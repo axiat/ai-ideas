@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# 禁止推送 main:agent 一律走特性分支 + PR,由 CI path guard 决定合入。
+# 人工确需直推 main 时:ALLOW_MAIN_PUSH=1 git push ...
+[ "${ALLOW_MAIN_PUSH:-0}" = "1" ] && exit 0
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "pre-push: 禁止直推 main,走分支 + PR(人工覆盖:ALLOW_MAIN_PUSH=1)" >&2
+    exit 1
+  fi
+done
+exit 0
