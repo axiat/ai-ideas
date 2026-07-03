@@ -12,6 +12,7 @@
 #     AGENT_CMD='opencode run' ./hunt.sh
 set -u
 cd "$(dirname "$0")"
+git config core.hooksPath .githooks   # 激活 pre-push 守卫:禁止直推 main
 
 AGENT_CMD=${AGENT_CMD:-claude -p}
 SLEEP_MIN=${1:-150}
