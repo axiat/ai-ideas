@@ -7,10 +7,8 @@
       "Write(ledger.tsv)",
       "WebSearch",
       "WebFetch",
-      "Bash(git *)",
-      "Bash(rtk git *)",
-      "Bash(gh *)",
-      "Bash(rtk gh *)",
+      "Bash(./publish.sh)",
+      "Bash(rtk ./publish.sh)",
       "Bash(ls)",
       "Bash(date)"
     ]

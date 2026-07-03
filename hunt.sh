@@ -2,7 +2,7 @@
 # 外层循环:反复调起 agent CLI 跑 hunt.md,直到当日达标报告出现。
 # 全程记录 hunt.log(含 agent 输出);失败分类:异常退出(额度/权限/命令错,连续 MAX_FAILS 次即停)
 # vs 正常退出但无达标(继续重试)。固定层守卫:每轮结束校验改动只落在 ideas/ 与 ledger.tsv,
-# 越界的未提交改动回滚,越界的已提交改动停止循环留人工处理。
+# 越界的已跟踪改动回滚;越界的已提交改动或未跟踪新文件,停止循环留人工处理。
 #
 # 用法:
 #   ./hunt.sh [重试间隔分钟,默认 150]
@@ -49,9 +49,19 @@ while :; do
       log "越界改动已进 commit,停止循环,人工处理:git log ${before:0:7}..HEAD"
       exit 2
     fi
-    printf '%s\n' "$bad" | while read -r p; do
-      git checkout -- "$p" 2>/dev/null && log "已回滚: $p" || log "未跟踪的越界文件,保留待查: $p"
-    done
+    rolled_all=1
+    while read -r p; do
+      if git checkout -- "$p" 2>/dev/null; then
+        log "已回滚: $p"
+      else
+        log "未跟踪的越界文件: $p"
+        rolled_all=0
+      fi
+    done <<< "$bad"
+    if [ "$rolled_all" -eq 0 ]; then
+      log "存在未跟踪的越界文件,停止循环,人工处理后再跑"
+      exit 2
+    fi
   fi
 
   if ls "ideas/${today}"_hunt*.md >/dev/null 2>&1; then
