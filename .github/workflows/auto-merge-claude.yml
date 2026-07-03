@@ -1,23 +1,34 @@
-name: Auto-merge Claude routine PRs
+name: Auto-merge routine PRs
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, synchronize]
 
 jobs:
   automerge:
-    if: startsWith(github.head_ref, 'claude/')
+    # 仅本仓库分支(拒 fork),不限分支名——claude/codex/任何 agent 的 PR 都按路径判定
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - name: Merge PR (squash)
+      - name: Path guard + merge
         env:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUM: ${{ github.event.pull_request.number }}
         run: |
-          # mergeability 检查可能有延迟，重试几次
+          # 守卫:PR 只允许改 ideas/** 与 ledger.tsv,越界则跳过自动合并,留人工审
+          gh api "repos/${{ github.repository }}/pulls/${PR_NUM}/files" --paginate --jq '.[].filename' > files.txt
+          bad=$(grep -vE '^(ideas/|ledger\.tsv$)' files.txt || true)
+          if [ -n "$bad" ]; then
+            echo "越出产出层的改动,跳过自动合并:" >&2
+            echo "$bad" >&2
+            gh pr comment "$PR_URL" --body "auto-merge 跳过:改动越出 ideas/ 与 ledger.tsv,需人工审阅。"
+            exit 0
+          fi
+          # mergeability 检查可能有延迟,重试几次
           for i in 1 2 3 4 5; do
             gh pr merge --squash --delete-branch "$PR_URL" && exit 0
             sleep 15

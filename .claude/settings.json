@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(ideas/**)",
+      "Write(ideas/**)",
+      "Edit(ledger.tsv)",
+      "Write(ledger.tsv)",
+      "WebSearch",
+      "WebFetch",
+      "Bash(git *)",
+      "Bash(rtk git *)",
+      "Bash(gh *)",
+      "Bash(rtk gh *)",
+      "Bash(ls)",
+      "Bash(date)"
+    ]
+  }
+}
