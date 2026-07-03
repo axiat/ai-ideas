@@ -1,1 +1,6 @@
 date	source	idea	verdict	reason
+2026-07-04	hunt	Action ABI: 给跨数据集 VLA 动作空间建立可检查的语义契约,在训练前暴露 frame/rate/control-mode/gripper 语义错配。	strong-accept	抓住标准化数据格式之下的语义兼容性漏洞,兼具数据基础设施、benchmark 和轻量工具贡献。
+2026-07-04	hunt	用 latent world model 在 action chunk 内做多候选 rollout 选择,把 VLA 分块执行变成 test-time scaling。	reject	DREAM-Chunk、VLA-Corrector、AAC、DCDP 已覆盖核心问题与方法形态,新意不足。
+2026-07-04	hunt	用反事实语言标签自动扩增机器人轨迹,降低 VLA 对视觉捷径的依赖。	reject	LIBERO-CF、CAG、CAST、SAM/flatness 已经形成拥挤方向,难以凭当前形态达到 clear accept。
+2026-07-04	hunt	把物理一致性损失加入机器人视频 world model,专门约束接触区域和物体轨迹。	reject	PhysisForcing、PAIWorld、GWM、ContactGaussian-WM 已经直接覆盖物理一致 world simulator。
+2026-07-04	hunt	为 frozen VLA 的 latent steering 建立 action-Jacobian rank probe,定位后训练控制权瓶颈。	reject	方向过窄且强依赖现有 DSRL 栈,作为诊断实验可做,但单独投稿上限不足。
