@@ -52,7 +52,7 @@ AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.ne
 
 报告在 `ideas/YYYY-MM-DD_hunt.md`,以 `hunt/日期` 分支 PR 提交,CI 按路径自动合并;本地收尾用 `./settle.sh`(合并后切回 main、清理本地/远程特性分支)。
 
-**每周定时**:cloud routine "Weekly Embodied Idea Scout" 自动运行,远端 prompt 即 `trigger.md`;报告经 `./publish.sh weekly` 以 `weekly/日期` 分支 PR 提交。改 `trigger.md` 需手动同步远端 routine;改固定层/角色层无需同步,routine 每次读仓库最新版。**caveat**:cloud routine 是单个 agent,拿不到 `hunt.sh` 的进程级隔离与取最低票——生成/查重/打分在同一 context,仍有自评偏松风险。要同等严格,需把 weekly 也改成跑多进程流水线。
+**每周定时**:cloud routine "Weekly Embodied Idea Scout" 自动运行,远端 prompt 即 `trigger.md`;报告经 `./publish.sh weekly` 以 `weekly/日期` 分支 PR 提交。改 `trigger.md` 需手动同步远端 routine;改固定层/角色层无需同步,routine 每次读仓库最新版。**caveat**:cloud routine 是**单个 agent**,拿不到 `hunt.sh` 的进程级隔离。`trigger.md` 已把 hunt 中纯 bash 的那部分严格度写成自律纪律逼近——分阶段执行、默认 Reject、对抗查重、三遍取最低、SA 硬门槛自检——但生成/查重/打分终究同一 context,严格度弱于 hunt 的独立裁判。**权限**:weekly 单 agent 要自己记账 + 跑 `publish.sh`(内含 git/gh),这些全在 `.claude/settings.json` allowlist 之外——allowlist 只约束 hunt.sh 统率的**本地受控 agent**,不绑云端 routine。故 weekly 只能以 **full-access(skip-permissions)** 运行(若被 allowlist 绑住会连 publish 都做不了);其越权风险由 `publish.sh` 硬限提交范围(`ideas/` 与 `ledger.tsv`)+ CI 路径守卫 + pre-push 拒直推 main 兜底,而非 `ledger.good` 快照。要完全对齐 hunt,把 weekly 改跑本地一次性流水线(同一条 bash 路径,`source=weekly`)即可。
 
 ## verdict 完整性(反串通)
 
