@@ -3,8 +3,3 @@ date	source	idea	verdict	reason
 2026-07-04	hunt	用反事实语言标签自动扩增机器人轨迹,降低 VLA 对视觉捷径的依赖。	reject	LIBERO-CF、CAG、CAST、SAM/flatness 已经形成拥挤方向,难以凭当前形态达到 clear accept。
 2026-07-04	hunt	把物理一致性损失加入机器人视频 world model,专门约束接触区域和物体轨迹。	reject	PhysisForcing、PAIWorld、GWM、ContactGaussian-WM 已经直接覆盖物理一致 world simulator。
 2026-07-04	hunt	为 frozen VLA 的 latent steering 建立 action-Jacobian rank probe,定位后训练控制权瓶颈。	reject	方向过窄且强依赖现有 DSRL 栈,作为诊断实验可做,但单独投稿上限不足。
-2026-07-04	hunt	把大型机器人示教集当作可测试的软件构件,为 VLA 训练建立 action/metadata/视觉-运动一致性数据单元测试与自动修复基准。	strong-accept	切中 VLA 数据基础设施缺口,区别于 influence 筛样与部署端 ExecSpec,可用公开数据验证并直接降低跨数据集负迁移。
-2026-07-04	hunt	把 tactile/audio/thermal 传感器做成 VLA 的按需工具调用,按任务选择非视觉模态。	reject	MuseVLA、Audio-VLA、TAP-VLA、TacVLA、Safe-Night VLA 已直接覆盖多传感器 VLA,当前形态新意不足。
-2026-07-04	hunt	做 deadline-aware VLA runtime,结合 KV cache、streaming、early observation 和 one-step flow 降低边缘部署延迟。	reject	VLA-Cache、StreamingVLA、ReactVLA、edge bottleneck characterization 已把 latency/runtime 方向占得很满。
-2026-07-04	hunt	为机器人 world model 建立 causal intervention pair benchmark,检查 counterfactual prompt 或 action 变化是否导致正确物理后果。	reject	What-If World、RoboWM-Bench、ABot-PhysWorld 已覆盖 causal/physical/world-model evaluation。
-2026-07-04	hunt	用生成式反事实失败轨迹训练 VLA failure recovery supervisor。	reject	FailSafe、Guardian、Dream2Fix、FPC-VLA 已覆盖失败合成、检测、恢复和 supervisor 框架。
