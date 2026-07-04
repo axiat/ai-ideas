@@ -6,24 +6,24 @@
 
 1. `rubric.md` — 评审流程,只读,不得跳步或重新解释。
 2. `brainstorming_policy.md` — 发散规则、idea 形态、verdict 校准,只读;Strong Accept 的尺度不得自行放宽或收紧。
-3. 指标唯一:verdict。keep ⇔ Strong Accept。
-4. 定级证据:候选 Strong Accept 必须附 policy 要求的定向查重记录(最相近 3-5 篇 + 链接);无记录不得定级。
-5. `ledger.tsv` schema 固定(见下);每个生成的 idea 无论 verdict 一律记一行,只追加,不改历史行。
+3. 指标唯一:verdict。keep ⇔ Strong Accept。verdict 不由任何单个 agent 决定,而由 orchestrator(`hunt.sh`)对 N 位独立裁判取**最低**票聚合;Strong Accept 需全票。
+4. 定级证据:候选 Strong Accept 必须附 policy 要求的定向查重记录(最相近 3-5 篇 + 链接);无记录不得定级。查重由独立进程完成,裁判的 novelty 只认该证据,不认生成方的说法。
+5. `ledger.tsv` schema 固定(见下);每个生成的 idea 无论 verdict 一律记一行,只追加,不改历史行。**只由 orchestrator 写入**,agent 不碰。
 6. 生成前必读 `ledger.tsv`,新 idea 不得与任何已有行实质雷同(包括已拒的)。
-7. 写入范围:agent 只允许写 `ideas/`、`ledger.tsv` 与 `tmp/`(草稿区,gitignored,不入库);不得改动其它文件;不得直推 main,产出经 `./publish.sh` 走特性分支 + PR 合入。
-8. 一轮 = 一批 idea(4-6 个)完整走完"生成 → 评审 → 记账",不得半途丢弃未评审的 idea。
-9. 循环期间不停下询问人、不请求确认;停机条件只由入口文件定义,未达标不得提前放水结束。
+7. 角色分离(反串通):生成 / 查重 / 打分是互不共享 context 的独立进程,prompt 见 `roles/`。生成方不查重定性、不打分;裁判默认 Reject、互不通气、也不知道停机条件。
+8. 写入范围:agent 只允许写 `tmp/`(草稿区,gitignored)与 `ideas/`(仅报告角色);不得碰 `ledger.tsv` 及其它文件,不得运行 git/gh/publish。记账与发布由 orchestrator 负责,产出经 `./publish.sh` 走特性分支 + PR。
+9. 一轮 = 一批 idea(4-6 个)完整走完"生成 → 查重 → 打分 → 记账",不得半途丢弃未评审的 idea。
+10. 循环期间不停下询问人、不请求确认;停机条件只由入口文件定义,未达标不得提前放水结束。
 
 ## 回路
 
-LOOP:
-1. 读 `brainstorming_policy.md`、`rubric.md`、`ledger.tsv`(`research_context.md` 可选灵感,不构成约束)。
-2. 文献调研:范围与时间窗由入口文件定义,每篇记标题、arXiv 链接、核心方法、关键结果、局限。
-3. 综合分析:趋势、方法分歧、未解决的 gap、隐藏假设。
-4. 生成一批 idea,遵守 policy 的发散要求与四种合法形态,避开 ledger 已有行。
-5. 按 `rubric.md` 完整评审,verdict 用 policy 校准。
-6. 记账:每个 idea 一行追加进 `ledger.tsv`。
-7. 达到入口定义的达标条件 → 按入口的输出格式写报告,结束;否则回到 4(调研可增量补充)。
+`hunt.sh` 按序调起独立进程,每轮:
+
+1. **生成**(`roles/generate.md`):读 policy 与 ledger,产出 4-6 个 idea 到 `tmp/round/`,遵守 policy 发散要求与四种合法形态,避开 ledger 已有行。
+2. **查重**(`roles/research.md`):对抗式定向查重,每个 idea 找最相近 3-5 篇实读摘要/方法,产出独立证据。
+3. **打分**(`roles/review.md`,跑 N 次):各裁判按 `rubric.md` 完整评审、用 policy 校准,默认 Reject,输出各自 verdict。
+4. **聚合记账**(orchestrator):每个 idea 取 N 位裁判最低票(SA 需全票),全部追加进 `ledger.tsv`。
+5. 有全票 Strong Accept → `roles/report.md` 组装报告到 `ideas/`,orchestrator 调 `./publish.sh` 发布,结束;否则下一轮(调研可增量补充)。
 
 ## ledger.tsv
 

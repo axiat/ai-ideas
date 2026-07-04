@@ -1,10 +1,1 @@
 date	source	idea	verdict	reason
-2026-07-04	hunt	用 latent world model 在 action chunk 内做多候选 rollout 选择,把 VLA 分块执行变成 test-time scaling。	reject	DREAM-Chunk、VLA-Corrector、AAC、DCDP 已覆盖核心问题与方法形态,新意不足。
-2026-07-04	hunt	用反事实语言标签自动扩增机器人轨迹,降低 VLA 对视觉捷径的依赖。	reject	LIBERO-CF、CAG、CAST、SAM/flatness 已经形成拥挤方向,难以凭当前形态达到 clear accept。
-2026-07-04	hunt	把物理一致性损失加入机器人视频 world model,专门约束接触区域和物体轨迹。	reject	PhysisForcing、PAIWorld、GWM、ContactGaussian-WM 已经直接覆盖物理一致 world simulator。
-2026-07-04	hunt	为 frozen VLA 的 latent steering 建立 action-Jacobian rank probe,定位后训练控制权瓶颈。	reject	方向过窄且强依赖现有 DSRL 栈,作为诊断实验可做,但单独投稿上限不足。
-2026-07-04	hunt	把 VLM-as-judge 机器人奖励当作可被策略攻击的 proxy,做 reward hacking 压测与防御。	reject	SOLE-R1 已把 partial observability、distribution shift 与 reward hacking 作为核心问题并给出视频推理 rewarder,当前形态拥挤。
-2026-07-04	hunt	用 counterfactual stale/fresh observation liveness 测试 VLA 是否真正依赖当前视觉。	reject	AR-VLA、DEFLECT、AAC、VLA-Corrector 已直接覆盖 perception staleness、异步延迟和 action chunk 截断,新意不足。
-2026-07-04	hunt	通过物理物体、初始状态或轨迹模式触发 VLA 定向后门,建立部署前红队基准。	reject	AttackVLA、GoBA、State Backdoor、TabVLA 已形成统一评测、物理触发和状态触发攻击路线。
-2026-07-04	hunt	让 action chunk 自带安全停靠点和可中断证书,把 open-loop 执行改成可抢占控制。	reject	AAC、VLA-Corrector、ForesightSafety-VLA 已覆盖自适应 horizon、偏差检测和安全诊断,需要更强形式化贡献才够。
-2026-07-04	hunt	建立 Embodied Model Collapse 基准,测试递归 VLA 数据飞轮是否逐轮抹掉长尾接触、恢复与稀有任务能力。	strong-accept	把 model collapse 从文本/图像生成迁移到闭环机器人数据引擎,直接击中 synthetic-first VLA 数据飞轮的未检验风险,单人可用 SmolVLA/RoboTwin/LIBERO 做出清晰证据。
