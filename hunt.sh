@@ -21,11 +21,20 @@
 #     AGENT_CMD='claude -p' ./hunt.sh              # 默认;权限走 .claude/settings.json allowlist
 #     AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
 #       # OS sandbox 写限本仓库;approval never + 放行网络(publish.sh 的 push/gh 需联网)。codex exec 不吃 -a,须用 -c approval_policy=
+#   FRONT_CMD 覆盖前段(生成+查重)、BACK_CMD 覆盖后段(打分+报告);二者都默认回落到 AGENT_CMD,不设则行为与原来逐字节一致。
+#   Level 1.5(agy 跑便宜前段,claude/codex 跑可信后段):
+#     FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
+#       # 前段用 agy:便宜、可错——错误 idea 由下游独立裁判 + SA 硬门槛毙掉,只会多重试几轮,不污染 verdict。
+#       # 后段(verdict/报告)与 publish 全走 claude/codex:可信、可并行。切勿让 agy 跑 review(3 并发认证会挂)或碰 publish(其 CLI sandbox 可读写 $HOME,不能当边界)。
 set -u
 cd "$(dirname "$0")"
 git config core.hooksPath .githooks   # 激活 pre-push 守卫:禁止直推 main
 
 AGENT_CMD=${AGENT_CMD:-claude -p}
+# 分段 agent:前段(生成+查重)便宜且可错,可换 agy;后段(打分+报告)决定 verdict 与发布产物,须可信(claude/codex)。
+# 两者默认回落 AGENT_CMD——都不设时行为与原来完全一致。
+FRONT_CMD=${FRONT_CMD:-$AGENT_CMD}
+BACK_CMD=${BACK_CMD:-$AGENT_CMD}
 FAIL_SLEEP_MIN=${FAIL_SLEEP_MIN:-${1:-150}}
 NO_HIT_SLEEP_MIN_LO=${NO_HIT_SLEEP_MIN_LO:-1}
 NO_HIT_SLEEP_MIN_HI=${NO_HIT_SLEEP_MIN_HI:-8}
@@ -71,10 +80,11 @@ random_no_hit_sleep_min() {
   echo $((NO_HIT_SLEEP_MIN_LO + RANDOM % (NO_HIT_SLEEP_MIN_HI - NO_HIT_SLEEP_MIN_LO + 1)))
 }
 
-# 调一次 agent(串行阶段用),rc 作为返回值;$1=prompt $2=阶段名
+# 调一次 agent(串行阶段用),rc 作为返回值;$1=命令 $2=prompt $3=阶段名
 run_stage() {
-  log "调起 [$2]: $AGENT_CMD"
-  $AGENT_CMD "$1" >> "$LOG" 2>&1
+  local cmd=$1
+  log "调起 [$3]: $cmd"
+  $cmd "$2" >> "$LOG" 2>&1
   return $?
 }
 
@@ -181,7 +191,7 @@ while :; do
   rm -rf "$RD"; mkdir -p "$RD"
 
   # 1) 生成(禁写 ideas/)
-  run_stage "读 roles/generate.md,按其执行" generate; rc=$?; guard 0
+  run_stage "$FRONT_CMD" "读 roles/generate.md,按其执行" generate; rc=$?; guard 0
   if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
   if [ ! -s "$RD/ideas.tsv" ]; then
     log "生成阶段未产出 ideas.tsv,本轮作废重试"; fails=0
@@ -189,7 +199,7 @@ while :; do
   fi
 
   # 2) 对抗式查重(禁写 ideas/)
-  run_stage "读 roles/research.md,按其执行" research; rc=$?; guard 0
+  run_stage "$FRONT_CMD" "读 roles/research.md,按其执行" research; rc=$?; guard 0
   if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
   if [ ! -s "$RD/priorwork.md" ]; then
     log "查重阶段未产出 priorwork.md,本轮作废重试"; fails=0
@@ -201,8 +211,8 @@ while :; do
   for r in $(seq 1 "$REVIEWERS"); do
     d="$RD/rev/$r"; mkdir -p "$d"
     cp "$RD/ideas.md" "$RD/priorwork.md" "$d/"
-    log "调起 [review#${r}] (并行,独立目录 ${d}): $AGENT_CMD"
-    ( $AGENT_CMD "读 roles/review.md,按其执行;输入只在 ${d}/(ideas.md 与 priorwork.md)+ 仓库根 rubric.md、brainstorming_policy.md;verdict 写 ${d}/verdict.tsv,完整评审写 ${d}/review.md" \
+    log "调起 [review#${r}] (并行,独立目录 ${d}): $BACK_CMD"
+    ( $BACK_CMD "读 roles/review.md,按其执行;输入只在 ${d}/(ideas.md 与 priorwork.md)+ 仓库根 rubric.md、brainstorming_policy.md;verdict 写 ${d}/verdict.tsv,完整评审写 ${d}/review.md" \
         >> "$RD/rev/${r}.log" 2>&1; printf '%s %s\n' "$r" "$?" >> "$RD/rev_rc" ) &
     pids+=("$!")
   done
@@ -247,7 +257,7 @@ while :; do
   # 5) 达标 → 组装报告并发布;否则继续循环
   if [ "$sa_count" -gt 0 ]; then
     printf '尝试轮数: %s\n评审日期: %s\n裁判数: %s\n' "$round" "$today" "$REVIEWERS" > "$RD/meta.txt"
-    run_stage "读 roles/report.md,按其执行" report; rc=$?; guard 1   # 仅此阶段允许写 ideas/
+    run_stage "$BACK_CMD" "读 roles/report.md,按其执行" report; rc=$?; guard 1   # 仅此阶段允许写 ideas/
     if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
     if ls "ideas/${today}"_hunt*.md >/dev/null 2>&1; then
       cp "$LEDGER_GOOD" ledger.tsv   # 发布前再确保 ledger = 定谳 good,抹掉 report 阶段对 ledger 的任何擅改
