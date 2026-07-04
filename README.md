@@ -28,12 +28,14 @@
 
 ## 用法
 
-**主动找 idea(挂机)**:`./hunt.sh`。每轮把一批 idea 走完「生成 → 对抗式查重 → 打分 ×N」,脚本自身聚合 verdict(取最低票,Strong Accept 需全票)、写 ledger、发报告。首轮就出全票 SA 则发布即退;否则按间隔(默认 150 分钟)重试,额度刷新后自动续——状态在 `ledger.tsv`,新会话不重做已评审的 idea。
+**主动找 idea(挂机)**:`./hunt.sh`。每轮把一批 idea 走完「生成 → 对抗式查重 → 打分 ×N」,脚本自身聚合 verdict(取最低票,Strong Accept 需全票)、写 ledger、发报告。首轮就出全票 SA 则发布即退;异常退出/阶段产物缺失默认冷却 150 分钟,正常无 SA 默认随机 1-8 分钟后重试——状态在 `ledger.tsv`,新会话不重做已评审的 idea。
 
 ```bash
 ./hunt.sh                 # 默认 claude -p,3 位裁判
 REVIEWERS=5 ./hunt.sh     # 加严:5 位裁判,仍取最低票
-./hunt.sh 30              # 重试间隔改 30 分钟
+./hunt.sh 30              # 异常冷却改 30 分钟;正常无 SA 仍随机 1-8 分钟
+NO_HIT_SLEEP_MIN_LO=1 NO_HIT_SLEEP_MIN_HI=8 ./hunt.sh
+ALLOW_ZERO_NO_HIT_SLEEP=1 NO_HIT_SLEEP_MIN_LO=0 NO_HIT_SLEEP_MIN_HI=0 ./hunt.sh  # 测试用
 AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
 ```
 
