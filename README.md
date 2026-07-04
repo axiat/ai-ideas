@@ -30,8 +30,19 @@
 
 **主动找 idea(挂机)**:`./hunt.sh`。每轮把一批 idea 走完「生成 → 对抗式查重 → 打分 ×N」,脚本自身聚合 verdict(取最低票,Strong Accept 需全票)、写 ledger、发报告。首轮就出全票 SA 则发布即退;异常退出/阶段产物缺失默认冷却 150 分钟,正常无 SA 默认随机 1-8 分钟后重试——状态在 `ledger.tsv`,新会话不重做已评审的 idea。
 
+
 ```bash
-./hunt.sh                 # 默认 claude -p,3 位裁判
+./hunt.sh                 
+# 默认参数
+#  agent: claude -p
+#  裁判数: REVIEWERS=3
+#  SA 实读门槛: MIN_READ=3
+#  异常冷却: 150 分钟
+#  正常跑完但无 SA: 随机等待 1-8 分钟后重试
+#  连续异常上限: MAX_FAILS=12
+#  有至少 1 个 Strong Accept: 写报告、发布 PR、退出
+
+
 REVIEWERS=5 ./hunt.sh     # 加严:5 位裁判,仍取最低票
 ./hunt.sh 30              # 异常冷却改 30 分钟;正常无 SA 仍随机 1-8 分钟
 NO_HIT_SLEEP_MIN_LO=1 NO_HIT_SLEEP_MIN_HI=8 ./hunt.sh
