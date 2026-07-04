@@ -48,6 +48,16 @@ REVIEWERS=5 ./hunt.sh     # 加严:5 位裁判,仍取最低票
 NO_HIT_SLEEP_MIN_LO=1 NO_HIT_SLEEP_MIN_HI=8 ./hunt.sh
 ALLOW_ZERO_NO_HIT_SLEEP=1 NO_HIT_SLEEP_MIN_LO=0 NO_HIT_SLEEP_MIN_HI=0 ./hunt.sh  # 测试用
 AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
+
+# agy + claude:agy 只跑生成+查重;claude 跑打分+报告,publish 仍由 hunt.sh 调 publish.sh
+# agy 只可作 FRONT;放 BACK 会因 review 3 并发认证失败而炸
+FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
+
+# agy + codex:agy 只跑生成+查重;codex 跑打分+报告
+FRONT_CMD='./agy-worker.sh' BACK_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
+
+# agy 前段可调,默认 AGY_MODEL=gemini-3.5-flash-low,AGY_PRINT_TIMEOUT=8m
+AGY_MODEL=gemini-3.5-flash-medium AGY_PRINT_TIMEOUT=10m FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
 ```
 
 报告在 `ideas/YYYY-MM-DD_hunt.md`,以 `hunt/日期` 分支 PR 提交,CI 按路径自动合并;本地收尾用 `./settle.sh`(合并后切回 main、清理本地/远程特性分支)。
@@ -65,7 +75,7 @@ AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.ne
 
 ## 无人值守的四层保证
 
-1. **工具策略**:claude 走 `.claude/settings.json` allowlist——只放行写 `ideas/` 与草稿区(仓库内 `tmp/`、系统 `/tmp`),WebSearch/WebFetch,无参 ls/date;`ledger.tsv` 写权与 publish/git/gh 都不给 agent(orchestrator 独占)。未匹配操作在无头模式下自动拒绝(前提:本仓库已 trust)。codex 走 OS 级 sandbox(`-s workspace-write` 写限仓库、`-c approval_policy=never`、`-c sandbox_workspace_write.network_access=true` 放行网络、`--search`;`codex exec` 须用 `-c approval_policy=` 而非 `-a`);codex 沙箱无细粒度写控,ledger 完整性靠上面的快照-还原兜底。
+1. **工具策略**:claude 走 `.claude/settings.json` allowlist——只放行写 `ideas/` 与草稿区(仓库内 `tmp/`、系统 `/tmp`),WebSearch/WebFetch,无参 ls/date;`ledger.tsv` 写权与 publish/git/gh 都不给 agent(orchestrator 独占)。未匹配操作在无头模式下自动拒绝(前提:本仓库已 trust)。codex 走 OS 级 sandbox(`-s workspace-write` 写限仓库、`-c approval_policy=never`、`-c sandbox_workspace_write.network_access=true` 放行网络、`--search`;`codex exec` 须用 `-c approval_policy=` 而非 `-a`);codex 沙箱无细粒度写控,ledger 完整性靠上面的快照-还原兜底。agy(前段 `FRONT_CMD`)既无 allowlist 也无 OS sandbox,其 CLI sandbox 可读写 `$HOME`,不能当边界;故只用于生成/查重这类**可错**的上游——靠回路守卫(§3)回滚越界仓库改动、且它绝不碰 verdict/ledger/publish 兜底,错误 idea 由下游独立裁判毙掉。它对 `$HOME` 的越界写在守卫视野外,但不影响判定与发布产物。
 2. **push 守卫**:发布只经 `./publish.sh`——add 范围硬编码为 `ideas/` 与 `ledger.tsv`,走 `hunt/当日` 分支 PR。`.githooks/pre-push` 拒直推 main(人工覆盖 `ALLOW_MAIN_PUSH=1`)。GitHub 端未启用 branch protection,远端 main 无服务端防线。
 3. **回路守卫**:`hunt.sh` 每次调 agent 后按阶段校验已跟踪改动——生成/查重/评审阶段只允许 `ledger.tsv`(且靠 ledger.good 兜底),report 阶段才放行 `ideas/`;越界未提交改动自动回滚,越界已提交/未跟踪文件停机留人工。日志 `hunt.log`(gitignored),连续异常达 `MAX_FAILS`(默认 12)即停。
 4. **CI 守卫**:auto-merge workflow 只按路径判定——本仓库分支的 PR 改动全落在 `ideas/**` 与 `ledger.tsv` 才自动合并,越界跳过并留言,固定层改动必须人工 merge。
