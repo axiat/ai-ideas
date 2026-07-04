@@ -44,7 +44,7 @@ run_stage() {
 # 固定层守卫:本轮相对 before/pre_dirty 的新增已跟踪改动只允许落在指定路径。
 # $1=是否允许 ideas/(1/0)。ledger.tsv 恒视为在界内——其完整性由 ledger.good 重置保证,不靠此守卫。
 guard() {
-  local allow_ideas=${1:-0} pat changed bad committed_bad rolled_all p
+  local allow_ideas=${1:-0} pat changed bad committed_bad rolled_all p bad_after
   if [ "$allow_ideas" = "1" ]; then pat='^(ideas/|ledger\.tsv$)'; else pat='^(ledger\.tsv$)'; fi
   changed=$({ git diff --name-only "$before" HEAD; git status --porcelain | cut -c4-; } | sort -u)
   bad=$(comm -23 <(printf '%s\n' "$changed") <(printf '%s\n' "$pre_dirty") \
@@ -59,9 +59,28 @@ guard() {
   rolled_all=1
   while read -r p; do
     [ -z "$p" ] && continue
-    if git checkout -- "$p" 2>/dev/null; then log "已回滚: $p"; else log "未跟踪越界文件: $p"; rolled_all=0; fi
+    if git cat-file -e "$before:$p" 2>/dev/null; then
+      if git restore --source="$before" --staged --worktree -- "$p" 2>/dev/null; then
+        log "已回滚: $p"
+      elif git reset -q "$before" -- "$p" 2>/dev/null && git checkout "$before" -- "$p" 2>/dev/null; then
+        log "已回滚: $p"
+      else
+        log "未能回滚越界文件: $p"
+        rolled_all=0
+      fi
+    else
+      git reset -q HEAD -- "$p" 2>/dev/null || true
+      log "未跟踪越界文件: $p"
+      rolled_all=0
+    fi
   done <<< "$bad"
-  [ "$rolled_all" -eq 0 ] && { log "存在未跟踪越界文件(疑似伪造报告/越权写入),停机,人工处理后再跑"; exit 2; }
+  changed=$({ git diff --name-only "$before" HEAD; git status --porcelain | cut -c4-; } | sort -u)
+  bad_after=$(comm -23 <(printf '%s\n' "$changed") <(printf '%s\n' "$pre_dirty") \
+        | grep -vE "$pat" | grep -v '^$' || true)
+  if [ "$rolled_all" -eq 0 ] || [ -n "$bad_after" ]; then
+    log "存在未跟踪或未清干净的越界文件,停机,人工处理后再跑: $(echo "$bad_after" | tr '\n' ' ')"
+    exit 2
+  fi
   return 0
 }
 

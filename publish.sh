@@ -16,10 +16,18 @@ if git diff --cached --quiet; then
   exit 0
 fi
 
+staged=$(git diff --cached --name-only)
+bad=$(printf '%s\n' "$staged" | grep -vE '^(ideas/|ledger\.tsv$)' || true)
+if [ -n "$bad" ]; then
+  echo "拒绝发布: staged 改动越出 ideas/ 与 ledger.tsv:" >&2
+  echo "$bad" >&2
+  exit 2
+fi
+
 if [ "$(git rev-parse --abbrev-ref HEAD)" != "$branch" ]; then
   git checkout -b "$branch" 2>/dev/null || git checkout "$branch"
 fi
-git commit -m "${src}: ${today} 报告与台账"
+git commit -m "${src}: ${today} 报告与台账" -- ideas ledger.tsv
 git push -u origin "$branch"
 
 state=$(gh pr view "$branch" --json state -q .state 2>/dev/null || true)
