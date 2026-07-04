@@ -1,1 +1,6 @@
 date	source	idea	verdict	reason
+2026-07-04	hunt	交互式世界模型不只预测未来帧，而是输出带回滚条件的短期承诺，让机器人在执行动作块前知道何时应继续、何时必须撤销。	reject	CRITICAL novelty failure: VLA-Corrector 与 DREAM-Chunk 已直接覆盖承诺有效性监控、截断/重规划和短期 latent future。
+2026-07-04	hunt	VLA 推理可借鉴 CPU 投机执行，先用廉价策略分支预取多个动作块，再由轻量世界模型或在线观测提交其中一支、冲刷其余分支。	reject	CRITICAL novelty failure: DREAM-Chunk 已覆盖多候选 action chunk 的投机生成与 latent matching 提交，VLA-Corrector 覆盖 flush stale actions。
+2026-07-04	hunt	接触操作中的世界模型应显式建模“接触守恒残差”，把视觉上合理但物理接触不闭合的未来从训练目标里分离出来。	accept-w-rev	Contact residual latent 未被单篇完整覆盖，但 ContactWorld、DreamTacVLA、PIN-WM 等近邻使 novelty 与真实 baseline 仍是 MAJOR。
+2026-07-04	hunt	VLM-as-judge 奖励的噪声可能主要来自自遮挡导致的可观测性下降，可把奖励可靠性写成部分可观测判别问题而不是统一标签噪声。	accept-w-rev	遮挡可观测性奖励噪声的 formulation 有差异，但 RoboReward、VLM-AR3L、PO-PDDL 和 Observability Gap 已覆盖关键组件。
+2026-07-04	hunt	长时序 manipulation 可能存在可测量的经验局部性，成功轨迹反复访问少量状态-动作模式，因此可先做局部性 probe 再决定是否设计缓存式 VLA 推理。	reject	CRITICAL novelty failure: VLA-Cache 与 C^3ache 已直接覆盖 VLA/WAM 推理局部性测量和 cache 路线。
