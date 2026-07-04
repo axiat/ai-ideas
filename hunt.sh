@@ -10,10 +10,12 @@
 #   - 分阶段守卫:生成/查重/评审阶段禁写 ideas/(防伪造达标报告绕过全票);仅 report 阶段可写 ideas/。
 #
 # 全程记录 hunt.log。失败分类:某阶段异常退出(额度/权限/命令错,连续 MAX_FAILS 次即停)
-# vs 正常跑完但无达标(继续重试)。
+# vs 正常跑完但无达标(随机短间隔继续重试)。
 #
 # 用法:
-#   ./hunt.sh [重试间隔分钟,默认 150]
+#   ./hunt.sh [异常重试间隔分钟,默认 150]
+#   NO_HIT_SLEEP_MIN_LO/HI 正常无达标后的随机重试区间(默认 1-8 分钟,默认最小为 1);
+#   ALLOW_ZERO_NO_HIT_SLEEP=1 仅用于测试,允许正常无达标后 0 分钟重试;
 #   REVIEWERS 裁判票数(默认 3);MIN_READ SA 门槛要求的最少实读篇数(默认 3);
 #   AGENT_CMD 指定 agent CLI(prompt 作为最后一个参数传入),例:
 #     AGENT_CMD='claude -p' ./hunt.sh              # 默认;权限走 .claude/settings.json allowlist
@@ -24,7 +26,10 @@ cd "$(dirname "$0")"
 git config core.hooksPath .githooks   # 激活 pre-push 守卫:禁止直推 main
 
 AGENT_CMD=${AGENT_CMD:-claude -p}
-SLEEP_MIN=${1:-150}
+FAIL_SLEEP_MIN=${FAIL_SLEEP_MIN:-${1:-150}}
+NO_HIT_SLEEP_MIN_LO=${NO_HIT_SLEEP_MIN_LO:-1}
+NO_HIT_SLEEP_MIN_HI=${NO_HIT_SLEEP_MIN_HI:-8}
+ALLOW_ZERO_NO_HIT_SLEEP=${ALLOW_ZERO_NO_HIT_SLEEP:-0}
 MAX_FAILS=${MAX_FAILS:-12}
 REVIEWERS=${REVIEWERS:-3}
 MIN_READ=${MIN_READ:-3}
@@ -33,6 +38,38 @@ RD=tmp/round
 LEDGER_GOOD=tmp/ledger.good
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
+
+is_uint() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+validate_sleep_config() {
+  is_uint "$FAIL_SLEEP_MIN" || { log "FAIL_SLEEP_MIN 必须是非负整数分钟: $FAIL_SLEEP_MIN"; exit 2; }
+  is_uint "$NO_HIT_SLEEP_MIN_LO" || { log "NO_HIT_SLEEP_MIN_LO 必须是非负整数分钟: $NO_HIT_SLEEP_MIN_LO"; exit 2; }
+  is_uint "$NO_HIT_SLEEP_MIN_HI" || { log "NO_HIT_SLEEP_MIN_HI 必须是非负整数分钟: $NO_HIT_SLEEP_MIN_HI"; exit 2; }
+  case "$ALLOW_ZERO_NO_HIT_SLEEP" in
+    0|1) ;;
+    *) log "ALLOW_ZERO_NO_HIT_SLEEP 只能是 0 或 1: $ALLOW_ZERO_NO_HIT_SLEEP"; exit 2 ;;
+  esac
+  if [ "$ALLOW_ZERO_NO_HIT_SLEEP" != "1" ]; then
+    if [ "$NO_HIT_SLEEP_MIN_LO" -lt 1 ] || [ "$NO_HIT_SLEEP_MIN_HI" -lt 1 ]; then
+      log "NO_HIT_SLEEP_MIN_LO/HI 默认必须 >=1 分钟;测试需显式 ALLOW_ZERO_NO_HIT_SLEEP=1"
+      exit 2
+    fi
+  fi
+  if [ "$NO_HIT_SLEEP_MIN_LO" -gt "$NO_HIT_SLEEP_MIN_HI" ]; then
+    log "NO_HIT_SLEEP_MIN_LO 不能大于 NO_HIT_SLEEP_MIN_HI: ${NO_HIT_SLEEP_MIN_LO}-${NO_HIT_SLEEP_MIN_HI}"
+    exit 2
+  fi
+}
+
+sleep_minutes() {
+  local minutes=$1
+  log "${minutes} 分钟后重试"
+  sleep "$((minutes * 60))"
+}
+
+random_no_hit_sleep_min() {
+  echo $((NO_HIT_SLEEP_MIN_LO + RANDOM % (NO_HIT_SLEEP_MIN_HI - NO_HIT_SLEEP_MIN_LO + 1)))
+}
 
 # 调一次 agent(串行阶段用),rc 作为返回值;$1=prompt $2=阶段名
 run_stage() {
@@ -92,8 +129,7 @@ fail_and_wait() {
     log "连续失败达上限,停止;检查 AGENT_CMD、额度与权限配置"
     exit 1
   fi
-  log "${SLEEP_MIN} 分钟后重试"
-  sleep "$((SLEEP_MIN * 60))"
+  sleep_minutes "$FAIL_SLEEP_MIN"
 }
 
 rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) echo 0 ;; esac; }
@@ -116,6 +152,7 @@ sa_gate_ok() {
 }
 
 mkdir -p "$(dirname "$LEDGER_GOOD")"                             # tmp/ 在干净 checkout 里不存在,先建(否则种子/重置全失败)
+validate_sleep_config
 # 启动瞬间的工作树 ledger 视为人工/operator 基线;后续阶段中 agent 的任何擅改都只会被重置回此基线。
 if [ -f ledger.tsv ]; then
   if ! git diff --quiet -- ledger.tsv 2>/dev/null; then
@@ -148,7 +185,7 @@ while :; do
   if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
   if [ ! -s "$RD/ideas.tsv" ]; then
     log "生成阶段未产出 ideas.tsv,本轮作废重试"; fails=0
-    log "${SLEEP_MIN} 分钟后重试"; sleep "$((SLEEP_MIN * 60))"; continue
+    sleep_minutes "$FAIL_SLEEP_MIN"; continue
   fi
 
   # 2) 对抗式查重(禁写 ideas/)
@@ -156,7 +193,7 @@ while :; do
   if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
   if [ ! -s "$RD/priorwork.md" ]; then
     log "查重阶段未产出 priorwork.md,本轮作废重试"; fails=0
-    log "${SLEEP_MIN} 分钟后重试"; sleep "$((SLEEP_MIN * 60))"; continue
+    sleep_minutes "$FAIL_SLEEP_MIN"; continue
   fi
 
   # 3) N 位裁判,并行 + 各自独立输入目录(开跑时看不到彼此产出)(F3);禁写 ideas/
@@ -222,6 +259,7 @@ while :; do
 
   fails=0
   log "运行完成但无达标报告(本轮 idea 未拿到全票 Strong Accept)"
-  log "${SLEEP_MIN} 分钟后重试"
-  sleep "$((SLEEP_MIN * 60))"
+  sleep_min=$(random_no_hit_sleep_min)
+  log "正常无达标,随机等待 ${NO_HIT_SLEEP_MIN_LO}-${NO_HIT_SLEEP_MIN_HI} 分钟;本次 ${sleep_min} 分钟后重试"
+  sleep "$((sleep_min * 60))"
 done
