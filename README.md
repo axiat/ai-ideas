@@ -21,7 +21,7 @@
 
 ## 用法
 
-**每周定时**:cloud routine "Weekly Embodied Idea Scout" 自动运行,远端 prompt 即 `trigger.md` 的内容;报告以 `claude/*` 分支 PR 提交,CI 自动合并。改了 `trigger.md` 需手动同步到远端 routine 配置;改 `PROGRAM.md` / `rubric.md` / `brainstorming_policy.md` 无需同步,routine 每次从仓库读最新版。
+**每周定时**:cloud routine "Weekly Embodied Idea Scout" 自动运行,远端 prompt 即 `trigger.md` 的内容;报告经 `./publish.sh weekly` 以 `weekly/日期` 分支 PR 提交,CI 按路径自动合并。改了 `trigger.md` 需手动同步到远端 routine 配置;改 `PROGRAM.md` / `rubric.md` / `brainstorming_policy.md` 无需同步,routine 每次从仓库读最新版。
 
 **主动找 idea(单次)**:任一 agent CLI(claude / codex / opencode 等)会话里:
 
@@ -41,7 +41,7 @@ AGENT_CMD='opencode run' ./hunt.sh
 
 无人值守的边界分四层:
 
-1. **工具策略**:claude 走 `.claude/settings.json` allowlist——文件写入只放行 `ideas/` 与 `ledger.tsv`,Bash 只放行 `./publish.sh`、无参 ls/date,不直接暴露 git/gh(防 `--no-verify`、改 hooksPath 等绕守卫操作),未匹配操作在无头模式下自动拒绝(前提:本仓库已 trust,`~/.claude.json` 中 `hasTrustDialogAccepted: true`)。codex 走 OS 级 sandbox(`-s workspace-write` 写限仓库、`-a never` 不询问、`--search` 内置搜索),不需要也不建议 `--dangerously-bypass-approvals-and-sandbox`;codex 在仓库内可跑任意命令,越界靠后两层兜底。
+1. **工具策略**:claude 走 `.claude/settings.json` allowlist——文件写入只放行 `ideas/`、`ledger.tsv` 与草稿区 `tmp/`(gitignored,对守卫与 CI 均不可见),Bash 只放行 `./publish.sh`、无参 ls/date,不直接暴露 git/gh(防 `--no-verify`、改 hooksPath 等绕守卫操作),未匹配操作在无头模式下自动拒绝(前提:本仓库已 trust,`~/.claude.json` 中 `hasTrustDialogAccepted: true`)。codex 走 OS 级 sandbox(`-s workspace-write` 写限仓库、`-a never` 不询问、`--search` 内置搜索),不需要也不建议 `--dangerously-bypass-approvals-and-sandbox`;codex 在仓库内可跑任意命令,越界靠后两层兜底。
 2. **push 守卫**:agent 发布只经 `./publish.sh`——add 范围硬编码为 `ideas/` 与 `ledger.tsv`,提交到 `hunt/当日` 分支、推送、开 PR。`.githooks/pre-push` 拒绝直推 main(`hunt.sh` 与 `publish.sh` 启动时自动 `git config core.hooksPath .githooks`)。人工直推:`ALLOW_MAIN_PUSH=1 git push`。绕过面:GitHub 端未启用 branch protection,远端 main 无服务端防线,`--no-verify` 的直推对人(和 codex)仍可行。
 3. **回路守卫**:`hunt.sh` 每轮结束校验本轮改动只落在 `ideas/` 与 `ledger.tsv`——越界的未提交改动自动回滚,越界的已提交改动停止循环留人工处理;全程日志在 `hunt.log`(gitignored),异常退出与"跑完但无达标"分类记录,连续异常达 `MAX_FAILS`(默认 12)即停,不做无限静默重试。
 4. **CI 守卫**:auto-merge workflow 不看分支名,只按路径判定——本仓库分支的 PR 改动完全落在 `ideas/**` 与 `ledger.tsv` 内才自动合并,越界则跳过并留言,固定层改动必须人工 merge。
