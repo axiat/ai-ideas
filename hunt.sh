@@ -8,7 +8,8 @@
 #   ./hunt.sh [重试间隔分钟,默认 150]
 #   AGENT_CMD 指定 agent CLI(prompt 作为最后一个参数传入),例:
 #     AGENT_CMD='claude -p' ./hunt.sh              # 默认;权限走 .claude/settings.json allowlist
-#     AGENT_CMD='codex --search -a never exec -s workspace-write' ./hunt.sh   # OS sandbox,写限本仓库
+#     AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
+#       # OS sandbox 写限本仓库;approval never + 放行网络(publish.sh 的 push/gh 需联网)。codex exec 不吃 -a,须用 -c approval_policy=
 #     AGENT_CMD='opencode run' ./hunt.sh
 set -u
 cd "$(dirname "$0")"
