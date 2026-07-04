@@ -13,6 +13,6 @@
   4. 附录:至多 2 个 borderline(Accept with Revisions)
   5. 被拒 idea 简表(一句话 + 拒因)
   6. 元信息:尝试轮数、评审日期
-- 收尾:提交并推送(含 `ledger.tsv` 更新)。
+- 收尾:执行 `./publish.sh weekly`(提交 `ideas/` 与 `ledger.tsv` 到 `weekly/当日` 分支、推送、开 PR);不直接使用 git/gh。
 
 成功标准:文件已提交,正文保留的 idea 均为 Strong Accept(或如实报告无达标)。
