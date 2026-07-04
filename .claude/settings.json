@@ -3,8 +3,6 @@
     "allow": [
       "Edit(ideas/**)",
       "Write(ideas/**)",
-      "Edit(ledger.tsv)",
-      "Write(ledger.tsv)",
       "Edit(tmp/**)",
       "Write(tmp/**)",
       "Edit(//tmp/**)",
@@ -13,10 +11,6 @@
       "Write(//private/tmp/**)",
       "WebSearch",
       "WebFetch",
-      "Bash(./publish.sh)",
-      "Bash(./publish.sh *)",
-      "Bash(rtk ./publish.sh)",
-      "Bash(rtk ./publish.sh *)",
       "Bash(ls)",
       "Bash(date)"
     ]
