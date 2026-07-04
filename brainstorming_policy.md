@@ -20,8 +20,10 @@ idea 不要求完整方法与实验设计，以下四种形态均合法：
 
 - **Strong Accept** ⇔ 做出来有较大概率达 **clear accept**（约 6,6,8）及以上；能冲 oral/spotlight（8,8,6+，无强反对）更佳。
 - **Accept with Revisions** ⇔ borderline accept：上限低，价值有限。
-- 评分权重：**novelty 与"是否已有人做过"是第一位的**；feasibility 与工程完整度可放宽（idea 允许非常初步），但 novelty 存疑必须定向查文献，不得凭印象放行。
-- 任何候选 Strong Accept 在定级前必须做一轮定向查重（web search / arXiv 检索最相近的 3-5 篇），发现强重合即降级。
+- 评分权重：**novelty 与"是否已有人做过"是第一位的**；工程完整度可放宽（idea 允许非常初步），但 novelty 存疑必须定向查文献，不得凭印象放行。
+- fatal-flaws 硬门槛：审计表含 **≥2 个 MAJOR 不得定 Strong Accept**（至多 1 个 MAJOR；含 CRITICAL 直接 Reject and Pivot）。此规则与 rubric 的 severity escalation 一致，不得绕过。
+- 可行性基线：**单人执行，默认算力 1×H100 80G**；idea 足够有说服力时可按追加 8×A100 评估，但须在评审表注明该依赖。rubric 的 lifecycle/feasibility 步骤必须按此基线评估；单人在 idea 生命周期内做不完的，最高只给 Accept with Revisions。
+- 任何候选 Strong Accept 在定级前必须做一轮**特别认真的定向查重**：多组检索词（问题表述、方法机制、相邻领域至少各一组，含 web search 与 arXiv），找最相近 3-5 篇，并覆盖工业界工具/博客等非论文占位。存在相似工作时，必须逐篇写明差异，且差异本身足以支撑 clear accept，否则降级。
 
 ## 保留规则
 
