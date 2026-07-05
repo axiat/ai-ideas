@@ -11,11 +11,11 @@
 # 用法(在 hunt.sh 里):
 #   FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
 # 可调:
-#   AGY_MODEL          默认 gemini-3.5-flash-low(便宜、已实测可用)
+#   AGY_MODEL          默认 gemini-3.5-flash-high(flash-low 实测方向对但细节糙:引用编号会写错,命中率拖累下游 review 轮数)
 #   AGY_PRINT_TIMEOUT  默认 8m
 set -u
 repo="$(cd "$(dirname "$0")" && pwd)"
-model=${AGY_MODEL:-gemini-3.5-flash-low}
+model=${AGY_MODEL:-gemini-3.5-flash-high}
 ptimeout=${AGY_PRINT_TIMEOUT:-8m}
 prompt=${1:?用法: agy-worker.sh <prompt>}
 
