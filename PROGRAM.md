@@ -25,7 +25,7 @@
 2. **深查重**(`roles/research.md`):对抗式定向查重,先 direct-hit 猎杀再铺开三类检索词;每个 idea 找最相近 5-8 篇实读摘要/方法,产出独立证据(含"最强反例"行);每个 idea 块须有至少 5 条带链接近邻与至少 1 条 API 检索记录(query URL)。
 3. **打分**(`roles/review.md`,跑 N 次):各裁判按 `rubric.md` 完整评审、用 policy 校准,默认 Reject,输出各自 verdict。
 4. **聚合记账**(orchestrator):每个 idea 取 N 位裁判最低票(SA 需全票),连同查重的重叠判定(overlap 列)全部追加进 `ledger.tsv`。
-5. 有全票 Strong Accept → `roles/report.md` 组装报告到 `ideas/`,orchestrator 调 `./publish.sh` 发布,结束;否则下一轮(调研可增量补充)。
+5. 有全票 Strong Accept → `roles/report.md` 组装报告到 `ideas/`,orchestrator 调 `./publish.sh` 发布;当日累计达入口定义的目标数(`SA_TARGET`,默认 1)即停,未达则继续下一轮(调研可增量补充)。
 
 ## ledger.tsv
 
