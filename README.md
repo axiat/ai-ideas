@@ -28,7 +28,7 @@
 
 ## 用法
 
-**主动找 idea(挂机)**:`./hunt.sh`。每轮把一批 idea 走完「生成 → 对抗式查重 → 打分 ×N」,脚本自身聚合 verdict(取最低票,Strong Accept 需全票)、写 ledger、发报告。首轮就出全票 SA 则发布即退;异常退出/阶段产物缺失默认冷却 150 分钟,正常无 SA 默认随机 1-8 分钟后重试——状态在 `ledger.tsv`,新会话不重做已评审的 idea。
+**主动找 idea(挂机)**:`./hunt.sh`。每轮把一批 idea 走完「生成 → 对抗式查重 → 打分 ×N」,脚本自身聚合 verdict(取最低票,Strong Accept 需全票)、写 ledger、发报告。首轮就出全票 SA 则发布即退;异常退出默认冷却 150 分钟;前段空产出或查重结构不达标先短重试,连续 `EMPTY_MAX` 次后才升级长冷却;正常无 SA 默认随机 1-8 分钟后重试——状态在 `ledger.tsv`,新会话不重做已评审的 idea。
 
 
 ```bash
@@ -56,8 +56,8 @@ FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
 # agy + codex:agy 只跑生成+查重;codex 跑打分+报告
 FRONT_CMD='./agy-worker.sh' BACK_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
 
-# agy 前段可调,默认 AGY_MODEL=gemini-3.5-flash-low,AGY_PRINT_TIMEOUT=8m
-AGY_MODEL=gemini-3.5-flash-medium AGY_PRINT_TIMEOUT=10m FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
+# agy 前段可调,默认 AGY_MODEL=gemini-3.5-flash-high,AGY_PRINT_TIMEOUT=8m
+AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
 ```
 
 报告在 `ideas/YYYY-MM-DD_hunt.md`,以 `hunt/日期` 分支 PR 提交,CI 按路径自动合并;本地收尾用 `./settle.sh`(合并后切回 main、清理本地/远程特性分支)。
