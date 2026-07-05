@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## 2026-07-05 中断恢复(未提交,待 review)
+## 2026-07-05 中断恢复(已合并,PR #6)
 
 - **实例锁**:`tmp/hunt.lock`(mkdir 原子抢锁 + pid 记录),同目录双开第二个实例直接退出;持锁进程已死则自清重抢。双开会互踩 `tmp/round`、ledger 基线与守卫,此前无防护。
 - **启动补发布**:当日报告已存在时,先跑幂等的 `./publish.sh` 再退。堵住"report 写完、publish 被中断"后重启直接 break、报告永久滞留本地的缺口。
@@ -26,4 +26,4 @@
 - `hunt.sh sa_gate_ok`:最小否证实验从"字段存在"加严为"冒号后内容 ≥30 字节",拦空字段/占位;语义真伪仍归裁判。
 - `hunt.md` 砍掉流程复述(已与 PROGRAM.md 分裂:仍写"三个独立进程"、查重只提 3 条链接),只保留入口特有项,协议指向 `PROGRAM.md`。
 
-**待人工**:`trigger.md` 已改,远端 cloud routine "Weekly Embodied Idea Scout" 的 prompt 需手动同步。
+远端 cloud routine "Weekly Embodied Idea Scout" 的 prompt 已于 2026-07-05 按新 `trigger.md` 手动同步。
