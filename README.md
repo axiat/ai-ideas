@@ -32,7 +32,7 @@
 
 
 ```bash
-# 最常用情况：agy 负责产生 idea + 调研 + 占据两个 review 席位、codex 负责最后一个 review 席位 + publish 把关
+# 最常用：agy 负责产生 idea + 调研 + 占据两个 review 席位、codex 负责最后一个 review 席位 + publish 把关
 FRONT_CMD='./agy-worker.sh' \
 BACK_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
 REV_CMD_2='./agy-worker.sh' \
