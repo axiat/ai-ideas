@@ -152,6 +152,14 @@ engineering skills, timeline), assess:
 - Timeline risk: does the estimated end-to-end duration (coding,
   experiments, writing, revision) fit within the idea's lifecycle?
 
+Anchor the assessment in the idea's stated minimal falsification
+experiment (最小否证实验: data × compute × expected signal, where a
+missing signal kills the idea). Judge whether that experiment is
+executable under the stated resource baseline and whether its signal
+can genuinely falsify the claim; narrative feasibility claims without
+an executable falsification experiment count as a MAJOR flaw and cap
+the verdict at Accept with Revisions.
+
 If any risk is high, flag it explicitly with a suggested mitigation.
 
 ### Step 7: Integrity gate
