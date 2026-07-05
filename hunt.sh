@@ -40,6 +40,10 @@
 #     0 关闭分布校验(默认 2);theme 必须属 policy 主题词表,词表解析不出则跳过整项校验;
 #   META_EVERY 每 N 轮做一次死因蒸馏(roles/meta.md → tmp/deathlist.md,默认 6),
 #   META_MIN_REJECTS 拒行少于 N 时跳过蒸馏(默认 5)。蒸馏是可错阶段,失败只记日志不阻塞。
+#   中断恢复:tmp/hunt.lock 实例锁防同目录双开(持锁进程已死则自动清陈旧锁);
+#   启动时当日报告已存在则先跑一次幂等的 publish.sh 补发布再退(堵"report 写完、publish 没跑成"的滞留);
+#   RESUME_FRONT=1(默认)时,中断遗留的前段产物(ideas+priorwork)过机械门槛则首轮跳过生成/查重续跑;
+#   评审票据/聚合残留一律作废、裁判由本进程重新调起——verdict 永不续用,防前段借崩溃伪造票据绕过独立评审。
 set -u
 cd "$(dirname "$0")"
 git config core.hooksPath .githooks   # 激活 pre-push 守卫:禁止直推 main
@@ -63,10 +67,12 @@ PRIOR_MIN_API=${PRIOR_MIN_API:-1}
 THEME_MIN_LOW=${THEME_MIN_LOW:-2}
 META_EVERY=${META_EVERY:-6}
 META_MIN_REJECTS=${META_MIN_REJECTS:-5}
+RESUME_FRONT=${RESUME_FRONT:-1}
 LOG=hunt.log
 RD=tmp/round
 LEDGER_GOOD=tmp/ledger.good
 DEATHLIST=tmp/deathlist.md
+LOCK=tmp/hunt.lock
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 
@@ -97,6 +103,10 @@ validate_sleep_config() {
   is_uint "$THEME_MIN_LOW" || { log "THEME_MIN_LOW 必须是非负整数: $THEME_MIN_LOW"; exit 2; }
   is_uint "$META_EVERY" && [ "$META_EVERY" -ge 1 ] || { log "META_EVERY 必须是 >=1 的整数: $META_EVERY"; exit 2; }
   is_uint "$META_MIN_REJECTS" || { log "META_MIN_REJECTS 必须是非负整数: $META_MIN_REJECTS"; exit 2; }
+  case "$RESUME_FRONT" in
+    0|1) ;;
+    *) log "RESUME_FRONT 只能是 0 或 1: $RESUME_FRONT"; exit 2 ;;
+  esac
 }
 
 # 发散透镜:从 policy 的「## 发散透镜」小节随机抽一条(随机性在 bash 层,agent 不得自选);
@@ -285,6 +295,21 @@ themes_ok() {
 
 mkdir -p "$(dirname "$LEDGER_GOOD")"                             # tmp/ 在干净 checkout 里不存在,先建(否则种子/重置全失败)
 validate_sleep_config
+
+# 实例锁:同目录双开会互踩(共享 tmp/round 与 ledger 基线、守卫误杀、同日分支撞车)。
+# mkdir 原子抢锁;持锁进程已死则清陈旧锁重抢。确认无实例时可手动 rm -rf tmp/hunt.lock。
+if ! mkdir "$LOCK" 2>/dev/null; then
+  other=$(cat "$LOCK/pid" 2>/dev/null || true)
+  if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
+    log "已有 hunt.sh 实例在跑(pid ${other}),退出"
+    exit 2
+  fi
+  log "清理陈旧实例锁(原持有 pid ${other:-未知} 已不在)"
+  rm -rf "$LOCK"
+  mkdir "$LOCK" 2>/dev/null || { log "抢锁失败(并发启动?),退出"; exit 2; }
+fi
+echo $$ > "$LOCK/pid"
+
 # 启动瞬间的工作树 ledger 视为人工/operator 基线;后续阶段中 agent 的任何擅改都只会被重置回此基线。
 if [ -f ledger.tsv ]; then
   if ! git diff --quiet -- ledger.tsv 2>/dev/null; then
@@ -294,8 +319,20 @@ if [ -f ledger.tsv ]; then
 else
   git show "HEAD:ledger.tsv" > "$LEDGER_GOOD" 2>/dev/null || : > "$LEDGER_GOOD"
 fi
-# 任何退出(含 MAX_FAILS、守卫停机、Ctrl-C)都把 ledger.tsv 还原到最近一次 bash 定谳的 good,绝不留篡改
-trap 'cp "$LEDGER_GOOD" ledger.tsv 2>/dev/null || true' EXIT
+# 任何退出(含 MAX_FAILS、守卫停机、Ctrl-C)都把 ledger.tsv 还原到最近一次 bash 定谳的 good,绝不留篡改;顺带释放实例锁
+trap 'cp "$LEDGER_GOOD" ledger.tsv 2>/dev/null || true; rm -rf "$LOCK"' EXIT
+
+# 前段续跑检测:中断遗留的前段产物(生成+查重)过机械门槛则首轮跳过生成/查重,省掉已花的调用费。
+# 只信前段产物(它们本就是 agent 产物、由门槛+裁判消化);评审票据残留在循环内一律清除,verdict 永不续用。
+resume_front=0
+if [ "$RESUME_FRONT" = "1" ] && [ -s "$RD/ideas.tsv" ] && [ -s "$RD/ideas.md" ] && [ -s "$RD/priorwork.md" ]; then
+  if themes_ok && priorwork_ok; then
+    resume_front=1
+    log "检测到中断遗留的前段产物且过机械门槛,首轮续跑(跳过生成/查重,裁判照常重跑)"
+  else
+    log "中断遗留的前段产物不过门槛,按常规重跑"
+  fi
+fi
 
 fails=0
 empties=0
@@ -303,50 +340,66 @@ round=0
 while :; do
   today=$(date +%F)
   if ls "ideas/${today}"_hunt*.md >/dev/null 2>&1; then
-    log "当日达标报告已存在,结束"
-    break
+    # 报告可能写完但发布被中断:publish.sh 幂等,先补发布再退(确无待发布改动时为空跑)
+    if ./publish.sh >> "$LOG" 2>&1; then
+      log "当日达标报告已存在(已确保发布),结束"
+      break
+    fi
+    log "当日报告已存在但补发布失败,见 hunt.log;停机人工处理"
+    exit 2
   fi
 
   round=$((round + 1))
   before=$(git rev-parse HEAD)
   cp "$LEDGER_GOOD" ledger.tsv                       # 重置到上一轮定谳后的良好 ledger,抹掉任何遗留篡改(F2)
   pre_dirty=$(git status --porcelain | cut -c4- | sort -u)
-  rm -rf "$RD"; mkdir -p "$RD"
 
-  # 0) 死因蒸馏(可错,失败不阻塞):每 META_EVERY 轮、拒行足量时,让独立进程把 ledger 拒因
-  #    归纳成 tmp/deathlist.md,生成阶段据此避开高频失败模式(Co-Scientist meta-review 的廉价版)。
-  rejects_now=$(awk -F'\t' '$5=="reject"' ledger.tsv 2>/dev/null | grep -c . || true)
-  if [ $(( (round - 1) % META_EVERY )) -eq 0 ] && [ "$rejects_now" -ge "$META_MIN_REJECTS" ]; then
-    run_stage "$FRONT_CMD" "读 roles/meta.md,按其执行" meta; rc=$?; guard 0
-    if [ "$rc" -ne 0 ] || [ ! -s "$DEATHLIST" ]; then
-      log "死因蒸馏失败或无产出,忽略并继续(沿用旧清单或无清单)"
-    else
-      log "死因清单已更新: $DEATHLIST(基于 ${rejects_now} 行拒记录)"
+  if [ "$resume_front" = "1" ]; then
+    # 前段续跑:沿用遗留 ideas.tsv/ideas.md/priorwork.md(启动时已过门槛),直接进评审。
+    # 评审及以后的残留必须清除——遗留 rev/ 里的票据与评审块可能是前段伪造,verdict 永不续用。
+    resume_front=0
+    rm -rf "$RD/rev"
+    rm -f "$RD/rev_rc" "$RD/accepted.tsv" "$RD/rejects.tsv" "$RD/meta.txt"
+    empties=0
+    log "续跑:沿用中断遗留的前段产物,跳过生成/查重,直接进入评审"
+  else
+    rm -rf "$RD"; mkdir -p "$RD"
+
+    # 0) 死因蒸馏(可错,失败不阻塞):每 META_EVERY 轮、拒行足量时,让独立进程把 ledger 拒因
+    #    归纳成 tmp/deathlist.md,生成阶段据此避开高频失败模式(Co-Scientist meta-review 的廉价版)。
+    rejects_now=$(awk -F'\t' '$5=="reject"' ledger.tsv 2>/dev/null | grep -c . || true)
+    if [ $(( (round - 1) % META_EVERY )) -eq 0 ] && [ "$rejects_now" -ge "$META_MIN_REJECTS" ]; then
+      run_stage "$FRONT_CMD" "读 roles/meta.md,按其执行" meta; rc=$?; guard 0
+      if [ "$rc" -ne 0 ] || [ ! -s "$DEATHLIST" ]; then
+        log "死因蒸馏失败或无产出,忽略并继续(沿用旧清单或无清单)"
+      else
+        log "死因清单已更新: $DEATHLIST(基于 ${rejects_now} 行拒记录)"
+      fi
     fi
-  fi
 
-  # 1) 生成(禁写 ideas/);发散透镜由 bash 随机抽取注入,对抗跨轮模式坍缩
-  lens=$(pick_lens)
-  gen_prompt="读 roles/generate.md,按其执行"
-  if [ -n "$lens" ]; then
-    gen_prompt="${gen_prompt};本轮发散透镜(orchestrator 随机指定,不得替换):${lens}"
-    log "本轮发散透镜: ${lens}"
-  fi
-  run_stage "$FRONT_CMD" "$gen_prompt" generate; rc=$?; guard 0
-  if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
-  if [ ! -s "$RD/ideas.tsv" ] || ! themes_ok; then
-    log "生成阶段未产出 ideas.tsv 或主题结构不达标,本轮作废重试"; fails=0
-    empty_and_wait; continue
-  fi
+    # 1) 生成(禁写 ideas/);发散透镜由 bash 随机抽取注入,对抗跨轮模式坍缩
+    lens=$(pick_lens)
+    gen_prompt="读 roles/generate.md,按其执行"
+    if [ -n "$lens" ]; then
+      gen_prompt="${gen_prompt};本轮发散透镜(orchestrator 随机指定,不得替换):${lens}"
+      log "本轮发散透镜: ${lens}"
+    fi
+    run_stage "$FRONT_CMD" "$gen_prompt" generate; rc=$?; guard 0
+    if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
+    if [ ! -s "$RD/ideas.tsv" ] || ! themes_ok; then
+      log "生成阶段未产出 ideas.tsv 或主题结构不达标,本轮作废重试"; fails=0
+      empty_and_wait; continue
+    fi
 
-  # 2) 对抗式查重(禁写 ideas/)
-  run_stage "$FRONT_CMD" "读 roles/research.md,按其执行" research; rc=$?; guard 0
-  if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
-  if [ ! -s "$RD/priorwork.md" ] || ! priorwork_ok; then
-    log "查重阶段未产出 priorwork.md 或结构不达标,本轮作废重试"; fails=0
-    empty_and_wait; continue
+    # 2) 对抗式查重(禁写 ideas/)
+    run_stage "$FRONT_CMD" "读 roles/research.md,按其执行" research; rc=$?; guard 0
+    if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
+    if [ ! -s "$RD/priorwork.md" ] || ! priorwork_ok; then
+      log "查重阶段未产出 priorwork.md 或结构不达标,本轮作废重试"; fails=0
+      empty_and_wait; continue
+    fi
+    empties=0                                        # 前段两阶段产物齐备,空产出计数清零
   fi
-  empties=0                                          # 前段两阶段产物齐备,空产出计数清零
 
   # 3) N 位裁判,并行 + 各自独立输入目录(开跑时看不到彼此产出)(F3);禁写 ideas/
   : > "$RD/rev_rc"; pids=()

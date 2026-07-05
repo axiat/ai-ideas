@@ -29,7 +29,7 @@
 
 ## 用法
 
-**主动找 idea(挂机)**:`./hunt.sh`。每轮把一批 idea 走完「生成 → 对抗式查重 → 打分 ×N」,脚本自身聚合 verdict(取最低票,Strong Accept 需全票)、写 ledger、发报告。首轮就出全票 SA 则发布即退;异常退出默认冷却 150 分钟;前段空产出或查重结构不达标先短重试,连续 `EMPTY_MAX` 次后才升级长冷却;正常无 SA 默认随机 1-8 分钟后重试——状态在 `ledger.tsv`,新会话不重做已评审的 idea。
+**主动找 idea(挂机)**:`./hunt.sh`。每轮把一批 idea 走完「生成 → 对抗式查重 → 打分 ×N」,脚本自身聚合 verdict(取最低票,Strong Accept 需全票)、写 ledger、发报告。首轮就出全票 SA 则发布即退;异常退出默认冷却 150 分钟;前段空产出或查重结构不达标先短重试,连续 `EMPTY_MAX` 次后才升级长冷却;正常无 SA 默认随机 1-8 分钟后重试——状态在 `ledger.tsv`,新会话不重做已评审的 idea。中断随时安全:`tmp/hunt.lock` 实例锁防同目录双开(陈旧锁自清);重启时当日报告已存在则先跑幂等的 `publish.sh` 补发布再退;中断遗留的前段产物过机械门槛则首轮自动续跑(跳过生成/查重,裁判一律重跑,`RESUME_FRONT=0` 关闭)。
 
 
 ```bash
@@ -54,6 +54,8 @@ REV_STAGGER_SEC=15 \
 #  主题门槛: theme 须属 policy 词表,且 ≥THEME_MIN_LOW=2 个 idea 落在低存量主题(0 关闭分布校验)
 #  死因蒸馏: 每 META_EVERY=6 轮、拒行 ≥ META_MIN_REJECTS=5 时刷新 tmp/deathlist.md
 #  发散透镜: 每轮从 brainstorming_policy.md「发散透镜」小节随机抽一条注入生成 prompt
+#  前段续跑: RESUME_FRONT=1(0 关闭;遗留前段产物过门槛则首轮跳过生成/查重,verdict 永不续用)
+#  实例锁: tmp/hunt.lock,双开自动退出,持锁进程已死则自清重抢
 #  连续异常上限: MAX_FAILS=12
 #  有至少 1 个 Strong Accept: 写报告、发布 PR、退出
 
@@ -90,12 +92,13 @@ AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m FRONT_CMD='./agy-worker.sh
 - verdict、ledger、publish 全由 `hunt.sh` 决定:每个 idea 取 N 位裁判**最低**票,SA 需全票,缺/坏票当 reject。
 - **SA 硬门槛**:全票 SA 还须过 orchestrator 校验——该 idea 有查重块、实读篇数 ≥ `MIN_READ`(默认 3)、附最小否证实验、每位裁判都写了完整评审;缺任一则硬降级 reject。
 - ledger 以 `tmp/ledger.good` 为单一可信基线,启动时取当前工作树 `ledger.tsv` 作为人工基线,之后只被 bash 聚合更新;任何 agent 擅改(含中途失败轮的残留)在下一轮开局被抹掉。
+- **中断续跑不放水**:重启只沿用过机械门槛的前段产物(它们本就是 agent 产物,由门槛+裁判消化);遗留的评审票据与评审块一律清除、裁判由 orchestrator 重新调起——防前段借崩溃伪造整轮票据绕过独立评审。
 - **分阶段守卫**:生成/查重/评审阶段禁写 `ideas/`(防伪造达标报告绕过全票),仅 report 阶段可写。
 
 ## 无人值守的四层保证
 
 1. **工具策略**:claude 走 `.claude/settings.json` allowlist——只放行写 `ideas/` 与草稿区(仓库内 `tmp/`、系统 `/tmp`),WebSearch/WebFetch,无参 ls/date;`ledger.tsv` 写权与 publish/git/gh 都不给 agent(orchestrator 独占)。未匹配操作在无头模式下自动拒绝(前提:本仓库已 trust)。codex 走 OS 级 sandbox(`-s workspace-write` 写限仓库、`-c approval_policy=never`、`-c sandbox_workspace_write.network_access=true` 放行网络、`--search`;`codex exec` 须用 `-c approval_policy=` 而非 `-a`);codex 沙箱无细粒度写控,ledger 完整性靠上面的快照-还原兜底。agy(前段 `FRONT_CMD`)既无 allowlist 也无 OS sandbox,其 CLI sandbox 可读写 `$HOME`,不能当边界;故只用于生成/查重这类**可错**的上游——靠回路守卫(§3)回滚越界仓库改动、且它绝不碰 verdict/ledger/publish 兜底,错误 idea 由下游独立裁判毙掉。它对 `$HOME` 的越界写在守卫视野外,但不影响判定与发布产物。
-2. **push 守卫**:发布只经 `./publish.sh`——add 范围硬编码为 `ideas/` 与 `ledger.tsv`,走 `hunt/当日` 分支 PR。`.githooks/pre-push` 拒直推 main(人工覆盖 `ALLOW_MAIN_PUSH=1`)。GitHub 端未启用 branch protection,远端 main 无服务端防线。
+2. **push 守卫**:发布只经 `./publish.sh`——add 范围硬编码为 `ideas/` 与 `ledger.tsv`,走 `hunt/当日` 分支 PR;幂等可重跑,commit 后中断可补推送/补 PR。`.githooks/pre-push` 拒直推 main(人工覆盖 `ALLOW_MAIN_PUSH=1`)。GitHub 端未启用 branch protection,远端 main 无服务端防线。
 3. **回路守卫**:`hunt.sh` 每次调 agent 后按阶段校验已跟踪改动——生成/查重/评审阶段只允许 `ledger.tsv`(且靠 ledger.good 兜底),report 阶段才放行 `ideas/`;越界未提交改动自动回滚,越界已提交/未跟踪文件停机留人工。日志 `hunt.log`(gitignored),连续异常达 `MAX_FAILS`(默认 12)即停。
 4. **CI 守卫**:auto-merge workflow 只按路径判定——本仓库分支的 PR 改动全落在 `ideas/**` 与 `ledger.tsv` 才自动合并,越界跳过并留言,固定层改动必须人工 merge。
 

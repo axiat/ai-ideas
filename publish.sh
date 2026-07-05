@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # agent 的唯一发布通道:只把 ideas/ 与 ledger.tsv 提交到 <source>/当日 分支,push 并确保有 PR。
+# 幂等可重跑:无新改动但当日分支已存在(上次在 commit 后、push/PR 前中断)时,补推送、补 PR。
 # 用法:./publish.sh [source]   source = hunt(默认)| weekly
 # allowlist 只放行本脚本,不直接暴露 git/gh。
 set -euo pipefail
@@ -11,23 +12,24 @@ today=$(date +%F)
 branch="${src}/${today}"
 
 git add ideas ledger.tsv
-if git diff --cached --quiet; then
+if ! git diff --cached --quiet; then
+  staged=$(git diff --cached --name-only)
+  bad=$(printf '%s\n' "$staged" | grep -vE '^(ideas/|ledger\.tsv$)' || true)
+  if [ -n "$bad" ]; then
+    echo "拒绝发布: staged 改动越出 ideas/ 与 ledger.tsv:" >&2
+    echo "$bad" >&2
+    exit 2
+  fi
+  if [ "$(git rev-parse --abbrev-ref HEAD)" != "$branch" ]; then
+    git checkout -b "$branch" 2>/dev/null || git checkout "$branch"
+  fi
+  git commit -m "${src}: ${today} 报告与台账" -- ideas ledger.tsv
+elif ! git rev-parse --verify -q "refs/heads/${branch}" >/dev/null; then
   echo "无待发布改动"
   exit 0
 fi
 
-staged=$(git diff --cached --name-only)
-bad=$(printf '%s\n' "$staged" | grep -vE '^(ideas/|ledger\.tsv$)' || true)
-if [ -n "$bad" ]; then
-  echo "拒绝发布: staged 改动越出 ideas/ 与 ledger.tsv:" >&2
-  echo "$bad" >&2
-  exit 2
-fi
-
-if [ "$(git rev-parse --abbrev-ref HEAD)" != "$branch" ]; then
-  git checkout -b "$branch" 2>/dev/null || git checkout "$branch"
-fi
-git commit -m "${src}: ${today} 报告与台账" -- ideas ledger.tsv
+# 至此:有新提交,或当日分支已存在——推送与 PR 均幂等补齐
 git push -u origin "$branch"
 
 state=$(gh pr view "$branch" --json state -q .state 2>/dev/null || true)
