@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 外层循环:每轮把一批 idea 走完「生成 → 预筛(杀 direct hit)→ 对抗式深查重 → N 位裁判打分」,
-# 由本脚本(而非任何 agent)聚合 verdict、写 ledger、发布。达当日达标(≥1 Strong Accept)即停。
+# 由本脚本(而非任何 agent)聚合 verdict、写 ledger、发布。当日全票 Strong Accept 累计达 SA_TARGET(默认 1)即停。
 #
 # 反串通设计:
 #   - 生成 / 查重 / 打分是互不共享 context 的独立进程;裁判并行跑、各用独立输入目录,开跑时看不到彼此产出。
@@ -17,6 +17,8 @@
 #   NO_HIT_SLEEP_MIN_LO/HI 正常无达标后的随机重试区间(默认 1-8 分钟,默认最小为 1);
 #   ALLOW_ZERO_NO_HIT_SLEEP=1 仅用于测试,允许正常无达标后 0 分钟重试;
 #   REVIEWERS 裁判票数(默认 3);MIN_READ SA 门槛要求的最少实读篇数(默认 5);
+#   SA_TARGET 当日 Strong Accept 目标数,累计达标才停(默认 1,行为同旧版;0=不设上限一直攒,Ctrl-C 手动停);
+#     >1 或 0 时同日多份报告按 roles/report.md 加 -2/-3 后缀,publish.sh 幂等追加进同一当日分支与 PR;
 #   AGENT_CMD 指定 agent CLI(prompt 作为最后一个参数传入),例:
 #     AGENT_CMD='claude -p' ./hunt.sh              # 默认;权限走 .claude/settings.json allowlist
 #     AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
@@ -44,7 +46,8 @@
 #   META_EVERY 每 N 轮做一次失败蒸馏(roles/meta.md → tmp/deathlist.md,默认 6),
 #   META_MIN_REJECTS 失败行(reject+accept-w-rev)少于 N 时跳过蒸馏(默认 5)。蒸馏是可错阶段,失败只记日志不阻塞。
 #   中断恢复:tmp/hunt.lock 实例锁防同目录双开(持锁进程已死则自动清陈旧锁);
-#   启动时当日报告已存在则先跑一次幂等的 publish.sh 补发布再退(堵"report 写完、publish 没跑成"的滞留);
+#   启动时当日 SA 计数(以 ledger 基线为准)已达标则先跑一次幂等的 publish.sh 补发布再退;
+#   已有当日报告但未达标(发布后上调 SA_TARGET 重启,或 report 写完 publish 没跑成)则启动先补发布再继续攒;
 #   RESUME_FRONT=1(默认)时,中断遗留的前段产物(ideas+priorwork)过机械门槛则首轮跳过生成/预筛/查重续跑;
 #   评审票据/聚合残留一律作废、裁判由本进程重新调起——verdict 永不续用,防前段借崩溃伪造票据绕过独立评审。
 set -u
@@ -63,6 +66,7 @@ ALLOW_ZERO_NO_HIT_SLEEP=${ALLOW_ZERO_NO_HIT_SLEEP:-0}
 MAX_FAILS=${MAX_FAILS:-12}
 REVIEWERS=${REVIEWERS:-3}
 MIN_READ=${MIN_READ:-5}
+SA_TARGET=${SA_TARGET:-1}
 REV_STAGGER_SEC=${REV_STAGGER_SEC:-0}
 EMPTY_MAX=${EMPTY_MAX:-3}
 PRIOR_MIN_LINKS=${PRIOR_MIN_LINKS:-5}
@@ -108,6 +112,7 @@ validate_sleep_config() {
   is_uint "$THEME_MIN_LOW" || { log "THEME_MIN_LOW 必须是非负整数: $THEME_MIN_LOW"; exit 2; }
   is_uint "$META_EVERY" && [ "$META_EVERY" -ge 1 ] || { log "META_EVERY 必须是 >=1 的整数: $META_EVERY"; exit 2; }
   is_uint "$META_MIN_REJECTS" || { log "META_MIN_REJECTS 必须是非负整数: $META_MIN_REJECTS"; exit 2; }
+  is_uint "$SA_TARGET" || { log "SA_TARGET 必须是非负整数(0=不设上限): $SA_TARGET"; exit 2; }
   case "$RESUME_FRONT" in
     0|1) ;;
     *) log "RESUME_FRONT 只能是 0 或 1: $RESUME_FRONT"; exit 2 ;;
@@ -214,6 +219,14 @@ empty_and_wait() {
 
 rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) echo 0 ;; esac; }
 verdict_of() { case "$1" in 2) echo strong-accept ;; 1) echo accept-w-rev ;; *) echo reject ;; esac; }
+
+# 当日(hunt 源)Strong Accept 计数:只数 bash 定谳基线 $LEDGER_GOOD,不信工作树 ledger
+sa_today() {
+  awk -F'\t' -v d="$today" '$1==d && $2=="hunt" && $5=="strong-accept"{n++} END{print n+0}' "$LEDGER_GOOD" 2>/dev/null || echo 0
+}
+
+# 当日报告文件数:同日多份报告(-2/-3 后缀)时,报告是否写出须按"数量新增"判,存在性检查会被旧报告蹭过
+reports_today() { ls "ideas/${today}"_hunt*.md 2>/dev/null | grep -c . || true; }
 
 # SA 硬门槛:$1=id。要求 priorwork.md 有该 idea 的查重块、实读篇数≥MIN_READ、
 # ideas.md 该 idea 块含「最小否证实验」(feasibility 的非叙事锚点,裁判只认它),
@@ -333,6 +346,7 @@ prescreen_ok() {
 
 mkdir -p "$(dirname "$LEDGER_GOOD")"                             # tmp/ 在干净 checkout 里不存在,先建(否则种子/重置全失败)
 validate_sleep_config
+if [ "$SA_TARGET" -gt 0 ]; then TARGET_DESC="$SA_TARGET"; else TARGET_DESC="∞(不设上限)"; fi
 
 # 实例锁:同目录双开会互踩(共享 tmp/round 与 ledger 基线、守卫误杀、同日分支撞车)。
 # mkdir 原子抢锁;持锁进程已死则清陈旧锁重抢。确认无实例时可手动 rm -rf tmp/hunt.lock。
@@ -380,14 +394,25 @@ empties=0
 round=0
 while :; do
   today=$(date +%F)
-  if ls "ideas/${today}"_hunt*.md >/dev/null 2>&1; then
-    # 报告可能写完但发布被中断:publish.sh 幂等,先补发布再退(确无待发布改动时为空跑)
-    if ./publish.sh >> "$LOG" 2>&1; then
-      log "当日达标报告已存在(已确保发布),结束"
-      break
+  sa_now=$(sa_today)
+  if [ "$SA_TARGET" -gt 0 ] && [ "$sa_now" -ge "$SA_TARGET" ]; then
+    if ls "ideas/${today}"_hunt*.md >/dev/null 2>&1; then
+      # 报告可能写完但发布被中断:publish.sh 幂等,先补发布再退(确无待发布改动时为空跑)
+      if ./publish.sh >> "$LOG" 2>&1; then
+        log "当日 Strong Accept 累计 ${sa_now},已达目标 ${SA_TARGET}(已确保发布),结束"
+        break
+      fi
+      log "当日已达标但补发布失败,见 hunt.log;停机人工处理"
+      exit 2
     fi
-    log "当日报告已存在但补发布失败,见 hunt.log;停机人工处理"
-    exit 2
+    # 罕见中断态:ledger 已计达标但当日无报告(上次死在聚合后、报告前)。继续跑轮补出报告——
+    # 新报告只覆盖新达标轮,孤儿 SA 行留在 ledger 随发布入库;可能超额一轮,可接受。
+    log "当日 SA 计数 ${sa_now} 已达目标 ${SA_TARGET} 但缺当日报告(疑似聚合后中断),继续跑轮补报告"
+  elif [ "$round" -eq 0 ] && ls "ideas/${today}"_hunt*.md >/dev/null 2>&1; then
+    # 启动时未达标但已有当日报告(发布后上调 SA_TARGET 重启,或 report 写完 publish 被中断):
+    # 先幂等补发布,再继续攒。仅启动做——运行中每次报告写出后都紧跟 publish,失败即停,不会滞留。
+    ./publish.sh >> "$LOG" 2>&1 || { log "启动补发布失败,见 hunt.log;停机人工处理"; exit 2; }
+    log "当日 Strong Accept 累计 ${sa_now}/${TARGET_DESC},已有报告已确保发布,继续攒"
   fi
 
   round=$((round + 1))
@@ -544,17 +569,27 @@ while :; do
   guard 0
   log "本轮聚合:${sa_count} 个 Strong Accept(全票且过硬门槛),已记账 ledger.tsv"
 
-  # 5) 达标 → 组装报告并发布;否则继续循环
+  # 5) 达标轮 → 组装报告并发布;当日累计达 SA_TARGET 才停,否则继续攒
   if [ "$sa_count" -gt 0 ]; then
     printf '尝试轮数: %s\n评审日期: %s\n裁判数: %s\n' "$round" "$today" "$REVIEWERS" > "$RD/meta.txt"
+    reports_before=$(reports_today)
     run_stage "$BACK_CMD" "读 roles/report.md,按其执行" report; rc=$?; guard 1   # 仅此阶段允许写 ideas/
     if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
-    if ls "ideas/${today}"_hunt*.md >/dev/null 2>&1; then
+    if [ "$(reports_today)" -gt "$reports_before" ]; then
       cp "$LEDGER_GOOD" ledger.tsv   # 发布前再确保 ledger = 定谳 good,抹掉 report 阶段对 ledger 的任何擅改
-      ./publish.sh >> "$LOG" 2>&1 && { log "已发布,结束"; break; }
-      log "publish.sh 失败,见 hunt.log;停机人工处理"; exit 2
+      ./publish.sh >> "$LOG" 2>&1 || { log "publish.sh 失败,见 hunt.log;停机人工处理"; exit 2; }
+      sa_now=$(sa_today)
+      if [ "$SA_TARGET" -gt 0 ] && [ "$sa_now" -ge "$SA_TARGET" ]; then
+        log "已发布;当日 Strong Accept 累计 ${sa_now},达目标 ${SA_TARGET},结束"
+        break
+      fi
+      fails=0
+      sleep_min=$(random_no_hit_sleep_min)
+      log "已发布;当日 Strong Accept 累计 ${sa_now}/${TARGET_DESC},${sleep_min} 分钟后继续下一轮"
+      sleep "$((sleep_min * 60))"
+      continue
     fi
-    log "报告阶段声称达标但未写出 ideas/${today}_hunt*.md,本轮作废重试"
+    log "报告阶段声称达标但未新增 ideas/${today}_hunt*.md 报告,本轮作废重试"
   fi
 
   fails=0
