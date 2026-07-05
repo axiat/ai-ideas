@@ -7,7 +7,7 @@
 1. `rubric.md` — 评审流程,只读,不得跳步或重新解释。
 2. `brainstorming_policy.md` — 发散规则、idea 形态、verdict 校准,只读;Strong Accept 的尺度不得自行放宽或收紧。
 3. 指标唯一:verdict。keep ⇔ Strong Accept。verdict 不由任何单个 agent 决定,而由 orchestrator(`hunt.sh`)对 N 位独立裁判取**最低**票聚合;Strong Accept 需全票。
-4. 定级证据:候选 Strong Accept 必须附 policy 要求的定向查重记录(最相近 3-5 篇 + 链接,含 ≥1 条可复现的 arXiv/Semantic Scholar API 检索记录)与「最小否证实验」(数据 × 算力 × 预期信号);缺任一不得定级。查重由独立进程完成,裁判的 novelty 只认该证据、feasibility 只认最小否证实验,不认生成方的说法。
+4. 定级证据:候选 Strong Accept 必须附 policy 要求的定向查重记录(最相近 5-8 篇 + 链接,含「最强反例」行与 ≥1 条可复现的 arXiv/Semantic Scholar API 检索记录)与「最小否证实验」(数据 × 算力 × 预期信号);缺任一不得定级。查重由独立进程完成,裁判的 novelty 只认该证据、feasibility 只认最小否证实验,不认生成方的说法。
 5. `ledger.tsv` schema 固定(见下);每个生成的 idea 无论 verdict 一律记一行,只追加,不改历史行。**只由 orchestrator 写入**,agent 不碰。
 6. 生成前必读 `ledger.tsv`,新 idea 不得与任何已有行实质雷同(包括已拒的)。唯一例外(每轮至多 1 个,进化与复查共用名额):进化——只准选 verdict=accept-w-rev 且 overlap=low 且死因属实验设计类缺陷的行做定向修复(novelty 封顶/已被占据的行不得进化);复查——查重薄弱型 accept-w-rev 行原样重交补查重,同一 story 至多一次。均按全新 idea 走完整查重与评审,不继承旧票;reject 行不得复活。
 7. 角色分离(反串通):生成 / 查重 / 打分是互不共享 context 的独立进程,prompt 见 `roles/`。生成方不查重定性、不打分;裁判默认 Reject、互不通气、也不知道停机条件。
