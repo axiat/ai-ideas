@@ -34,6 +34,13 @@ for r in $(seq 1 "$REVIEWERS"); do
 done
 wait "${pids[@]}"
 
+# 裁判返回码校验(同 hunt.sh):恰好 REVIEWERS 行、每行 rc=0;缺席/非 0 直接失败退出——
+# 崩溃的裁判若按"缺票=reject"聚合,会把 agent 故障误读成"阴性对照全 reject"的假结果。
+if ! awk -v n="$REVIEWERS" 'NF==2 && $2==0{ok++} END{exit !(ok==n)}' "$OUT/rev_rc" 2>/dev/null; then
+  echo "[calib] 有裁判异常退出或缺席: $(tr '\n' ' ' < "$OUT/rev_rc" 2>/dev/null),校准作废;见 $OUT/rev/*.log" >&2
+  exit 2
+fi
+
 echo
 echo "=== 校准结果: $name(取最低票;SA 需全票)==="
 awk -F'\t' '{print $1}' "$CASE"/ideas.tsv 2>/dev/null > "$OUT/ids" || grep -oE '^## I[0-9]+' "$CASE/ideas.md" | awk '{print $2}' > "$OUT/ids"
