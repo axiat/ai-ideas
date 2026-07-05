@@ -4,3 +4,34 @@ date	source	idea	verdict	reason
 2026-07-04	hunt	接触操作中的世界模型应显式建模“接触守恒残差”，把视觉上合理但物理接触不闭合的未来从训练目标里分离出来。	accept-w-rev	Contact residual latent 未被单篇完整覆盖，但 ContactWorld、DreamTacVLA、PIN-WM 等近邻使 novelty 与真实 baseline 仍是 MAJOR。
 2026-07-04	hunt	VLM-as-judge 奖励的噪声可能主要来自自遮挡导致的可观测性下降，可把奖励可靠性写成部分可观测判别问题而不是统一标签噪声。	accept-w-rev	遮挡可观测性奖励噪声的 formulation 有差异，但 RoboReward、VLM-AR3L、PO-PDDL 和 Observability Gap 已覆盖关键组件。
 2026-07-04	hunt	长时序 manipulation 可能存在可测量的经验局部性，成功轨迹反复访问少量状态-动作模式，因此可先做局部性 probe 再决定是否设计缓存式 VLA 推理。	reject	CRITICAL novelty failure: VLA-Cache 与 C^3ache 已直接覆盖 VLA/WAM 推理局部性测量和 cache 路线。
+2026-07-05	hunt	针对 flow-matching VLA 的后训练 RL 引导，将直接在动作空间或起始噪声空间转向改为在推理积分步骤调制速度场（Flow Field Steering），避免引导动作偏离基座模型的有效数据分布流形。	reject	Guided Action Flow 已覆盖每步调制 flow-matching ODE 速度场做 RL 引导的头条机制，F1 novelty 为 CRITICAL。
+2026-07-05	hunt	借鉴 CPU 分支预测中的分支目标缓冲器（BTB）思想，在世界模型规划中引入“接触状态转移缓冲器（Contact Transition Buffer, CTB）”，识别并缓存高不确定性/多分支的接触转换瓶颈，以优化多步 Rollout 推理的计算开销。	accept-w-rev	接触转换 BTB 缓存有低中重叠但仍有清晰差异，速度收益验证与真实基线覆盖各构成 MAJOR，封顶 accept-w-rev。
+2026-07-05	hunt	针对手眼相机（Eye-in-Hand）世界模型，探讨“自我运动主导损失（Ego-Motion Dominant Loss）”导致交互物理失效的问题，通过对重建梯度进行信噪比（SNR）数学建模，推导交互区域的梯度淹没现象。	accept-w-rev	手眼自运动梯度 SNR 问题未被 priorwork 覆盖，但查重薄弱与可验证实验/雅可比约束路径不足，各算 MAJOR。
+2026-07-05	hunt	通过注意力阻断与指令激活层级探针实验，定位多任务 VLA（如 π0.5）在层深网络中何时完成视觉特征与文本指令的实质性融合，为冻结基座调制（Steering）提供最优注入位置的实验依据。	reject	已有 VLA activation steering 与 mech-interp 近邻，新增层级探针更像辅助诊断，缺少能支撑 A 会主贡献的独立机制。
+2026-07-05	hunt	提出一种“基于世界模型心理排练的测试期策略自适应（Mental Rehearsal Test-time Adaptation）”机制，让 VLA 在执行任务前于世界模型中进行多步想象，根据想象轨迹的预测一致性自我修正潜在表征，实现无物理反馈下的 OOD 任务对齐。	reject	Medium overlap with AdaWorldPolicy/AdaJEPA plus a model-consistency objective that may optimize self-consistency rather than real OOD task success.
+2026-07-05	hunt	借鉴 CPU 中断处理机制，在 VLA 动作块执行中引入基于进展价值突变的中断服务程序，随时强行截断并重新 steering 当前动作块。	reject	CRITICAL novelty: VLA-Corrector 与 Pre-VLA 已覆盖基于偏差/进展突变的动作块截断与重新 steering。
+2026-07-05	hunt	将接触力学中的 Signorini 互补条件作为投影算子注入扩散视频世界模型，数学推导约束去噪流下的收敛性以解决大步长预测中的穿模问题。	reject	CRITICAL novelty: projected diffusion 与物理约束去噪工作已覆盖去噪步内非渗透投影约束。
+2026-07-05	hunt	借鉴 CPU 乱序执行与重排序缓冲区（ROB）机制，设计长时序世界模型的乱序帧生成与提交架构，并发预测高置信度路标帧以降低累积误差。	reject	CRITICAL novelty: SKIP 已覆盖稀疏路标关键帧并行生成、对齐与插值补全。
+2026-07-05	hunt	设计相机视角偏移与纹理替换的几何扰动探针实验，定位多任务 VLA 层深网络中 3D 物理空间理解与 2D 外观纹理依赖的失效边界。	reject	CRITICAL novelty: 视角/纹理扰动探针与 VLA 隐藏层线性探测已有近邻工作覆盖。
+2026-07-05	hunt	利用物体碰撞与摩擦的音频特征构建声-视融合的隐式接触世界模型，解决手部自遮挡下视觉动力学预测失效的问题。	reject	CRITICAL novelty: Audio-VLA 与 Audio World Models 已覆盖声-视融合接触/遮挡世界模型。
+2026-07-05	hunt	借鉴 CPU 动态时间片调度，在 flow-matching VLA 去噪积分中根据环境复杂度变化动态调整积分步数，在保证微动控制精度的同时降低推理开销。	reject	CRITICAL F1: priorwork shows ProbeFlow, GeCO, and AdaFlow already cover adaptive flow-matching/VLA denoising-step scheduling; the Jacobian-probe variant is not a clear-accept difference.
+2026-07-05	hunt	借鉴虚拟内存分页与脏页写时复制机制，在视频扩散世界模型中仅对发生动作交互的“脏页补丁”执行扩散去噪以解决背景漂移并提升计算效率。	reject	CRITICAL F1: priorwork shows profiling-based feature reuse, TeaCache, and DynaPatch already cover dirty/local patch diffusion compute with static-background reuse, so the head claim is not novel.
+2026-07-05	hunt	提出基于隐空间拓扑同调特征约束的世界模型，通过显式引入拓扑连通度一致性损失，解决软体/绳索交互预测中的穿模与拓扑突变问题。	reject	CRITICAL F1: priorwork shows TopoDiffusionNet, PHINN, TopoLiDM, and seqPH already cover persistent-homology/Betti topology constraints for diffusion or deformable dynamics.
+2026-07-05	hunt	设计多尺度时空分辨率压缩与控制保真度衰退的瓶颈定位实验，系统量化视觉 Token 剪裁对多任务 VLA 微动控制动作信噪比的非对称贡献。	reject	F1 MAJOR with no upward gate: priorwork shows VLA-Pruner, SpecPrune-VLA, VLA-Cache, and StableVLA already quantify or exploit visual-token sensitivity for fine-grained control.
+2026-07-05	hunt	探究受扰动动作条件在长时序世界模型预测中的“动作条件漂移”现象，基于常微分方程（ODE）相空间稳定性理论推导状态流形发散的数学上界。	reject	CRITICAL F1: priorwork shows certified predictability and Lyapunov/Jacobian stability work already derive rollout error bounds for world models or autoregressive dynamics.
+2026-07-05	hunt	跨 Overlap 动作块的“相空间惯性去噪”，利用前序动作流场的剩余轨迹作为相空间惯性先验来引导当前动作块 of 去噪积分。	reject	F1 近邻覆盖度过高：RTC/POTR/WarmPrior 已分别覆盖未执行动作引导、速度场平滑与时序先验，“相空间惯性”差异不足以支撑 clear-accept 贡献。
+2026-07-05	hunt	VLM-as-judge 对动作动力学（如力控、微动摩擦）奖励反馈失效边界的系统量化探针实验。	accept-w-rev	微观接触动力学 probe 有价值，但 RoboProcessBench/PhyGround 等已覆盖物理评判边界，且数据与真值构造未闭合。
+2026-07-05	hunt	基于注意力生命周期（Liveness）的 VLA 上下文“垃圾回收”机制，动态清理 KV 缓存中的静态背景与已完成子任务 Token。	reject	CRITICAL novelty: KV-Efficient VLA、VLA-Pruner、HAE 已覆盖 VLA/MLLM 动态 KV 淘汰，subgoal-GC 包装不足以形成 clear-accept 差异。
+2026-07-05	hunt	视频世界模型中三维旋转累积误差的李群流形飘移解析推导，量化自回归像素预测在 SE(3) 特殊欧氏群上的累积飘移上界。	accept-w-rev	SE(3) 漂移解析有新问题味道，但像素流到李群 SDE 的可验证假设和单人理论执行路径都未证实。
+2026-07-05	hunt	基于主动拉格朗日扰动的反事实动作物理世界模型，在隐表征中引入独立的虚拟外力 Token 以预测外部干预轨迹。	accept-w-rev	外力 Token 反事实预测有潜力，但与 force-aware world model/CWM 重叠明显，外部扰动数据与训练规模风险未解。
+2026-07-05	hunt	设计时空降维扰动实验，定位 Flow-Matching VLA 在去噪积分轨迹不同时段对 Noise-Space Steering 响应的鲁棒性与有效性瓶颈。	accept-w-rev	通过小规模瓶颈定位与可行性 gate，但 UniSteer/LP-DS 已覆盖 noise-space steering，诊断贡献不足以到 strong-accept。
+2026-07-05	hunt	将数据库乐观并发控制（OCC）迁移至 VLM 奖励计算，允许先乐观发放实时奖励以满足时效，并在后续帧通过时序一致性验证后正式提交或回滚奖励。	accept-w-rev	OCC 式 speculative reward 有明确跨域机制，但 RAC/SOLAR-RL 已覆盖延迟奖励回溯思想，在线回滚的无偏训练与验证路径仍是主要缺口。
+2026-07-05	hunt	将内存纠错码（ECC）概念迁移至世界模型，在隐空间自回归预测中引入多步校验 Token，用于在长时序 Rollout 中检测并纠正表征发散。	accept-w-rev	ECC parity latent token 有较高机制新意和鲁棒性上限，但 priorwork 只实读 1 篇且漂移纠错主张尚缺决定性实验。
+2026-07-05	hunt	通过对动作空间方差的频域分解，建立 VLA 学习过程中大尺度位移与微观对齐动作的梯度竞争模型，数学推导微动信号被宏观梯度淹没的理论边界。	reject	CRITICAL: AttenA+ 已覆盖宏观动作主导、微动梯度被淹没与速度/尺度自适应损失加权，核心发现和技术路径被近邻工作实质覆盖。
+2026-07-05	hunt	在隐空间中引入持续存在的物体“幻影 Token”，在视觉完全遮挡时通过触觉与本体感觉流自回归追踪被遮挡物体的物理状态变化。	accept-w-rev	幻影 Token 是可讨论的新机制，但 VT-WM 已覆盖触觉融合与遮挡 object permanence，且触觉/本体数据与硬件可得性未证实。
+2026-07-05	hunt	借鉴 CPU 虚拟内存的 TLB 页表加速思想，设计轻量级语义旁路缓冲器（Semantic TLB），缓存局部热点视觉表征到动作偏量的快速转换以跳过骨干网络推理。	reject	VLA-Cache/LAC 已实质覆盖利用局部性缓存加速 VLA，Semantic TLB 的直接动作旁路差异不足且安全/收益证据缺失，无法从默认 Reject 上调。
+2026-07-05	hunt	结合雅可比敏感度的时变 Flow-Matching VLA 动作引导机制。	reject	priorwork 已覆盖动作去噪轨迹雅可比、时变 guidance 与 Flow-Matching 约束引导，VLA 动作头应用没有给出 clear-accept 级差异。
+2026-07-05	hunt	借鉴日志结构合并树（LSM-Tree）与 WAL 机制的长时序世界模型状态更新架构。	reject	核心的 log-structured 状态、短长记忆合并和增量缓存已被近邻工作覆盖，世界模型迁移缺清晰新机制且单人周期偏大。
+2026-07-05	hunt	隔离视觉投影降维与骨干网络表征能力的 VLA 微动控制失效瓶颈定位实验。	accept-w-rev	无 CRITICAL 且变量控制实验可执行，但 RoboGround、RoboFlamingo 与 Spatial Awareness 已覆盖空间丢失/注入主线，只剩诊断隔离价值。
+2026-07-05	hunt	引入物理连续性方程约束的隐表征质量守恒视频世界模型。	reject	CRITICAL novelty：Lagrangian Flow Networks 等已直接在隐空间用连续性方程/质量守恒约束建模，头条机制被覆盖。
+2026-07-05	hunt	基于即时编译（JIT）概念的自适应 VLA 动作生成与按需推理路由架构。	reject	CRITICAL novelty：VLA-Corrector、PI-VLA/AURD 已实现异常监测触发大模型重规划/路由，JIT 命名不足以形成差异。
