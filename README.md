@@ -34,7 +34,8 @@
 
 
 ```bash
-# 最常用：agy 负责产生 idea + 调研 + 占据两个 review 席位、codex 负责最后一个 review 席位 + publish 把关
+# 最常用：agy 跑前段(生成+调研)+ 两个 review 席位(REV_CMD_2/3);codex 跑 REV_CMD_1(未设,回落 BACK_CMD)与报告。
+# agy 席位由启动闸门(AGY_LAUNCH_GAP_SEC,默认 60s)自动错峰,防快速重复调起触发登录验证。
 FRONT_CMD='./agy-worker.sh' \
 BACK_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
 REV_CMD_2='./agy-worker.sh' \
@@ -70,7 +71,7 @@ ALLOW_ZERO_NO_HIT_SLEEP=1 NO_HIT_SLEEP_MIN_LO=0 NO_HIT_SLEEP_MIN_HI=0 ./hunt.sh 
 AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
 
 # agy + claude:agy 只跑生成+查重;claude 跑打分+报告,publish 仍由 hunt.sh 调 publish.sh
-# 不要把 3 个 reviewer 全交给 agy;并发认证会失败
+# 不要把 3 个 reviewer 全交给 agy;须留至少 1 个可信席位
 FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
 
 # agy + codex:agy 只跑生成+查重;codex 跑打分+报告
@@ -80,8 +81,9 @@ FRONT_CMD='./agy-worker.sh' BACK_CMD='codex --search -c approval_policy=never -c
 REV_CMD_1='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
 REV_CMD_2='claude -p' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
 
-# agy 前段可调,默认 AGY_MODEL=gemini-3.5-flash-high,AGY_PRINT_TIMEOUT=8m
-AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
+# agy 前段可调,默认 AGY_MODEL=gemini-3.5-flash-high,AGY_PRINT_TIMEOUT=8m,
+# AGY_LAUNCH_GAP_SEC=60(两次 agy 启动的最小间隔秒数,防快速重复调起触发登录验证;0 关闭)
+AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m AGY_LAUNCH_GAP_SEC=90 FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
 ```
 
 报告在 `ideas/YYYY-MM-DD_hunt.md`,以 `hunt/日期` 分支 PR 提交,CI 按路径自动合并;本地收尾用 `./settle.sh`(合并后切回 main、清理本地/远程特性分支)。
