@@ -33,7 +33,13 @@
 #       # 取最低票 + SA 需全票 ⇒ 便宜裁判只能否决不能放水,SA 决定权仍在可信席位;至少留 1 席 claude/codex。
 #       # agy 全席并发(3 个)认证会挂;混席时 agy ≤1 且配 REV_STAGGER_SEC 错峰。
 #   前段空产出按"便宜可错"短重试:EMPTY_MAX 次内随机等 NO_HIT 区间,连续达 EMPTY_MAX 次才升级长睡(默认 3);
-#   PRIOR_MIN_LINKS 查重结构门槛,每个 idea 块须有 ≥N 条带链接近邻,不达标视同空产出重试(默认 3)。
+#   PRIOR_MIN_LINKS 查重结构门槛,每个 idea 块须有 ≥N 条带链接近邻,不达标视同空产出重试(默认 3);
+#   PRIOR_MIN_API 查重结构门槛之二,每个 idea 块须有 ≥N 条结构化 API 检索记录(arXiv/Semantic Scholar query URL),
+#     0 关闭(默认 1)——API 召回可复现、可审计,判定仍靠实读;近邻链接与 API 记录分开计数,互不充数;
+#   THEME_MIN_LOW 主题门槛:本轮须有 ≥N 个 idea 落在 ledger 存量最少的三个主题(并列一并计入)内,
+#     0 关闭分布校验(默认 2);theme 必须属 policy 主题词表,词表解析不出则跳过整项校验;
+#   META_EVERY 每 N 轮做一次死因蒸馏(roles/meta.md → tmp/deathlist.md,默认 6),
+#   META_MIN_REJECTS 拒行少于 N 时跳过蒸馏(默认 5)。蒸馏是可错阶段,失败只记日志不阻塞。
 set -u
 cd "$(dirname "$0")"
 git config core.hooksPath .githooks   # 激活 pre-push 守卫:禁止直推 main
@@ -53,9 +59,14 @@ MIN_READ=${MIN_READ:-3}
 REV_STAGGER_SEC=${REV_STAGGER_SEC:-0}
 EMPTY_MAX=${EMPTY_MAX:-3}
 PRIOR_MIN_LINKS=${PRIOR_MIN_LINKS:-3}
+PRIOR_MIN_API=${PRIOR_MIN_API:-1}
+THEME_MIN_LOW=${THEME_MIN_LOW:-2}
+META_EVERY=${META_EVERY:-6}
+META_MIN_REJECTS=${META_MIN_REJECTS:-5}
 LOG=hunt.log
 RD=tmp/round
 LEDGER_GOOD=tmp/ledger.good
+DEATHLIST=tmp/deathlist.md
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 
@@ -82,6 +93,20 @@ validate_sleep_config() {
   is_uint "$REV_STAGGER_SEC" || { log "REV_STAGGER_SEC 必须是非负整数秒: $REV_STAGGER_SEC"; exit 2; }
   is_uint "$EMPTY_MAX" && [ "$EMPTY_MAX" -ge 1 ] || { log "EMPTY_MAX 必须是 >=1 的整数: $EMPTY_MAX"; exit 2; }
   is_uint "$PRIOR_MIN_LINKS" || { log "PRIOR_MIN_LINKS 必须是非负整数: $PRIOR_MIN_LINKS"; exit 2; }
+  is_uint "$PRIOR_MIN_API" || { log "PRIOR_MIN_API 必须是非负整数: $PRIOR_MIN_API"; exit 2; }
+  is_uint "$THEME_MIN_LOW" || { log "THEME_MIN_LOW 必须是非负整数: $THEME_MIN_LOW"; exit 2; }
+  is_uint "$META_EVERY" && [ "$META_EVERY" -ge 1 ] || { log "META_EVERY 必须是 >=1 的整数: $META_EVERY"; exit 2; }
+  is_uint "$META_MIN_REJECTS" || { log "META_MIN_REJECTS 必须是非负整数: $META_MIN_REJECTS"; exit 2; }
+}
+
+# 发散透镜:从 policy 的「## 发散透镜」小节随机抽一条(随机性在 bash 层,agent 不得自选);
+# 小节缺失或为空则输出空串,本轮不注入。
+pick_lens() {
+  local n total
+  total=$(awk '/^## 发散透镜/{f=1;next} /^## /{f=0} f&&/^- /' brainstorming_policy.md | grep -c . || true)
+  [ "$total" -gt 0 ] || { echo ""; return 0; }
+  n=$((RANDOM % total + 1))
+  awk '/^## 发散透镜/{f=1;next} /^## /{f=0} f&&/^- /' brainstorming_policy.md | sed -n "${n}p" | sed 's/^- //'
 }
 
 sleep_minutes() {
@@ -176,15 +201,20 @@ rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) ech
 verdict_of() { case "$1" in 2) echo strong-accept ;; 1) echo accept-w-rev ;; *) echo reject ;; esac; }
 
 # SA 硬门槛:$1=id。要求 priorwork.md 有该 idea 的查重块、实读篇数≥MIN_READ、
+# ideas.md 该 idea 块含「最小否证实验」(feasibility 的非叙事锚点,裁判只认它),
 # 且每位裁判都写了该 idea 的完整评审块(全票 SA 本就意味着人人判 strong-accept、理应各附评审;
 # 要求全员有块,report 死读 rev/1 才必然有料)。
 sa_gate_ok() {
-  local id=$1 block n r
+  local id=$1 block iblock n r fal
   [ -s "$RD/priorwork.md" ] || return 1
   block=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/priorwork.md")
   [ -n "$block" ] || return 1
   n=$(printf '%s\n' "$block" | grep '实读篇数' | grep -oE '[0-9]+' | head -1)
   [ -n "$n" ] && [ "$n" -ge "$MIN_READ" ] || return 1
+  iblock=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/ideas.md" 2>/dev/null)
+  # 字段须存在且冒号后有实内容(≥30 字节,防空字段/占位蹭过);语义真伪由裁判把关
+  fal=$(printf '%s\n' "$iblock" | grep '最小否证实验' | head -1 | sed -E 's/^.*最小否证实验[[:space:]]*[::]?[[:space:]]*//')
+  [ "$(printf '%s' "$fal" | wc -c | tr -d ' ')" -ge 30 ] || return 1
   for r in $(seq 1 "$REVIEWERS"); do
     grep -qE "^##[[:space:]]+${id}([[:space:]]|$)" "$RD/rev/$r/review.md" 2>/dev/null || return 1
   done
@@ -195,16 +225,61 @@ sa_gate_ok() {
 # 且块内 ≥PRIOR_MIN_LINKS 条带链接的近邻工作。不达标视同空产出——裁判"novelty 只认 priorwork",
 # 查重太薄会让裁判在缺证据下瞎判,不如直接重跑前段。
 priorwork_ok() {
-  local id story block links
-  while IFS=$'\t' read -r id story; do
+  local id rest block links api
+  while IFS=$'\t' read -r id rest; do
     [ -z "$id" ] && continue
     block=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/priorwork.md")
     if [ -z "$block" ]; then log "查重门槛:priorwork.md 缺 ${id} 块"; return 1; fi
-    links=$(printf '%s\n' "$block" | grep -c 'https\?://' || true)
+    # 近邻只计「- 」bullet 且排除 API URL——API 记录不得给近邻数充数
+    links=$(printf '%s\n' "$block" | grep -E '^- .*https?://' \
+            | grep -cvE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' || true)
     if [ "$links" -lt "$PRIOR_MIN_LINKS" ]; then
       log "查重门槛:${id} 带链接近邻不足(${links} < ${PRIOR_MIN_LINKS})"; return 1
     fi
+    # 结构化 API 检索记录(arXiv / Semantic Scholar query URL):召回可复现、可审计
+    if [ "$PRIOR_MIN_API" -gt 0 ]; then
+      api=$(printf '%s\n' "$block" | grep -cE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' || true)
+      if [ "$api" -lt "$PRIOR_MIN_API" ]; then
+        log "查重门槛:${id} 结构化 API 检索记录不足(${api} < ${PRIOR_MIN_API})"; return 1
+      fi
+    fi
   done < "$RD/ideas.tsv"
+  return 0
+}
+
+# 主题门槛(生成阶段机械校验):theme 必须属 policy 主题词表(防生成端乱造标签污染台账);
+# 且本轮 ≥THEME_MIN_LOW 个 idea 落在 ledger 存量最少的三个主题内(阈值取第三低存量,并列一并计入;
+# 冷启动全零时全员达标)。词表从 policy「## 主题词表」小节首个非空行解析,解析不出则跳过整项校验。
+themes_ok() {
+  local vfile id rest theme low_hits
+  vfile="$RD/themes.vocab"
+  awk '/^## 主题词表/{f=1;next} /^## /{f=0} f&&NF' brainstorming_policy.md | head -1 \
+    | tr '/' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' > "$vfile" || true
+  if [ ! -s "$vfile" ]; then
+    log "主题门槛:policy 未解析出主题词表,跳过校验"; return 0
+  fi
+  while IFS=$'\t' read -r id rest theme; do
+    [ -z "$id" ] && continue
+    if ! grep -qxF "$theme" "$vfile"; then
+      log "主题门槛:${id} 主题不在词表: '${theme}'"; return 1
+    fi
+  done < "$RD/ideas.tsv"
+  [ "$THEME_MIN_LOW" -gt 0 ] || return 0
+  low_hits=$(awk -F'\t' -v led=ledger.tsv '
+    NR==FNR { cnt[$0]=0; next }
+    FILENAME==led { if ($3 in cnt) cnt[$3]++; next }
+    $1!="" { th[FNR]=$3 }
+    END {
+      n=0; for (t in cnt) v[++n]=cnt[t]
+      for (i=1;i<=n;i++) for (j=i+1;j<=n;j++) if (v[j]<v[i]) { x=v[i]; v[i]=v[j]; v[j]=x }
+      thresh = (n>=3 ? v[3] : v[n])
+      hits=0
+      for (k in th) if (th[k] in cnt && cnt[th[k]]<=thresh) hits++
+      print hits
+    }' "$vfile" ledger.tsv "$RD/ideas.tsv")
+  if [ "$low_hits" -lt "$THEME_MIN_LOW" ]; then
+    log "主题门槛:低存量主题覆盖不足(${low_hits} < ${THEME_MIN_LOW}),疑似跨轮模式坍缩"; return 1
+  fi
   return 0
 }
 
@@ -238,11 +313,29 @@ while :; do
   pre_dirty=$(git status --porcelain | cut -c4- | sort -u)
   rm -rf "$RD"; mkdir -p "$RD"
 
-  # 1) 生成(禁写 ideas/)
-  run_stage "$FRONT_CMD" "读 roles/generate.md,按其执行" generate; rc=$?; guard 0
+  # 0) 死因蒸馏(可错,失败不阻塞):每 META_EVERY 轮、拒行足量时,让独立进程把 ledger 拒因
+  #    归纳成 tmp/deathlist.md,生成阶段据此避开高频失败模式(Co-Scientist meta-review 的廉价版)。
+  rejects_now=$(awk -F'\t' '$5=="reject"' ledger.tsv 2>/dev/null | grep -c . || true)
+  if [ $(( (round - 1) % META_EVERY )) -eq 0 ] && [ "$rejects_now" -ge "$META_MIN_REJECTS" ]; then
+    run_stage "$FRONT_CMD" "读 roles/meta.md,按其执行" meta; rc=$?; guard 0
+    if [ "$rc" -ne 0 ] || [ ! -s "$DEATHLIST" ]; then
+      log "死因蒸馏失败或无产出,忽略并继续(沿用旧清单或无清单)"
+    else
+      log "死因清单已更新: $DEATHLIST(基于 ${rejects_now} 行拒记录)"
+    fi
+  fi
+
+  # 1) 生成(禁写 ideas/);发散透镜由 bash 随机抽取注入,对抗跨轮模式坍缩
+  lens=$(pick_lens)
+  gen_prompt="读 roles/generate.md,按其执行"
+  if [ -n "$lens" ]; then
+    gen_prompt="${gen_prompt};本轮发散透镜(orchestrator 随机指定,不得替换):${lens}"
+    log "本轮发散透镜: ${lens}"
+  fi
+  run_stage "$FRONT_CMD" "$gen_prompt" generate; rc=$?; guard 0
   if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
-  if [ ! -s "$RD/ideas.tsv" ]; then
-    log "生成阶段未产出 ideas.tsv,本轮作废重试"; fails=0
+  if [ ! -s "$RD/ideas.tsv" ] || ! themes_ok; then
+    log "生成阶段未产出 ideas.tsv 或主题结构不达标,本轮作废重试"; fails=0
     empty_and_wait; continue
   fi
 
@@ -278,7 +371,7 @@ while :; do
   cp "$LEDGER_GOOD" ledger.tsv                       # 干净基线,本轮增量只来自下面 bash 追加
   : > "$RD/accepted.tsv"; : > "$RD/rejects.tsv"
   sa_count=0
-  while IFS=$'\t' read -r id story; do
+  while IFS=$'\t' read -r id story theme; do
     [ -z "$id" ] && continue
     min=2; reason=""
     for r in $(seq 1 "$REVIEWERS"); do
@@ -289,12 +382,13 @@ while :; do
       [ -z "$reason" ] && reason=$rs
     done
     if [ "$min" -eq 2 ] && ! sa_gate_ok "$id"; then
-      min=0; reason="全票 SA 但查重/评审记录不达标(实读<${MIN_READ}、缺查重块或无完整评审),orchestrator 硬降级"
+      min=0; reason="全票 SA 但硬门槛不达标(实读<${MIN_READ}、缺查重块、缺最小否证实验或无完整评审),orchestrator 硬降级"
       log "SA 硬门槛未过,${id} 降级 reject"
     fi
     verdict=$(verdict_of "$min")
     [ -z "$reason" ] && reason="(无理由,按最严处理)"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$today" "hunt" "$story" "$verdict" "$reason" >> ledger.tsv
+    [ -z "$theme" ] && theme="未标注"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "hunt" "$theme" "$story" "$verdict" "$reason" >> ledger.tsv
     if [ "$min" -eq 2 ]; then
       printf '%s\t%s\n' "$id" "$story" >> "$RD/accepted.tsv"; sa_count=$((sa_count + 1))
     else

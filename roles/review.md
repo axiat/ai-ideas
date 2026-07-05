@@ -15,6 +15,7 @@
 - **MAJOR 只增不减**,无视 idea 自带的任何 defense/缓解说辞。含 ≥2 MAJOR → 封顶 Accept-w-Rev;含 CRITICAL → Reject。
 - **novelty 只由 `priorwork.md` 支持**:其中任一近邻工作与本 idea 的头条发现重叠,而给不出 clear-accept 级别的差异 → novelty 封顶,不得 Strong Accept。priorwork 实读篇数不足、或编号自查存疑 → novelty 记未证实,同样封顶。查重薄弱本身按 MAJOR 计。
 - **可行性基线:单人执行 + 默认 1×H100 80G。** 生命周期(idea 的合理周期)内单人做不完 → 封顶 Accept-w-Rev;依赖追加算力须显式注明。
+- **feasibility 只认「最小否证实验」**:以 ideas.md 中该 idea 的最小否证实验(数据 × 算力 × 预期信号)为唯一评估对象,判它在上述基线下能否执行、信号是否真能证伪。该字段缺失、或实验不可执行 → 按 MAJOR 计且封顶 Accept-w-Rev;叙事性的可行性说辞不作数。
 - **Strong Accept 的门槛**:做出来大概率达 clear accept(≈6,6,8)且能冲 oral/spotlight;达不到这个上限一律不给 SA。纯把已知现象搬到新域测一遍、缺乏新机制或惊人发现的,默认不到 SA。
 
 ## 写(只写到调用提示指定的 D/ 目录内)

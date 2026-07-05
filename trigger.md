@@ -10,13 +10,13 @@
 
 ## 分阶段执行(强制按序;后一阶段不得回头救前一阶段的结论)
 
-1. **生成**:读 `ledger.tsv`,避开所有已有行(含已拒的),先发散 10 个候选,再自筛 4-6 个差异最大的 idea。已反复被拒的套路(如 CPU/数据库/内存机制迁移)本轮至多 1 个。只描述 idea,**禁止**在此阶段写任何「novelty 强 / 没人做 / 能过」之类自评。
-2. **对抗式查重**:对每个 idea,尽力证明已经有人做过。每个找最相近 3-5 篇,写实读摘要/方法与**实读篇数**,且每个 idea 块至少 3 条带链接近邻。编号自查须实际打开链接核对标题。后续 novelty 结论**只认这一步的证据**,不认生成阶段的说法;查重薄弱本身按 MAJOR 计。
+1. **生成**:读 `ledger.tsv`,避开所有已有行(含已拒的;唯一例外:对 accept-w-rev 行的定向进化,至多 1 个,规则见 `brainstorming_policy.md`),先发散 10 个候选,再自筛 4-6 个差异最大的 idea。已反复被拒的套路(如 CPU/数据库/内存机制迁移)本轮至多 1 个。每个 idea 标注主题(policy 主题词表)并附**最小否证实验**(数据 × 算力 × 预期信号),按 policy 主题反坍缩规则分布。只描述 idea,**禁止**在此阶段写任何「novelty 强 / 没人做 / 能过」之类自评。
+2. **对抗式查重**:对每个 idea,尽力证明已经有人做过。每个找最相近 3-5 篇,写实读摘要/方法与**实读篇数**,且每个 idea 块至少 3 条带链接近邻、至少 1 条 arXiv/Semantic Scholar API 检索记录(实际 query URL)。编号自查须实际打开链接核对标题。后续 novelty 结论**只认这一步的证据**,不认生成阶段的说法;查重薄弱本身按 MAJOR 计。
 3. **打分(独立跑 3 遍,取最低票)**:默认结论 **Reject**。每遍当作一次全新的对抗评审,按 `rubric.md` 8 步完整走、用 `brainstorming_policy.md` 校准,给出 verdict ∈ {strong-accept, accept-w-rev, reject}。三遍各记一行,**该 idea 的最终 verdict = 三遍最低**。
    - MAJOR **只增不减**,无视 idea 自带的任何 defense/缓解说辞;含 ≥2 MAJOR 封顶 accept-w-rev,含 CRITICAL → reject。
    - novelty 仅由第 2 步证据支持:任一近邻工作与头条发现重叠、又给不出 clear-accept 级差异 → novelty 封顶,不得 SA;实读不足或编号自查存疑 → novelty 记未证实,同样封顶。
-   - 可行性基线:单人执行 + 默认 1×H100 80G;生命周期内单人做不完 → 封顶 accept-w-rev,依赖追加算力须显式注明。
-4. **Strong Accept 硬门槛自检**:某 idea 要留在正文,必须**同时**满足——三遍**全部** strong-accept、有该 idea 的定向查重块、实读篇数 ≥ 3、写了完整 rubric 8 段评审。任一不满足 → 降级 reject,移出正文。做出来达不到 clear accept(≈6,6,8)/冲不了 oral 的,一律不给 SA。
+   - 可行性基线:单人执行 + 默认 1×H100 80G;生命周期内单人做不完 → 封顶 accept-w-rev,依赖追加算力须显式注明。feasibility 只认该 idea 的最小否证实验,缺失或不可执行按 MAJOR 计、封顶 accept-w-rev。
+4. **Strong Accept 硬门槛自检**:某 idea 要留在正文,必须**同时**满足——三遍**全部** strong-accept、有该 idea 的定向查重块(含 API 检索记录)、实读篇数 ≥ 3、附最小否证实验、写了完整 rubric 8 段评审。任一不满足 → 降级 reject,移出正文。做出来达不到 clear accept(≈6,6,8)/冲不了 oral 的,一律不给 SA。
 5. **记账**:所有生成过的 idea(无论 verdict)各写一行进 `ledger.tsv`(schema 见 PROGRAM.md,只追加、不改历史行);正文只保留 Strong Accept。
 
 ## 达标条件
