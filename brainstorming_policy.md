@@ -4,7 +4,7 @@
 
 - `research_context.md` 只是可选的灵感来源，**不是约束**。每轮生成的 idea 中至多 1-2 个与用户现有工作（DSRL / π0.5 栈）直接相关，其余必须跳出该栈，在 WorldModel / VLA 乃至具身智能更大范围内自由发散。
 - 优先级排序：纯 novelty（改变问题定义或基础机制，Transformer 级别的野心）＞ 问题发现 + 初步探究 ＞ 现有方向的增量改进。
-- 每轮可含至多 1 个**进化 idea**：对 ledger 近期 accept-w-rev 行的定向修复（点名修的缺陷），按全新 idea 走完整查重与评审，不继承旧票；reject 行不得进化复活。
+- 每轮可含至多 1 个**进化或复查 idea**（共用名额）。进化：只准选 verdict=accept-w-rev、overlap=low 且死因属实验设计类缺陷的行做定向修复（novelty 封顶/已被占据的不修，修不掉）；复查：查重薄弱型 AwR 原样重交补查重，同一 story 至多一次，补完仍封顶即永久放弃。均按全新 idea 走完整查重与评审，不继承旧票；reject 行不得复活。
 
 ## 主题词表（ledger 的 theme 列，生成时逐 idea 标注）
 
