@@ -160,6 +160,13 @@ can genuinely falsify the claim; narrative feasibility claims without
 an executable falsification experiment count as a MAJOR flaw and cap
 the verdict at Accept with Revisions.
 
+Scope the lifecycle and timeline judgment to the falsification
+experiment plus a reasonable first-paper cut of the idea, not the
+idea's maximal vision. A vision whose full scope exceeds a
+single-person budget is not by itself a MAJOR flaw when the
+first-paper cut stands; state the assumed first-paper cut in the
+feasibility table.
+
 If any risk is high, flag it explicitly with a suggested mitigation.
 
 ### Step 7: Integrity gate

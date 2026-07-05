@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 外层循环:每轮把一批 idea 走完「生成 → 对抗式查重 → N 位裁判打分」,
+# 外层循环:每轮把一批 idea 走完「生成 → 预筛(杀 direct hit)→ 对抗式深查重 → N 位裁判打分」,
 # 由本脚本(而非任何 agent)聚合 verdict、写 ledger、发布。达当日达标(≥1 Strong Accept)即停。
 #
 # 反串通设计:
@@ -16,7 +16,7 @@
 #   ./hunt.sh [异常重试间隔分钟,默认 150]
 #   NO_HIT_SLEEP_MIN_LO/HI 正常无达标后的随机重试区间(默认 1-8 分钟,默认最小为 1);
 #   ALLOW_ZERO_NO_HIT_SLEEP=1 仅用于测试,允许正常无达标后 0 分钟重试;
-#   REVIEWERS 裁判票数(默认 3);MIN_READ SA 门槛要求的最少实读篇数(默认 3);
+#   REVIEWERS 裁判票数(默认 3);MIN_READ SA 门槛要求的最少实读篇数(默认 5);
 #   AGENT_CMD 指定 agent CLI(prompt 作为最后一个参数传入),例:
 #     AGENT_CMD='claude -p' ./hunt.sh              # 默认;权限走 .claude/settings.json allowlist
 #     AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
@@ -33,16 +33,19 @@
 #       # 取最低票 + SA 需全票 ⇒ 便宜裁判只能否决不能放水,SA 决定权仍在可信席位;至少留 1 席 claude/codex。
 #       # agy 全席并发(3 个)认证会挂;混席时 agy ≤1 且配 REV_STAGGER_SEC 错峰。
 #   前段空产出按"便宜可错"短重试:EMPTY_MAX 次内随机等 NO_HIT 区间,连续达 EMPTY_MAX 次才升级长睡(默认 3);
-#   PRIOR_MIN_LINKS 查重结构门槛,每个 idea 块须有 ≥N 条带链接近邻,不达标视同空产出重试(默认 3);
+#   预筛(生成与深查之间,FRONT_CMD 跑,便宜可错、只杀不保):只杀"单篇工作直接占据头条"的 direct hit,
+#     被杀 idea 由本脚本立即按 reject 入账、overlap=high(防下轮重生成);存活取前 SHORT_MAX 个(默认 3)
+#     进深查,超额 keep 丢弃不入账(下轮可重新生成),全灭走空产出短重试;
+#   PRIOR_MIN_LINKS 查重结构门槛,每个 idea 块须有 ≥N 条带链接近邻,不达标视同空产出重试(默认 5);
 #   PRIOR_MIN_API 查重结构门槛之二,每个 idea 块须有 ≥N 条结构化 API 检索记录(arXiv/Semantic Scholar query URL),
 #     0 关闭(默认 1)——API 召回可复现、可审计,判定仍靠实读;近邻链接与 API 记录分开计数,互不充数;
 #   THEME_MIN_LOW 主题门槛:本轮须有 ≥N 个 idea 落在 ledger 存量最少的三个主题(并列一并计入)内,
 #     0 关闭分布校验(默认 2);theme 必须属 policy 主题词表,词表解析不出则跳过整项校验;
-#   META_EVERY 每 N 轮做一次死因蒸馏(roles/meta.md → tmp/deathlist.md,默认 6),
-#   META_MIN_REJECTS 拒行少于 N 时跳过蒸馏(默认 5)。蒸馏是可错阶段,失败只记日志不阻塞。
+#   META_EVERY 每 N 轮做一次失败蒸馏(roles/meta.md → tmp/deathlist.md,默认 6),
+#   META_MIN_REJECTS 失败行(reject+accept-w-rev)少于 N 时跳过蒸馏(默认 5)。蒸馏是可错阶段,失败只记日志不阻塞。
 #   中断恢复:tmp/hunt.lock 实例锁防同目录双开(持锁进程已死则自动清陈旧锁);
 #   启动时当日报告已存在则先跑一次幂等的 publish.sh 补发布再退(堵"report 写完、publish 没跑成"的滞留);
-#   RESUME_FRONT=1(默认)时,中断遗留的前段产物(ideas+priorwork)过机械门槛则首轮跳过生成/查重续跑;
+#   RESUME_FRONT=1(默认)时,中断遗留的前段产物(ideas+priorwork)过机械门槛则首轮跳过生成/预筛/查重续跑;
 #   评审票据/聚合残留一律作废、裁判由本进程重新调起——verdict 永不续用,防前段借崩溃伪造票据绕过独立评审。
 set -u
 cd "$(dirname "$0")"
@@ -59,11 +62,12 @@ NO_HIT_SLEEP_MIN_HI=${NO_HIT_SLEEP_MIN_HI:-8}
 ALLOW_ZERO_NO_HIT_SLEEP=${ALLOW_ZERO_NO_HIT_SLEEP:-0}
 MAX_FAILS=${MAX_FAILS:-12}
 REVIEWERS=${REVIEWERS:-3}
-MIN_READ=${MIN_READ:-3}
+MIN_READ=${MIN_READ:-5}
 REV_STAGGER_SEC=${REV_STAGGER_SEC:-0}
 EMPTY_MAX=${EMPTY_MAX:-3}
-PRIOR_MIN_LINKS=${PRIOR_MIN_LINKS:-3}
+PRIOR_MIN_LINKS=${PRIOR_MIN_LINKS:-5}
 PRIOR_MIN_API=${PRIOR_MIN_API:-1}
+SHORT_MAX=${SHORT_MAX:-3}
 THEME_MIN_LOW=${THEME_MIN_LOW:-2}
 META_EVERY=${META_EVERY:-6}
 META_MIN_REJECTS=${META_MIN_REJECTS:-5}
@@ -100,6 +104,7 @@ validate_sleep_config() {
   is_uint "$EMPTY_MAX" && [ "$EMPTY_MAX" -ge 1 ] || { log "EMPTY_MAX 必须是 >=1 的整数: $EMPTY_MAX"; exit 2; }
   is_uint "$PRIOR_MIN_LINKS" || { log "PRIOR_MIN_LINKS 必须是非负整数: $PRIOR_MIN_LINKS"; exit 2; }
   is_uint "$PRIOR_MIN_API" || { log "PRIOR_MIN_API 必须是非负整数: $PRIOR_MIN_API"; exit 2; }
+  is_uint "$SHORT_MAX" && [ "$SHORT_MAX" -ge 1 ] || { log "SHORT_MAX 必须是 >=1 的整数: $SHORT_MAX"; exit 2; }
   is_uint "$THEME_MIN_LOW" || { log "THEME_MIN_LOW 必须是非负整数: $THEME_MIN_LOW"; exit 2; }
   is_uint "$META_EVERY" && [ "$META_EVERY" -ge 1 ] || { log "META_EVERY 必须是 >=1 的整数: $META_EVERY"; exit 2; }
   is_uint "$META_MIN_REJECTS" || { log "META_MIN_REJECTS 必须是非负整数: $META_MIN_REJECTS"; exit 2; }
@@ -261,7 +266,8 @@ priorwork_ok() {
 # 且本轮 ≥THEME_MIN_LOW 个 idea 落在 ledger 存量最少的三个主题内(阈值取第三低存量,并列一并计入;
 # 冷启动全零时全员达标)。词表从 policy「## 主题词表」小节首个非空行解析,解析不出则跳过整项校验。
 themes_ok() {
-  local vfile id rest theme low_hits
+  local tsv vfile id rest theme low_hits
+  tsv=${1:-$RD/ideas.tsv}
   vfile="$RD/themes.vocab"
   awk '/^## 主题词表/{f=1;next} /^## /{f=0} f&&NF' brainstorming_policy.md | head -1 \
     | tr '/' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' > "$vfile" || true
@@ -273,7 +279,7 @@ themes_ok() {
     if ! grep -qxF "$theme" "$vfile"; then
       log "主题门槛:${id} 主题不在词表: '${theme}'"; return 1
     fi
-  done < "$RD/ideas.tsv"
+  done < "$tsv"
   [ "$THEME_MIN_LOW" -gt 0 ] || return 0
   low_hits=$(awk -F'\t' -v led=ledger.tsv '
     NR==FNR { cnt[$0]=0; next }
@@ -286,10 +292,42 @@ themes_ok() {
       hits=0
       for (k in th) if (th[k] in cnt && cnt[th[k]]<=thresh) hits++
       print hits
-    }' "$vfile" ledger.tsv "$RD/ideas.tsv")
+    }' "$vfile" ledger.tsv "$tsv")
   if [ "$low_hits" -lt "$THEME_MIN_LOW" ]; then
     log "主题门槛:低存量主题覆盖不足(${low_hits} < ${THEME_MIN_LOW}),疑似跨轮模式坍缩"; return 1
   fi
+  return 0
+}
+
+# 预筛判定读取:$1=id → stdout 输出 kill|keep|空(块缺失/判定非法)
+prescreen_dec() {
+  awk -v id="$1" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/prescreen.md" 2>/dev/null \
+    | grep -m1 '^判定' | grep -oE 'kill|keep' | head -1
+}
+
+# 预筛结构门槛(机械校验):ideas.all.tsv 每个 id 在 prescreen.md 有块、块内 ≥1 条结构化 API 检索记录、
+# 判定 ∈ {kill,keep}、kill 必附占位工作链接(非 API URL)。预筛定位"便宜可错、只杀不保":
+# 结构不达标视同空产出重跑;keep 不构成任何 novelty 结论,深查与裁判照常对抗。
+prescreen_ok() {
+  local id rest block dec link
+  while IFS=$'\t' read -r id rest; do
+    [ -z "$id" ] && continue
+    block=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/prescreen.md")
+    if [ -z "$block" ]; then log "预筛门槛:prescreen.md 缺 ${id} 块"; return 1; fi
+    if ! printf '%s\n' "$block" | grep -qE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org'; then
+      log "预筛门槛:${id} 缺结构化 API 检索记录"; return 1
+    fi
+    dec=$(prescreen_dec "$id")
+    case "$dec" in
+      keep) ;;
+      kill)
+        link=$(printf '%s\n' "$block" | grep -oE 'https?://[^ )|,;>]+' \
+               | grep -vE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' | head -1)
+        if [ -z "$link" ]; then log "预筛门槛:${id} 判 kill 但未附占位链接"; return 1; fi
+        ;;
+      *) log "预筛门槛:${id} 判定缺失或非法"; return 1 ;;
+    esac
+  done < "$RD/ideas.all.tsv"
   return 0
 }
 
@@ -326,9 +364,12 @@ trap 'cp "$LEDGER_GOOD" ledger.tsv 2>/dev/null || true; rm -rf "$LOCK"' EXIT
 # 只信前段产物(它们本就是 agent 产物、由门槛+裁判消化);评审票据残留在循环内一律清除,verdict 永不续用。
 resume_front=0
 if [ "$RESUME_FRONT" = "1" ] && [ -s "$RD/ideas.tsv" ] && [ -s "$RD/ideas.md" ] && [ -s "$RD/priorwork.md" ]; then
-  if themes_ok && priorwork_ok; then
+  # 主题门槛查发散全集(ideas.all.tsv,预筛前的 4-6 个);老格式遗留(无 all 文件)退回查 ideas.tsv
+  themes_src="$RD/ideas.tsv"
+  [ -s "$RD/ideas.all.tsv" ] && themes_src="$RD/ideas.all.tsv"
+  if themes_ok "$themes_src" && priorwork_ok; then
     resume_front=1
-    log "检测到中断遗留的前段产物且过机械门槛,首轮续跑(跳过生成/查重,裁判照常重跑)"
+    log "检测到中断遗留的前段产物且过机械门槛,首轮续跑(跳过生成/预筛/查重,裁判照常重跑)"
   else
     log "中断遗留的前段产物不过门槛,按常规重跑"
   fi
@@ -361,19 +402,20 @@ while :; do
     rm -rf "$RD/rev"
     rm -f "$RD/rev_rc" "$RD/accepted.tsv" "$RD/rejects.tsv" "$RD/meta.txt"
     empties=0
-    log "续跑:沿用中断遗留的前段产物,跳过生成/查重,直接进入评审"
+    log "续跑:沿用中断遗留的前段产物,跳过生成/预筛/查重,直接进入评审"
   else
     rm -rf "$RD"; mkdir -p "$RD"
 
-    # 0) 死因蒸馏(可错,失败不阻塞):每 META_EVERY 轮、拒行足量时,让独立进程把 ledger 拒因
-    #    归纳成 tmp/deathlist.md,生成阶段据此避开高频失败模式(Co-Scientist meta-review 的廉价版)。
-    rejects_now=$(awk -F'\t' '$5=="reject"' ledger.tsv 2>/dev/null | grep -c . || true)
-    if [ $(( (round - 1) % META_EVERY )) -eq 0 ] && [ "$rejects_now" -ge "$META_MIN_REJECTS" ]; then
+    # 0) 失败蒸馏(可错,失败不阻塞):每 META_EVERY 轮、失败行足量时,让独立进程把 ledger 的
+    #    reject 拒因与 accept-w-rev 封顶原因归纳成 tmp/deathlist.md(致命模式/封顶模式/进化候选),
+    #    生成阶段据此避开高频失败模式、选对进化父本(Co-Scientist meta-review 的廉价版)。
+    fails_now=$(awk -F'\t' '$5=="reject" || $5=="accept-w-rev"' ledger.tsv 2>/dev/null | grep -c . || true)
+    if [ $(( (round - 1) % META_EVERY )) -eq 0 ] && [ "$fails_now" -ge "$META_MIN_REJECTS" ]; then
       run_stage "$FRONT_CMD" "读 roles/meta.md,按其执行" meta; rc=$?; guard 0
       if [ "$rc" -ne 0 ] || [ ! -s "$DEATHLIST" ]; then
-        log "死因蒸馏失败或无产出,忽略并继续(沿用旧清单或无清单)"
+        log "失败蒸馏无产出或失败,忽略并继续(沿用旧清单或无清单)"
       else
-        log "死因清单已更新: $DEATHLIST(基于 ${rejects_now} 行拒记录)"
+        log "失败清单已更新: $DEATHLIST(基于 ${fails_now} 行 reject/AwR 记录)"
       fi
     fi
 
@@ -391,7 +433,53 @@ while :; do
       empty_and_wait; continue
     fi
 
-    # 2) 对抗式查重(禁写 ideas/)
+    # 1.5) 预筛(禁写 ideas/;便宜可错、只杀不保):深查花钱前杀掉"单篇直接占据头条"的 direct hit。
+    #      agent 只给判定与证据链接;shortlist 与 kill 台账由本脚本机械构建,防预筛擅改候选内容。
+    mv "$RD/ideas.tsv" "$RD/ideas.all.tsv"
+    mv "$RD/ideas.md" "$RD/ideas.all.md"
+    run_stage "$FRONT_CMD" "读 roles/prescreen.md,按其执行" prescreen; rc=$?; guard 0
+    if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
+    if [ ! -s "$RD/prescreen.md" ] || ! prescreen_ok; then
+      log "预筛阶段未产出 prescreen.md 或结构不达标,本轮作废重试"; fails=0
+      empty_and_wait; continue
+    fi
+    : > "$RD/ideas.tsv"; : > "$RD/ideas.md"; : > "$RD/kills.tsv"
+    kept=0
+    while IFS=$'\t' read -r id story theme; do
+      [ -z "$id" ] && continue
+      if [ "$(prescreen_dec "$id")" = "keep" ]; then
+        if [ "$kept" -lt "$SHORT_MAX" ]; then
+          printf '%s\t%s\t%s\n' "$id" "$story" "$theme" >> "$RD/ideas.tsv"
+          awk -v id="$id" '$1=="##"{f=($2==id)} f' "$RD/ideas.all.md" >> "$RD/ideas.md"
+          printf '\n' >> "$RD/ideas.md"
+          kept=$((kept + 1))
+        else
+          log "预筛:${id} keep 但超出 SHORT_MAX=${SHORT_MAX},本轮不深查、不入账(下轮可重新生成)"
+        fi
+      else
+        kill_url=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/prescreen.md" \
+                   | grep -oE 'https?://[^ )|,;>]+' \
+                   | grep -vE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' | head -1)
+        printf '%s\t%s\t%s\t%s\n' "$id" "$story" "$theme" "$kill_url" >> "$RD/kills.tsv"
+      fi
+    done < "$RD/ideas.all.tsv"
+    # kill 行立即 bash 定谳入账(verdict=reject,overlap=high):防同类 idea 下轮重生成;
+    # 预筛错杀只损失单一 idea 族(多花几轮重试),不污染 verdict,可接受。
+    if [ -s "$RD/kills.tsv" ]; then
+      cp "$LEDGER_GOOD" ledger.tsv
+      while IFS=$'\t' read -r id story theme kill_url; do
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "hunt" "$theme" "$story" "reject" "预筛直接占位: $kill_url" "high" >> ledger.tsv
+      done < "$RD/kills.tsv"
+      cp ledger.tsv "$LEDGER_GOOD"
+      log "预筛:$(grep -c . "$RD/kills.tsv") 个 direct hit 已按 reject 入账"
+    fi
+    if [ "$kept" -eq 0 ]; then
+      log "预筛全灭:本轮候选头条均被直接占位,作废重试"; fails=0
+      empty_and_wait; continue
+    fi
+    log "预筛:${kept} 个存活进深查"
+
+    # 2) 对抗式深查重(禁写 ideas/;只查预筛存活的 shortlist,每个 idea 5-8 篇实读)
     run_stage "$FRONT_CMD" "读 roles/research.md,按其执行" research; rc=$?; guard 0
     if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
     if [ ! -s "$RD/priorwork.md" ] || ! priorwork_ok; then
@@ -441,7 +529,11 @@ while :; do
     verdict=$(verdict_of "$min")
     [ -z "$reason" ] && reason="(无理由,按最严处理)"
     [ -z "$theme" ] && theme="未标注"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "hunt" "$theme" "$story" "$verdict" "$reason" >> ledger.tsv
+    # overlap 列:取独立查重的「重叠判定」(high/medium/low),供进化父本资格的机械筛选
+    overlap=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/priorwork.md" 2>/dev/null \
+              | grep -m1 '重叠判定' | grep -oE 'high|medium|low' | head -1)
+    [ -z "$overlap" ] && overlap="未知"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "hunt" "$theme" "$story" "$verdict" "$reason" "$overlap" >> ledger.tsv
     if [ "$min" -eq 2 ]; then
       printf '%s\t%s\n' "$id" "$story" >> "$RD/accepted.tsv"; sa_count=$((sa_count + 1))
     else

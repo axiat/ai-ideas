@@ -14,9 +14,9 @@
 - **默认结论 Reject。** 每上调一档(Reject → Accept-w-Rev → Strong Accept)必须点名通过 rubric 的对应 gate 并附证据;证据缺失或存疑,停在低档。
 - **MAJOR 只增不减**,无视 idea 自带的任何 defense/缓解说辞。含 ≥2 MAJOR → 封顶 Accept-w-Rev;含 CRITICAL → Reject。
 - **novelty 只由 `priorwork.md` 支持**:其中任一近邻工作与本 idea 的头条发现重叠,而给不出 clear-accept 级别的差异 → novelty 封顶,不得 Strong Accept。priorwork 实读篇数不足、或编号自查存疑 → novelty 记未证实,同样封顶。查重薄弱本身按 MAJOR 计。
-- **可行性基线:单人执行 + 默认 1×H100 80G。** 生命周期(idea 的合理周期)内单人做不完 → 封顶 Accept-w-Rev;依赖追加算力须显式注明。
+- **可行性基线:单人执行 + 默认 1×H100 80G;评估对象是最小否证实验与首篇论文的合理裁剪(phase-1 scope),不是 idea 的最大愿景。** 否证实验或首篇裁剪在生命周期内单人做不完 → 封顶 Accept-w-Rev;愿景全量超出单人算力不单独计 MAJOR(首篇裁剪在评审表写明);依赖追加算力须显式注明。
 - **feasibility 只认「最小否证实验」**:以 ideas.md 中该 idea 的最小否证实验(数据 × 算力 × 预期信号)为唯一评估对象,判它在上述基线下能否执行、信号是否真能证伪。该字段缺失、或实验不可执行 → 按 MAJOR 计且封顶 Accept-w-Rev;叙事性的可行性说辞不作数。
-- **Strong Accept 的门槛**:做出来大概率达 clear accept(≈6,6,8)且能冲 oral/spotlight;达不到这个上限一律不给 SA。纯把已知现象搬到新域测一遍、缺乏新机制或惊人发现的,默认不到 SA。
+- **Strong Accept 的门槛**:做出来大概率达 clear accept(≈6,6,8)且能冲 oral/spotlight;达不到这个上限一律不给 SA。纯把已知现象搬到新域测一遍的,默认不到 SA;机制迁移**同时**满足三条件的可给 SA——目标域零命中(只认 priorwork 证据)、适配机制非平凡(新域约束迫使机制实质改动,不是换数据集重训)、信号落地即够 clear accept。三条件逐条点名证据,缺一仍封顶。
 
 ## 写(只写到调用提示指定的 D/ 目录内)
 
