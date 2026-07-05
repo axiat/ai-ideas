@@ -33,7 +33,8 @@
 #     REV_CMD_1='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
 #     REV_CMD_2='claude -p' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
 #       # 取最低票 + SA 需全票 ⇒ 便宜裁判只能否决不能放水,SA 决定权仍在可信席位;至少留 1 席 claude/codex。
-#       # agy 全席并发(3 个)认证会挂;混席时 agy ≤1 且配 REV_STAGGER_SEC 错峰。
+#       # agy 快速重复调起会触发登录验证;agy-worker.sh 内置启动闸门(AGY_LAUNCH_GAP_SEC,默认 60s)
+#       # 自动错峰所有 agy 席位,REV_STAGGER_SEC 可再减少闸门排队。仍不要把全部裁判席交给 agy(须留可信席位)。
 #   前段空产出按"便宜可错"短重试:EMPTY_MAX 次内随机等 NO_HIT 区间,连续达 EMPTY_MAX 次才升级长睡(默认 3);
 #   预筛(生成与深查之间,FRONT_CMD 跑,便宜可错、只杀不保):只杀"单篇工作直接占据头条"的 direct hit,
 #     被杀 idea 由本脚本立即按 reject 入账、overlap=high(防下轮重生成);存活取前 SHORT_MAX 个(默认 3)
