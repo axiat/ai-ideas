@@ -88,6 +88,25 @@ AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m AGY_LAUNCH_GAP_SEC=90 FRON
 
 报告在 `ideas/YYYY-MM-DD_hunt.md`,以 `hunt/日期` 分支 PR 提交,CI 按路径自动合并;本地收尾用 `./settle.sh`(合并后切回 main、清理本地/远程特性分支)。
 
+**AwR 复活 sidecar(可选,与 hunt.sh 并行)**:`./agy-side.sh`。主环之外用多轮 agy(便宜可错)把 ledger 里 accept-w-rev 的 idea 磨成可复审成品:研究员按 reason 点名缺口检索出修订稿(`roles/awr.md`)→ 裁判按 rubric 判 `SA-可能/还不行`(`roles/awr-judge.md`,失败关闭)→ 还不行则缺陷回灌任务文件、下轮在旧稿上继续改;`AGY_SIDE_MAX_ROUNDS`(默认 3)轮反馈用尽带最后修订稿收尾。产物只落 `tmp/agy-side/awr/`(gitignored,主环守卫不可见),verdict/ledger/ideas 一概不碰;agy 每次调起只见 `tmp/agy-side/run.*` 临时镜像,指定输出文件由 bash 拷回,写界物理隔离(agy 实测不守 prompt 写界)。早停/糊弄由机械校验兜住:修订稿须含「## 修订版 idea」节 + ≥3 条带 URL 检索记录 + 末行 `AGY-DONE`,判定须二选一且"还不行"附具体缺陷;不合格存 `.badN` 重跑,同 key 累计 3 次拉黑(删 `.badN` 解除)。与 `agy-worker.sh` 共享启动闸门戳,默认间隔 `AGY_SIDE_GAP_SEC=120`,防连发触发登录验证。每 key 状态全由文件派生,无状态文件,中断随便杀。注意:主环运行中往仓库加任何未跟踪文件(tmp/ 之外)会触固定层守卫停机——sidecar 自身文件均已入库,产物全在 tmp/ 下,不会触。
+
+```bash
+caffeinate -is ./agy-side.sh        # 常驻:队列全终态后每 AGY_SIDE_POLL_SEC=600 秒重扫,等主环产新 AwR
+AGY_SIDE_POLL_SEC=0 ./agy-side.sh   # 单遍:队列全终态即退
+# 其余可调:AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m AGY_SIDE_MAX_BAD=3 AGY_SIDE_MAX_ROUNDS=3
+```
+
+跑完后按序看:
+
+```bash
+grep -h '^- 状态' tmp/agy-side/awr/*.md | sort | uniq -c   # 总览:达标/未达标各多少
+grep -l '状态: 达标' tmp/agy-side/awr/*.md                 # 给 claude 复审的候选
+ls tmp/agy-side/awr/*.bad3 2>/dev/null                     # 拉黑名单(3 次机械作废)
+grep 作废 tmp/agy-side/awr/side.log                        # 死法分布:早停多→任务再切小;检索不足多→查 .agy.log
+```
+
+达标品人工核三点再上贵模型:抽点 2-3 条 URL 确认真是所称论文且"占据/部分重叠"标注没胡说;修订版没被改空泛或面目全非;裁判意见有具体核对痕迹而非空洞放行。校准信号:第一轮达标率过半→裁判太松,把 rubric 的 SA 硬门槛节单独摘给它;全军未达标→看几份 `<key>.task.md` 的反馈史,分辨裁判太严还是研究员补不动。成品不自动回灌主环——原始 AwR 仍在 ledger/deathlist 里,generate 会避开该方向;claude 认可后怎么用(手动成文进 ideas/ 或当下轮生成素材)是人工动作。
+
 **每周定时**:cloud routine "Weekly Embodied Idea Scout" 自动运行,远端 prompt 即 `trigger.md`;报告经 `./publish.sh weekly` 以 `weekly/日期` 分支 PR 提交。改 `trigger.md` 需手动同步远端 routine;改固定层/角色层无需同步,routine 每次读仓库最新版。**caveat**:cloud routine 是**单个 agent**,拿不到 `hunt.sh` 的进程级隔离。`trigger.md` 已把 hunt 中纯 bash 的那部分严格度写成自律纪律逼近——分阶段执行、默认 Reject、对抗查重、三遍取最低、SA 硬门槛自检——但生成/查重/打分终究同一 context,严格度弱于 hunt 的独立裁判。**权限**:weekly 单 agent 要自己记账 + 跑 `publish.sh`(内含 git/gh),这些全在 `.claude/settings.json` allowlist 之外——allowlist 只约束 hunt.sh 统率的**本地受控 agent**,不绑云端 routine。故 weekly 只能以 **full-access(skip-permissions)** 运行(若被 allowlist 绑住会连 publish 都做不了);其越权风险由 `publish.sh` 硬限提交范围(`ideas/` 与 `ledger.tsv`)+ CI 路径守卫 + pre-push 拒直推 main 兜底,而非 `ledger.good` 快照。要完全对齐 hunt,把 weekly 改跑本地一次性流水线(同一条 bash 路径,`source=weekly`)即可。
 
 ## verdict 完整性(反串通)
