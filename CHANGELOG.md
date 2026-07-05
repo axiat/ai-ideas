@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-07-05 当日目标数 SA_TARGET(已合并,PR #8)
+
+- `hunt.sh` 新增 `SA_TARGET`(默认 1,行为同旧版;0=不设上限):停机条件从"当日 ≥1 全票 Strong Accept"改为"当日累计达目标数"。达标轮发布后未达目标则继续攒;同日多份报告按 `roles/report.md` 既有 `-2`/`-3` 后缀累加,`publish.sh` 幂等追加进同一当日分支与 PR,二者零改动。
+- 重入判定从"当日报告文件存在"改为"`tmp/ledger.good` 基线中当日 hunt 源 strong-accept 行数达标";已有报告但未达标(如上调 `SA_TARGET` 重启)时启动先幂等补发布再继续。
+- 报告写出判定从"当日报告存在"改为"报告文件数新增",防多报告日被旧报告蹭过。
+- 同步 `hunt.md` 停机条件、`PROGRAM.md` 回路第 5 步、`README.md`。
+
 ## 2026-07-05 预筛 + 深查重 + 进化资格 + 裁判校准(已合并,PR #9)
 
 背景:当日 29 个 idea 全无 SA(21 AwR + 8 reject)。死因分布:8 个 reject 全为 F1"已被占据"(查重/裁判事后才发现);约七成 AwR 死因涉 novelty(封顶或"实读仅 3 篇→novelty 未证实");3 次进化全选了 novelty 封顶的父本再次封顶。结论:瓶颈在查重深度与进化父本选择,不在生成时长。落地五项:
@@ -21,6 +28,8 @@
 - 一致性修正:`PROGRAM.md` 不动项 4 与 `brainstorming_policy.md` 定向查重的篇数同步为 5-8;`ledger.tsv` 29 行历史行一次性 backfill 第 7 列 overlap=未知(schema 迁移,此后行行 7 列)。
 
 远端 cloud routine "Weekly Embodied Idea Scout" 的 prompt 已于 2026-07-05 按新 `trigger.md` 手动同步。
+
+## 2026-07-05 中断恢复(已合并,PR #6)
 
 - **实例锁**:`tmp/hunt.lock`(mkdir 原子抢锁 + pid 记录),同目录双开第二个实例直接退出;持锁进程已死则自清重抢。双开会互踩 `tmp/round`、ledger 基线与守卫,此前无防护。
 - **启动补发布**:当日报告已存在时,先跑幂等的 `./publish.sh` 再退。堵住"report 写完、publish 被中断"后重启直接 break、报告永久滞留本地的缺口。

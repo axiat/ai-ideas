@@ -20,7 +20,7 @@
 
 入口层:
 
-- `hunt.md` — 主动挂机,`hunt.sh` 驱动的多进程流水线,循环到 1 个全票 Strong Accept
+- `hunt.md` — 主动挂机,`hunt.sh` 驱动的多进程流水线,循环到当日累计 `SA_TARGET`(默认 1)个全票 Strong Accept
 - `trigger.md` — 每周定时 cloud routine("Weekly Embodied Idea Scout",远端 prompt 与此同步;单 agent,见下方 caveat)
 
 产出层:
@@ -30,7 +30,7 @@
 
 ## 用法
 
-**主动找 idea(挂机)**:`./hunt.sh`。每轮把一批 idea 走完「生成 → 预筛(杀 direct hit)→ 对抗式深查重 → 打分 ×N」,脚本自身聚合 verdict(取最低票,Strong Accept 需全票)、写 ledger(含查重 overlap 列)、发报告。首轮就出全票 SA 则发布即退;异常退出默认冷却 150 分钟;前段空产出或查重结构不达标先短重试,连续 `EMPTY_MAX` 次后才升级长冷却;正常无 SA 默认随机 1-8 分钟后重试——状态在 `ledger.tsv`,新会话不重做已评审的 idea。中断随时安全:`tmp/hunt.lock` 实例锁防同目录双开(陈旧锁自清);重启时当日报告已存在则先跑幂等的 `publish.sh` 补发布再退;中断遗留的前段产物过机械门槛则首轮自动续跑(跳过生成/查重,裁判一律重跑,`RESUME_FRONT=0` 关闭)。
+**主动找 idea(挂机)**:`./hunt.sh`。每轮把一批 idea 走完「生成 → 预筛(杀 direct hit)→ 对抗式深查重 → 打分 ×N」,脚本自身聚合 verdict(取最低票,Strong Accept 需全票)、写 ledger(含查重 overlap 列)、发报告。当日 SA 累计达 `SA_TARGET`(默认 1;`0` 不设上限)则发布即退,达标轮未凑满目标则发布后继续攒(同日报告加 `-2`/`-3` 后缀,幂等追加进同一当日分支与 PR);异常退出默认冷却 150 分钟;前段空产出或查重结构不达标先短重试,连续 `EMPTY_MAX` 次后才升级长冷却;正常无 SA 默认随机 1-8 分钟后重试——状态在 `ledger.tsv`,新会话不重做已评审的 idea。中断随时安全:`tmp/hunt.lock` 实例锁防同目录双开(陈旧锁自清);重启按 ledger 当日 SA 计数判断,已达标先跑幂等的 `publish.sh` 补发布再退,未达标但已有当日报告则补发布后继续;中断遗留的前段产物过机械门槛则首轮自动续跑(跳过生成/预筛/查重,裁判一律重跑,`RESUME_FRONT=0` 关闭)。
 
 
 ```bash
@@ -59,10 +59,11 @@ REV_STAGGER_SEC=15 \
 #  前段续跑: RESUME_FRONT=1(0 关闭;遗留前段产物过门槛则首轮跳过生成/预筛/查重,verdict 永不续用)
 #  实例锁: tmp/hunt.lock,双开自动退出,持锁进程已死则自清重抢
 #  连续异常上限: MAX_FAILS=12
-#  有至少 1 个 Strong Accept: 写报告、发布 PR、退出
+#  达标轮: 写报告、发布 PR;当日 SA 累计达 SA_TARGET=1 退出
 
 
 REVIEWERS=5 ./hunt.sh     # 加严:5 位裁判,仍取最低票
+SA_TARGET=3 ./hunt.sh     # 当日攒满 3 个全票 SA 才停;SA_TARGET=0 不设上限,Ctrl-C 手动停
 ./hunt.sh 30              # 异常冷却改 30 分钟;正常无 SA 仍随机 1-8 分钟
 NO_HIT_SLEEP_MIN_LO=1 NO_HIT_SLEEP_MIN_HI=8 ./hunt.sh
 ALLOW_ZERO_NO_HIT_SLEEP=1 NO_HIT_SLEEP_MIN_LO=0 NO_HIT_SLEEP_MIN_HI=0 ./hunt.sh  # 测试用
