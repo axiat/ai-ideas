@@ -1,6 +1,24 @@
 # CHANGELOG
 
-## 2026-07-05 中断恢复(已合并,PR #6)
+## 2026-07-05 预筛 + 深查重 + 进化资格 + 裁判校准
+
+背景:当日 29 个 idea 全无 SA(21 AwR + 8 reject)。死因分布:8 个 reject 全为 F1"已被占据"(查重/裁判事后才发现);约七成 AwR 死因涉 novelty(封顶或"实读仅 3 篇→novelty 未证实");3 次进化全选了 novelty 封顶的父本再次封顶。结论:瓶颈在查重深度与进化父本选择,不在生成时长。落地五项:
+
+1. **预筛阶段**(`roles/prescreen.md` 新增,`hunt.sh` 生成与深查之间):便宜可错、只杀不保——只杀"单篇工作直接占据头条"的 direct hit,kill 必附占位链接与 ≥1 条 API 检索记录;被杀者由 orchestrator 立即按 reject 入账(overlap=high,防下轮重生成),存活取前 `SHORT_MAX`(3)个进深查,超额 keep 丢弃不入账,全灭走空产出短重试。shortlist/kill 台账由 bash 机械构建,agent 只给判定。主题门槛改查预筛前的发散全集(`ideas.all.tsv`)。
+2. **深查重**:`roles/research.md` 每 idea 实读 3-5 → **5-8 篇**、先 direct-hit 猎杀、新增必填「最强反例」行(单篇最近邻 + 差异是否够 clear-accept);机械门槛联动 `PRIOR_MIN_LINKS` 3→5、SA 硬门槛 `MIN_READ` 3→5——prompt 与机械地板同步,防 agent 只满足地板。
+3. **ledger 加 overlap 列**(6→7 列):聚合时从 priorwork「重叠判定」提取 high/medium/low 入账,进化父本资格由此机械可查;预筛杀的记 high。
+4. **进化/复查资格收紧**(`roles/generate.md`、`brainstorming_policy.md`、PROGRAM.md 不动项 6):进化只准选 verdict=accept-w-rev 且 overlap=low 且死因属实验设计类缺陷的行(novelty 封顶/已被占据的不修);查重薄弱型 AwR 走「复查」——原样重交补查重,同 story 至多一次,补完仍封顶永久放弃;两者共用每轮 1 个名额。另:最小否证实验必须点名最强基线、给样本量与预期效应(对着今天的高频 MAJOR 硬化)。
+5. **失败蒸馏扩容**(`roles/meta.md`):deathlist 三节化(致命模式/封顶模式/进化候选),触发计数从"仅 reject"改为 reject+AwR(今天主失败是 AwR,旧计数一直不触发,deathlist 从未产出过)。ledger 不再人工清理 reject 行——清了会饿死蒸馏与防重生成。
+
+**裁判校准 harness**(`calib/`):`run_panel.sh` 对对照 case 跑 N 位禁搜裁判(独立目录、min-vote,与 hunt 评审同构;禁搜是因为对照多为已发表工作,联网会变成"被自己占据"的假阴性;裁判怀疑对应已发表论文时只做泄漏标记不改判)。对照组:pos-robomme(ICML 2026 oral,benchmark 型,arXiv 2603.04639)、pos-meanflow(ICLR 2026 oral,method 型)+ 理想 priorwork(8 篇实读、low、编号全经 arXiv API 核验);neg-replai(头条被 RepLAI 2209.13583 直接占据,如实 high)。判读:阳性若给足理想证据仍无人投 SA → 瓶颈在 verdict 逻辑/聚合规则;阴性若不全票 reject → 面板放水。
+
+当日跑完(结果详见 `calib/results-2026-07-05.md`):阴性 3/3 reject(面板没坏);两个阳性均 3/3 accept-w-rev、六票零 SA。零 SA 票的结构性来源是两条评审条款——生命周期可行性按 idea 全量 scope 而非最小否证实验评、"已知机制搬新域默认不到 SA";在此之下聚合规则改 2/3 也不会触发。另:两份手工理想 priorwork 各漏了一个真实近邻(MIKASA-Robo、MP1),被裁判凭训练数据点名——深查重是对的投资方向。
+
+### 校准后条款修正(A+B,operator 拍板)
+
+- **A 可行性收窄**:lifecycle/feasibility 的评估对象改为「最小否证实验 + 首篇论文的合理裁剪(phase-1 scope)」,不再按 idea 最大愿景评;愿景全量超出单人算力不单独计 MAJOR。改动:`brainstorming_policy.md`、`roles/review.md`、`rubric.md` Step 6。
+- **B 机制迁移破例**:同时满足目标域零命中(只认 priorwork)、适配机制非平凡、信号落地即够 clear accept 三条件的机制迁移可给 SA,逐条点名证据、缺一仍封顶。改动:同上两处 + review.md SA 门槛条款。
+- 一致性修正:`PROGRAM.md` 不动项 4 与 `brainstorming_policy.md` 定向查重的篇数同步为 5-8;`ledger.tsv` 29 行历史行一次性 backfill 第 7 列 overlap=未知(schema 迁移,此后行行 7 列)。
 
 - **实例锁**:`tmp/hunt.lock`(mkdir 原子抢锁 + pid 记录),同目录双开第二个实例直接退出;持锁进程已死则自清重抢。双开会互踩 `tmp/round`、ledger 基线与守卫,此前无防护。
 - **启动补发布**:当日报告已存在时,先跑幂等的 `./publish.sh` 再退。堵住"report 写完、publish 被中断"后重启直接 break、报告永久滞留本地的缺口。

@@ -11,11 +11,12 @@
 
 角色层(人改,agent 按其执行,prompt 在 `roles/`):
 
-- `generate.md` — 只生成 idea,不查重、不打分;标注主题、附最小否证实验,可含至多 1 个对 accept-w-rev 的进化版
-- `research.md` — 对抗式查重,尽力证明每个 idea 已有人做过;须留 ≥1 条可复现的 arXiv/Semantic Scholar API 检索记录
+- `generate.md` — 只生成 idea,不查重、不打分;标注主题、附最小否证实验(点名最强基线);可含至多 1 个进化/复查版(父本限 overlap=low 的实验设计类 AwR / 查重薄弱型 AwR)
+- `prescreen.md` — 廉价预筛,只杀"单篇直接占据头条"的 direct hit(kill 必附链接),keep 不构成 novelty 结论;被杀者由 orchestrator 按 reject 入账
+- `research.md` — 对抗式深查重,先 direct-hit 猎杀,每个 idea 实读 5-8 篇、附"最强反例"行;须留 ≥1 条可复现的 arXiv/Semantic Scholar API 检索记录
 - `review.md` — 打分裁判,默认 Reject,跑多次取最低票;feasibility 只认最小否证实验
 - `report.md` — 纯组装报告,不改判
-- `meta.md` — 死因蒸馏,只读 ledger 拒因,归纳高频失败模式到 `tmp/deathlist.md` 供生成端规避
+- `meta.md` — 失败蒸馏,读 ledger 的 reject+AwR 行,归纳致命模式/封顶模式/进化候选到 `tmp/deathlist.md`
 
 入口层:
 
@@ -29,7 +30,7 @@
 
 ## 用法
 
-**主动找 idea(挂机)**:`./hunt.sh`。每轮把一批 idea 走完「生成 → 对抗式查重 → 打分 ×N」,脚本自身聚合 verdict(取最低票,Strong Accept 需全票)、写 ledger、发报告。首轮就出全票 SA 则发布即退;异常退出默认冷却 150 分钟;前段空产出或查重结构不达标先短重试,连续 `EMPTY_MAX` 次后才升级长冷却;正常无 SA 默认随机 1-8 分钟后重试——状态在 `ledger.tsv`,新会话不重做已评审的 idea。中断随时安全:`tmp/hunt.lock` 实例锁防同目录双开(陈旧锁自清);重启时当日报告已存在则先跑幂等的 `publish.sh` 补发布再退;中断遗留的前段产物过机械门槛则首轮自动续跑(跳过生成/查重,裁判一律重跑,`RESUME_FRONT=0` 关闭)。
+**主动找 idea(挂机)**:`./hunt.sh`。每轮把一批 idea 走完「生成 → 预筛(杀 direct hit)→ 对抗式深查重 → 打分 ×N」,脚本自身聚合 verdict(取最低票,Strong Accept 需全票)、写 ledger(含查重 overlap 列)、发报告。首轮就出全票 SA 则发布即退;异常退出默认冷却 150 分钟;前段空产出或查重结构不达标先短重试,连续 `EMPTY_MAX` 次后才升级长冷却;正常无 SA 默认随机 1-8 分钟后重试——状态在 `ledger.tsv`,新会话不重做已评审的 idea。中断随时安全:`tmp/hunt.lock` 实例锁防同目录双开(陈旧锁自清);重启时当日报告已存在则先跑幂等的 `publish.sh` 补发布再退;中断遗留的前段产物过机械门槛则首轮自动续跑(跳过生成/查重,裁判一律重跑,`RESUME_FRONT=0` 关闭)。
 
 
 ```bash
@@ -45,16 +46,17 @@ REV_STAGGER_SEC=15 \
 # 默认参数
 #  agent: claude -p
 #  裁判数: REVIEWERS=3
-#  SA 实读门槛: MIN_READ=3
+#  SA 实读门槛: MIN_READ=5
+#  预筛存活上限: SHORT_MAX=3(超额 keep 不深查、不入账;kill 立即按 reject 入账 overlap=high)
 #  异常冷却: 150 分钟
 #  正常跑完但无 SA: 随机等待 1-8 分钟后重试
-#  前段空产出上限: EMPTY_MAX=3
-#  查重链接门槛: PRIOR_MIN_LINKS=3
+#  前段空产出上限: EMPTY_MAX=3(预筛全灭同样走空产出短重试)
+#  查重链接门槛: PRIOR_MIN_LINKS=5
 #  查重 API 记录门槛: PRIOR_MIN_API=1(0 关闭;近邻链接与 API 记录分开计数)
-#  主题门槛: theme 须属 policy 词表,且 ≥THEME_MIN_LOW=2 个 idea 落在低存量主题(0 关闭分布校验)
-#  死因蒸馏: 每 META_EVERY=6 轮、拒行 ≥ META_MIN_REJECTS=5 时刷新 tmp/deathlist.md
+#  主题门槛: theme 须属 policy 词表,且 ≥THEME_MIN_LOW=2 个 idea 落在低存量主题(0 关闭分布校验;查的是预筛前的发散全集)
+#  失败蒸馏: 每 META_EVERY=6 轮、reject+AwR 行 ≥ META_MIN_REJECTS=5 时刷新 tmp/deathlist.md
 #  发散透镜: 每轮从 brainstorming_policy.md「发散透镜」小节随机抽一条注入生成 prompt
-#  前段续跑: RESUME_FRONT=1(0 关闭;遗留前段产物过门槛则首轮跳过生成/查重,verdict 永不续用)
+#  前段续跑: RESUME_FRONT=1(0 关闭;遗留前段产物过门槛则首轮跳过生成/预筛/查重,verdict 永不续用)
 #  实例锁: tmp/hunt.lock,双开自动退出,持锁进程已死则自清重抢
 #  连续异常上限: MAX_FAILS=12
 #  有至少 1 个 Strong Accept: 写报告、发布 PR、退出
@@ -90,7 +92,7 @@ AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m FRONT_CMD='./agy-worker.sh
 - 生成 / 查重 / 打分是独立进程,裁判看不到生成方自评,也不知道停机条件——没有灌水动机。裁判**并行 + 各用独立输入目录**,开跑时看不到彼此产出。
 - novelty 只认独立查重进程产出的证据,不认生成方"没人做"的自述。
 - verdict、ledger、publish 全由 `hunt.sh` 决定:每个 idea 取 N 位裁判**最低**票,SA 需全票,缺/坏票当 reject。
-- **SA 硬门槛**:全票 SA 还须过 orchestrator 校验——该 idea 有查重块、实读篇数 ≥ `MIN_READ`(默认 3)、附最小否证实验、每位裁判都写了完整评审;缺任一则硬降级 reject。
+- **SA 硬门槛**:全票 SA 还须过 orchestrator 校验——该 idea 有查重块、实读篇数 ≥ `MIN_READ`(默认 5)、附最小否证实验、每位裁判都写了完整评审;缺任一则硬降级 reject。
 - ledger 以 `tmp/ledger.good` 为单一可信基线,启动时取当前工作树 `ledger.tsv` 作为人工基线,之后只被 bash 聚合更新;任何 agent 擅改(含中途失败轮的残留)在下一轮开局被抹掉。
 - **中断续跑不放水**:重启只沿用过机械门槛的前段产物(它们本就是 agent 产物,由门槛+裁判消化);遗留的评审票据与评审块一律清除、裁判由 orchestrator 重新调起——防前段借崩溃伪造整轮票据绕过独立评审。
 - **分阶段守卫**:生成/查重/评审阶段禁写 `ideas/`(防伪造达标报告绕过全票),仅 report 阶段可写。

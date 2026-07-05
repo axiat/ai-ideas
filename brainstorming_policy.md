@@ -4,7 +4,7 @@
 
 - `research_context.md` 只是可选的灵感来源，**不是约束**。每轮生成的 idea 中至多 1-2 个与用户现有工作（DSRL / π0.5 栈）直接相关，其余必须跳出该栈，在 WorldModel / VLA 乃至具身智能更大范围内自由发散。
 - 优先级排序：纯 novelty（改变问题定义或基础机制，Transformer 级别的野心）＞ 问题发现 + 初步探究 ＞ 现有方向的增量改进。
-- 每轮可含至多 1 个**进化 idea**：对 ledger 近期 accept-w-rev 行的定向修复（点名修的缺陷），按全新 idea 走完整查重与评审，不继承旧票；reject 行不得进化复活。
+- 每轮可含至多 1 个**进化或复查 idea**（共用名额）。进化：只准选 verdict=accept-w-rev、overlap=low 且死因属实验设计类缺陷的行做定向修复（novelty 封顶/已被占据的不修，修不掉）；复查：查重薄弱型 AwR 原样重交补查重，同一 story 至多一次，补完仍封顶即永久放弃。均按全新 idea 走完整查重与评审，不继承旧票；reject 行不得复活。
 
 ## 主题词表（ledger 的 theme 列，生成时逐 idea 标注）
 
@@ -40,10 +40,11 @@ idea 不要求完整方法与实验设计，以下四种形态均合法：
 - **Accept with Revisions** ⇔ borderline accept：上限低，价值有限。
 - 评分权重：**novelty 与"是否已有人做过"是第一位的**；工程完整度可放宽（idea 允许非常初步），但 novelty 存疑必须定向查文献，不得凭印象放行。
 - fatal-flaws 硬门槛：审计表含 **≥2 个 MAJOR 不得定 Strong Accept**（至多 1 个 MAJOR；含 CRITICAL 直接 Reject and Pivot）。此规则与 rubric 的 severity escalation 一致，不得绕过。
-- 可行性基线：**单人执行，默认算力 1×H100 80G**；idea 足够有说服力时可按追加 8×A100 评估，但须在评审表注明该依赖。rubric 的 lifecycle/feasibility 步骤必须按此基线评估；单人在 idea 生命周期内做不完的，最高只给 Accept with Revisions。
+- 可行性基线：**单人执行，默认算力 1×H100 80G**；idea 足够有说服力时可按追加 8×A100 评估，但须在评审表注明该依赖。rubric 的 lifecycle/feasibility 步骤按此基线评估，**评估对象是最小否证实验与首篇论文的合理裁剪（phase-1 scope），不是 idea 的最大愿景**：否证实验或首篇裁剪在生命周期内单人做不完的，最高只给 Accept with Revisions；愿景全量超出单人算力不单独计 MAJOR（首篇裁剪由评审在表中写明）。
 - feasibility 只认 idea 自带的**最小否证实验**（数据 × 算力 × 预期信号，信号不出现即判死）：评它在上述基线下能否执行、能否真正证伪；字段缺失或实验不可执行按 MAJOR 计，封顶 Accept with Revisions。叙事性可行性说辞不作数。
+- 机制迁移（已知机制搬新域）默认不到 Strong Accept；**同时**满足三条件可破例给 SA：目标域零命中（以独立查重证据为准）、适配机制非平凡（新域约束迫使机制实质改动，不是换数据集重训）、信号落地即够 clear accept。三条件须逐条点名证据，缺一仍封顶。
 - 调研不设时长压力：宁慢勿浅，不得为尽快收束而压缩文献调研与对比分析。查重的差异论证必须基于实读相近工作的摘要与方法部分，不得仅凭标题或检索结果摘要下结论。
-- 任何候选 Strong Accept 在定级前必须做一轮**特别认真的定向查重**：多组检索词（问题表述、方法机制、相邻领域至少各一组，含 web search 与 arXiv），找最相近 3-5 篇，并覆盖工业界工具/博客等非论文占位。存在相似工作时，必须逐篇写明差异，且差异本身足以支撑 clear accept，否则降级。
+- 任何候选 Strong Accept 在定级前必须做一轮**特别认真的定向查重**：多组检索词（问题表述、方法机制、相邻领域至少各一组，含 web search 与 arXiv），找最相近 5-8 篇，并覆盖工业界工具/博客等非论文占位。存在相似工作时，必须逐篇写明差异，且差异本身足以支撑 clear accept，否则降级。
 
 ## 保留规则
 
