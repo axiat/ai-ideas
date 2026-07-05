@@ -13,7 +13,9 @@
 #            不合格存 .badN 重跑,同 key 累计 MAX_BAD 次拉黑(删 .badN 文件解除);
 #            研究员写新稿到 .new.md,校验通过才顶替旧草稿,烂稿不吞好稿;
 #   连发触发登录验证 → 与 agy-worker.sh 共享启动闸门戳(tmp/agy.last-launch),默认间隔 120s,
-#            主环将来加 agy 席也自动互相错峰。
+#            主环将来加 agy 席也自动互相错峰;
+#   配额用尽/登录失效 → 熔断:连续 3 次调起连产物文件都没写出(与内容烂的 .badN 分开计)视为
+#            agy 本体故障,冷却 COOLDOWN 秒再试,防超限后每 gap 秒不停调起危及账号。
 #
 # 每 key 状态全由文件派生,无状态文件,中断随便杀:
 #   <key>.md 成品(终态)  <key>.task.md 任务+历轮反馈  <key>.draft.md 现行草稿  <key>.judge.md 最新判定
@@ -23,6 +25,7 @@
 # 可调: AGY_MODEL(默认 gemini-3.5-flash-high) AGY_PRINT_TIMEOUT(默认 10m)
 #       AGY_SIDE_GAP_SEC(默认 120,0 关闭) AGY_SIDE_POLL_SEC(默认 600,0=队列全终态后退出)
 #       AGY_SIDE_MAX_BAD(默认 3) AGY_SIDE_MAX_ROUNDS(默认 3,收尾前允许的反馈轮数)
+#       AGY_SIDE_COOLDOWN_SEC(默认 3600,熔断后的冷却秒数;0=熔断直接退出)
 set -u
 repo="$(cd "$(dirname "$0")" && pwd)"
 model=${AGY_MODEL:-gemini-3.5-flash-high}
@@ -31,12 +34,13 @@ gap=${AGY_SIDE_GAP_SEC:-120}
 poll=${AGY_SIDE_POLL_SEC:-600}
 max_bad=${AGY_SIDE_MAX_BAD:-3}
 max_rounds=${AGY_SIDE_MAX_ROUNDS:-3}
+cooldown=${AGY_SIDE_COOLDOWN_SEC:-3600}
 outdir="$repo/tmp/agy-side/awr"
 sidelock="$repo/tmp/agy-side.lock"
 gate_stamp="$repo/tmp/agy.last-launch"
 gate_lock="$repo/tmp/agy.launch.lock"
-for v in "$gap" "$poll" "$max_bad" "$max_rounds"; do
-  case "$v" in ''|*[!0-9]*) echo "agy-side: GAP/POLL/MAX_BAD/MAX_ROUNDS 必须是非负整数: $v" >&2; exit 2 ;; esac
+for v in "$gap" "$poll" "$max_bad" "$max_rounds" "$cooldown"; do
+  case "$v" in ''|*[!0-9]*) echo "agy-side: GAP/POLL/MAX_BAD/MAX_ROUNDS/COOLDOWN 必须是非负整数: $v" >&2; exit 2 ;; esac
 done
 
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" | tee -a "$outdir/side.log"; }
@@ -77,6 +81,10 @@ gate() {
   rm -rf "$gate_lock"
 }
 
+# 熔断计数:连续调起连产物文件都没写出的次数。配额用尽/登录失效/断网时 agy 报错即退、
+# 不产文件,.badN(按 key 计内容烂)不涨,没有这层会每 gap 秒无限重试超限调起。
+nofile=0
+
 # $1=唯一允许写的文件 $2=prompt 正文 $3=原始输出日志。
 # agy 只看 tmp/agy-side 下的临时镜像;合格与否由外层机械校验决定,主仓库只接收指定输出文件。
 run_agy() {
@@ -101,6 +109,20 @@ ${prompt_in_sandbox}" < /dev/null >> "$logf" 2>&1 )
   rc=$?
   if [ -e "$target_in_sandbox" ]; then cp "$target_in_sandbox" "$target"; fi
   rm -rf "$sandbox"
+  if [ -e "$target" ]; then
+    nofile=0
+  else
+    nofile=$((nofile + 1))
+    if [ "$nofile" -ge 3 ]; then
+      if [ "$cooldown" -gt 0 ]; then
+        log "熔断: 连续 ${nofile} 次调起无产物(疑似配额用尽/登录失效/断网,rc=$rc,详见各 .agy.log),冷却 ${cooldown}s 再试"
+        sleep "$cooldown"; nofile=0
+      else
+        log "熔断: 连续 ${nofile} 次调起无产物(疑似配额用尽/登录失效/断网,rc=$rc,详见各 .agy.log),退出"
+        exit 3
+      fi
+    fi
+  fi
   return "$rc"
 }
 
@@ -136,7 +158,7 @@ finalize() {
 }
 
 cd "$repo" || { echo "agy-side: 无法进入仓库根 $repo" >&2; exit 1; }
-log "agy-side 启动: model=$model gap=${gap}s poll=${poll}s max_bad=$max_bad max_rounds=$max_rounds"
+log "agy-side 启动: model=$model gap=${gap}s poll=${poll}s max_bad=$max_bad max_rounds=$max_rounds cooldown=${cooldown}s"
 
 while :; do
   # 只信 bash 定谳基线(主环运行期间工作树 ledger.tsv 可能被 agent 篡改);快照后再遍历,避开读写窗口。
