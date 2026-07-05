@@ -25,7 +25,15 @@
 #   Level 1.5(agy 跑便宜前段,claude/codex 跑可信后段):
 #     FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
 #       # 前段用 agy:便宜、可错——错误 idea 由下游独立裁判 + SA 硬门槛毙掉,只会多重试几轮,不污染 verdict。
-#       # 后段(verdict/报告)与 publish 全走 claude/codex:可信、可并行。切勿让 agy 跑 review(3 并发认证会挂)或碰 publish(其 CLI sandbox 可读写 $HOME,不能当边界)。
+#       # 后段(verdict/报告)与 publish 全走 claude/codex:可信、可并行。agy 不碰 publish(其 CLI sandbox 可读写 $HOME,不能当边界)。
+#   REV_CMD_1..REV_CMD_N 逐席位覆盖裁判命令(不设回落 BACK_CMD);REV_STAGGER_SEC 裁判错峰起跑秒数(默认 0)。
+#   混合面板示例(1 codex + 1 claude + 1 agy):
+#     REV_CMD_1='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
+#     REV_CMD_2='claude -p' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
+#       # 取最低票 + SA 需全票 ⇒ 便宜裁判只能否决不能放水,SA 决定权仍在可信席位;至少留 1 席 claude/codex。
+#       # agy 全席并发(3 个)认证会挂;混席时 agy ≤1 且配 REV_STAGGER_SEC 错峰。
+#   前段空产出按"便宜可错"短重试:EMPTY_MAX 次内随机等 NO_HIT 区间,连续达 EMPTY_MAX 次才升级长睡(默认 3);
+#   PRIOR_MIN_LINKS 查重结构门槛,每个 idea 块须有 ≥N 条带链接近邻,不达标视同空产出重试(默认 3)。
 set -u
 cd "$(dirname "$0")"
 git config core.hooksPath .githooks   # 激活 pre-push 守卫:禁止直推 main
@@ -42,6 +50,9 @@ ALLOW_ZERO_NO_HIT_SLEEP=${ALLOW_ZERO_NO_HIT_SLEEP:-0}
 MAX_FAILS=${MAX_FAILS:-12}
 REVIEWERS=${REVIEWERS:-3}
 MIN_READ=${MIN_READ:-3}
+REV_STAGGER_SEC=${REV_STAGGER_SEC:-0}
+EMPTY_MAX=${EMPTY_MAX:-3}
+PRIOR_MIN_LINKS=${PRIOR_MIN_LINKS:-3}
 LOG=hunt.log
 RD=tmp/round
 LEDGER_GOOD=tmp/ledger.good
@@ -68,6 +79,9 @@ validate_sleep_config() {
     log "NO_HIT_SLEEP_MIN_LO 不能大于 NO_HIT_SLEEP_MIN_HI: ${NO_HIT_SLEEP_MIN_LO}-${NO_HIT_SLEEP_MIN_HI}"
     exit 2
   fi
+  is_uint "$REV_STAGGER_SEC" || { log "REV_STAGGER_SEC 必须是非负整数秒: $REV_STAGGER_SEC"; exit 2; }
+  is_uint "$EMPTY_MAX" && [ "$EMPTY_MAX" -ge 1 ] || { log "EMPTY_MAX 必须是 >=1 的整数: $EMPTY_MAX"; exit 2; }
+  is_uint "$PRIOR_MIN_LINKS" || { log "PRIOR_MIN_LINKS 必须是非负整数: $PRIOR_MIN_LINKS"; exit 2; }
 }
 
 sleep_minutes() {
@@ -142,6 +156,22 @@ fail_and_wait() {
   sleep_minutes "$FAIL_SLEEP_MIN"
 }
 
+# 前段(生成/查重)空产出:前段定位"便宜可错",EMPTY_MAX 次内走 NO_HIT 短随机重试;
+# 连续达 EMPTY_MAX 次(疑似认证挂了等真故障)才升级为 FAIL_SLEEP 长睡,防空转死循环。
+empty_and_wait() {
+  local m
+  empties=$((empties + 1))
+  if [ "$empties" -ge "$EMPTY_MAX" ]; then
+    log "前段连续 ${empties} 次空产出,疑似非偶发(认证/命令问题),升级长间隔重试"
+    empties=0
+    sleep_minutes "$FAIL_SLEEP_MIN"
+  else
+    m=$(random_no_hit_sleep_min)
+    log "前段空产出(连续第 ${empties}/${EMPTY_MAX} 次),短重试 ${m} 分钟"
+    sleep "$((m * 60))"
+  fi
+}
+
 rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) echo 0 ;; esac; }
 verdict_of() { case "$1" in 2) echo strong-accept ;; 1) echo accept-w-rev ;; *) echo reject ;; esac; }
 
@@ -161,6 +191,23 @@ sa_gate_ok() {
   return 0
 }
 
+# 查重结构门槛(前段机械校验,与 SA 门槛无关):每个 idea 在 priorwork.md 有块,
+# 且块内 ≥PRIOR_MIN_LINKS 条带链接的近邻工作。不达标视同空产出——裁判"novelty 只认 priorwork",
+# 查重太薄会让裁判在缺证据下瞎判,不如直接重跑前段。
+priorwork_ok() {
+  local id story block links
+  while IFS=$'\t' read -r id story; do
+    [ -z "$id" ] && continue
+    block=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/priorwork.md")
+    if [ -z "$block" ]; then log "查重门槛:priorwork.md 缺 ${id} 块"; return 1; fi
+    links=$(printf '%s\n' "$block" | grep -c 'https\?://' || true)
+    if [ "$links" -lt "$PRIOR_MIN_LINKS" ]; then
+      log "查重门槛:${id} 带链接近邻不足(${links} < ${PRIOR_MIN_LINKS})"; return 1
+    fi
+  done < "$RD/ideas.tsv"
+  return 0
+}
+
 mkdir -p "$(dirname "$LEDGER_GOOD")"                             # tmp/ 在干净 checkout 里不存在,先建(否则种子/重置全失败)
 validate_sleep_config
 # 启动瞬间的工作树 ledger 视为人工/operator 基线;后续阶段中 agent 的任何擅改都只会被重置回此基线。
@@ -176,6 +223,7 @@ fi
 trap 'cp "$LEDGER_GOOD" ledger.tsv 2>/dev/null || true' EXIT
 
 fails=0
+empties=0
 round=0
 while :; do
   today=$(date +%F)
@@ -195,24 +243,27 @@ while :; do
   if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
   if [ ! -s "$RD/ideas.tsv" ]; then
     log "生成阶段未产出 ideas.tsv,本轮作废重试"; fails=0
-    sleep_minutes "$FAIL_SLEEP_MIN"; continue
+    empty_and_wait; continue
   fi
 
   # 2) 对抗式查重(禁写 ideas/)
   run_stage "$FRONT_CMD" "读 roles/research.md,按其执行" research; rc=$?; guard 0
   if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
-  if [ ! -s "$RD/priorwork.md" ]; then
-    log "查重阶段未产出 priorwork.md,本轮作废重试"; fails=0
-    sleep_minutes "$FAIL_SLEEP_MIN"; continue
+  if [ ! -s "$RD/priorwork.md" ] || ! priorwork_ok; then
+    log "查重阶段未产出 priorwork.md 或结构不达标,本轮作废重试"; fails=0
+    empty_and_wait; continue
   fi
+  empties=0                                          # 前段两阶段产物齐备,空产出计数清零
 
   # 3) N 位裁判,并行 + 各自独立输入目录(开跑时看不到彼此产出)(F3);禁写 ideas/
   : > "$RD/rev_rc"; pids=()
   for r in $(seq 1 "$REVIEWERS"); do
     d="$RD/rev/$r"; mkdir -p "$d"
     cp "$RD/ideas.md" "$RD/priorwork.md" "$d/"
-    log "调起 [review#${r}] (并行,独立目录 ${d}): $BACK_CMD"
-    ( $BACK_CMD "读 roles/review.md,按其执行;输入只在 ${d}/(ideas.md 与 priorwork.md)+ 仓库根 rubric.md、brainstorming_policy.md;verdict 写 ${d}/verdict.tsv,完整评审写 ${d}/review.md" \
+    rev_cmd_var="REV_CMD_$r"; rev_cmd=${!rev_cmd_var:-$BACK_CMD}   # 混合面板:逐席位覆盖,不设回落 BACK_CMD
+    log "调起 [review#${r}] (并行,独立目录 ${d}): $rev_cmd"
+    ( if [ "$r" -gt 1 ] && [ "$REV_STAGGER_SEC" -gt 0 ]; then sleep "$(( (r - 1) * REV_STAGGER_SEC ))"; fi
+      $rev_cmd "读 roles/review.md,按其执行;输入只在 ${d}/(ideas.md 与 priorwork.md)+ 仓库根 rubric.md、brainstorming_policy.md;verdict 写 ${d}/verdict.tsv,完整评审写 ${d}/review.md" \
         >> "$RD/rev/${r}.log" 2>&1; printf '%s %s\n' "$r" "$?" >> "$RD/rev_rc" ) &
     pids+=("$!")
   done
