@@ -39,6 +39,8 @@
 #  SA 实读门槛: MIN_READ=3
 #  异常冷却: 150 分钟
 #  正常跑完但无 SA: 随机等待 1-8 分钟后重试
+#  前段空产出上限: EMPTY_MAX=3
+#  查重链接门槛: PRIOR_MIN_LINKS=3
 #  连续异常上限: MAX_FAILS=12
 #  有至少 1 个 Strong Accept: 写报告、发布 PR、退出
 
@@ -50,11 +52,15 @@ ALLOW_ZERO_NO_HIT_SLEEP=1 NO_HIT_SLEEP_MIN_LO=0 NO_HIT_SLEEP_MIN_HI=0 ./hunt.sh 
 AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
 
 # agy + claude:agy 只跑生成+查重;claude 跑打分+报告,publish 仍由 hunt.sh 调 publish.sh
-# agy 只可作 FRONT;放 BACK 会因 review 3 并发认证失败而炸
+# 不要把 3 个 reviewer 全交给 agy;并发认证会失败
 FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
 
 # agy + codex:agy 只跑生成+查重;codex 跑打分+报告
 FRONT_CMD='./agy-worker.sh' BACK_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
+
+# 混合 reviewer:每席可单独指定;保留至少 1 个可信席位,agy 席位错峰启动
+REV_CMD_1='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
+REV_CMD_2='claude -p' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
 
 # agy 前段可调,默认 AGY_MODEL=gemini-3.5-flash-high,AGY_PRINT_TIMEOUT=8m
 AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh

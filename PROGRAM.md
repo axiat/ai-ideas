@@ -12,15 +12,15 @@
 6. 生成前必读 `ledger.tsv`,新 idea 不得与任何已有行实质雷同(包括已拒的)。
 7. 角色分离(反串通):生成 / 查重 / 打分是互不共享 context 的独立进程,prompt 见 `roles/`。生成方不查重定性、不打分;裁判默认 Reject、互不通气、也不知道停机条件。
 8. 写入范围:agent 只允许写 `tmp/`(草稿区,gitignored)与 `ideas/`(仅报告角色);不得碰 `ledger.tsv` 及其它文件,不得运行 git/gh/publish。记账与发布由 orchestrator 负责,产出经 `./publish.sh` 走特性分支 + PR。
-9. 一轮 = 一批 idea(4-6 个)完整走完"生成 → 查重 → 打分 → 记账",不得半途丢弃未评审的 idea。
+9. 一轮 = 一批最终候选 idea(4-6 个)完整走完"生成 → 查重 → 打分 → 记账",不得半途丢弃已写入本轮产物的 idea。
 10. 循环期间不停下询问人、不请求确认;停机条件只由入口文件定义,未达标不得提前放水结束。
 
 ## 回路
 
 `hunt.sh` 按序调起独立进程,每轮:
 
-1. **生成**(`roles/generate.md`):读 policy 与 ledger,产出 4-6 个 idea 到 `tmp/round/`,遵守 policy 发散要求与四种合法形态,避开 ledger 已有行。
-2. **查重**(`roles/research.md`):对抗式定向查重,每个 idea 找最相近 3-5 篇实读摘要/方法,产出独立证据。
+1. **生成**(`roles/generate.md`):读 policy 与 ledger,先发散 10 个候选,再自筛出 4-6 个差异最大的 idea 到 `tmp/round/`,遵守 policy 发散要求与四种合法形态,避开 ledger 已有行和已饱和套路。
+2. **查重**(`roles/research.md`):对抗式定向查重,每个 idea 找最相近 3-5 篇实读摘要/方法,产出独立证据;每个 idea 块须有至少 3 条带链接近邻。
 3. **打分**(`roles/review.md`,跑 N 次):各裁判按 `rubric.md` 完整评审、用 policy 校准,默认 Reject,输出各自 verdict。
 4. **聚合记账**(orchestrator):每个 idea 取 N 位裁判最低票(SA 需全票),全部追加进 `ledger.tsv`。
 5. 有全票 Strong Accept → `roles/report.md` 组装报告到 `ideas/`,orchestrator 调 `./publish.sh` 发布,结束;否则下一轮(调研可增量补充)。
