@@ -32,12 +32,15 @@
 #   SIDE_CMD='claude -p --strict-mcp-config' ./awr-side.sh         # 两席全 claude(与 hunt.sh 同:不加载 MCP)
 #   SIDE_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral' ./awr-side.sh
 #       # codex 以沙箱镜像为 workspace,写限镜像;镜像无 .git,须 --skip-git-repo-check;--ephemeral 避免写会话
-# 注意:自定义命令不走 agy 启动闸门(闸门专治 agy 连发触发登录验证);模型/超时由命令
+# 注意:自定义命令不走 agy 启动闸门(闸门专治 agy 连发触发登录验证),但走随机节流(禁背靠背,
+#       默认调起间隔 1-10min 随机,见 SIDE_GAP_MIN/MAX_SEC,全后端一视同仁);模型/超时由命令
 #       自身携带(AGY_MODEL/AGY_PRINT_TIMEOUT 仅作用于内置 agy,claude/codex 无挂起兜底,
 #       与 hunt.sh 同);机械校验、.badN、熔断对所有后端一视同仁(产物末行仍须 AGY-DONE)。
 #
 # 可调: AGY_MODEL(默认 gemini-3.5-flash-high) AGY_PRINT_TIMEOUT(默认 10m,均仅内置 agy)
-#       SIDE_GAP_SEC(默认 120,0 关闭) SIDE_POLL_SEC(默认 600,0=队列全终态后退出)
+#       SIDE_GAP_SEC(默认 120,0 关闭;agy 启动闸门,仅内置 agy)
+#       SIDE_GAP_MIN_SEC/SIDE_GAP_MAX_SEC(默认 60/600,随机节流区间,禁背靠背,全后端;MAX=0 关闭)
+#       SIDE_POLL_SEC(默认 9000=150min,0=队列全终态后退出)
 #       SIDE_MAX_BAD(默认 3) SIDE_MAX_ROUNDS(默认 3,收尾前允许的反馈轮数)
 #       SIDE_COOLDOWN_SEC(默认 3600,熔断后的冷却秒数;0=熔断直接退出)
 set -u
@@ -48,7 +51,9 @@ side_cmd=${SIDE_CMD:-}                       # 空=内置 agy
 research_cmd=${SIDE_RESEARCH_CMD:-$side_cmd}
 judge_cmd=${SIDE_JUDGE_CMD:-$side_cmd}
 gap=${SIDE_GAP_SEC:-120}
-poll=${SIDE_POLL_SEC:-600}
+gap_min=${SIDE_GAP_MIN_SEC:-60}              # 随机节流下限(禁背靠背,全后端)
+gap_max=${SIDE_GAP_MAX_SEC:-600}             # 随机节流上限;0 关闭随机节流
+poll=${SIDE_POLL_SEC:-9000}                  # 队列全终态后重扫间隔,默认 150min
 max_bad=${SIDE_MAX_BAD:-3}
 max_rounds=${SIDE_MAX_ROUNDS:-3}
 cooldown=${SIDE_COOLDOWN_SEC:-3600}
@@ -57,9 +62,10 @@ outdir="$statedir/awr"
 sidelock="$repo/tmp/awr-side.lock"
 gate_stamp="$repo/tmp/agy.last-launch"
 gate_lock="$repo/tmp/agy.launch.lock"
-for v in "$gap" "$poll" "$max_bad" "$max_rounds" "$cooldown"; do
-  case "$v" in ''|*[!0-9]*) echo "awr-side: GAP/POLL/MAX_BAD/MAX_ROUNDS/COOLDOWN 必须是非负整数: $v" >&2; exit 2 ;; esac
+for v in "$gap" "$gap_min" "$gap_max" "$poll" "$max_bad" "$max_rounds" "$cooldown"; do
+  case "$v" in ''|*[!0-9]*) echo "awr-side: GAP/GAP_MIN/GAP_MAX/POLL/MAX_BAD/MAX_ROUNDS/COOLDOWN 必须是非负整数: $v" >&2; exit 2 ;; esac
 done
+[ "$gap_max" -eq 0 ] || [ "$gap_min" -le "$gap_max" ] || { echo "awr-side: SIDE_GAP_MIN_SEC($gap_min) 不能大于 SIDE_GAP_MAX_SEC($gap_max)" >&2; exit 2; }
 
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" | tee -a "$outdir/side.log"; }
 
@@ -103,6 +109,20 @@ gate() {
   rm -rf "$gate_lock"
 }
 
+# 随机节流:禁止背靠背调起。每次调起(本进程首次、及每次空闲重扫后首次除外)前睡 gap_min..gap_max
+# 的随机秒数,制造调起间 1-10min(默认)的间隔。与 agy 启动闸门正交——闸门治 agy 连发登录验证并与
+# agy-worker 错峰(仅 agy),本节流对所有后端一视同仁(claude/codex 也慢下来)。gap_max=0 关闭。
+throttle_first=1
+throttle() {
+  [ "$gap_max" -gt 0 ] || return 0
+  if [ "$throttle_first" = 1 ]; then throttle_first=0; return 0; fi
+  local span r
+  span=$((gap_max - gap_min + 1))
+  r=$((gap_min + RANDOM % span))
+  log "节流: 距上次调起随机等待 ${r}s(禁背靠背)"
+  sleep "$r"
+}
+
 # 熔断计数:连续调起连产物文件都没写出的次数(各后端合计)。配额用尽/登录失效/断网时 agent
 # 报错即退、不产文件,.badN(按 key 计内容烂)不涨,没有这层会无限重试超限调起。
 nofile=0
@@ -112,7 +132,8 @@ nofile=0
 # 启动闸门只罩 agy 后端(专治 agy 连发触发登录验证),claude/codex 直起、不动共享戳。
 run_agent() {
   local cmd=$1 target=$2 prompt=$3 logf=$4 sandbox rel target_in_sandbox prompt_in_sandbox pre rc
-  case "${cmd%% *}" in ''|agy|*/agy) gate ;; esac   # agy-worker.sh 自带同一闸门,不重复闸
+  throttle                                          # 随机 1-10min 节流,禁背靠背(全后端)
+  case "${cmd%% *}" in ''|agy|*/agy) gate ;; esac   # agy 另加启动闸门(治连发登录验证 + 与 agy-worker 错峰)
   sandbox=$(mktemp -d "$statedir/run.XXXXXX") || return 1
   rel=${target#"$repo"/}
   target_in_sandbox="$sandbox/$rel"
@@ -188,7 +209,7 @@ finalize() {
 }
 
 cd "$repo" || { echo "awr-side: 无法进入仓库根 $repo" >&2; exit 1; }
-log "awr-side 启动: 研究=${research_cmd:-agy(内置,$model)} 裁判=${judge_cmd:-agy(内置,$model)} gap=${gap}s poll=${poll}s max_bad=$max_bad max_rounds=$max_rounds cooldown=${cooldown}s"
+log "awr-side 启动: 研究=${research_cmd:-agy(内置,$model)} 裁判=${judge_cmd:-agy(内置,$model)} throttle=${gap_min}-${gap_max}s gap=${gap}s poll=${poll}s max_bad=$max_bad max_rounds=$max_rounds cooldown=${cooldown}s"
 
 while :; do
   # 只信 bash 定谳基线(主环运行期间工作树 ledger.tsv 可能被 agent 篡改);快照后再遍历,避开读写窗口。
@@ -250,7 +271,7 @@ while :; do
   done 3< "$snap"
   if [ "$pending" = 0 ]; then
     [ "$poll" -gt 0 ] || { log "队列全终态,单遍模式退出"; exit 0; }
-    log "队列全终态,${poll}s 后重扫"; sleep "$poll"
+    log "队列全终态,${poll}s 后重扫"; sleep "$poll"; throttle_first=1
   elif [ "$did" = 0 ] && [ "$poll" -eq 0 ]; then
     log "剩余任务本遍全部作废,单遍模式退出"; exit 1
   fi
