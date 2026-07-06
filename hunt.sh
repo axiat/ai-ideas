@@ -20,18 +20,18 @@
 #   SA_TARGET 当日 Strong Accept 目标数,累计达标才停(默认 1,行为同旧版;0=不设上限一直攒,Ctrl-C 手动停);
 #     >1 或 0 时同日多份报告按 roles/report.md 加 -2/-3 后缀,publish.sh 幂等追加进同一当日分支与 PR;
 #   AGENT_CMD 指定 agent CLI(prompt 作为最后一个参数传入),例:
-#     AGENT_CMD='claude -p' ./hunt.sh              # 默认;权限走 .claude/settings.json allowlist
+#     AGENT_CMD='claude -p --strict-mcp-config' ./hunt.sh   # 默认;权限走 .claude/settings.json allowlist
 #     AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
 #       # OS sandbox 写限本仓库;approval never + 放行网络(publish.sh 的 push/gh 需联网)。codex exec 不吃 -a,须用 -c approval_policy=
 #   FRONT_CMD 覆盖前段(生成+查重)、BACK_CMD 覆盖后段(打分+报告);二者都默认回落到 AGENT_CMD,不设则行为与原来逐字节一致。
 #   Level 1.5(agy 跑便宜前段,claude/codex 跑可信后段):
-#     FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
+#     FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p --strict-mcp-config' ./hunt.sh
 #       # 前段用 agy:便宜、可错——错误 idea 由下游独立裁判 + SA 硬门槛毙掉,只会多重试几轮,不污染 verdict。
 #       # 后段(verdict/报告)与 publish 全走 claude/codex:可信、可并行。agy 不碰 publish(其 CLI sandbox 可读写 $HOME,不能当边界)。
 #   REV_CMD_1..REV_CMD_N 逐席位覆盖裁判命令(不设回落 BACK_CMD);REV_STAGGER_SEC 裁判错峰起跑秒数(默认 0)。
 #   混合面板示例(1 codex + 1 claude + 1 agy):
 #     REV_CMD_1='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
-#     REV_CMD_2='claude -p' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
+#     REV_CMD_2='claude -p --strict-mcp-config' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
 #       # 取最低票 + SA 需全票 ⇒ 便宜裁判只能否决不能放水,SA 决定权仍在可信席位;至少留 1 席 claude/codex。
 #       # agy 快速重复调起会触发登录验证;agy-worker.sh 内置启动闸门(AGY_LAUNCH_GAP_SEC,默认 60s)
 #       # 自动错峰所有 agy 席位,REV_STAGGER_SEC 可再减少闸门排队。仍不要把全部裁判席交给 agy(须留可信席位)。
@@ -57,7 +57,7 @@ set -u
 cd "$(dirname "$0")"
 git config core.hooksPath .githooks   # 激活 pre-push 守卫:禁止直推 main
 
-AGENT_CMD=${AGENT_CMD:-claude -p}
+AGENT_CMD=${AGENT_CMD:-claude -p --strict-mcp-config}
 # 分段 agent:前段(生成+查重)便宜且可错,可换 agy;后段(打分+报告)决定 verdict 与发布产物,须可信(claude/codex)。
 # 两者默认回落 AGENT_CMD——都不设时行为与原来完全一致。
 FRONT_CMD=${FRONT_CMD:-$AGENT_CMD}
