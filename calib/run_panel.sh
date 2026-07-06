@@ -5,7 +5,7 @@
 #   2. 不写 ledger、不发布,结果只打印 + 留在 tmp/calib/ 供人工核对。
 #
 # 用法: ./calib/run_panel.sh calib/cases/<case> [裁判数,默认 3]
-#   PANEL_CMD 覆盖裁判命令(默认 'claude -p');结果目录 tmp/calib/<case名>/rev/N
+#   PANEL_CMD 覆盖裁判命令(默认 'claude -p --strict-mcp-config',不带任何用户级 MCP);结果目录 tmp/calib/<case名>/rev/N
 #
 # 判读:
 #   阳性对照(已知 oral/spotlight 的投稿前形态 + 理想 priorwork)——期望 min-vote ≥ accept-w-rev,
@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 
 CASE=${1:?用法: ./calib/run_panel.sh calib/cases/<case> [裁判数]}
 REVIEWERS=${2:-3}
-PANEL_CMD=${PANEL_CMD:-claude -p}
+PANEL_CMD=${PANEL_CMD:-claude -p --strict-mcp-config}
 name=$(basename "$CASE")
 OUT="tmp/calib/$name"
 
