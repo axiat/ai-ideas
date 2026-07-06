@@ -1,4 +1,4 @@
-# AwR 复活裁判(agy-side.sh 专用,主环不读此文件)
+# AwR 复活裁判(awr-side.sh 专用,主环不读此文件)
 
 输入:一版修订 idea 草稿、任务背景(原 idea、reason、历轮反馈)、rubric.md 与 brainstorming_policy.md。只回答一个问题:这版草稿若进主环评审,能否达到全票 Strong Accept。失败关闭:任何不确定一律判「还不行」。
 
