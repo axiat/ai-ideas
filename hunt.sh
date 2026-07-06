@@ -42,6 +42,8 @@
 #   PRIOR_MIN_LINKS 查重结构门槛,每个 idea 块须有 ≥N 条带链接近邻,不达标视同空产出重试(默认 5);
 #   PRIOR_MIN_API 查重结构门槛之二,每个 idea 块须有 ≥N 条结构化 API 检索记录(arXiv/Semantic Scholar query URL),
 #     0 关闭(默认 1)——API 召回可复现、可审计,判定仍靠实读;近邻链接与 API 记录分开计数,互不充数;
+#   AXIOM_MIN_CRACKS 删承重假设形态门槛(默认 2):生成块自报裂缝证据 URL 行数、查重块核验行数,
+#     以及 SA 硬门槛时「核验:相符」行数,均须 ≥N;生成全集另须「删公理尝试」标记行(成 I<n> 或 未成+卡点);
 #   THEME_MIN_LOW 主题门槛:本轮须有 ≥N 个 idea 落在 ledger 存量最少的三个主题(并列一并计入)内,
 #     0 关闭分布校验(默认 2);theme 必须属 policy 主题词表,词表解析不出则跳过整项校验;
 #   META_EVERY 每 N 轮做一次失败蒸馏(roles/meta.md → tmp/deathlist.md,默认 6),
@@ -74,6 +76,7 @@ PRIOR_MIN_LINKS=${PRIOR_MIN_LINKS:-5}
 PRIOR_MIN_API=${PRIOR_MIN_API:-1}
 SHORT_MAX=${SHORT_MAX:-3}
 THEME_MIN_LOW=${THEME_MIN_LOW:-2}
+AXIOM_MIN_CRACKS=${AXIOM_MIN_CRACKS:-2}
 META_EVERY=${META_EVERY:-6}
 META_MIN_REJECTS=${META_MIN_REJECTS:-5}
 RESUME_FRONT=${RESUME_FRONT:-1}
@@ -111,6 +114,7 @@ validate_sleep_config() {
   is_uint "$PRIOR_MIN_API" || { log "PRIOR_MIN_API 必须是非负整数: $PRIOR_MIN_API"; exit 2; }
   is_uint "$SHORT_MAX" && [ "$SHORT_MAX" -ge 1 ] || { log "SHORT_MAX 必须是 >=1 的整数: $SHORT_MAX"; exit 2; }
   is_uint "$THEME_MIN_LOW" || { log "THEME_MIN_LOW 必须是非负整数: $THEME_MIN_LOW"; exit 2; }
+  is_uint "$AXIOM_MIN_CRACKS" && [ "$AXIOM_MIN_CRACKS" -ge 1 ] || { log "AXIOM_MIN_CRACKS 必须是 >=1 的整数: $AXIOM_MIN_CRACKS"; exit 2; }
   is_uint "$META_EVERY" && [ "$META_EVERY" -ge 1 ] || { log "META_EVERY 必须是 >=1 的整数: $META_EVERY"; exit 2; }
   is_uint "$META_MIN_REJECTS" || { log "META_MIN_REJECTS 必须是非负整数: $META_MIN_REJECTS"; exit 2; }
   is_uint "$SA_TARGET" || { log "SA_TARGET 必须是非负整数(0=不设上限): $SA_TARGET"; exit 2; }
@@ -247,6 +251,11 @@ sa_gate_ok() {
   for r in $(seq 1 "$REVIEWERS"); do
     grep -qE "^##[[:space:]]+${id}([[:space:]]|$)" "$RD/rev/$r/review.md" 2>/dev/null || return 1
   done
+  # 删承重假设形态:独立查重实读核验的「相符」行须 ≥AXIOM_MIN_CRACKS(裂缝确属实,防话术合规蹭 SA)
+  if is_axiom_idea "$id" "$RD/ideas.md"; then
+    n=$(printf '%s\n' "$block" | grep -cE '核验[::][[:space:]]*相符' || true)
+    [ "$n" -ge "$AXIOM_MIN_CRACKS" ] || return 1
+  fi
   return 0
 }
 
@@ -345,6 +354,68 @@ prescreen_ok() {
   return 0
 }
 
+# 删承重假设形态(机械校验,语义真伪由查重核验与裁判把关):
+# - 生成全集须带「删公理尝试」标记行(ideas.md 首个 ## 之前):成 I<n> 或 未成——一句话候选与卡点。
+#   配额落在 10 个原料候选;未成标记不是 idea、不进 ideas.tsv,自然不入 ledger。
+# - 形态含「删承重假设」的每块须齐三个专属字段行 + 裂缝证据 ≥AXIOM_MIN_CRACKS 条带 URL(自报待核验);
+#   第五字段复用「最小否证实验」行,由 SA 硬门槛与裁判把关。
+is_axiom_idea() {   # $1=id $2=ideas.md 路径
+  awk -v id="$1" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$2" 2>/dev/null \
+    | grep -q '^形态[::].*删承重假设'
+}
+axiom_ok() {        # $1=ideas.md $2=ideas.tsv $3=是否要求标记行(1/0;续跑的 shortlist 无标记行)
+  local md=$1 tsv=$2 need_marker=${3:-1} marker m_id id rest block field val urls
+  if [ "$need_marker" = "1" ]; then
+    marker=$(grep -m1 '^删公理尝试[::]' "$md" || true)
+    if [ -z "$marker" ]; then log "删公理门槛:缺「删公理尝试:」标记行(成 I<n> 或 未成+卡点)"; return 1; fi
+    if printf '%s' "$marker" | grep -q '未成'; then
+      val=${marker#*未成}
+      if [ "$(printf '%s' "$val" | wc -c | tr -d ' ')" -lt 30 ]; then
+        log "删公理门槛:未成标记须附一句话候选与卡在哪个字段"; return 1
+      fi
+    else
+      m_id=$(printf '%s' "$marker" | grep -oE 'I[0-9]+' | head -1)
+      if [ -z "$m_id" ] || ! is_axiom_idea "$m_id" "$md"; then
+        log "删公理门槛:成标记未点名有效的删承重假设块(${m_id:-无 id})"; return 1
+      fi
+    fi
+  fi
+  while IFS=$'\t' read -r id rest; do
+    [ -z "$id" ] && continue
+    is_axiom_idea "$id" "$md" || continue
+    block=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$md")
+    for field in 删哪条承重假设 为何现在能删 'forcing constraint'; do
+      val=$(printf '%s\n' "$block" | grep -m1 "^${field}[::]" | sed -E "s/^${field}[::][[:space:]]*//")
+      if [ "$(printf '%s' "$val" | wc -c | tr -d ' ')" -lt 12 ]; then
+        log "删公理门槛:${id} 字段「${field}」缺失或空洞"; return 1
+      fi
+    done
+    urls=$(printf '%s\n' "$block" | grep -c '^裂缝证据[::].*https\?://' || true)
+    if [ "$urls" -lt "$AXIOM_MIN_CRACKS" ]; then
+      log "删公理门槛:${id} 裂缝证据带 URL 行不足(${urls} < ${AXIOM_MIN_CRACKS})"; return 1
+    fi
+  done < "$tsv"
+  return 0
+}
+# 查重侧:删承重假设块须有「裂缝证据核验」节,核验行(相符/部分/不符/不可达)≥AXIOM_MIN_CRACKS。
+# 这里只锁结构与核验存在性;「相符」条数到 SA 硬门槛才要求,不符/不可达如实记录即合规。
+cracks_ok() {
+  local id rest block n
+  while IFS=$'\t' read -r id rest; do
+    [ -z "$id" ] && continue
+    is_axiom_idea "$id" "$RD/ideas.md" || continue
+    block=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/priorwork.md")
+    if ! printf '%s\n' "$block" | grep -q '裂缝证据核验'; then
+      log "查重门槛:${id} 缺「裂缝证据核验」节"; return 1
+    fi
+    n=$(printf '%s\n' "$block" | grep -cE '核验[::][[:space:]]*(相符|部分|不符|不可达)' || true)
+    if [ "$n" -lt "$AXIOM_MIN_CRACKS" ]; then
+      log "查重门槛:${id} 裂缝核验行不足(${n} < ${AXIOM_MIN_CRACKS})"; return 1
+    fi
+  done < "$RD/ideas.tsv"
+  return 0
+}
+
 mkdir -p "$(dirname "$LEDGER_GOOD")"                             # tmp/ 在干净 checkout 里不存在,先建(否则种子/重置全失败)
 validate_sleep_config
 if [ "$SA_TARGET" -gt 0 ]; then TARGET_DESC="$SA_TARGET"; else TARGET_DESC="∞(不设上限)"; fi
@@ -382,7 +453,7 @@ if [ "$RESUME_FRONT" = "1" ] && [ -s "$RD/ideas.tsv" ] && [ -s "$RD/ideas.md" ] 
   # 主题门槛查发散全集(ideas.all.tsv,预筛前的 4-6 个);老格式遗留(无 all 文件)退回查 ideas.tsv
   themes_src="$RD/ideas.tsv"
   [ -s "$RD/ideas.all.tsv" ] && themes_src="$RD/ideas.all.tsv"
-  if themes_ok "$themes_src" && priorwork_ok; then
+  if themes_ok "$themes_src" && axiom_ok "$RD/ideas.md" "$RD/ideas.tsv" 0 && priorwork_ok && cracks_ok; then
     resume_front=1
     log "检测到中断遗留的前段产物且过机械门槛,首轮续跑(跳过生成/预筛/查重,裁判照常重跑)"
   else
@@ -454,8 +525,8 @@ while :; do
     fi
     run_stage "$FRONT_CMD" "$gen_prompt" generate; rc=$?; guard 0
     if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
-    if [ ! -s "$RD/ideas.tsv" ] || ! themes_ok; then
-      log "生成阶段未产出 ideas.tsv 或主题结构不达标,本轮作废重试"; fails=0
+    if [ ! -s "$RD/ideas.tsv" ] || ! themes_ok || ! axiom_ok "$RD/ideas.md" "$RD/ideas.tsv" 1; then
+      log "生成阶段未产出 ideas.tsv 或主题/删公理结构不达标,本轮作废重试"; fails=0
       empty_and_wait; continue
     fi
 
@@ -508,8 +579,8 @@ while :; do
     # 2) 对抗式深查重(禁写 ideas/;只查预筛存活的 shortlist,每个 idea 5-8 篇实读)
     run_stage "$FRONT_CMD" "读 roles/research.md,按其执行" research; rc=$?; guard 0
     if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
-    if [ ! -s "$RD/priorwork.md" ] || ! priorwork_ok; then
-      log "查重阶段未产出 priorwork.md 或结构不达标,本轮作废重试"; fails=0
+    if [ ! -s "$RD/priorwork.md" ] || ! priorwork_ok || ! cracks_ok; then
+      log "查重阶段未产出 priorwork.md 或结构(含裂缝核验)不达标,本轮作废重试"; fails=0
       empty_and_wait; continue
     fi
     empties=0                                        # 前段两阶段产物齐备,空产出计数清零
@@ -549,7 +620,7 @@ while :; do
       [ -z "$reason" ] && reason=$rs
     done
     if [ "$min" -eq 2 ] && ! sa_gate_ok "$id"; then
-      min=0; reason="全票 SA 但硬门槛不达标(实读<${MIN_READ}、缺查重块、缺最小否证实验或无完整评审),orchestrator 硬降级"
+      min=0; reason="全票 SA 但硬门槛不达标(实读<${MIN_READ}、缺查重块、缺最小否证实验、无完整评审或删公理裂缝核验相符不足),orchestrator 硬降级"
       log "SA 硬门槛未过,${id} 降级 reject"
     fi
     verdict=$(verdict_of "$min")
