@@ -1,13 +1,13 @@
 # CHANGELOG
 
-## 2026-07-06 删承重假设通道:第 5 形态 + 裂缝核验 + 窄 break-glass
+## 2026-07-06 删承重假设通道:第 5 形态 + 裂缝核验 + 窄 break-glass(已合并,PR #13)
 
 背景:ledger 51 AwR / 18 reject / 0 SA,且 07-05 校准证明真 oral 素材在旧条款下也拿不到 SA 票——生成端只产范式内 probe(天然 AwR 形态),评审端又把这一类封顶,两端严丝合缝。SA 级 idea 的共性(Transformer 原型):删一条范式承重假设 × 外部约束逼出 × 便宜决定性否证实验。据此开一条窄而硬的证明路径,全链路落地:
 
 1. **第 5 形态「删承重假设」**(`brainstorming_policy.md`):结构化字段——删哪条承重假设 / 为何现在能删 / forcing constraint / 裂缝证据(≥2 行带 URL,待核验自报)/ 最小否证实验加严为须能一击杀死赌注。发散要求加删公理配额:10 个原料候选中至少尝试 1 个,进不进自筛后的 4-6 个只看质量;未成写标记行(带一句话候选与卡点)不入 ledger,宁缺勿造。
 2. **裂缝核验走查重管线**(`roles/research.md`):裁判 novelty 只认 priorwork(`roles/review.md` 铁律),自报裂缝留在 ideas.md 制度性无效;查重进程对该形态逐条实读核验 URL(判定词:相符/部分/不符/不可达,只记事实不评说服力),在 priorwork 块写「裂缝证据核验」节。
 3. **第二条 break-glass**(`roles/review.md` + policy 评审校准):「赌注未经验证」本身不计 MAJOR(前提:否证实验便宜且决定性);**同时**满足四条件可 SA——头条零命中 overlap=low / 裂缝核验 ≥2 条相符 / forcing constraint 为明确外部压力 / 否证实验 1×H100 可执行可杀死。不豁免任何既有硬门(direct-hit、CRITICAL、≥2 MAJOR、查重薄弱、缺否证实验);五字段缺失或核验不符 → 视为话术合规按普通形态从严。
-4. **hunt.sh 机械化**:新增 `AXIOM_MIN_CRACKS`(默认 2)与 `is_axiom_idea`/`axiom_ok`/`cracks_ok` 三校验,接入生成后、查重后、resume、SA 硬门槛四个挂点(SA 另须核验「相符」≥2,防话术蹭全票);标记行放 ideas.md 首个 `##` 之前,按块解析的下游天然忽略。夹具单测 17/17。`trigger.md`(weekly 自律版)、`PROGRAM.md`、`README.md` 同步;**改了 trigger.md,远端 weekly routine 需手动同步**。
+4. **hunt.sh 机械化**:新增 `AXIOM_MIN_CRACKS`(默认 2)与 `is_axiom_idea`/`axiom_ok`/`cracks_ok` 三校验,接入生成后、查重后、resume、SA 硬门槛四个挂点(SA 另须核验「相符」≥2,防话术蹭全票);标记行放 ideas.md 首个 `##` 之前,按块解析的下游天然忽略。夹具单测 17/17。`trigger.md`(weekly 自律版)、`PROGRAM.md`、`README.md` 同步;trigger.md 有改动,远端 weekly routine 已于 2026-07-06 手动同步。
 5. **calib 双侧验证**(详见 `calib/results-2026-07-06.md`):`neg-axiom-cosplay`(话术阴性:五字段结构合规、真 URL 假主张、核验全不符、头条被 Diffusion Policy 基线表覆盖)3/3 reject,三票独立命中全部设计雷点;`pos-axiom-adam`(形态探针,ICML 2026 oral 2602.07729「Do We Need Adam?」投稿前形态,LLM 域越域注记)3/3 SA——校准史首个 min-vote SA,逐票点名四条件、无人给「未验证」记 MAJOR、无一票因越域拒绝。同一条款话术关、真货开,判别落在证据(核验相符与否)而非修辞;对照 07-05 v2 真 oral 仅 2/6 单票 SA,佐证当时"剩余封顶在材料内证据不足"的判读——五字段随材料交裁判后直接全票。具身域正式阳性待 RSS 2026(7/13-17 悉尼)奖项揭晓后选定,选取标准、oral 金标来源与判读表见 `calib/README.md`。
 
 ## 2026-07-05 AwR 复活 sidecar(直接提交 main)
