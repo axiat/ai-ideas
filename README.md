@@ -45,7 +45,7 @@ REV_STAGGER_SEC=15 \
 
 ./hunt.sh                 
 # 默认参数
-#  agent: claude -p
+#  agent: claude -p --strict-mcp-config(零 MCP:不带用户级 lark/连接器,省启动与健康检查,凭据不进无关进程)
 #  裁判数: REVIEWERS=3
 #  SA 实读门槛: MIN_READ=5
 #  预筛存活上限: SHORT_MAX=3(超额 keep 不深查、不入账;kill 立即按 reject 入账 overlap=high)
@@ -72,18 +72,18 @@ AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.ne
 
 # agy + claude:agy 只跑生成+查重;claude 跑打分+报告,publish 仍由 hunt.sh 调 publish.sh
 # 不要把 3 个 reviewer 全交给 agy;须留至少 1 个可信席位
-FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
+FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p --strict-mcp-config' ./hunt.sh
 
 # agy + codex:agy 只跑生成+查重;codex 跑打分+报告
 FRONT_CMD='./agy-worker.sh' BACK_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
 
 # 混合 reviewer:每席可单独指定;保留至少 1 个可信席位,agy 席位错峰启动
 REV_CMD_1='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
-REV_CMD_2='claude -p' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
+REV_CMD_2='claude -p --strict-mcp-config' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
 
 # agy 前段可调,默认 AGY_MODEL=gemini-3.5-flash-high,AGY_PRINT_TIMEOUT=8m,
 # AGY_LAUNCH_GAP_SEC=60(两次 agy 启动的最小间隔秒数,防快速重复调起触发登录验证;0 关闭)
-AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m AGY_LAUNCH_GAP_SEC=90 FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
+AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m AGY_LAUNCH_GAP_SEC=90 FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p --strict-mcp-config' ./hunt.sh
 ```
 
 报告在 `ideas/YYYY-MM-DD_hunt.md`,以 `hunt/日期` 分支 PR 提交,CI 按路径自动合并;本地收尾用 `./settle.sh`(合并后切回 main、清理本地/远程特性分支)。

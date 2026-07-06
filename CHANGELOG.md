@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 2026-07-06 自动化 claude 调起隔离 MCP(--strict-mcp-config)
+
+- `hunt.sh` 的 `AGENT_CMD` 与 `calib/run_panel.sh` 的 `PANEL_CMD` 默认从 `claude -p` 改为 `claude -p --strict-mcp-config`:子进程零 MCP——不继承用户级注册的任何 server(lark、claude.ai 连接器等),省每个 agent 的 MCP 启动与健康检查开销,应用凭据不再进无关自动化的进程参数(`ps` 可见)。README/头注示例同步。
+- 配套的环境侧动作(不在仓库内):lark 已从 Claude user scope 移除,配置存 `~/.claude/mcp-lark.json`(600),需要写飞书文档时用 `claude --mcp-config ~/.claude/mcp-lark.json` 按需挂载;codex 侧本就未注册。
+
 ## 2026-07-06 删承重假设通道:第 5 形态 + 裂缝核验 + 窄 break-glass(已合并,PR #13)
 
 背景:ledger 51 AwR / 18 reject / 0 SA,且 07-05 校准证明真 oral 素材在旧条款下也拿不到 SA 票——生成端只产范式内 probe(天然 AwR 形态),评审端又把这一类封顶,两端严丝合缝。SA 级 idea 的共性(Transformer 原型):删一条范式承重假设 × 外部约束逼出 × 便宜决定性否证实验。据此开一条窄而硬的证明路径,全链路落地:
