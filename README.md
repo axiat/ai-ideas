@@ -88,21 +88,25 @@ AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m AGY_LAUNCH_GAP_SEC=90 FRON
 
 报告在 `ideas/YYYY-MM-DD_hunt.md`,以 `hunt/日期` 分支 PR 提交,CI 按路径自动合并;本地收尾用 `./settle.sh`(合并后切回 main、清理本地/远程特性分支)。
 
-**AwR 复活 sidecar(可选,与 hunt.sh 并行)**:`./agy-side.sh`。主环之外用多轮 agy(便宜可错)把 ledger 里 accept-w-rev 的 idea 磨成可复审成品:研究员按 reason 点名缺口检索出修订稿(`roles/awr.md`)→ 裁判按 rubric 判 `SA-可能/还不行`(`roles/awr-judge.md`,失败关闭)→ 还不行则缺陷回灌任务文件、下轮在旧稿上继续改;`AGY_SIDE_MAX_ROUNDS`(默认 3)轮反馈用尽带最后修订稿收尾。产物只落 `tmp/agy-side/awr/`(gitignored,主环守卫不可见),verdict/ledger/ideas 一概不碰;agy 每次调起只见 `tmp/agy-side/run.*` 临时镜像,指定输出文件由 bash 拷回,写界物理隔离(agy 实测不守 prompt 写界)。早停/糊弄由机械校验兜住:修订稿须含「## 修订版 idea」节 + ≥3 条带 URL 检索记录 + 末行 `AGY-DONE`,判定须二选一且"还不行"附具体缺陷;不合格存 `.badN` 重跑,同 key 累计 3 次拉黑(删 `.badN` 解除)。与 `agy-worker.sh` 共享启动闸门戳,默认间隔 `AGY_SIDE_GAP_SEC=120`,防连发触发登录验证。每 key 状态全由文件派生,无状态文件,中断随便杀。注意:主环运行中往仓库加任何未跟踪文件(tmp/ 之外)会触固定层守卫停机——sidecar 自身文件均已入库,产物全在 tmp/ 下,不会触。
+**AwR 复活 sidecar(可选,与 hunt.sh 并行)**:`./awr-side.sh`。主环之外用多轮 agent(默认 agy,便宜可错;两席可换 claude/codex)把 ledger 里 accept-w-rev 的 idea 磨成可复审成品:研究员按 reason 点名缺口检索出修订稿(`roles/awr.md`)→ 裁判按 rubric 判 `SA-可能/还不行`(`roles/awr-judge.md`,失败关闭)→ 还不行则缺陷回灌任务文件、下轮在旧稿上继续改;`SIDE_MAX_ROUNDS`(默认 3)轮反馈用尽带最后修订稿收尾。产物只落 `tmp/awr-side/awr/`(gitignored,主环守卫不可见),verdict/ledger/ideas 一概不碰;agent 每次调起只见 `tmp/awr-side/run.*` 临时镜像,指定输出文件由 bash 拷回,写界物理隔离(agy 实测不守 prompt 写界;镜像内含 `.claude/` 供 claude 席 allowlist,codex 席 workspace 边界即镜像)。早停/糊弄由机械校验兜住:修订稿须含「## 修订版 idea」节 + ≥3 条带 URL 检索记录 + 末行 `AGY-DONE`,判定须二选一且"还不行"附具体缺陷;不合格存 `.badN` 重跑,同 key 累计 3 次拉黑(删 `.badN` 解除)——对所有后端一视同仁。agy 席与 `agy-worker.sh` 共享启动闸门戳,默认间隔 `SIDE_GAP_SEC=120`,防连发触发登录验证;claude/codex 席不走闸门。每 key 状态全由文件派生,无状态文件,中断随便杀。注意:主环运行中往仓库加任何未跟踪文件(tmp/ 之外)会触固定层守卫停机——sidecar 自身文件均已入库,产物全在 tmp/ 下,不会触。
 
 ```bash
-caffeinate -is ./agy-side.sh        # 常驻:队列全终态后每 AGY_SIDE_POLL_SEC=600 秒重扫,等主环产新 AwR
-AGY_SIDE_POLL_SEC=0 ./agy-side.sh   # 单遍:队列全终态即退
-# 其余可调:AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m AGY_SIDE_MAX_BAD=3 AGY_SIDE_MAX_ROUNDS=3
+caffeinate -is ./awr-side.sh        # 常驻:队列全终态后每 SIDE_POLL_SEC=600 秒重扫,等主环产新 AwR
+SIDE_POLL_SEC=0 ./awr-side.sh       # 单遍:队列全终态即退
+# 接入 claude/codex(与 AGENT_CMD 同约定;SIDE_RESEARCH_CMD/SIDE_JUDGE_CMD 分席覆盖,不设回落 SIDE_CMD,再回落内置 agy):
+SIDE_JUDGE_CMD='claude -p --strict-mcp-config' ./awr-side.sh   # agy 研究(便宜可错)+ claude 裁判(可信),推荐
+SIDE_CMD='claude -p --strict-mcp-config' ./awr-side.sh         # 两席全 claude(不加载 MCP)
+SIDE_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral' ./awr-side.sh
+# 其余可调:AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m(仅内置 agy) SIDE_MAX_BAD=3 SIDE_MAX_ROUNDS=3
 ```
 
 跑完后按序看:
 
 ```bash
-grep -h '^- 状态' tmp/agy-side/awr/*.md | sort | uniq -c   # 总览:达标/未达标各多少
-grep -l '状态: 达标' tmp/agy-side/awr/*.md                 # 给 claude 复审的候选
-ls tmp/agy-side/awr/*.bad3 2>/dev/null                     # 拉黑名单(3 次机械作废)
-grep 作废 tmp/agy-side/awr/side.log                        # 死法分布:早停多→任务再切小;检索不足多→查 .agy.log
+grep -h '^- 状态' tmp/awr-side/awr/*.md | sort | uniq -c   # 总览:达标/未达标各多少
+grep -l '状态: 达标' tmp/awr-side/awr/*.md                 # 给 claude 复审的候选
+ls tmp/awr-side/awr/*.bad3 2>/dev/null                     # 拉黑名单(3 次机械作废)
+grep 作废 tmp/awr-side/awr/side.log                        # 死法分布:早停多→任务再切小;检索不足多→查 .agy.log
 ```
 
 达标品人工核三点再上贵模型:抽点 2-3 条 URL 确认真是所称论文且"占据/部分重叠"标注没胡说;修订版没被改空泛或面目全非;裁判意见有具体核对痕迹而非空洞放行。校准信号:第一轮达标率过半→裁判太松,把 rubric 的 SA 硬门槛节单独摘给它;全军未达标→看几份 `<key>.task.md` 的反馈史,分辨裁判太严还是研究员补不动。成品不自动回灌主环——原始 AwR 仍在 ledger/deathlist 里,generate 会避开该方向;claude 认可后怎么用(手动成文进 ideas/ 或当下轮生成素材)是人工动作。

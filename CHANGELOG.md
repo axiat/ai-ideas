@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 2026-07-06 AwR sidecar 多后端 + 改名 awr-side.sh
+
+- `agy-side.sh` → `awr-side.sh`:研究员/裁判两席可接 claude/codex——`SIDE_CMD` 两席统一覆盖,`SIDE_RESEARCH_CMD`/`SIDE_JUDGE_CMD` 分席覆盖(与 hunt.sh `AGENT_CMD` 同约定,claude 席同样 `--strict-mcp-config`,codex 席示例加 `--skip-git-repo-check --ephemeral` 适配无 `.git` 镜像),不设时仍为内置 agy、行为不变。沙箱镜像对所有后端保留,并拷入 `.claude/` 供 claude 席 allowlist;启动闸门只罩 agy 席(专治连发触发登录验证),claude/codex 直起、不动共享戳;机械校验/`.badN`/熔断对所有后端一视同仁。
+- 环境变量 `AGY_SIDE_*` → `SIDE_*`(`AGY_MODEL`/`AGY_PRINT_TIMEOUT` 保留,仅内置 agy);状态目录 `tmp/agy-side/` → `tmp/awr-side/`,启动时自动整体迁移,队列状态无损续跑;实例锁改 `tmp/awr-side.lock`。README/roles 头注同步。
+
 ## 2026-07-06 自动化 claude 调起隔离 MCP(--strict-mcp-config)
 
 - `hunt.sh` 的 `AGENT_CMD` 与 `calib/run_panel.sh` 的 `PANEL_CMD` 默认从 `claude -p` 改为 `claude -p --strict-mcp-config`:子进程零 MCP——不继承用户级注册的任何 server(lark、claude.ai 连接器等),省每个 agent 的 MCP 启动与健康检查开销,应用凭据不再进无关自动化的进程参数(`ps` 可见)。README/头注示例同步。
