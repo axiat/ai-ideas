@@ -48,7 +48,7 @@ REV_STAGGER_SEC=15 \
 #  agent: claude -p --strict-mcp-config(零 MCP:不带用户级 lark/连接器,省启动与健康检查,凭据不进无关进程)
 #  裁判数: REVIEWERS=3
 #  SA 实读门槛: MIN_READ=5
-#  预筛存活上限: SHORT_MAX=3(超额 keep 不深查、不入账;kill 立即按 reject 入账 overlap=high)
+#  预筛存活上限: SHORT_MAX=3(按优先级取:复查/进化>删公理>低存量主题>生成序;超额 keep 不深查、不入账;kill 立即按 reject 入账 overlap=high)
 #  异常冷却: 150 分钟
 #  正常跑完但无 SA: 随机等待 1-8 分钟后重试
 #  前段空产出上限: EMPTY_MAX=3(预筛全灭同样走空产出短重试)
@@ -60,6 +60,7 @@ REV_STAGGER_SEC=15 \
 #  前段续跑: RESUME_FRONT=1(0 关闭;遗留前段产物过门槛则首轮跳过生成/预筛/查重,verdict 永不续用)
 #  实例锁: tmp/hunt.lock,双开自动退出,持锁进程已死则自清重抢
 #  连续异常上限: MAX_FAILS=12
+#  轮级指标: 追加写 tmp/hunt.metrics.tsv(fail/empty/verdict 各一行:计数列+每 idea 票串,调参不翻 hunt.log)
 #  达标轮: 写报告、发布 PR;当日 SA 累计达 SA_TARGET=1 退出
 
 

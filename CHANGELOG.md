@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-07-07 预筛 shortlist 优先级选取 + 轮级机器可读指标
+
+采纳 codex 07-07 调研的两条建议(候选调度与可观测性;安全边界不动):
+
+- shortlist 弃 FIFO:预筛 keep 先写 `tmp/round/keeps.tsv`(rank、主题存量、生成序),`select_shortlist` 排序取前 `SHORT_MAX` 个——`keep_rank` 复查/进化(0)> 删承重假设块(1)> 普通(2),同 rank 按 ledger 同主题行数升序、再按生成序;溢出 keep 照旧丢弃不入账。FIFO 按生成顺序取,已把排位靠后的稀缺候选丢掉 51 次(hunt.log;含中断遗留一轮的复查候选 I6,该轮在新逻辑下选出 I6/I1/I3——复查、删公理、存量 2 的人机交互与部署)。
+- 轮级指标 append-only `tmp/hunt.metrics.tsv`:阶段异常(fail)/空产出作废(empty)/聚合定谳(verdict)各追加一行——round、stage、lens、gen/kill/keep/short 计数(由 tmp/round 文件即时派生,drop=keep-short)、pw_links/pw_api、verdicts 每 idea 票串 `id=r1,r2,r3->终判`(2=SA 1=aWr 0=rej -=缺票;全 2 却 ->reject 即 SA 硬门槛降级)。诊断 84/107 accept-w-rev 卡在 novelty 封顶还是查重薄弱,不再翻 hunt.log/ledger prose。
+- 踩坑:BSD awk/sort/uniq 字符串比较走 strcoll,en_US.UTF-8 下纯 CJK 串互判相等(`awk '$3=="效率与系统"'` 能命中「动作表征」行),主题存量计数改 `grep -Fxc` 字节比较。既有代码未踩坑(themes_ok 用 awk 数组下标,哈希字节精确);CJK 等值判断避开 awk `==` 与默认 locale 的 sort/uniq。
+
 ## 2026-07-06 预筛铁律:一次性调用禁挂后台 + 限流有界重试
 
 当晚两轮预筛空产出同因:代理把 API 检索挂后台、结束回复"等通知",而 `claude -p` 回复结束进程即退,`prescreen.md` 永不落盘(hunt.log 22:07/22:46,烧掉 3 次短重试中的 2 次)。

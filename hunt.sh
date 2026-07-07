@@ -11,6 +11,7 @@
 #
 # 全程记录 hunt.log。失败分类:某阶段异常退出(额度/权限/命令错,连续 MAX_FAILS 次即停)
 # vs 正常跑完但无达标(随机短间隔继续重试)。
+# 轮级机器可读指标追加写 tmp/hunt.metrics.tsv(阶段失败/空产出/聚合定谳各一行,字段见 metrics_write 头注)。
 #
 # 用法:
 #   ./hunt.sh [异常重试间隔分钟,默认 150]
@@ -37,8 +38,9 @@
 #       # 自动错峰所有 agy 席位,REV_STAGGER_SEC 可再减少闸门排队。仍不要把全部裁判席交给 agy(须留可信席位)。
 #   前段空产出按"便宜可错"短重试:EMPTY_MAX 次内随机等 NO_HIT 区间,连续达 EMPTY_MAX 次才升级长睡(默认 3);
 #   预筛(生成与深查之间,FRONT_CMD 跑,便宜可错、只杀不保):只杀"单篇工作直接占据头条"的 direct hit,
-#     被杀 idea 由本脚本立即按 reject 入账、overlap=high(防下轮重生成);存活取前 SHORT_MAX 个(默认 3)
-#     进深查,超额 keep 丢弃不入账(下轮可重新生成),全灭走空产出短重试;
+#     被杀 idea 由本脚本立即按 reject 入账、overlap=high(防下轮重生成);存活按优先级取 SHORT_MAX 个
+#     (默认 3)进深查——复查/进化 > 删承重假设 > 低存量主题(ledger 同主题行数升序)> 生成顺序,
+#     防 FIFO 把排位靠后的稀缺候选随机丢掉;超额 keep 丢弃不入账(下轮可重新生成),全灭走空产出短重试;
 #   PRIOR_MIN_LINKS 查重结构门槛,每个 idea 块须有 ≥N 条带链接近邻,不达标视同空产出重试(默认 5);
 #   PRIOR_MIN_API 查重结构门槛之二,每个 idea 块须有 ≥N 条结构化 API 检索记录(arXiv/Semantic Scholar query URL),
 #     0 关闭(默认 1)——API 召回可复现、可审计,判定仍靠实读;近邻链接与 API 记录分开计数,互不充数;
@@ -85,6 +87,7 @@ RD=tmp/round
 LEDGER_GOOD=tmp/ledger.good
 DEATHLIST=tmp/deathlist.md
 LOCK=tmp/hunt.lock
+METRICS=tmp/hunt.metrics.tsv
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 
@@ -149,6 +152,7 @@ random_no_hit_sleep_min() {
 # 调一次 agent(串行阶段用),rc 作为返回值;$1=命令 $2=prompt $3=阶段名
 run_stage() {
   local cmd=$1
+  m_stage=$3
   log "调起 [$3]: $cmd"
   $cmd "$2" >> "$LOG" 2>&1
   return $?
@@ -199,6 +203,7 @@ guard() {
 
 # 阶段异常退出:计失败数,达上限停机,否则睡眠(调用方随后 continue)
 fail_and_wait() {
+  metrics_write fail "$m_stage" '-'
   fails=$((fails + 1))
   log "阶段异常退出,连续第 ${fails}/${MAX_FAILS} 次(额度耗尽/权限被拒/命令拼错,见上方 agent 输出)"
   if [ "$fails" -ge "$MAX_FAILS" ]; then
@@ -212,6 +217,7 @@ fail_and_wait() {
 # 连续达 EMPTY_MAX 次(疑似认证挂了等真故障)才升级为 FAIL_SLEEP 长睡,防空转死循环。
 empty_and_wait() {
   local m
+  metrics_write empty "$m_stage" '-'
   empties=$((empties + 1))
   if [ "$empties" -ge "$EMPTY_MAX" ]; then
     log "前段连续 ${empties} 次空产出,疑似非偶发(认证/命令问题),升级长间隔重试"
@@ -222,6 +228,28 @@ empty_and_wait() {
     log "前段空产出(连续第 ${empties}/${EMPTY_MAX} 次),短重试 ${m} 分钟"
     sleep "$((m * 60))"
   fi
+}
+
+# 文件非空行数;文件不存在输出 -(区别于存在但为空的 0)
+count_lines() { if [ -f "$1" ]; then grep -c . "$1" || true; else echo '-'; fi; }
+
+# 轮级机器可读指标(append-only tmp/hunt.metrics.tsv):阶段异常(fail)、空产出作废(empty)、
+# 聚合定谳(verdict)各追加一行,调参不再翻 hunt.log/ledger prose。计数列由 tmp/round 文件即时派生,
+# -=文件不存在:gen 生成全集、kill 预筛杀、keep 预筛存活、short 入深查 shortlist(drop=keep-short);
+# pw_links/pw_api 查重块链接行/结构化 API 检索行总数。verdicts 每 idea 一段 id=票,票,..->终判,
+# 票为 rank(2=SA 1=aWr 0=rej -=缺票);全票 2 却 ->reject 即 SA 硬门槛降级。
+metrics_write() {   # $1=outcome $2=阶段名(-=不适用) $3=verdicts 串(-=不适用)
+  local n_gen n_kill n_keep n_short pw_links pw_api
+  [ -s "$METRICS" ] || printf 'ts\tround\toutcome\tstage\tlens\tgen\tkill\tkeep\tshort\tpw_links\tpw_api\tverdicts\n' > "$METRICS"
+  n_gen=$(count_lines "$RD/ideas.all.tsv"); [ "$n_gen" = '-' ] && n_gen=$(count_lines "$RD/ideas.tsv")
+  n_kill=$(count_lines "$RD/kills.tsv"); n_keep=$(count_lines "$RD/keeps.tsv"); n_short=$(count_lines "$RD/ideas.tsv")
+  if [ -f "$RD/priorwork.md" ]; then
+    pw_links=$(grep -cE 'https?://' "$RD/priorwork.md" || true)
+    pw_api=$(grep -cE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' "$RD/priorwork.md" || true)
+  else pw_links='-'; pw_api='-'; fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date '+%F %T')" "$round" "$1" "$2" "$m_lens" "$n_gen" "$n_kill" "$n_keep" "$n_short" \
+    "$pw_links" "$pw_api" "$3" >> "$METRICS"
 }
 
 rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) echo 0 ;; esac; }
@@ -418,6 +446,35 @@ cracks_ok() {
   return 0
 }
 
+# 预筛 keep 的优先级 rank(0 最高):0=复查/进化(与进化共享每轮至多 1 个名额的稀缺候选)
+# 1=删承重假设块 2=普通;标记行格式由 roles/generate.md 模板钉死(复查:/进化自:行首)。
+keep_rank() {   # $1=id(查 ideas.all.md 块)
+  if awk -v id="$1" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/ideas.all.md" \
+       | grep -qE '^[-* ]*(复查|进化自)[::]'; then echo 0
+  elif is_axiom_idea "$1" "$RD/ideas.all.md"; then echo 1
+  else echo 2; fi
+}
+
+# shortlist 选取:keeps.tsv(rank 主题存量 生成序 id story theme)排序取前 SHORT_MAX 个写
+# ideas.tsv/ideas.md,溢出照旧丢弃(不深查、不入账)。替代按生成顺序 FIFO——复查/进化/删公理
+# 排位靠后时曾被随机丢掉(hunt.log 至 07-07 已 51 次)。设全局 kept。
+select_shortlist() {
+  local rank tcount oidx id story theme
+  kept=0
+  [ -s "$RD/keeps.tsv" ] || return 0
+  sort -t$'\t' -k1,1n -k2,2n -k3,3n -o "$RD/keeps.tsv" "$RD/keeps.tsv"
+  while IFS=$'\t' read -r rank tcount oidx id story theme; do
+    if [ "$kept" -lt "$SHORT_MAX" ]; then
+      printf '%s\t%s\t%s\n' "$id" "$story" "$theme" >> "$RD/ideas.tsv"
+      awk -v id="$id" '$1=="##"{f=($2==id)} f' "$RD/ideas.all.md" >> "$RD/ideas.md"
+      printf '\n' >> "$RD/ideas.md"
+      kept=$((kept + 1))
+    else
+      log "预筛:${id} keep 但超出 SHORT_MAX=${SHORT_MAX}(rank=${rank} 主题存量=${tcount}),本轮不深查、不入账(下轮可重新生成)"
+    fi
+  done < "$RD/keeps.tsv"
+}
+
 mkdir -p "$(dirname "$LEDGER_GOOD")"                             # tmp/ 在干净 checkout 里不存在,先建(否则种子/重置全失败)
 validate_sleep_config
 if [ "$SA_TARGET" -gt 0 ]; then TARGET_DESC="$SA_TARGET"; else TARGET_DESC="∞(不设上限)"; fi
@@ -490,6 +547,7 @@ while :; do
   fi
 
   round=$((round + 1))
+  m_stage='-'; m_lens='-'
   before=$(git rev-parse HEAD)
   cp "$LEDGER_GOOD" ledger.tsv                       # 重置到上一轮定谳后的良好 ledger,抹掉任何遗留篡改(F2)
   pre_dirty=$(git status --porcelain | cut -c4- | sort -u)
@@ -520,6 +578,7 @@ while :; do
 
     # 1) 生成(禁写 ideas/);发散透镜由 bash 随机抽取注入,对抗跨轮模式坍缩
     lens=$(pick_lens)
+    m_lens=${lens:--}
     gen_prompt="读 roles/generate.md,按其执行"
     if [ -n "$lens" ]; then
       gen_prompt="${gen_prompt};本轮发散透镜(orchestrator 随机指定,不得替换):${lens}"
@@ -544,19 +603,16 @@ while :; do
       log "预筛阶段未产出 prescreen.md 或结构不达标,本轮作废重试"; fails=0
       empty_and_wait; continue
     fi
-    : > "$RD/ideas.tsv"; : > "$RD/ideas.md"; : > "$RD/kills.tsv"
-    kept=0
+    : > "$RD/ideas.tsv"; : > "$RD/ideas.md"; : > "$RD/kills.tsv"; : > "$RD/keeps.tsv"
+    oidx=0
     while IFS=$'\t' read -r id story theme; do
       [ -z "$id" ] && continue
+      oidx=$((oidx + 1))
       if [ "$(prescreen_dec "$id")" = "keep" ]; then
-        if [ "$kept" -lt "$SHORT_MAX" ]; then
-          printf '%s\t%s\t%s\n' "$id" "$story" "$theme" >> "$RD/ideas.tsv"
-          awk -v id="$id" '$1=="##"{f=($2==id)} f' "$RD/ideas.all.md" >> "$RD/ideas.md"
-          printf '\n' >> "$RD/ideas.md"
-          kept=$((kept + 1))
-        else
-          log "预筛:${id} keep 但超出 SHORT_MAX=${SHORT_MAX},本轮不深查、不入账(下轮可重新生成)"
-        fi
+        # 主题存量必须 grep -Fx 字节比较:BSD awk/sort 的字符串 == 走 strcoll,
+        # en_US.UTF-8 下 CJK 串会互判相等(动作表征==效率与系统),计数全错
+        tcount=$(cut -f3 "$LEDGER_GOOD" 2>/dev/null | grep -Fxc -- "$theme" || true)
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(keep_rank "$id")" "$tcount" "$oidx" "$id" "$story" "$theme" >> "$RD/keeps.tsv"
       else
         kill_url=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/prescreen.md" \
                    | grep -oE 'https?://[^ )|,;>]+' \
@@ -574,11 +630,12 @@ while :; do
       cp ledger.tsv "$LEDGER_GOOD"
       log "预筛:$(grep -c . "$RD/kills.tsv") 个 direct hit 已按 reject 入账"
     fi
+    select_shortlist
     if [ "$kept" -eq 0 ]; then
       log "预筛全灭:本轮候选头条均被直接占位,作废重试"; fails=0
       empty_and_wait; continue
     fi
-    log "预筛:${kept} 个存活进深查"
+    log "预筛:${kept} 个按优先级进深查(复查/进化>删公理>低存量主题): $(cut -f1 "$RD/ideas.tsv" | tr '\n' ' ')"
 
     # 2) 对抗式深查重(禁写 ideas/;只查预筛存活的 shortlist,每个 idea 5-8 篇实读)
     run_stage "$FRONT_CMD" "读 roles/research.md,按其执行" research; rc=$?; guard 0
@@ -591,6 +648,7 @@ while :; do
   fi
 
   # 3) N 位裁判,并行 + 各自独立输入目录(开跑时看不到彼此产出)(F3);禁写 ideas/
+  m_stage=review
   : > "$RD/rev_rc"; pids=()
   for r in $(seq 1 "$REVIEWERS"); do
     d="$RD/rev/$r"; mkdir -p "$d"
@@ -613,13 +671,15 @@ while :; do
   cp "$LEDGER_GOOD" ledger.tsv                       # 干净基线,本轮增量只来自下面 bash 追加
   : > "$RD/accepted.tsv"; : > "$RD/rejects.tsv"
   sa_count=0
+  m_verdicts=""
   while IFS=$'\t' read -r id story theme; do
     [ -z "$id" ] && continue
-    min=2; reason=""
+    min=2; reason=""; votes=""
     for r in $(seq 1 "$REVIEWERS"); do
       line=$(awk -F'\t' -v id="$id" '$1==id{print; exit}' "$RD/rev/$r/verdict.tsv" 2>/dev/null || true)
       v=$(printf '%s' "$line" | cut -f2); rs=$(printf '%s' "$line" | cut -f4)
       rank=$(rank_of "$v")
+      if [ -n "$v" ]; then votes="${votes:+$votes,}${rank}"; else votes="${votes:+$votes,}-"; fi
       if [ "$rank" -lt "$min" ]; then min=$rank; reason=$rs; fi
       [ -z "$reason" ] && reason=$rs
     done
@@ -628,6 +688,7 @@ while :; do
       log "SA 硬门槛未过,${id} 降级 reject"
     fi
     verdict=$(verdict_of "$min")
+    m_verdicts="${m_verdicts:+${m_verdicts};}${id}=${votes}->${verdict}"
     [ -z "$reason" ] && reason="(无理由,按最严处理)"
     [ -z "$theme" ] && theme="未标注"
     # overlap 列:取独立查重的「重叠判定」(high/medium/low),供进化父本资格的机械筛选
@@ -644,6 +705,7 @@ while :; do
   cp ledger.tsv "$LEDGER_GOOD"                       # 定谳:把本轮 bash 追加固化为新的良好基线(F2)
   guard 0
   log "本轮聚合:${sa_count} 个 Strong Accept(全票且过硬门槛),已记账 ledger.tsv"
+  metrics_write verdict '-' "${m_verdicts:--}"
 
   # 5) 达标轮 → 组装报告并发布;当日累计达 SA_TARGET 才停,否则继续攒
   if [ "$sa_count" -gt 0 ]; then
