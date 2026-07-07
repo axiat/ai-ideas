@@ -12,7 +12,7 @@
 角色层(人改,agent 按其执行,prompt 在 `roles/`):
 
 - `generate.md` — 只生成 idea,不查重、不打分;标注主题、附最小否证实验(点名最强基线);可含至多 1 个进化/复查版(父本限 overlap=low 的实验设计类 AwR / 查重薄弱型 AwR)
-- `prescreen.md` — 廉价预筛,只杀"单篇直接占据头条"的 direct hit(kill 必附链接),keep 不构成 novelty 结论;被杀者由 orchestrator 按 reject 入账
+- `prescreen.md` — 廉价预筛,只杀"单篇直接占据头条"的 direct hit(kill 必附链接),keep 不构成 novelty 结论;被杀者由 orchestrator 按 reject 入账;结构失败/kill 佐证不全 fail-open 按 keep,不废轮
 - `research.md` — 对抗式深查重,先 direct-hit 猎杀,每个 idea 实读 5-8 篇、附"最强反例"行;须留 ≥1 条可复现的 arXiv/Semantic Scholar API 检索记录
 - `review.md` — 打分裁判,默认 Reject,跑多次取最低票;feasibility 只认最小否证实验
 - `report.md` — 纯组装报告,不改判
@@ -49,6 +49,7 @@ REV_STAGGER_SEC=15 \
 #  裁判数: REVIEWERS=3
 #  SA 实读门槛: MIN_READ=5
 #  预筛存活上限: SHORT_MAX=3(按优先级取:复查/进化>删公理>低存量主题>生成序;超额 keep 不深查、不入账;kill 立即按 reject 入账 overlap=high)
+#  预筛 fail-open: prescreen.md 缺失/判定非法/kill 佐证不全按 keep 兜底,不废轮(调起 rc≠0 仍走异常重试)
 #  异常冷却: 150 分钟
 #  正常跑完但无 SA: 随机等待 1-8 分钟后重试
 #  前段空产出上限: EMPTY_MAX=3(预筛全灭同样走空产出短重试)

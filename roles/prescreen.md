@@ -37,7 +37,7 @@ API 检索:<实际 query URL,≥1 条>
 
 ## 铁律
 
-- 本进程是 `claude -p` 一次性调用,回复结束进程即退出:禁止把检索挂后台、禁止"等通知/回调后再写"。遇 API 限流:换另一家 API 或 `sleep 10`(权限只放行这个精确命令)后重试,每个 idea 合计至多 2 次;仍失败则记录已发出的 query URL、判 keep,不再等待。`tmp/round/prescreen.md` 必须在本次回复结束前落盘,否则整轮作废。
+- 本进程是 `claude -p` 一次性调用,回复结束进程即退出:禁止把检索挂后台、禁止"等通知/回调后再写"。遇 API 限流:换另一家 API 或 `sleep 10`(权限只放行这个精确命令)后重试,每个 idea 合计至多 2 次;仍失败则记录已发出的 query URL、判 keep,不再等待。`tmp/round/prescreen.md` 必须在本次回复结束前落盘,否则本轮全部检索白做(orchestrator fail-open 全 keep)。
 - 不打分、不写 verdict、不做完整查重(那是下一阶段)、不改 ideas.all.*、不写报告、不运行任何发布命令。
-- orchestrator 机械校验:每个 id 有块、每块 ≥1 条 API 记录、kill 必附链接;不达标整轮作废重跑。
-- 存活者由 orchestrator 取前 N 个进深查,被杀者由 orchestrator 记账——本进程都不用管、也不得代办。
+- orchestrator 机械校验只针对 kill:判 kill 的块须有 ≥1 条 API 记录 + 占位链接,佐证不全该 kill 降级 keep(白判);判定缺失/非法或 prescreen.md 缺失,fail-open 一律按 keep——不废轮,代价转嫁给深查与裁判。
+- 存活者由 orchestrator 按优先级取 N 个进深查(复查/进化 > 删公理 > 低存量主题),被杀者由 orchestrator 记账——本进程都不用管、也不得代办。
