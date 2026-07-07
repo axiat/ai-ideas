@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-07-07 预筛判定行严格解析,堵宽松抽词误杀
+
+codex 复审 fail-open 改动时指出:`prescreen_dec` 的 `grep -oE 'kill|keep'` 是子串抽词,`判定:not kill`/`判定:kill? keep`/`判定:killed` 都被抽成 kill,块内再有 API 记录+任一非 API 链接即按 reject+overlap=high 永久入账。存量问题(旧 `prescreen_ok` 同一解析),但 fail-open 契约已承诺「判定非法→keep」,解析器须兑现:
+
+- 首条判定行整行严格匹配 `判定:kill|keep`(容忍空白与全/半角冒号)才算数,附加任何词视为非法→空→fail-open keep;含糊判定的代价方向从"可能永久误杀"变为"多花一次深查"。首行畸形不捡后面的严格行——畸形块直接 fail-open,比扫全块更保守。
+- `roles/prescreen.md` 同步:判定行不得附加任何词,附加词=kill 白判。
+
 ## 2026-07-07 预筛结构失败 fail-open,不再废轮
 
 采纳 codex 07-07 调研第 3 条。9fa98c8 只在 prompt 层修了挂后台导致 prescreen.md 不落盘的问题,orchestrator 层结构失败仍整轮作废——白扔已花的生成+透镜抽取。预筛定位"只杀不保"的纯省钱优化,不是正确性门槛,失败方向应是多花深查钱而非废轮:
