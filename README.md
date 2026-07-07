@@ -56,7 +56,7 @@ REV_STAGGER_SEC=15 \
 #  查重 API 记录门槛: PRIOR_MIN_API=1(0 关闭;近邻链接与 API 记录分开计数)
 #  主题门槛: theme 须属 policy 词表,且 ≥THEME_MIN_LOW=2 个 idea 落在低存量主题(0 关闭分布校验;查的是预筛前的发散全集)
 #  失败蒸馏: 每 META_EVERY=6 轮、reject+AwR 行 ≥ META_MIN_REJECTS=5 时刷新 tmp/deathlist.md
-#  发散透镜: 每轮从 brainstorming_policy.md「发散透镜」小节随机抽一条注入生成 prompt
+#  发散透镜: 每轮从 brainstorming_policy.md「发散透镜」小节随机抽一条注入生成 prompt(池含 3 张空白牌,抽中不注入、自由发散)
 #  前段续跑: RESUME_FRONT=1(0 关闭;遗留前段产物过门槛则首轮跳过生成/预筛/查重,verdict 永不续用)
 #  实例锁: tmp/hunt.lock,双开自动退出,持锁进程已死则自清重抢
 #  连续异常上限: MAX_FAILS=12
