@@ -6,6 +6,7 @@ codex 复审 fail-open 改动时指出:`prescreen_dec` 的 `grep -oE 'kill|keep'
 
 - 首条判定行整行严格匹配 `判定:kill|keep`(容忍空白与全/半角冒号)才算数,附加任何词视为非法→空→fail-open keep;含糊判定的代价方向从"可能永久误杀"变为"多花一次深查"。首行畸形不捡后面的严格行——畸形块直接 fail-open,比扫全块更保守。
 - `roles/prescreen.md` 同步:判定行不得附加任何词,附加词=kill 白判。
+- codex 二次复审补漏:落码时括号内全角冒号丢成 ASCII `[::]`,`判定：kill` 解析为空走 fail-open keep(方向安全,只多花深查);已改 `[:：]`,全/半角与附加词非法三组回归通过。当前纯理论敞口——模板与真实 prescreen 输出全是半角冒号。
 
 ## 2026-07-07 预筛结构失败 fail-open,不再废轮
 

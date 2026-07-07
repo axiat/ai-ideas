@@ -361,7 +361,7 @@ themes_ok() {
 # 防子串抽词把含糊判定变成永久 reject 入账。
 prescreen_dec() {
   awk -v id="$1" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/prescreen.md" 2>/dev/null \
-    | grep -m1 '^判定' | grep -xE '判定[[:space:]]*[::][[:space:]]*(kill|keep)[[:space:]]*' \
+    | grep -m1 '^判定' | grep -xE '判定[[:space:]]*[:：][[:space:]]*(kill|keep)[[:space:]]*' \
     | grep -oE 'kill|keep'
 }
 
