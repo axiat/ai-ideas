@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-07-06 预筛铁律:一次性调用禁挂后台 + 限流有界重试
+
+当晚两轮预筛空产出同因:代理把 API 检索挂后台、结束回复"等通知",而 `claude -p` 回复结束进程即退,`prescreen.md` 永不落盘(hunt.log 22:07/22:46,烧掉 3 次短重试中的 2 次)。
+
+- `roles/prescreen.md` 铁律新增首条:一次性调用,禁挂后台/等回调;遇 API 限流换另一家 API 或 `sleep 10` 重试,每 idea 合计至多 2 次,仍失败则记录已发出的 query URL、判 keep 不再等待(与「拿不准一律 keep」同向,机械门槛只查 URL 模式,此路合规);`prescreen.md` 必须在回复结束前落盘。
+- `.claude/settings.json` 放行精确命令 `Bash(sleep 10)`:单次等待在权限层钉死 10 秒,限流路径整体有界,不依赖 run_stage 加超时。
+
 ## 2026-07-06 AwR sidecar 多后端 + 改名 awr-side.sh
 
 - `agy-side.sh` → `awr-side.sh`:研究员/裁判两席可接 claude/codex——`SIDE_CMD` 两席统一覆盖,`SIDE_RESEARCH_CMD`/`SIDE_JUDGE_CMD` 分席覆盖(与 hunt.sh `AGENT_CMD` 同约定,claude 席同样 `--strict-mcp-config`,codex 席示例加 `--skip-git-repo-check --ephemeral` 适配无 `.git` 镜像),不设时仍为内置 agy、行为不变。沙箱镜像对所有后端保留,并拷入 `.claude/` 供 claude 席 allowlist;启动闸门只罩 agy 席(专治连发触发登录验证),claude/codex 直起、不动共享戳;机械校验/`.badN`/熔断对所有后端一视同仁。

@@ -12,7 +12,8 @@
       "WebSearch",
       "WebFetch",
       "Bash(ls)",
-      "Bash(date)"
+      "Bash(date)",
+      "Bash(sleep 10)"
     ]
   }
 }
