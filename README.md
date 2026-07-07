@@ -81,9 +81,9 @@ FRONT_CMD='./agy-worker.sh' BACK_CMD='codex --search -c approval_policy=never -c
 REV_CMD_1='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
 REV_CMD_2='claude -p --strict-mcp-config' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
 
-# agy 前段可调,默认 AGY_MODEL=gemini-3.5-flash-high,AGY_PRINT_TIMEOUT=8m,
+# agy 前段可调,默认 AGY_MODEL='Gemini 3.5 Flash (High)'(只认展示名,见 agy-worker.sh 头注释),AGY_PRINT_TIMEOUT=8m,
 # AGY_LAUNCH_GAP_SEC=60(两次 agy 启动的最小间隔秒数,防快速重复调起触发登录验证;0 关闭)
-AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m AGY_LAUNCH_GAP_SEC=90 FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p --strict-mcp-config' ./hunt.sh
+AGY_MODEL='Gemini 3.5 Flash (High)' AGY_PRINT_TIMEOUT=10m AGY_LAUNCH_GAP_SEC=90 FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p --strict-mcp-config' ./hunt.sh
 ```
 
 报告在 `ideas/YYYY-MM-DD_hunt.md`,以 `hunt/日期` 分支 PR 提交,CI 按路径自动合并;本地收尾用 `./settle.sh`(合并后切回 main、清理本地/远程特性分支)。
@@ -97,7 +97,10 @@ SIDE_POLL_SEC=0 ./awr-side.sh       # 单遍:队列全终态即退
 SIDE_JUDGE_CMD='claude -p --strict-mcp-config' ./awr-side.sh   # agy 研究(便宜可错)+ claude 裁判(可信),推荐
 SIDE_CMD='claude -p --strict-mcp-config' ./awr-side.sh         # 两席全 claude(不加载 MCP)
 SIDE_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral' ./awr-side.sh
-# 其余可调:AGY_MODEL=gemini-3.5-flash-high AGY_PRINT_TIMEOUT=10m(仅内置 agy) SIDE_MAX_BAD=3 SIDE_MAX_ROUNDS=3
+# 内置 agy 换模型:AGY_MODEL 只认 `agy models` 的完整展示名,连字符形式会被静默忽略(详见 agy-worker.sh 头注释)
+AGY_MODEL='Claude Sonnet 4.6 (Thinking)' caffeinate -is ./awr-side.sh
+AGY_MODEL='Claude Opus 4.6 (Thinking)' caffeinate -is ./awr-side.sh
+# 其余可调:AGY_PRINT_TIMEOUT=10m(仅内置 agy) SIDE_MAX_BAD=3 SIDE_MAX_ROUNDS=3
 ```
 
 跑完后按序看:
