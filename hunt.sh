@@ -125,12 +125,14 @@ validate_sleep_config() {
 }
 
 # 发散透镜:从 policy 的「## 发散透镜」小节随机抽一条(随机性在 bash 层,agent 不得自选);
-# 小节缺失或为空则输出空串,本轮不注入。
+# 抽签池含 3 张空白牌(与 policy「抽签池」行同步),抽中输出空串、本轮不注入;
+# 小节缺失或为空同样输出空串。
 pick_lens() {
   local n total
   total=$(awk '/^## 发散透镜/{f=1;next} /^## /{f=0} f&&/^- /' brainstorming_policy.md | grep -c . || true)
   [ "$total" -gt 0 ] || { echo ""; return 0; }
-  n=$((RANDOM % total + 1))
+  n=$((RANDOM % (total + 3) + 1))
+  [ "$n" -le "$total" ] || { echo ""; return 0; }
   awk '/^## 发散透镜/{f=1;next} /^## /{f=0} f&&/^- /' brainstorming_policy.md | sed -n "${n}p" | sed 's/^- //'
 }
 
@@ -522,6 +524,8 @@ while :; do
     if [ -n "$lens" ]; then
       gen_prompt="${gen_prompt};本轮发散透镜(orchestrator 随机指定,不得替换):${lens}"
       log "本轮发散透镜: ${lens}"
+    else
+      log "本轮无透镜注入(空白牌或小节缺失),自由发散"
     fi
     run_stage "$FRONT_CMD" "$gen_prompt" generate; rc=$?; guard 0
     if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
