@@ -11,7 +11,7 @@
 #
 # 全程记录 hunt.log。失败分类:某阶段异常退出(额度/权限/命令错,连续 MAX_FAILS 次即停)
 # vs 正常跑完但无达标(随机短间隔继续重试)。
-# 轮级机器可读指标追加写 tmp/hunt.metrics.tsv(阶段失败/空产出/聚合定谳各一行,字段见 metrics_write 头注)。
+# 轮级机器可读指标追加写 tmp/hunt.metrics.tsv(阶段失败/空产出/预筛 fail-open/聚合定谳各一行,字段见 metrics_write 头注)。
 #
 # 用法:
 #   ./hunt.sh [异常重试间隔分钟,默认 150]
@@ -41,6 +41,8 @@
 #     被杀 idea 由本脚本立即按 reject 入账、overlap=high(防下轮重生成);存活按优先级取 SHORT_MAX 个
 #     (默认 3)进深查——复查/进化 > 删承重假设 > 低存量主题(ledger 同主题行数升序)> 生成顺序,
 #     防 FIFO 把排位靠后的稀缺候选随机丢掉;超额 keep 丢弃不入账(下轮可重新生成),全灭走空产出短重试;
+#     结构失败 fail-open 不废轮:prescreen.md 缺失/判定非法/kill 佐证不全一律按 keep 兜底进 shortlist
+#     (无效 kill 不入账;调起 rc≠0 仍走异常重试);
 #   PRIOR_MIN_LINKS 查重结构门槛,每个 idea 块须有 ≥N 条带链接近邻,不达标视同空产出重试(默认 5);
 #   PRIOR_MIN_API 查重结构门槛之二,每个 idea 块须有 ≥N 条结构化 API 检索记录(arXiv/Semantic Scholar query URL),
 #     0 关闭(默认 1)——API 召回可复现、可审计,判定仍靠实读;近邻链接与 API 记录分开计数,互不充数;
@@ -234,7 +236,8 @@ empty_and_wait() {
 count_lines() { if [ -f "$1" ]; then grep -c . "$1" || true; else echo '-'; fi; }
 
 # 轮级机器可读指标(append-only tmp/hunt.metrics.tsv):阶段异常(fail)、空产出作废(empty)、
-# 聚合定谳(verdict)各追加一行,调参不再翻 hunt.log/ledger prose。计数列由 tmp/round 文件即时派生,
+# 预筛 fail-open(failopen)、聚合定谳(verdict)各追加一行,调参不再翻 hunt.log/ledger prose。
+# 计数列由 tmp/round 文件即时派生,
 # -=文件不存在:gen 生成全集、kill 预筛杀、keep 预筛存活、short 入深查 shortlist(drop=keep-short);
 # pw_links/pw_api 查重块链接行/结构化 API 检索行总数。verdicts 每 idea 一段 id=票,票,..->终判,
 # 票为 rank(2=SA 1=aWr 0=rej -=缺票);全票 2 却 ->reject 即 SA 硬门槛降级。
@@ -358,30 +361,17 @@ prescreen_dec() {
     | grep -m1 '^判定' | grep -oE 'kill|keep' | head -1
 }
 
-# 预筛结构门槛(机械校验):ideas.all.tsv 每个 id 在 prescreen.md 有块、块内 ≥1 条结构化 API 检索记录、
-# 判定 ∈ {kill,keep}、kill 必附占位工作链接(非 API URL)。预筛定位"便宜可错、只杀不保":
-# 结构不达标视同空产出重跑;keep 不构成任何 novelty 结论,深查与裁判照常对抗。
-prescreen_ok() {
-  local id rest block dec link
-  while IFS=$'\t' read -r id rest; do
-    [ -z "$id" ] && continue
-    block=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/prescreen.md")
-    if [ -z "$block" ]; then log "预筛门槛:prescreen.md 缺 ${id} 块"; return 1; fi
-    if ! printf '%s\n' "$block" | grep -qE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org'; then
-      log "预筛门槛:${id} 缺结构化 API 检索记录"; return 1
-    fi
-    dec=$(prescreen_dec "$id")
-    case "$dec" in
-      keep) ;;
-      kill)
-        link=$(printf '%s\n' "$block" | grep -oE 'https?://[^ )|,;>]+' \
-               | grep -vE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' | head -1)
-        if [ -z "$link" ]; then log "预筛门槛:${id} 判 kill 但未附占位链接"; return 1; fi
-        ;;
-      *) log "预筛门槛:${id} 判定缺失或非法"; return 1 ;;
-    esac
-  done < "$RD/ideas.all.tsv"
-  return 0
+# kill 佐证校验:块须有 ≥1 条结构化 API 检索记录 + 非 API 占位链接,通过则输出占位链接、rc=0。
+# kill 是永久 reject 入账(overlap=high),佐证不全的 kill 一律由调用方降级 keep,防幻觉/缺失
+# 链接污染 ledger;keep 侧无校验——keep 本就是 fail-open 的兜底方向(只杀不保)。
+kill_evidence() {   # $1=id → stdout 占位链接;rc≠0=佐证不全
+  local block url
+  block=$(awk -v id="$1" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/prescreen.md" 2>/dev/null)
+  printf '%s\n' "$block" | grep -qE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' || return 1
+  url=$(printf '%s\n' "$block" | grep -oE 'https?://[^ )|,;>]+' \
+        | grep -vE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' | head -1)
+  [ -n "$url" ] || return 1
+  printf '%s\n' "$url"
 }
 
 # 删承重假设形态(机械校验,语义真伪由查重核验与裁判把关):
@@ -599,25 +589,31 @@ while :; do
     mv "$RD/ideas.md" "$RD/ideas.all.md"
     run_stage "$FRONT_CMD" "读 roles/prescreen.md,按其执行" prescreen; rc=$?; guard 0
     if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
-    if [ ! -s "$RD/prescreen.md" ] || ! prescreen_ok; then
-      log "预筛阶段未产出 prescreen.md 或结构不达标,本轮作废重试"; fails=0
-      empty_and_wait; continue
+    # 结构失败不废轮(废轮浪费整轮生成+透镜抽取):prescreen.md 缺失、判定缺失/非法、kill 佐证
+    # 不全,一律 fail-open 按 keep 进优先级 shortlist——多花深查钱,由深查重+裁判+SA 门槛兜底;
+    # 调起 rc≠0 仍走 fail_and_wait(后端系统性故障,fail-open 只会让下一阶段接着失败)。
+    ps_missing=0
+    if [ ! -s "$RD/prescreen.md" ]; then
+      ps_missing=1
+      log "预筛 fail-open:prescreen.md 缺失/为空,本轮不记 kill、全体按 keep 进优先级选取"
     fi
     : > "$RD/ideas.tsv"; : > "$RD/ideas.md"; : > "$RD/kills.tsv"; : > "$RD/keeps.tsv"
-    oidx=0
+    oidx=0; failopen=0
     while IFS=$'\t' read -r id story theme; do
       [ -z "$id" ] && continue
       oidx=$((oidx + 1))
-      if [ "$(prescreen_dec "$id")" = "keep" ]; then
+      dec=$(prescreen_dec "$id")
+      if [ "$dec" = "kill" ] && kill_url=$(kill_evidence "$id"); then
+        printf '%s\t%s\t%s\t%s\n' "$id" "$story" "$theme" "$kill_url" >> "$RD/kills.tsv"
+      else
+        if [ "$dec" != "keep" ]; then
+          failopen=$((failopen + 1))
+          [ "$ps_missing" -eq 0 ] && log "预筛 fail-open:${id} 判定缺失/非法或 kill 佐证不全(API 记录/占位链接),按 keep"
+        fi
         # 主题存量必须 grep -Fx 字节比较:BSD awk/sort 的字符串 == 走 strcoll,
         # en_US.UTF-8 下 CJK 串会互判相等(动作表征==效率与系统),计数全错
         tcount=$(cut -f3 "$LEDGER_GOOD" 2>/dev/null | grep -Fxc -- "$theme" || true)
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(keep_rank "$id")" "$tcount" "$oidx" "$id" "$story" "$theme" >> "$RD/keeps.tsv"
-      else
-        kill_url=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/prescreen.md" \
-                   | grep -oE 'https?://[^ )|,;>]+' \
-                   | grep -vE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' | head -1)
-        printf '%s\t%s\t%s\t%s\n' "$id" "$story" "$theme" "$kill_url" >> "$RD/kills.tsv"
       fi
     done < "$RD/ideas.all.tsv"
     # kill 行立即 bash 定谳入账(verdict=reject,overlap=high):防同类 idea 下轮重生成;
@@ -631,6 +627,10 @@ while :; do
       log "预筛:$(grep -c . "$RD/kills.tsv") 个 direct hit 已按 reject 入账"
     fi
     select_shortlist
+    if [ "$failopen" -gt 0 ]; then
+      log "预筛 fail-open:${failopen} 个候选按 keep 兜底(无效 kill 不入账)"
+      metrics_write failopen prescreen '-'
+    fi
     if [ "$kept" -eq 0 ]; then
       log "预筛全灭:本轮候选头条均被直接占位,作废重试"; fails=0
       empty_and_wait; continue

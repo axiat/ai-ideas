@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-07-07 预筛结构失败 fail-open,不再废轮
+
+采纳 codex 07-07 调研第 3 条。9fa98c8 只在 prompt 层修了挂后台导致 prescreen.md 不落盘的问题,orchestrator 层结构失败仍整轮作废——白扔已花的生成+透镜抽取。预筛定位"只杀不保"的纯省钱优化,不是正确性门槛,失败方向应是多花深查钱而非废轮:
+
+- 删 `prescreen_ok`(任一 id 不达标即废轮),换 `kill_evidence`:只校验 kill 佐证(块内 ≥1 条结构化 API 检索记录 + 非 API 占位链接),通过才进 kills.tsv 按 reject 入账;佐证不全降级 keep——kill 是永久入账(overlap=high),幻觉/缺失链接不得污染 ledger。
+- prescreen.md 缺失/为空、判定缺失/非法:fail-open 按 keep 进优先级 shortlist,由深查重+裁判+SA 硬门槛兜底。调起 rc≠0 仍走 fail_and_wait——后端系统性故障,fail-open 只会让下一阶段(同一 FRONT_CMD)接着失败。
+- fail-open 逐 id 记 hunt.log,并写 metrics(outcome=failopen),防预筛系统性坏掉被兜底掩盖。`roles/prescreen.md` 契约同步:「不达标整轮作废」→「无效 kill 白判、fail-open 全 keep」。
+
 ## 2026-07-07 预筛 shortlist 优先级选取 + 轮级机器可读指标
 
 采纳 codex 07-07 调研的两条建议(候选调度与可观测性;安全边界不动):
