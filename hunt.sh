@@ -355,10 +355,14 @@ themes_ok() {
   return 0
 }
 
-# 预筛判定读取:$1=id → stdout 输出 kill|keep|空(块缺失/判定非法)
+# 预筛判定读取:$1=id → stdout 输出 kill|keep|空(块缺失/判定缺失或非法)。
+# 首条判定行整行严格匹配「判定:kill|keep」(容忍空白与全/半角冒号)才算数;
+# 附加词(not kill/kill? keep/killed)一律非法 → 空 → 调用方 fail-open keep,
+# 防子串抽词把含糊判定变成永久 reject 入账。
 prescreen_dec() {
   awk -v id="$1" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/prescreen.md" 2>/dev/null \
-    | grep -m1 '^判定' | grep -oE 'kill|keep' | head -1
+    | grep -m1 '^判定' | grep -xE '判定[[:space:]]*[::][[:space:]]*(kill|keep)[[:space:]]*' \
+    | grep -oE 'kill|keep'
 }
 
 # kill 佐证校验:块须有 ≥1 条结构化 API 检索记录 + 非 API 占位链接,通过则输出占位链接、rc=0。
