@@ -37,7 +37,9 @@
 #       自身携带(AGY_MODEL/AGY_PRINT_TIMEOUT 仅作用于内置 agy,claude/codex 无挂起兜底,
 #       与 hunt.sh 同);机械校验、.badN、熔断对所有后端一视同仁(产物末行仍须 AGY-DONE)。
 #
-# 可调: AGY_MODEL(默认 gemini-3.5-flash-high) AGY_PRINT_TIMEOUT(默认 10m,均仅内置 agy)
+# 可调: AGY_MODEL(默认 'Gemini 3.5 Flash (High)';只认 `agy models` 的完整展示名,连字符形式会被
+#              静默忽略、回落服务端默认 Flash (Medium)——详见 agy-worker.sh 头注释)
+#       AGY_PRINT_TIMEOUT(默认 10m,均仅内置 agy)
 #       SIDE_GAP_SEC(默认 120,0 关闭;agy 启动闸门,仅内置 agy)
 #       SIDE_GAP_MIN_SEC/SIDE_GAP_MAX_SEC(默认 60/600,随机节流区间,禁背靠背,全后端;MAX=0 关闭)
 #       SIDE_POLL_SEC(默认 9000=150min,0=队列全终态后退出)
@@ -45,7 +47,7 @@
 #       SIDE_COOLDOWN_SEC(默认 3600,熔断后的冷却秒数;0=熔断直接退出)
 set -u
 repo="$(cd "$(dirname "$0")" && pwd)"
-model=${AGY_MODEL:-gemini-3.5-flash-high}
+model=${AGY_MODEL:-Gemini 3.5 Flash (High)}
 ptimeout=${AGY_PRINT_TIMEOUT:-10m}
 side_cmd=${SIDE_CMD:-}                       # 空=内置 agy
 research_cmd=${SIDE_RESEARCH_CMD:-$side_cmd}
