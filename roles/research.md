@@ -14,6 +14,14 @@
 - 方法机制
 - 相邻领域(含跨学科的概念前驱与最强 baseline 所在领域)
 
+**命题式 idea(头条是一句关于世界的断言、非 M×D 配对——解释公认现象/命名新问题/换评测对象/删承重假设)另须专搜命题占位**,配对/机制检索抓不到这类:
+
+- 该竞争解释 / 因果账是否已被发表(含反向结论文献、相邻学科里同一因果账)
+- 该 estimand / 问题定义是否已被命名或形式化
+- 被点名的靶子论文,其 limitation / ablation / discussion 是否已自认该现象(须实读靶子该节,非只读摘要——LAPA 自认潜动作编码相机运动、LDA 自认欧氏动作头瓶颈即此类)
+
+任一命中即如实记 high 并写明占位位置。
+
 另须至少 1 条**结构化 API 检索**并记录实际 query URL,召回可复现、可审计:
 arXiv API(`http://export.arxiv.org/api/query?search_query=...`)或 Semantic Scholar
 (`https://api.semanticscholar.org/graph/v1/paper/search?query=...`),用 WebFetch 直接取。
