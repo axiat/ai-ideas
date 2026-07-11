@@ -33,6 +33,15 @@ code review(high 档)确认 3 个正确性缺陷、1 个幻影 id 隐患、1 个
 - 票据硬校验:verdict.tsv 拷回即规范化(剥 CR、trim 字段——校验与聚合读同一份规范文本,否则校验层容忍的尾随空白在聚合层把合法票降成缺票 reject);裁判 rc=0 时逐 id 校验——每 id 恰好一行、枚举合法、无未知 id/重复,容忍 header/空行;不合格按裁判失败计、面板作废(否则坏裁判在阴性对照里以缺票/错 id 伪装成正确全 reject);id 清单单源取 `ideas.md` 的 `## I<n>`(= 发进镜像、裁判唯一所见),不另立 ideas.tsv 为源(否则裁判按 md 投的票会因 id 集不符被 verdict_ok 全判失败、面板必败)。裁判输入(ideas.md/priorwork.md)留一份审计快照到结果目录,镜像随 `rm -rf` 即弃后仍可还原「裁判当时读到什么」。泄漏标记聚合后全局打印一次(放 per-id 循环内会对每个 id 重复整份、把 1 条读成 N 条)。
 - 验证:grok-worker 写界烟测(file-tool 写 ledger/roles 全 DENIED,`GROK_REPO` 钉根)、resolve 单测(相对/绝对/裸名 × 缺失/不可执行/合法)、假裁判七种产物形态、真 grok 禁搜端到端(direct-hit case 判 reject)。
 
+## 2026-07-07 生成端转向命题式,查重端镜像命题占位
+
+hunt 循环 3 天 0 SA:120 行判定死因≈50 次落在同一封顶模式——头条是「换轴近迁移/组合」(把机制 M 搬到域 D、或 A+B 拼接),novelty 落在可枚举的配对里,强查重必然找到近邻占位。而发散透镜池 11 条里 8 条是「换 X 轴」模板(`pick_lens` 均匀抽,换轴抽中率 8/14≈57%),正把生成推向被封顶的形状。命题式(把 novelty 放进一句关于世界的断言:某解释被推翻、某假设可删、某问题被命名)不直接落 M×D 网格、较难被单篇占位——ledger 里最不封顶的几条恰是「解释公认现象」型。
+
+- `brainstorming_policy.md` 透镜池 11→6:8 条换轴塌成 1 条「换一条轴(慎用)」,抽中率 57%→11%;命题式起手式(解释公认现象/删承重假设/命名新问题/换评测对象)提为高权重条目,新增「命名一个真实但没名字的问题/被测量」;引言点明命题式 vs 换轴式两类。form#4「瓶颈定位实验」补 probe 天花板约束(纯诊断上限 borderline,冲 SA 须绑可修复臂或惊人发现)——从易失的 deathlist 固化进 policy;经典 CS 迁移形态标注默认增量。
+- `roles/generate.md` 头条自测(落笔前每候选跑一遍):能写成 M×D/A+B 配对即近迁移、预期至多 AwR;改写成命题唯一算数的判据是逼出与最近邻不同的可证伪判别(落在最小否证实验信号上),句式改写不算——堵话术换壳;另加 estimand 对齐、诊断绑修复臂两条护栏。
+- `roles/research.md` / `roles/prescreen.md`:direct-hit/三类词是配对取向,抓不到命题占位。增专搜——竞争解释是否已发表(含反向结论/相邻学科)、estimand/问题是否已命名、被点名靶子 limitation/ablation 是否自认(LAPA 自认潜动作编码相机运动、LDA 自认欧氏动作头瓶颈即此类)。prescreen 只做便宜的靶子一瞥、系统检索留深查,保住 fail-open 便宜性。
+- `roles/review.md`:estimand 错位(判别信号≠命题声称的量)、纯诊断 probe 天花板从「通用严谨性隐式抓」升为点名检查项——生成端自评可话术化,真门仍在裁判。
+
 ## 2026-07-07 预筛判定行严格解析,堵宽松抽词误杀
 
 codex 复审 fail-open 改动时指出:`prescreen_dec` 的 `grep -oE 'kill|keep'` 是子串抽词,`判定:not kill`/`判定:kill? keep`/`判定:killed` 都被抽成 kill,块内再有 API 记录+任一非 API 链接即按 reject+overlap=high 永久入账。存量问题(旧 `prescreen_ok` 同一解析),但 fail-open 契约已承诺「判定非法→keep」,解析器须兑现:
