@@ -153,3 +153,9 @@ date	source	theme	idea	verdict	reason	overlap
 2026-07-10	hunt	VLA-架构	把动作生成器与外置安全过滤器统一成一个 barrier-score flow：切向 score 生成任务动作，法向 score 同时给出安全边界与回推方向，使安全修正不再是生成后的第二套系统	reject	CRITICAL：SafeFlow 已覆盖“barrier 进入 flow 生成动力学并沿全轨迹修正”的头条，priorwork 判 overlap=high，剩余 learned signed field 与切向—法向参数化差异不足以支撑 clear accept。	high
 2026-07-10	hunt	动作表征	把连续动作拆成可逆流形内修正与跨越不可逆边界的承诺分量，VLA 只对后者低频显式决策，让动作表示直接暴露“何时真正不可回头”	accept-w-rev	可恢复性动作坐标与承诺 token 有残余机制新意且实验可杀死主张，但动作级 recoverability 与自适应承诺已有直接前驱，现有基线也未覆盖这些近邻。	medium
 2026-07-10	hunt	VLA-架构	把主动观察与 action chunking 统一成条件分叉 chunk：共享前缀先制造信息，观测谓词触发不同执行后缀，一次生成同时表达“先看清再按结果行动”	accept-w-rev	共享探查前缀、显式谓词和条件后缀形成可检验结构，但 DREAM-Chunk 与 CoMe-VLA 已分别覆盖多未来选择和主动感知分支，且最小实验漏掉二者作为直接基线。	medium
+2026-07-10	hunt	人机交互与部署	把人在环的物理推拉纠正解释为局部约束梯度而非一段待模仿动作：一次力觉纠正直接生成可复用的状态条件半空间，约束后续同类动作	reject	Safe MPC Alignment 已直接覆盖“物理方向纠正作为安全约束的一阶信息并形成半空间更新”的头条，构成 novelty CRITICAL。	high
+2026-07-10	hunt	安全与鲁棒	把不可逆操作变成“带物理回执的动作”：VLA 在执行前同时预测应出现的力觉/触觉见证，只有见证按时到达才提交动作后缀，否则在接触尚可逆时撤回	accept-w-rev	显式“物理见证到达后才提交不可逆后缀”尚未被单篇近邻完整覆盖，但预测触觉、反馈控制与动态提交均已有强近邻，clear-accept 级差异未证实。	medium
+2026-07-10	hunt	世界模型-训练目标	让机器人主动发出肉眼不可见的微幅机械 chirp，并用接触麦克风回声在线辨识局部刚度与松紧状态，使世界模型在真正施力前获得一次动作条件化的材料查询	reject	VibeCheck 等已直接覆盖主动扫频激励、接触声学隐藏状态辨识及其进入 transition model 和操作策略的核心机制，构成 novelty CRITICAL。	high
+2026-07-10	hunt	人机交互与部署	删掉多视角 VLA 必须预先标定且固定相机外参的承重假设，以在线跨视角点图一致性作为唯一公共坐标，使任意摆放或移动的相机可直接加入策略	reject	GP3 已覆盖“未知相机参数的多视角几何直接进入操作策略”这一头条，现有点图对齐与热插拔差异不足以越过 novelty 硬门。	high
+2026-07-10	hunt	效率与系统	让对象级世界模型只重算物理约束残差正在传播的 token：接触、支撑或刚体一致性已满足的区域冻结，算力沿约束传播前沿动态移动	accept-w-rev	物理残差前沿调度有 low-overlap 的非平凡差异且否证实验可执行，但缺少 learned router/Mixture-of-Depths 级强基线，预期 35% FLOPs 节省也不足以支撑 clear-accept/oral 上限。	low
+2026-07-10	hunt	VLA-训练范式	从无动作标签视频中抽取物体关系拓扑事件（分离、接触、支撑、容纳）的偏序图，用“哪些事件可交换、哪些必须先后”预训练 VLA 的长时程计划表征	reject	2019 precedence graph 已占据“视频提供可交换事件偏序”的头条，ALAM 又占据 action-free temporal-composition-to-VLA；当前实验还未把二者纳入强基线，剩余整合差异不足以支撑 clear accept。	medium

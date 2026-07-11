@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# AwR 复活 sidecar:主环之外用多轮 agent(默认 agy,便宜可错;可换 claude/codex)把 ledger 中
+# AwR 复活 sidecar:主环之外用多轮 agent(默认 agy,便宜可错;可换 claude/codex/grok)把 ledger 中
 # accept-w-rev 的 idea 改进成可复审的成品。研究员检索补缺口、出修订稿(roles/awr.md);裁判按主环 rubric 判
 # 「SA-可能/还不行」(roles/awr-judge.md);判还不行则缺陷回灌任务文件,研究员下轮继续改;
 # MAX_ROUNDS 轮反馈用尽则带最后修订稿收尾。成品 tmp/awr-side/awr/<key>.md 给人/claude 复审,
 # verdict 不进主环。只读 ledger 基线、roles/awr*.md、rubric.md、brainstorming_policy.md;
-# 只写 tmp/awr-side/awr/;不碰 tmp/round/、ideas/、不 git。与 hunt.sh 可同时跑。
+# 只写 tmp/awr-side/awr/;不碰 tmp/round/、ideas/、不 git(prompt 约定+后端沙箱写域,非机械封进程;
+# grok 席细节见 grok-worker.sh 头注 3/3b)。与 hunt.sh 可同时跑。
 #
 # 对 agy 三个已知弱点的对策:
 #   能力弱 → 每次调起只做一件小事(一条 AwR 的一轮研究或一次判定);研究只要可点 URL 的证据;
@@ -23,7 +24,7 @@
 #
 # 用法: caffeinate -is ./awr-side.sh        # 常驻:队列全终态后每 POLL 秒重扫(等主环产新 AwR)
 #
-# 接入 claude/codex(与 hunt.sh AGENT_CMD 同约定:命令字符串按空白切分,prompt 作最后一个参数传入):
+# 接入 claude/codex/grok(与 hunt.sh AGENT_CMD 同约定:命令字符串按空白切分,prompt 作最后一个参数传入):
 #   SIDE_CMD           两席统一覆盖(不设=内置 agy,行为与原来一致)
 #   SIDE_RESEARCH_CMD  研究员席单独覆盖(不设回落 SIDE_CMD)
 #   SIDE_JUDGE_CMD     裁判席单独覆盖(不设回落 SIDE_CMD)
@@ -32,10 +33,14 @@
 #   SIDE_CMD='claude -p --strict-mcp-config' ./awr-side.sh         # 两席全 claude(与 hunt.sh 同:不加载 MCP)
 #   SIDE_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral' ./awr-side.sh
 #       # codex 以沙箱镜像为 workspace,写限镜像;镜像无 .git,须 --skip-git-repo-check;--ephemeral 避免写会话
+#   SIDE_CMD='./grok-worker.sh' ./awr-side.sh                      # 两席全 grok(见 grok-worker.sh)
+#   SIDE_JUDGE_CMD='./grok-worker.sh' ./awr-side.sh                # agy 研究 + grok 裁判
 # 注意:自定义命令不走 agy 启动闸门(闸门专治 agy 连发触发登录验证),但走随机节流(禁背靠背,
 #       默认调起间隔 1-10min 随机,见 SIDE_GAP_MIN/MAX_SEC,全后端一视同仁);模型/超时由命令
-#       自身携带(AGY_MODEL/AGY_PRINT_TIMEOUT 仅作用于内置 agy,claude/codex 无挂起兜底,
+#       自身携带(AGY_MODEL/AGY_PRINT_TIMEOUT 仅作用于内置 agy;claude/codex/grok 无 agy 挂起兜底,
 #       与 hunt.sh 同);机械校验、.badN、熔断对所有后端一视同仁(产物末行仍须 AGY-DONE)。
+#       相对路径 SIDE_CMD(如 ./grok-worker.sh)启动时解析为真仓库绝对路径(失败即退出);
+#       调起注入 GROK_REPO=<镜像> 钉 grok 工作根。
 #
 # 可调: AGY_MODEL(默认 'Gemini 3.5 Flash (High)';只认 `agy models` 的完整展示名,连字符形式会被
 #              静默忽略、回落服务端默认 Flash (Medium)——详见 agy-worker.sh 头注释)
@@ -129,13 +134,28 @@ throttle() {
 # 报错即退、不产文件,.badN(按 key 计内容烂)不涨,没有这层会无限重试超限调起。
 nofile=0
 
+# SIDE_CMD 首词解析(相对路径钉真仓绝对路径、封 .. 路径段、裸名须可执行才遮蔽 PATH):
+# 与 calib/run_panel.sh 共用单源 lib/resolve_cmd.sh。
+# 两席命令启动时一次性解析;失败=配置错,立即退出——若留到调起时才失败,early-return 会绕过
+# nofile 熔断且不产 .badN,坏命令下无限空转。
+. "$repo/lib/resolve_cmd.sh"
+. "$repo/lib/mirror_pre.sh"
+# 报错前缀按值的实际来源命名(与 :- 回落同判据):报错一律写 SIDE_CMD 会把
+# SIDE_JUDGE_CMD 拼错的用户支去查一个没设或没错的变量。
+research_label="awr-side: SIDE_CMD"; [ -n "${SIDE_RESEARCH_CMD:-}" ] && research_label="awr-side: SIDE_RESEARCH_CMD"
+judge_label="awr-side: SIDE_CMD"; [ -n "${SIDE_JUDGE_CMD:-}" ] && judge_label="awr-side: SIDE_JUDGE_CMD"
+research_cmd=$(resolve_cmd "$repo" "$research_label" "$research_cmd") || exit 2
+judge_cmd=$(resolve_cmd "$repo" "$judge_label" "$judge_cmd") || exit 2
+
 # $1=命令字符串(空=内置 agy) $2=唯一允许写的文件 $3=prompt 正文 $4=原始输出日志。
 # agent 只看 tmp/awr-side 下的临时镜像;合格与否由外层机械校验决定,主仓库只接收指定输出文件。
-# 启动闸门只罩 agy 后端(专治 agy 连发触发登录验证),claude/codex 直起、不动共享戳。
+# 启动闸门只罩 agy 后端(专治 agy 连发触发登录验证),claude/codex/grok 直起、不动共享戳。
+# 自定义后端命令已在启动时解析为绝对路径;GROK_REPO=镜像 让 grok-worker 不钉回真仓。
 run_agent() {
-  local cmd=$1 target=$2 prompt=$3 logf=$4 sandbox rel target_in_sandbox prompt_in_sandbox pre rc
+  local cmd=$1 target=$2 prompt=$3 logf=$4 first sandbox rel target_in_sandbox prompt_in_sandbox pre rc
   throttle                                          # 随机 1-10min 节流,禁背靠背(全后端)
-  case "${cmd%% *}" in ''|agy|*/agy) gate ;; esac   # agy 另加启动闸门(治连发登录验证 + 与 agy-worker 错峰)
+  read -r first _ <<<"$cmd"                         # 与 resolver/调起点同口径按任意空白切首词(tab 也算)
+  case "$first" in ''|agy|*/agy) gate ;; esac       # agy 另加启动闸门(治连发登录验证 + 与 agy-worker 错峰)
   sandbox=$(mktemp -d "$statedir/run.XXXXXX") || return 1
   rel=${target#"$repo"/}
   target_in_sandbox="$sandbox/$rel"
@@ -148,14 +168,15 @@ run_agent() {
   cp "$outdir"/*.md "$sandbox/tmp/awr-side/awr/" 2>/dev/null || true
   rm -f "$target" "$target_in_sandbox"
   prompt_in_sandbox=${prompt//$repo/$sandbox}
-  pre="仓库根(绝对路径)= ${sandbox}。当前工作目录已在此根下,所有读写路径一律相对该根解析。本次任务只允许写一个文件:${target_in_sandbox}。真实仓库未作为工作目录提供;严禁写 tmp/round/、ideas/、ledger.tsv,严禁写 ~/.gemini、~/.claude、~/.codex、任何 scratch 目录或 \$HOME 其它位置。"
+  pre=$(mirror_pre "$sandbox" "$target_in_sandbox" "tmp/round/、ideas/、ledger.tsv")   # 隔离预提示单源 lib/mirror_pre.sh
   if [ -z "$cmd" ]; then
     ( cd "$sandbox" && agy --model "$model" --add-dir "$sandbox" --print-timeout "$ptimeout" \
         -p "${pre}
 
 ${prompt_in_sandbox}" < /dev/null >> "$logf" 2>&1 )
   else
-    ( cd "$sandbox" && $cmd "${pre}
+    # GROK_REPO=镜像:grok-worker 以镜像为工作根(不按脚本 dirname 逃回真仓);其它后端忽略。
+    ( cd "$sandbox" && GROK_REPO="$sandbox" $cmd "${pre}
 
 ${prompt_in_sandbox}" < /dev/null >> "$logf" 2>&1 )
   fi
@@ -218,14 +239,18 @@ while :; do
   src="$repo/tmp/ledger.good"; [ -s "$src" ] || src="$repo/ledger.tsv"
   snap="$outdir/.ledger.snap"; cp "$src" "$snap"
   did=0; pending=0
-  while IFS=$'\t' read -r d source theme idea verdict reason overlap <&3; do
+  while IFS=$'\t' read -r d source theme idea verdict reason _overlap <&3; do
     [ "$source" = "hunt" ] && [ "$verdict" = "accept-w-rev" ] || continue
     [ -n "$idea" ] || continue
     key=$(printf '%s' "$idea" | md5 | cut -c1-12)
     out="$outdir/$key.md"
     [ -s "$out" ] && continue                                  # 终态
-    nbad=$(ls "$outdir/$key".*.bad* 2>/dev/null | grep -c . || true)
-    if [ "${nbad:-0}" -ge "$max_bad" ]; then continue; fi      # 拉黑
+    nbad=0
+    for badf in "$outdir/$key".*.bad*; do
+      [ -e "$badf" ] || continue                               # glob 未命中时字面量本身会进循环
+      nbad=$((nbad + 1))
+    done
+    if [ "$nbad" -ge "$max_bad" ]; then continue; fi           # 拉黑
     pending=1
     task="$outdir/$key.task.md"; draft="$outdir/$key.draft.md"
     judgef="$outdir/$key.judge.md"; new="$outdir/$key.new.md"; alog="$outdir/$key.agy.log"

@@ -1,5 +1,38 @@
 # CHANGELOG
 
+## 2026-07-11 review 修复:resolver 换行/空白路径、GROK_SANDBOX 封 fail-open、面板前置校验与 BOM
+
+code review(high 档)确认 10 项缺陷,全部修复:
+
+- `lib/resolve_cmd.sh`:首词切分弃 `read -r`(here-string 只读到首个换行,含换行的 SIDE_CMD/PANEL_CMD 会静默丢掉换行后全部参数——沙箱/审批 flags 就此蒸发还不报错),改参数展开按任意空白切、rest 原样保留;解析出的绝对路径含空白即拒 exit 2(调起点按 IFS 拆词必拆碎它,含空格仓库路径原本过了启动校验、调起时全 127 空转,正是启动解析要防的形态)。
+- `grok-worker.sh`:GROK_SANDBOX 补校验——grok 0.2.x 对认不出的 profile 只打 warning 就**无沙箱跑完全程**(实测,fail-open),固定枚举 workspace/off,其它值 exit 2(与 GROK_DISABLE_WEB 同风格:安全开关不 fail-open)。有意不放行 sandbox.toml 自定义 profile:可靠判定「toml 真有该 table」需要 TOML parser + profile 名转义(grep 级检查会被注释里的同名串骗过,复核实测确认),为无人在用的形态不值;两处 sandbox.toml 均不存在。
+- `calib/run_panel.sh` 前置校验挪到 `rm -rf` 清场之前:裁判数须正整数(原 REVIEWERS=0/非数字时 seq 空转、空 pids 数组在 bash 3.2 + set -u 下 `wait` 崩 unbound variable,且上轮票据已被清掉);PANEL_CMD 解析失败同样不再先毁上轮票据再退。
+- `calib/run_panel.sh` id 提取:未闭合围栏(CommonMark 语义吞到文件尾)不再静默照办——其后真标题全进不了 id 清单、正确面板被误作废,现 `PIPESTATUS` 捕获 awk `exit 3` 响亮报错让人修 case。
+- `calib/run_panel.sh` verdict.tsv 拷回规范化补剥 UTF-8 BOM(带 BOM 合法票首 id 变 `\xef\xbb\xbfI1` 被判未知 id,与 CR 同类隐形字节假失败);`LC_ALL=C` 使 substr 按字节计(UTF-8 aware awk 把 BOM 当 1 字符会多剥)。
+- `calib/run_panel.sh` 聚合的「缺票(计 reject)」死分支(rc 校验+verdict_ok 后 v 不可能空)改内部不一致响亮中止——留着会让维护者误信缺票仍静默降 reject,恰是 verdict_ok 加固要消灭的伪装通道。
+- `awr-side.sh` resolve 报错前缀按值的实际来源命名(SIDE_CMD/SIDE_RESEARCH_CMD/SIDE_JUDGE_CMD,与 `:-` 回落同判据;原一律报 SIDE_CMD,SIDE_JUDGE_CMD 拼错会支使用户查错变量)。
+- 镜像隔离预提示抽单源 `lib/mirror_pre.sh`(run_judge 与 run_agent 各持同构文本已实际漂移:awr 侧禁写 `~/.gemini` 等家目录、面板侧没有;单源后面板席同样获得家目录禁写)。有意不合并两函数的 mktemp/拷入/拷回骨架:输入集、拷回策略、节流/熔断真不同,强抽会造出参数森林。
+- 验证:22 项回归全过(resolver 换行/tab/空串/`..`/裸名/PATH 回退/含空格仓库、REVIEWERS=0/非数字与 PANEL_CMD 拼错均 exit 2 且上轮票据无损、未闭合围栏响亮退、闭合围栏 id 无幻影、BOM+CR+trim 规范化及无 BOM 不误伤、GROK_SANDBOX 三态、awr-side 三席报错标签),全脚本 `bash -n` 过。
+
+## 2026-07-10 review 修复:resolver 抽单源加固 + 面板输入冻结
+
+code review(high 档)确认 3 个正确性缺陷、1 个幻影 id 隐患、1 个快照口径问题,全部修复:
+
+- resolver 抽单源 `lib/resolve_cmd.sh`(SIDE_CMD 与 PANEL_CMD 原各持逐字拷贝,修 resolver 必两边同步、必然漂移),同时修三处:`..` 封禁从「仅开头 `../`」改为任意路径段(`./tmp/../../x` 原可穿出真仓 pin,静默执行仓外脚本);裸名须真仓根同名文件可执行才遮蔽 PATH(原杂散非可执行同名文件会让 `SIDE_CMD='claude -p …'` 启动即死,常驻 sidecar 整体停摆);报错前缀参数化。grok-worker 写禁树加 `lib`。
+- awr-side run_agent 的 agy 闸门首词改 `read -r` 按任意空白切(原 `${cmd%% *}` 只认空格,tab 分隔的 agy 命令串绕过闸门,连发触发登录验证——正是闸门要防的);`${nbad:-0}` 死防护改 `$nbad`(计数前已无条件初始化,`:-0` 是旧 `ls|grep -c` 管道的遗留,留着误导维护)。
+- run_panel 输入冻结:活 `$CASE` 只在启动时读一次成 `$OUT` 快照,id 清单与各席镜像全取自快照(原各席镜像各自再读活 `$CASE`,面板启动中 case 被编辑会让各席输入不一致、审计快照不再是「裁判当时读到的」);id 提取跳过围栏代码块(idea 正文引用 `## I<n>` 样例会生成幻影 id,verdict_ok 向每张票索要不存在的行、面板必败)——按 CommonMark 记围栏字符+长度的状态机:```` ``` ````/`~~~` 都算、容 ≤3 前导空格、关栏须同字符且长度 ≥ 开栏(裸 `!fence` 翻转会被 `~~~`、缩进栏、四内嵌三穿透出幻影 id;错翻反向还会吞真标题,票里冒「未知 id」同样面板必败,复测确认);反引号开栏行 info 串含反引号按行内代码不认栏;不写 `{0,3}` 区间,BSD awk 对 brace 区间支持不稳。
+- 有意不改:id 来源收窄到 ideas.md `## I<n>` 单源(既定决策,注释已文档化);hunt.sh 与 awr-side 的 glob 计数惯用法保持各一份、仅统一 `[ -e ]` 守卫注释(两脚本独立,不值得为 5 行引依赖)。
+- 验证:resolver 回归 15 例(`..` 开头/嵌中/绝对路径内/纯段、裸名遮蔽×可执行性、tab 切词、空串、相对/绝对/缺失)全过;假裁判端到端(含围栏样例的 case,2 席)ids 无幻影、快照落位、聚合正常;全部脚本 `bash -n` 过。
+
+## 2026-07-10 grok 一等公民接入(hunt / AwR / calib 全链路)
+
+- 新增 `grok-worker.sh`:grok 无头适配层,只收单一 prompt 参数拼 `grok … -p`(直接 `grok -p …` 会被 flags 吃值,裸 positional 无 TTY 挂;多参报错,防命令串夹带 flags 被静默吞掉用错配置);`--always-approve` + `--sandbox workspace` + `--no-subagents`,对 ledger.tsv、`tmp/ledger.good`(hunt 唯一可信基线,tmp/ 可写且在守卫视野外)、固定层、编排脚本、roles|calib|.claude 等发 file-tool Edit|Write 写禁(相对+绝对+`**/`glob 三套,仅相对挡不住绝对路径写);`GROK_REPO` 指定工作根(默认脚本所在目录);`GROK_DISABLE_WEB` 枚举校验(禁搜是安全开关,不 fail-open,认不出的值 exit 2);可调 GROK_MODEL/GROK_MAX_TURNS/GROK_SANDBOX/GROK_BIN。不用 `--disallowed-tools Agent`(grok 0.2.x session 构建期崩溃)。写界边界诚实记入头注:仅达文件写域,deny 挡 file tools 与可静态识别的 shell 写但间接写(python `open().write()` 实测)绕得过;sandbox workspace 不禁网/不禁进程(terminal 实测可 git/gh/curl 联网),且继承用户级 `~/.claude`+`~/.grok` 的 hooks/plugins/MCP——这些外部副作用无机械闸,靠 prompt 铁律,真要封须再包 OS 沙箱(本脚本不做)。
+- hunt.sh:AGENT_CMD/FRONT_CMD/BACK_CMD/REV_CMD_N 均可指 `./grok-worker.sh`,grok 计入可信席位(与 claude/codex 同级)。
+- awr-side.sh:两席可换 grok;自定义 SIDE_CMD 启动时一次性解析并验证(相对路径钉成真仓绝对路径,绝对路径同验 `-f`+`-x`,裸名优先真仓根同名文件、回退 PATH;失败立即退出——若留到调起时才失败会绕过 nofile 熔断,坏命令下无限空转;PANEL_CMD 同构同验),调起注入 `GROK_REPO=<镜像>`;沙箱预提示明文禁写 `~/.gemini`/`~/.claude`/`~/.codex`/`~/.grok`。
+- calib/run_panel.sh 裁判改镜像执行:每席一次性镜像,bash 只拷回 `verdict.tsv`/`review.md`,真仓不作为裁判工作目录;镜像只隔 CWD,越界写由后端沙箱挡(无沙箱命令不得当 PANEL_CMD);禁搜机械层:grok 席自动注入 `GROK_DISABLE_WEB=1`(禁内建检索),claude 席镜像内写 calib 专用 settings(只许写 tmp/**,deny WebSearch/WebFetch——原样拷真仓 allowlist 会放行检索);OS 层不限网络,shell 侧禁搜靠 prompt 铁律+泄漏标记(聚合 `LC_ALL=C sort -u`,BSD sort 在 UTF-8 locale 下会把等长 CJK 标记吞成一条)。不同 case 面板可并行(镜像名按 case 名隔离清扫,`_→_u`/`.→_d` 单射编码防前缀 glob 误伤与 `foo.bar`/`foo_bar` 同名互扫)。曾试过的内容快照守卫被复现 fail-destructive(agent 删掉快照后,守卫把全部 tracked 文件当「快照外新增」逐个删),弃用。
+- 票据硬校验:verdict.tsv 拷回即规范化(剥 CR、trim 字段——校验与聚合读同一份规范文本,否则校验层容忍的尾随空白在聚合层把合法票降成缺票 reject);裁判 rc=0 时逐 id 校验——每 id 恰好一行、枚举合法、无未知 id/重复,容忍 header/空行;不合格按裁判失败计、面板作废(否则坏裁判在阴性对照里以缺票/错 id 伪装成正确全 reject);id 清单单源取 `ideas.md` 的 `## I<n>`(= 发进镜像、裁判唯一所见),不另立 ideas.tsv 为源(否则裁判按 md 投的票会因 id 集不符被 verdict_ok 全判失败、面板必败)。裁判输入(ideas.md/priorwork.md)留一份审计快照到结果目录,镜像随 `rm -rf` 即弃后仍可还原「裁判当时读到什么」。泄漏标记聚合后全局打印一次(放 per-id 循环内会对每个 id 重复整份、把 1 条读成 N 条)。
+- 验证:grok-worker 写界烟测(file-tool 写 ledger/roles 全 DENIED,`GROK_REPO` 钉根)、resolve 单测(相对/绝对/裸名 × 缺失/不可执行/合法)、假裁判七种产物形态、真 grok 禁搜端到端(direct-hit case 判 reject)。
+
 ## 2026-07-07 预筛判定行严格解析,堵宽松抽词误杀
 
 codex 复审 fail-open 改动时指出:`prescreen_dec` 的 `grep -oE 'kill|keep'` 是子串抽词,`判定:not kill`/`判定:kill? keep`/`判定:killed` 都被抽成 kill,块内再有 API 记录+任一非 API 链接即按 reject+overlap=high 永久入账。存量问题(旧 `prescreen_ok` 同一解析),但 fail-open 契约已承诺「判定非法→keep」,解析器须兑现:

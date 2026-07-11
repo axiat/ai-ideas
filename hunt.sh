@@ -24,16 +24,20 @@
 #     AGENT_CMD='claude -p --strict-mcp-config' ./hunt.sh   # 默认;权限走 .claude/settings.json allowlist
 #     AGENT_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' ./hunt.sh
 #       # OS sandbox 写限本仓库;approval never + 放行网络(publish.sh 的 push/gh 需联网)。codex exec 不吃 -a,须用 -c approval_policy=
+#     AGENT_CMD='./grok-worker.sh' ./hunt.sh
+#       # grok 无头适配:--always-approve + --sandbox workspace + 固定层/ledger 的 Edit|Write deny;
+#       # 须走 worker(不能直接 AGENT_CMD='grok -p …',见 grok-worker.sh 头注)。ledger 仍靠 ledger.good 兜底。
 #   FRONT_CMD 覆盖前段(生成+查重)、BACK_CMD 覆盖后段(打分+报告);二者都默认回落到 AGENT_CMD,不设则行为与原来逐字节一致。
-#   Level 1.5(agy 跑便宜前段,claude/codex 跑可信后段):
+#   Level 1.5(agy 跑便宜前段,claude/codex/grok 跑可信后段):
 #     FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p --strict-mcp-config' ./hunt.sh
+#     FRONT_CMD='./agy-worker.sh' BACK_CMD='./grok-worker.sh' ./hunt.sh
 #       # 前段用 agy:便宜、可错——错误 idea 由下游独立裁判 + SA 硬门槛毙掉,只会多重试几轮,不污染 verdict。
-#       # 后段(verdict/报告)与 publish 全走 claude/codex:可信、可并行。agy 不碰 publish(其 CLI sandbox 可读写 $HOME,不能当边界)。
+#       # 后段(verdict/报告)与 publish 全走可信席:claude/codex/grok。agy 不碰 publish(其 CLI sandbox 可读写 $HOME,不能当边界)。
 #   REV_CMD_1..REV_CMD_N 逐席位覆盖裁判命令(不设回落 BACK_CMD);REV_STAGGER_SEC 裁判错峰起跑秒数(默认 0)。
-#   混合面板示例(1 codex + 1 claude + 1 agy):
+#   混合面板示例(1 codex + 1 grok + 1 agy):
 #     REV_CMD_1='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
-#     REV_CMD_2='claude -p --strict-mcp-config' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
-#       # 取最低票 + SA 需全票 ⇒ 便宜裁判只能否决不能放水,SA 决定权仍在可信席位;至少留 1 席 claude/codex。
+#     REV_CMD_2='./grok-worker.sh' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
+#       # 取最低票 + SA 需全票 ⇒ 便宜裁判只能否决不能放水,SA 决定权仍在可信席位;至少留 1 席 claude/codex/grok。
 #       # agy 快速重复调起会触发登录验证;agy-worker.sh 内置启动闸门(AGY_LAUNCH_GAP_SEC,默认 60s)
 #       # 自动错峰所有 agy 席位,REV_STAGGER_SEC 可再减少闸门排队。仍不要把全部裁判席交给 agy(须留可信席位)。
 #   前段空产出按"便宜可错"短重试:EMPTY_MAX 次内随机等 NO_HIT 区间,连续达 EMPTY_MAX 次才升级长睡(默认 3);
@@ -58,11 +62,11 @@
 #   RESUME_FRONT=1(默认)时,中断遗留的前段产物(ideas+priorwork)过机械门槛则首轮跳过生成/预筛/查重续跑;
 #   评审票据/聚合残留一律作废、裁判由本进程重新调起——verdict 永不续用,防前段借崩溃伪造票据绕过独立评审。
 set -u
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 2
 git config core.hooksPath .githooks   # 激活 pre-push 守卫:禁止直推 main
 
 AGENT_CMD=${AGENT_CMD:-claude -p --strict-mcp-config}
-# 分段 agent:前段(生成+查重)便宜且可错,可换 agy;后段(打分+报告)决定 verdict 与发布产物,须可信(claude/codex)。
+# 分段 agent:前段(生成+查重)便宜且可错,可换 agy;后段(打分+报告)决定 verdict 与发布产物,须可信(claude/codex/grok)。
 # 两者默认回落 AGENT_CMD——都不设时行为与原来完全一致。
 FRONT_CMD=${FRONT_CMD:-$AGENT_CMD}
 BACK_CMD=${BACK_CMD:-$AGENT_CMD}
@@ -264,7 +268,14 @@ sa_today() {
 }
 
 # 当日报告文件数:同日多份报告(-2/-3 后缀)时,报告是否写出须按"数量新增"判,存在性检查会被旧报告蹭过
-reports_today() { ls "ideas/${today}"_hunt*.md 2>/dev/null | grep -c . || true; }
+reports_today() {
+  local f n=0
+  for f in "ideas/${today}"_hunt*.md; do
+    [ -e "$f" ] || continue                        # glob 未命中时字面量本身会进循环
+    n=$((n + 1))
+  done
+  echo "$n"
+}
 
 # SA 硬门槛:$1=id。要求 priorwork.md 有该 idea 的查重块、实读篇数≥MIN_READ、
 # ideas.md 该 idea 块含「最小否证实验」(feasibility 的非叙事锚点,裁判只认它),
