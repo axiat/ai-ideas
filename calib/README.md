@@ -6,11 +6,15 @@
 - 阴性对照 = 头条被单篇工作直接占据、priorwork 如实标 high。期望全票 reject;否则面板放水。
 
 ```bash
-./calib/run_panel.sh calib/cases/neg-replai      # 3 位禁搜裁判,min-vote 聚合
-PANEL_CMD='codex ... exec ...' ./calib/run_panel.sh calib/cases/pos-robomme 5
+./calib/run_panel.sh calib/cases/neg-replai      # 3 位禁搜裁判(默认 claude),min-vote 聚合
+PANEL_CMD='./grok-worker.sh' ./calib/run_panel.sh calib/cases/pos-meanflow           # grok 席,自动禁内建检索
+PANEL_CMD='codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral' \
+  ./calib/run_panel.sh calib/cases/pos-robomme 5                                     # codex 席,禁搜故不开 --search/网络
 ```
 
 裁判禁用检索:对照多为已发表工作,联网检索会把它们判成"被自己占据"的假阴性。裁判怀疑某 idea 对应已发表论文时,只在 review.md 末尾加「怀疑对应已发表工作:<名>」做泄漏标记,verdict 仍按材料评。
+
+隔离契约:每席裁判只见一次性镜像,bash 只拷回 verdict.tsv/review.md,真仓不作为裁判工作目录;镜像只隔文件树与 CWD,不隔网络/进程,越界写靠后端沙箱挡——PANEL_CMD 必须自带沙箱(claude allowlist / codex workspace-write / grok worker)。写域边界与已知绕过(间接写、继承的用户级 hooks/MCP)细节见 `grok-worker.sh` 头注。
 
 cases:
 
