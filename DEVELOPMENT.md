@@ -30,6 +30,7 @@
 - `tmp/hunt.metrics.tsv`：96 个候选完成三席评审，288 张票中仅 6 张 SA；3 个候选得到 `2×SA + 1×AwR`，无全票 SA。
 - 59 次有指标记录的尝试中，32 次到达 verdict，27 次停在 empty/fail。
 - `tmp/sa-potential-ideas.md` 是动态候选池；其中的 `SA-可能` 未获正式主环确认，不计作 SA。
+- `calib/results-2026-07-12.md`（口径统一后首跑）：冻结校准正确率 2/4——阴性全票 reject，两个正式阳性全票 AwR、0 张 SA 票（诊断天花板 / 机制迁移条款封顶，非材料单因）；端到端检索召回 pass。
 
 #### 优化指标
 
