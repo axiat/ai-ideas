@@ -159,3 +159,10 @@ date	source	theme	idea	verdict	reason	overlap
 2026-07-10	hunt	人机交互与部署	删掉多视角 VLA 必须预先标定且固定相机外参的承重假设，以在线跨视角点图一致性作为唯一公共坐标，使任意摆放或移动的相机可直接加入策略	reject	GP3 已覆盖“未知相机参数的多视角几何直接进入操作策略”这一头条，现有点图对齐与热插拔差异不足以越过 novelty 硬门。	high
 2026-07-10	hunt	效率与系统	让对象级世界模型只重算物理约束残差正在传播的 token：接触、支撑或刚体一致性已满足的区域冻结，算力沿约束传播前沿动态移动	accept-w-rev	物理残差前沿调度有 low-overlap 的非平凡差异且否证实验可执行，但缺少 learned router/Mixture-of-Depths 级强基线，预期 35% FLOPs 节省也不足以支撑 clear-accept/oral 上限。	low
 2026-07-10	hunt	VLA-训练范式	从无动作标签视频中抽取物体关系拓扑事件（分离、接触、支撑、容纳）的偏序图，用“哪些事件可交换、哪些必须先后”预训练 VLA 的长时程计划表征	reject	2019 precedence graph 已占据“视频提供可交换事件偏序”的头条，ALAM 又占据 action-free temporal-composition-to-VLA；当前实验还未把二者纳入强基线，剩余整合差异不足以支撑 clear accept。	medium
+2026-07-12	weekly	世界模型-架构	长时程世界模型 rollout 漂移的主因是动作条件化衰减(模型逐步忽略动作)而非复合像素误差,衰减曲线比预测误差更预测下游规划失败	reject	头条"漂移由动作条件化坍缩驱动+可修"被 Delta-JEPA(2606.31232)+Persistent-WM(2603.25685)占据,残余仅衰减作逐步失败预测器的诊断增量,三遍最低 reject	medium
+2026-07-12	weekly	动作表征	离散动作 tokenizer 胜过连续头的真正原因是量化把亚阈动作噪声去掉了(去噪)而非序列建模先验,给连续头配匹配量化噪声地板即可补平差距	accept-w-rev	竞争账+噪声地板判别实验较新,但 ActionCodec(2602.15397)相邻占 tokenizer 抗过拟合、视觉域 2412.16326 同构先驱,novelty 封顶 medium;另 estimand 对齐一处 MAJOR	medium
+2026-07-12	weekly	数据引擎	命名决策相关动作带宽:遥操示教动作高频带(>人运动带宽约10Hz)是插值/手抖噪声,模型却拟合、评测却奖励它,应按频带清洗训练与评测	reject	动作低频可压缩被 FreqPolicy(2506.01583)直接占据并利用,评测奖励高频噪声的 estimand 偏弱、增量薄,三遍最低 reject	medium
+2026-07-12	weekly	VLA-架构	删掉 VLA 必须每控制步从原始像素重编码视觉这条承重假设:视觉只在稀疏感知决策点承重,用学习触发器决定何时重编码,其余步复用特征+本体感觉	reject	预筛直接占位:AC2-VLA(2601.19634)/VLA-Cache/DySL-VLA(2602.22896)已占自适应/缓存视觉计算、常开 backbone 冗余;删公理五字段齐但头条被占	high
+2026-07-12	weekly	安全与鲁棒	操作策略 OOD 失败由本体/动作空间新颖性预测,比视觉 OOD 检测更早更准,用本体空间 conformal 门控替代视觉门控	reject	预筛直接占位:ActProbe(2606.08508)主张动作信号先于可见失败预测,头条被单篇覆盖	high
+2026-07-12	weekly	评测与诊断	命名内在策略可靠性=固定初始态下动作采样导致的成功方差,它比均值成功率更预测部署掉点,低方差解码提升最差情形	reject	固定态方差已被 PhAIL(2605.29710)/Rethink-Repeatable(2505.08216)形式化,纯诊断天花板,且超深查名额被截断	medium
+2026-07-12	weekly	VLA-训练范式	web 视觉-语言共训对 VLA 的真实作用不是保住语义知识而是防止视觉编码器塌缩到窄机器人分布,可用编码器秩正则在纯机器人数据上廉价替代	reject	预筛直接占位:Preserving-Pretrained-Representations(2509.11417 冻结/部分冻结编码器防塌缩)+主流共训防过拟合已占,廉价替代亦已存在	high
