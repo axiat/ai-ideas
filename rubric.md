@@ -717,13 +717,15 @@ MAJOR → cap at Accept with Revisions) and the clear-accept SA bar in
   paper's thesis. Emphasise these two in the Introduction.
 - Three or more dimensions at 5 or below: the idea is thin — find the
   dimension where it really shines and sharpen it, or pivot.
-- All five dimensions at 4 or below: no dimension carries the idea, so
-  the value assessment lands at Reject and Pivot — corroborated by, not
-  decided by, the count.
-- No single dimension reaches 7: treat the idea as vague. This caps
-  enthusiasm (it does not clear the SA bar) and the dominant axis
-  should be named in the evaluation, but it does not by itself set the
-  verdict.
+- All five dimensions at 4 or below: this is the arithmetic shadow of a
+  thin idea, not a Reject rule. Re-read first (§9 Deflation); if the idea
+  really is weak, the Reject is set by the value assessment or a CRITICAL
+  flaw — never by the tally alone.
+- No single dimension reaches 7: the clear-accept SA bar in
+  `brainstorming_policy.md` requires a standout dimension (around 8), so
+  an idea with nothing at 7+ cannot meet it. That is the bar applied, not
+  a separate count veto — it removes SA and flags a vague idea to sharpen,
+  but does not by itself choose between Accept-with-Revisions and Reject.
 
 ## 8. Summary table
 

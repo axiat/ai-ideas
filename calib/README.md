@@ -5,7 +5,7 @@
 - 阳性对照 = 已知 oral/spotlight 论文的投稿前 idea 形态 + 理想 priorwork(实读 8 篇、low 重叠、编号经 arXiv API 核验)。期望 min-vote ≥ accept-w-rev 且出现 strong-accept 票;给足理想证据仍无人投 SA,说明瓶颈在 verdict 逻辑/聚合规则,不在生成与查重。
 - 阴性对照 = 头条被单篇工作直接占据、priorwork 如实标 high。期望全票 reject;否则面板放水。
 
-两条校准跑道分开验证:**冻结校准**(`run_panel.sh`/`run_all.sh`)固定 ideas+priorwork,只验 verdict 逻辑与聚合规则;**端到端校准**(`run_e2e.sh`)放开真实检索,只验查重进程能否召回已知占位。阳性对照没有端到端跑法——已发表工作会被真检索找到、判成"被自己占据"的假阴性,故端到端只跑 direct-hit 阴性(检索召回侧)。
+两条校准跑道分开验证:**冻结校准**(`run_panel.sh`/`run_all.sh`)固定 ideas+priorwork,只验 verdict 逻辑与聚合规则;**端到端检索召回校准**(`run_e2e.sh`)放开检索(须真·联网后端),验查重进程能否召回已知占位。**效力边界**:机械断言只查召回产物的结构(重叠判定、占位命中、近邻/API 密度),纯文本无法证伪一个硬编码链接、甚至明写"未联网"的离线 agent——脚本本身不自证真检索,判读时须默认后端确实联网,其效力来自用真·联网后端跑 research 角色。阳性对照没有端到端跑法——已发表工作会被真检索找到、判成"被自己占据"的假阴性,故端到端只跑 direct-hit 阴性(检索召回侧)。
 
 ```bash
 ./calib/run_panel.sh calib/cases/neg-replai      # 3 位禁搜裁判(默认 claude),min-vote 聚合
@@ -15,7 +15,7 @@ PANEL_CMD='codex -c approval_policy=never exec -s workspace-write --skip-git-rep
 
 ./calib/run_all.sh                               # 批跑全部带 expect 的 case,按 expect 断言打分,
                                                  # 打印校准正确率;逐 case 结果追加 tmp/calib/summary.tsv
-./calib/run_e2e.sh calib/cases/neg-replai        # 端到端检索召回:真检索跑 roles/research.md,
+./calib/run_e2e.sh calib/cases/neg-replai        # 端到端检索召回:联网后端跑 roles/research.md,
                                                  # 断言 priorwork 召回已知占位(e2e.expect:overlap/url_contains)
 ```
 
