@@ -2,6 +2,8 @@
 
 具身智能(WorldModel & VLA)idea 调研回路。仿 [karpathy/autoresearch](https://github.com/karpathy/autoresearch) 的分层:固定的回路协议 + 薄入口 + 实验台账。反串通:生成、查重、打分是互不共享 context 的独立进程,verdict 由 orchestrator 聚合,单个 agent 改不了判定。
 
+开发规划见 [`DEVELOPMENT.md`](DEVELOPMENT.md)。
+
 固定层(人改,agent 只读):
 
 - `PROGRAM.md` — 回路协议与不动项
