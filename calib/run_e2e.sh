@@ -3,6 +3,8 @@
 # 验 verdict 逻辑/聚合规则;本脚本放开检索,验「查重进程能否召回已知占位并如实定级」。
 # 对带 e2e.expect 的 case(direct-hit 阴性)镜像跑 roles/research.md,机械断言 priorwork 产物。
 # 阳性对照没有端到端跑法:已发表工作会被真检索找到、判成"被自己占据"的假阴性(见 calib/README.md)。
+# 效力边界:机械断言只查产物结构(重叠判定、占位命中、近邻/API 密度),无法从纯文本证明真发生了检索——
+# 效力来自用真·联网后端跑 research 角色。故 E2E 只作回归门(拦薄/空/漏占位),不作对抗性造假的证明。
 #
 # e2e.expect DSL(calib/cases/<case>/e2e.expect,每行一条,# 注释;对每个 id 都须成立):
 #   overlap=high|medium|low        priorwork 块的重叠判定
@@ -91,9 +93,11 @@ while read -r id; do
           | grep -cvE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' || true)
   api=$(printf '%s\n' "$block" | grep -cE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' || true)
   detail="${detail:+$detail;}${id}=${ov:-无判定},links=${links},api=${api}"
-  # 检索证据硬门槛(独立于 e2e.expect):E2E 这条跑道的目的就是验证真检索发生了。
-  # 只给记忆里的占位 URL + 「重叠判定:high」不做检索也能过 expect,故要求 ≥E2E_MIN_LINKS 条
-  # 非 API 近邻 + ≥1 条结构化 API query URL(roles/research.md 本就强制),不足即判 retrieval-thin。
+  # 检索结构门槛(独立于 e2e.expect):要求 ≥E2E_MIN_LINKS 条非 API 近邻 + ≥1 条结构化 API query URL
+  # (同 hunt.sh priorwork_ok 与 roles/research.md 口径),不足即判 retrieval-thin。
+  # 界定:这只证明「产物结构完整」,不证明「发生了真检索」——纯文本无法证伪一个硬编码这些字符串、
+  # 甚至明写「未检索」的离线 agent。E2E 的效力来自用真·联网后端(claude/codex/grok+web)跑 research 角色,
+  # 门槛只拦薄/空产物这类回归,不是防对抗性造假的机械证明。判读 E2E 结果时须默认后端确实联网。
   if [ "$links" -lt "$E2E_MIN_LINKS" ] || [ "$api" -lt 1 ]; then
     failed="${failed:+$failed;}${id}:retrieval-thin(links=${links}<${E2E_MIN_LINKS} 或 api=${api}<1)"
   fi

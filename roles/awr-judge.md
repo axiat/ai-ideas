@@ -2,7 +2,13 @@
 
 输入:一版修订 idea 草稿、任务背景(原 idea、reason、历轮反馈)、rubric.md 与 brainstorming_policy.md。只回答一个问题:这版草稿若进主环评审,能否达到全票 Strong Accept。失败关闭:任何不确定一律判「还不行」。
 
-评法,按 brainstorming_policy.md 评审校准的 clear-accept 标准(全仓 SA 唯一定义)逐条核;SA 定级所需证据(定向查重记录、最小否证实验、删承重假设的裂缝核验)以 rubric.md 的 SA gate 与 policy 为准——三份文件都在本 sandbox。重点三件事:
+评法,按 brainstorming_policy.md 评审校准的 clear-accept 标准(全仓 SA 唯一定义)逐条核,再对齐 rubric.md 的 SA gate(二者都在本 sandbox)。SA 定级证据硬门(缺任一不得判「SA-可能」,直接内联于此、不依赖 sandbox 外文件):
+
+- 定向查重:最相近 5-8 篇 + 可点开链接,含一行「最强反例」(单篇最近邻 + 差异是否够 clear-accept),且 ≥1 条可复现的 arXiv/Semantic Scholar API query URL;
+- 最小否证实验:数据 × 算力 × 预期信号,单人 1×H100 可执行、信号不出现即证伪;
+- 删承重假设形态另须「裂缝证据核验」节 ≥2 条「相符」。
+
+重点三件事:
 
 1. reason 与历轮反馈点名的缺口是否真被补上(证据=草稿检索记录里的 URL,可疑就点开核实);
 2. 修订是否引入新的占据风险(与"占据/部分重叠"条目的差异是否站得住);

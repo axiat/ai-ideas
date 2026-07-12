@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-07-12 复验修复:归档移出 workspace、E2E 声称收敛、awr-judge 硬门内联、rubric 维度否决
+
+上一条修复的复验指出 4 项未做彻底(#2/report 冻结、run_all/publish/cp 三条 P2 复验通过):
+
+- 【#1 归档仍在写域内】上版只加 grok/claude 的 tmp/runs deny,但 codex/grok 的 OS sandbox 写域=仓库工作树,tmp/runs 仍可写 → RUNS_DIR 默认移出仓库到 `$HOME/.ai-ideas-runs/<repo>`:claude allowlist(仅 ideas/tmp/)、codex/grok sandbox(仅仓库)都够不到,归档只由 hunt.sh(无沙箱编排器)写。启动 log 打印落点。残留仅 agy(可写 $HOME、前段不可信、不碰 verdict/ledger)。grok/claude 的 tmp/runs deny 保留作 RUNS_DIR 被覆盖回仓库内时的兜底。
+- 【#3 E2E 不能证明真检索】link/API 计数只证明产物结构完整,离线 agent 硬编码这些字符串(甚至明写「未检索」)仍过——纯文本无法证伪。**改法是收敛声称而非假装证明**:注释/头注明确 E2E 只作回归门(拦薄/空/漏占位),效力来自用真·联网后端跑 research 角色,判读须默认后端联网;删掉「验证真检索发生了」的过度措辞。检索结构门槛保留(仍拦薄产物)。
+- 【#4 awr-judge 丢了 PROGRAM.md 独有硬门】上版去掉 sandbox 外的 PROGRAM.md 引用,但连带丢了其独有的「最强反例」行 + ≥1 条可复现 API query 硬门,而 sandbox 仍无 PROGRAM.md → 把定级证据硬门(定向查重 5-8 篇+链接+最强反例行+API query URL、最小否证实验、删承重假设裂缝核验 ≥2 相符)直接内联进 awr-judge.md,自足、不依赖沙箱外文件。
+- 【#5 rubric 残留维度否决】740-741 已修,但 716「all ≤4 → Reject」仍是纯维度否决、717-718「no dim reaches 7 → ask the user」既是维度否决又假设有 user(自主 hunt 没有)→ 加总纲句把这组聚合降为诊断启发,verdict 锚定 fatal-flaws 逻辑(CRITICAL→Reject、≥2 MAJOR→封顶)+ policy clear-accept bar;all≤4 改「value assessment 落到 Reject,由计数佐证而非决定」,no-dim-7 改「封顶 SA、评审中点名主轴,但不单独定 verdict」,删掉 ask-the-user。
+- 验证:全脚本 bash -n;stub hunt 端到端确认归档落 `$HOME/.ai-ideas-runs/<repo>`(仓库内无 tmp/runs)、冻结语义在新位置仍正常(published 归档保留评审输入 + report 阶段进 stages/logs、delta 3 行)。
+
 ## 2026-07-12 code review 修复:归档冻结/审计边界、E2E 检索证据、run_all 假绿堵漏
 
 对 P0(#20)与 gold set 诚实化(#22)的 code review 确认 10 项缺陷,全部修复(P1×5、P2×5):
