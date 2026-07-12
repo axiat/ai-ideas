@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## 2026-07-12 P0 落地:SA 口径单源 + run_id/按运行归档 + calib 机器判读与端到端跑道
+
+DEVELOPMENT.md「优化 autoresearch 成功率」P0 五项(统一判定与完整观测):
+
+- SA 口径单源化(policy 评审校准节新增唯一定义声明):`rubric.md` Step 8 的「两维 8+」与 Integrity gate #5 的机械 SA 门槛改为指向 policy 的 clear-accept 标准(维度分是诊断证据,不是 SA 机械阈值);`roles/review.md` 撤销「且能冲 oral/spotlight」加严(policy 原文是「更佳」非必要条件——抄写漂移把 SA 门槛抬高了一档,可能是 288 票仅 6 SA 的成因之一);`roles/awr-judge.md` 与 README 的「rubric 的 SA 硬门槛(节)」错误指向改为 policy 评审校准 + PROGRAM.md 定级证据;`trigger.md` 同步撤销「冲不了 oral 不给 SA」(**须手动同步远端 weekly routine**)。
+- hunt.sh 按运行归档:每轮 run_id(启动时间+pid+轮次,candidate_id=`<run_id>/I<n>`);轮终点(fail:<stage>/empty:<stage>/verdict/report-missing/published)把 tmp/round 全量产物(ideas/priorwork/预筛/三席票据与完整评审/逐阶段日志)+ manifest(来源/backend/policy_sha+git_head/退出原因/票向量)+ ledger 增量行固化 `tmp/runs/<run_id>/`,同一 run_id 后到覆盖先到(exit_reason 按最新);ledger 只留摘要,任一结论可还原输入与判定过程。run_stage 输出另 tee 进 `tmp/round/logs/<stage>.log`,起止/rc 记 `stages.tsv`(review 段并行块单独记)。metrics.tsv 末列加 run_id,启动时一次性 header 迁移(旧行保持 12 列,按前 12 列位置解析不受影响)。ledger 增量行数基线取 `grep -c ''`,空文件时不可接 `|| echo 0`(grep 已输出 0 且 rc=1,双行)。
+- calib gold set 机器判读:`cases/<case>/expect` 断言 DSL(min_vote/sa_votes/reject_votes/all_votes;`probe` 只跑不打分),`run_panel.sh` 聚合另落机器可读 `aggregate.tsv`,新增 `calib/run_all.sh` 批跑打分、打印校准正确率(probe 与 panel-fail 不计分母——面板基础设施失败不得形成校准结论),逐 case 追加 `tmp/calib/summary.tsv`。
+- 端到端(真检索)校准跑道与冻结校准分开:新增 `calib/run_e2e.sh`,镜像跑 roles/research.md(检索放开,写界同面板),断言 priorwork 召回已知占位(`e2e.expect`:overlap/url_contains;首个 case neg-replai→2209.13583)。阳性无端到端跑法(已发表工作被真检索判成自占据),边界记入 calib/README。踩坑:子 shell cd 进镜像后日志重定向必须用绝对路径(run_panel 同款坑,已有注释)。
+- 围栏感知 id 提取抽单源 `lib/md_ids.sh`(run_panel 与 run_e2e 共用,防幻影 id/吞真标题两个方向)。
+- 验证:scratch 克隆(本地 bare origin)+ 假 agent 全链路——空产出→归档 empty:research;全票 SA→报告→发布(分支落 bare)→归档 published(delta=3 行 SA、stages/logs/manifest 齐);research rc=1 且 MAX_FAILS=1→exit 1 归档 fail:research;前段续跑轮首调即 review、verdict 归档 sa_count=0;metrics 老文件 header 迁移后旧行 12 列无损。calib:reject/SA stub 面板 5 case 判分(2 pass/2 fail/1 probe,正确率 2/4,退出码 1/0 正确);run_e2e pass/fail/agent-fail 三径与镜像清扫;md_ids 围栏样例无幻影、未闭合围栏 rc=3。全脚本 `bash -n` 过。真实裁判(claude/codex/grok)校准面板未在本次跑,按例行 `./calib/run_all.sh` 执行。
+
 ## 2026-07-11 review 修复:resolver 换行/空白路径、GROK_SANDBOX 封 fail-open、面板前置校验与 BOM
 
 code review(high 档)确认 10 项缺陷,全部修复:

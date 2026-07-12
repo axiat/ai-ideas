@@ -43,7 +43,7 @@ idea 不要求完整方法与实验设计，以下五种形态均合法：
 
 ## 评审校准（覆盖 rubric.md 的 verdict 尺度）
 
-以 A 类会议（NeurIPS / ICLR / CoRL）及机器人强会（RSS / ICRA）的 reviewer 尺度校准：
+本节的 clear-accept 标准是全仓 Strong Accept 的唯一定义；rubric.md、role prompt 或 sidecar 的表述与本节冲突时以本节为准。以 A 类会议（NeurIPS / ICLR / CoRL）及机器人强会（RSS / ICRA）的 reviewer 尺度校准：
 
 - **Strong Accept** ⇔ 做出来有较大概率达 **clear accept**（约 6,6,8）及以上；能冲 oral/spotlight（8,8,6+，无强反对）更佳。
 - **Accept with Revisions** ⇔ borderline accept：上限低，价值有限。

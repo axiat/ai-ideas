@@ -18,7 +18,7 @@
    - novelty 仅由第 3 步证据支持:任一近邻工作与头条发现重叠、又给不出 clear-accept 级差异 → novelty 封顶,不得 SA;实读不足或编号自查存疑 → novelty 记未证实,同样封顶。
    - 可行性基线:单人执行 + 默认 1×H100 80G;生命周期内单人做不完 → 封顶 accept-w-rev,依赖追加算力须显式注明。feasibility 只认该 idea 的最小否证实验,缺失或不可执行按 MAJOR 计、封顶 accept-w-rev。
    - 删承重假设通道(窄且硬):该形态"未经验证"本身不计 MAJOR(前提:否证实验便宜且决定性,信号不出现即杀死赌注);**同时**满足 ①头条零命中 overlap=low ②裂缝核验 ≥2 条「相符」 ③forcing constraint 为明确外部压力 ④否证实验 1×H100 可执行、可杀死赌注,方可 SA,缺一按普通尺度。不豁免 direct-hit、CRITICAL、≥2 MAJOR、查重薄弱、缺否证实验。五字段缺失或裂缝核验不符/不可达 → 按普通形态从严。
-5. **Strong Accept 硬门槛自检**:某 idea 要留在正文,必须**同时**满足——三遍**全部** strong-accept、有该 idea 的定向查重块(含 API 检索记录)、实读篇数 ≥ 5、附最小否证实验、写了完整 rubric 8 段评审;形态=删承重假设的另须「裂缝证据核验」节 ≥2 条「相符」。任一不满足 → 降级 reject,移出正文。做出来达不到 clear accept(≈6,6,8)/冲不了 oral 的,一律不给 SA。
+5. **Strong Accept 硬门槛自检**:某 idea 要留在正文,必须**同时**满足——三遍**全部** strong-accept、有该 idea 的定向查重块(含 API 检索记录)、实读篇数 ≥ 5、附最小否证实验、写了完整 rubric 8 段评审;形态=删承重假设的另须「裂缝证据核验」节 ≥2 条「相符」。任一不满足 → 降级 reject,移出正文。做出来达不到 clear accept(≈6,6,8)及以上的,一律不给 SA;能冲 oral/spotlight 更佳,不是必要条件(SA 唯一定义源 = brainstorming_policy.md 评审校准)。
 6. **记账**:所有生成过的 idea(无论 verdict,含预筛杀的)各写一行进 `ledger.tsv`(7 列 schema 见 PROGRAM.md,行末 overlap 列取查重的重叠判定,只追加、不改历史行);正文只保留 Strong Accept。
 
 ## 达标条件
