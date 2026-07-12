@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-07-12 复验修复:near-SA 队列生命周期(A1)+ design-fixable 收窄(A2)+ 分类注释纠错(B1)
+
+P1 复验(8 项全确认)后修 Top 2 真 bug。A1/A2 耦合:A2 制造"AwR+low 但非进化/复查资格(如 feasibility 封顶)"的行被误入队,A1 队列无 dequeue + generate 被要求"先取队首不得越过" → 不合格队首毒死唯一进化/复查名额。
+
+- 【A1 队列只写不消费】near-sa-queue 原为 append + story 去重,无 dequeue、不清理、跨运行无界增长,generate 卡死队首。修:(a) `prune_near_sa_queue` 每轮生成前跑——删 story 在 ledger.good 已出现 ≥2 次的终态行(已复查/进化/改到 SA 或再判死),再按 `NEAR_SA_MAX`(默认 30)截断防无界增长、顺带老化淘汰从未被选中的残留;(b) 入队加 `story_cnt<2` 门(同 story 在 ledger ≥2 次=复查已用尽,不再入);(c) generate.md 改"取队列**首个资格仍合法**的行,不合格就跳下一行、别卡死队首",不再裸队首。
+- 【A2 design-fixable 过宽】`classify_nonsa` 只按 (raw_min,overlap) 判 design-fixable、不看 reason,而进化资格要求 reason 属实验设计类且排除 novelty 封顶 → AwR+low 但因查重薄弱/feasibility 封顶的行被误标入队。reason 是自由文本、机器判不了类型,故不在 classify 硬判,而是:注释明确 design-fixable 是**粗标**(可能不合格),真资格由 generate 读 ledger reason 定(design-fixable→进化、evidence-incomplete→复查,不匹配就跳过),粗标只用于入队;prune 老化淘汰不合格残留。
+- 【B1 顺带】classify_nonsa 注释原称"reject 必因 CRITICAL、正是 direct-hit/CRITICAL 集"——过度声称。改为如实:非降级 reject 归 novelty-dead 是**失败关闭近似**(机器只据 rank_of 判 min=0,缺票/软拒/乱码都塌成 0),不声称已机检 CRITICAL。(PROGRAM.md 的对应 category 文案在后续文档 PR 一并改。)
+- 验证:`bash -n` OK;单测真 `prune_near_sa_queue`——终态行(count≥2)删、count<2 留、cap 保留最后 N;cap 顺序正确;e2e 入队 count-gate(预置 story 已在 ledger 1 次→本轮命中 count=2→不入队,其余入);#10 归档停机 A/B/C 无回归。
+
 ## 2026-07-12 P1 #1:独立 selector——生成只发散,排序交独立进程
 
 落 `P1-PROGRAM-DRAFT.md` 的 #1(用户授权改 PROGRAM.md + policy)。原 generate 在同一 context 里"发散 10 再自筛 4-6",自筛混在生成里、违背角色分离;shortlist 排序只有 `keep_rank` 机械定。改成生成只发散、排序交独立进程。至此 P1-PROGRAM-DRAFT.md 三项(#4-schema/#6/#1)全部并入,按其说明删除该文件。
