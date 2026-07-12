@@ -13,9 +13,10 @@
 # vs 正常跑完但无达标(随机短间隔继续重试)。
 # 轮级机器可读指标追加写 tmp/hunt.metrics.tsv(阶段失败/空产出/预筛 fail-open/聚合定谳各一行,字段见 metrics_write 头注)。
 # 每轮固定 run_id(启动时间+pid+轮次,candidate_id=<run_id>/I<n>);轮终点(fail/empty/verdict/
-# report-missing/published/publish-failed)把 tmp/round 全量产物+manifest+ledger 增量归档 tmp/runs/<run_id>/,
+# report-missing/published/publish-failed)把 tmp/round 全量产物+manifest+ledger 增量归档 $RUNS_DIR/<run_id>/,
 # ledger 只留摘要行(字段见 archive_round 头注);各阶段起止/rc 记 tmp/round/stages.tsv,逐阶段日志在 tmp/round/logs/。
-# tmp/runs 是审计载体:agent 写域禁写(claude deny + grok deny;codex workspace-write 无子树 deny,残留同 tmp/ledger.good)。
+# 归档是审计载体,默认 RUNS_DIR 在仓库外($HOME 下):agent 后端(claude allowlist / codex·grok OS sandbox
+# 写域=仓库)都写不到,只由 hunt.sh 写;仅 agy(前段·可写 $HOME·不碰 verdict/ledger)残留。见 RUNS_DIR 定义处。
 #
 # 用法:
 #   ./hunt.sh [异常重试间隔分钟,默认 150]
@@ -98,7 +99,11 @@ LEDGER_GOOD=tmp/ledger.good
 DEATHLIST=tmp/deathlist.md
 LOCK=tmp/hunt.lock
 METRICS=tmp/hunt.metrics.tsv
-RUNS_DIR=tmp/runs
+# 按运行审计归档默认放在仓库外:codex/grok 的 OS sandbox 写域=仓库工作树,claude allowlist 只含
+# ideas/tmp/(不含 $HOME),故仓库外目录三者都写不到——归档只由 hunt.sh(编排器,无沙箱)写。
+# agy(前段、不可信、可写 $HOME)是残留,但它绝不碰 verdict/ledger/publish,且只在生成/查重跑。
+# RUNS_DIR 可覆盖;若覆盖回仓库内(如 tmp/runs),agent 后端可触及,审计边界退回 best-effort。
+RUNS_DIR=${RUNS_DIR:-$HOME/.ai-ideas-runs/$(basename "$PWD")}
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 
@@ -563,6 +568,9 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   mkdir "$LOCK" 2>/dev/null || { log "抢锁失败(并发启动?),退出"; exit 2; }
 fi
 echo $$ > "$LOCK/pid"
+
+mkdir -p "$RUNS_DIR" 2>/dev/null || { log "无法创建归档目录 $RUNS_DIR(权限?),停机"; exit 2; }
+log "按运行归档目录: $RUNS_DIR(仓库外,agent 后端不可写)"
 
 # 启动瞬间的工作树 ledger 视为人工/operator 基线;后续阶段中 agent 的任何擅改都只会被重置回此基线。
 if [ -f ledger.tsv ]; then
