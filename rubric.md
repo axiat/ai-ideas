@@ -737,8 +737,11 @@ Then aggregate as follows:
   user's idea pointing at why is not a real score.
 - **Generic lift suggestions**: "try a different prompt" is not a
   lift. Name the entry strategy from this file.
-- **Score and verdict mismatch**: a Strong Accept verdict with no
-  dimension above 7 is incoherent. Realign.
+- **Score and verdict mismatch**: the SA bar is the clear-accept
+  standard in `brainstorming_policy.md`, not a dimension count. If
+  every dimension is 7 or below, re-examine whether the idea truly
+  meets clear-accept and adjust either the scores or the verdict —
+  but dimension counts alone neither grant nor block Strong Accept.
 
 ---
 
