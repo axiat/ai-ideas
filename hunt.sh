@@ -90,6 +90,7 @@ EMPTY_MAX=${EMPTY_MAX:-3}
 PRIOR_MIN_LINKS=${PRIOR_MIN_LINKS:-5}
 PRIOR_MIN_API=${PRIOR_MIN_API:-1}
 RESEARCH_RETRY=${RESEARCH_RETRY:-1}   # 检索不完整(结构未达门槛)对同一 shortlist 定向补查的次数上限;耗尽才整轮作废
+NEAR_SA_MAX=${NEAR_SA_MAX:-30}        # near-sa-queue 保留最近条目上限(防只写不消费无界增长);每轮生成前 prune 后截断
 SHORT_MAX=${SHORT_MAX:-3}
 THEME_MIN_LOW=${THEME_MIN_LOW:-2}
 AXIOM_MIN_CRACKS=${AXIOM_MIN_CRACKS:-2}
@@ -101,7 +102,7 @@ RD=tmp/round
 LEDGER_GOOD=tmp/ledger.good
 DEATHLIST=tmp/deathlist.md
 NONSA_CLASS=tmp/nonsa-class.tsv                                  # 非 SA 四分类观测(item #4;tmp/ 持久,不入固定 ledger schema)
-NEAR_SA_QUEUE=tmp/near-sa-queue.tsv                             # near-SA 修订队列(item #5/#6;design-fixable/evidence-incomplete 且有 SA 票,generate 优先取)
+NEAR_SA_QUEUE=tmp/near-sa-queue.tsv                             # near-SA 修订队列(item #5/#6;每轮生成前 prune_near_sa_queue 清理终态+截断,防只写不消费)
 LOCK=tmp/hunt.lock
 METRICS=tmp/hunt.metrics.tsv
 # 裁决归档失败停机时落此哨兵:SA 行已在 ledger.good 但其归档缺失=审计链断裂的孤儿 SA。
@@ -143,6 +144,7 @@ validate_sleep_config() {
   is_uint "$PRIOR_MIN_LINKS" || { log "PRIOR_MIN_LINKS 必须是非负整数: $PRIOR_MIN_LINKS"; exit 2; }
   is_uint "$PRIOR_MIN_API" || { log "PRIOR_MIN_API 必须是非负整数: $PRIOR_MIN_API"; exit 2; }
   is_uint "$RESEARCH_RETRY" || { log "RESEARCH_RETRY 必须是非负整数: $RESEARCH_RETRY"; exit 2; }
+  is_uint "$NEAR_SA_MAX" && [ "$NEAR_SA_MAX" -ge 1 ] || { log "NEAR_SA_MAX 必须是 >=1 的整数: $NEAR_SA_MAX"; exit 2; }
   is_uint "$SHORT_MAX" && [ "$SHORT_MAX" -ge 1 ] || { log "SHORT_MAX 必须是 >=1 的整数: $SHORT_MAX"; exit 2; }
   is_uint "$THEME_MIN_LOW" || { log "THEME_MIN_LOW 必须是非负整数: $THEME_MIN_LOW"; exit 2; }
   is_uint "$AXIOM_MIN_CRACKS" && [ "$AXIOM_MIN_CRACKS" -ge 1 ] || { log "AXIOM_MIN_CRACKS 必须是 >=1 的整数: $AXIOM_MIN_CRACKS"; exit 2; }
@@ -355,12 +357,14 @@ rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) ech
 verdict_of() { case "$1" in 2) echo strong-accept ;; 1) echo accept-w-rev ;; *) echo reject ;; esac; }
 # 非 SA 四分类(item #4;$1=降级前最低票 0/1/2、$2=是否全票 SA 但硬门槛降级(1/0)、$3=overlap):
 #   evidence-incomplete 票够但证据不完整(全票 SA 被硬门槛降级)——应补证重评,不是判死
-#   novelty-dead        头条已被占据(overlap=high)或 CRITICAL——永久禁复活(PROGRAM §不动项6)
-#   design-fixable      accept-w-rev 且 overlap=low——实验设计类可修,合法进化父本
-#   ceiling-limited     accept-w-rev 但 novelty 被近邻封顶(overlap≠low)——上限受限,搁置
-# 注:reject(min=0)恒归 novelty-dead——裁判判 reject 必因 CRITICAL,叠加 overlap=high 的 direct-hit,
-# 正是「只 direct-hit/CRITICAL 永久禁」的集合;唯一可复活的 reject 是 evidence-incomplete(全票 SA 仅因
-# 硬门槛降级),入 near-sa-queue 走复查补证(PROGRAM/policy 已按 item #6 放开,见 CHANGELOG)。
+#   novelty-dead        overlap=high 头条被占,或非降级 reject(min=0)——永久禁复活(PROGRAM §不动项6)
+#   design-fixable      accept-w-rev 且 overlap=low 的**粗标**(不看 reason):是"可能可修的进化/复查候选",
+#                       不保证真合格。真资格(reason 属实验设计类→进化 / 查重薄弱→复查、同 story <2 次)由
+#                       generate 读 ledger reason 定;粗标只用于入队,不合格的队首 generate 跳过、prune 老化淘汰。
+#   ceiling-limited     accept-w-rev 但 overlap≠low——novelty 被近邻封顶,上限受限,搁置
+# 注:非降级 reject(min=0)一律归 novelty-dead,是**失败关闭近似**——机器只据 rank_of 判 min=0(缺票/软拒/
+# 乱码都塌成 0),并未机检 CRITICAL/direct-hit;此归类是"按最严当永久禁",不声称已核到 CRITICAL。
+# 唯一可复活的 reject 是 evidence-incomplete(全票 SA 仅因硬门槛降级),入 near-sa-queue 走复查补证。
 classify_nonsa() {
   local raw_min=$1 downgraded=$2 overlap=$3
   [ "$downgraded" -eq 1 ] && { echo evidence-incomplete; return; }
@@ -368,6 +372,24 @@ classify_nonsa() {
   { [ "$raw_min" -eq 1 ] && [ "$overlap" = low ]; } && { echo design-fixable; return; }
   [ "$raw_min" -eq 1 ] && { echo ceiling-limited; return; }
   echo novelty-dead
+}
+
+# near-SA 队列生命周期(修 A1「只写不消费」):每轮生成前机械清理 near-sa-queue。
+# 删掉 story 在 ledger.good 已出现 ≥2 次的行——按「同 story 至多复查一次」这已是终态(改到 SA、或复查/进化过、
+# 或再判死),不该再占进化/复查名额;剩下的按 NEAR_SA_MAX 截断防无界增长,顺带把从未被选中的不合格残留
+# (如 feasibility 封顶——非进化非复查非 evidence-incomplete 资格)随新条目老化淘汰。generate 侧另有「跳过不合格队首」兜底。
+prune_near_sa_queue() {
+  [ -s "$NEAR_SA_QUEUE" ] || return 0
+  local line story cnt
+  : > "$NEAR_SA_QUEUE.tmp"
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    story=$(printf '%s' "$line" | cut -f3)
+    cnt=$(cut -f4 "$LEDGER_GOOD" 2>/dev/null | grep -Fxc -- "$story")
+    [ "${cnt:-0}" -lt 2 ] && printf '%s\n' "$line" >> "$NEAR_SA_QUEUE.tmp"
+  done < "$NEAR_SA_QUEUE"
+  tail -n "$NEAR_SA_MAX" "$NEAR_SA_QUEUE.tmp" > "$NEAR_SA_QUEUE" 2>/dev/null || : > "$NEAR_SA_QUEUE"
+  rm -f "$NEAR_SA_QUEUE.tmp"
 }
 
 # 当日(hunt 源)Strong Accept 计数:只数 bash 定谳基线 $LEDGER_GOOD,不信工作树 ledger
@@ -686,6 +708,7 @@ while :; do
 
   round=$((round + 1))
   m_stage='-'; m_lens='-'
+  prune_near_sa_queue   # 修 A1:每轮生成前清理 near-sa-queue(删 ledger.good 已出现 ≥2 次的终态 story + 截断 NEAR_SA_MAX)
   # 运行标识与轮级观测:run_id 稳定唯一(启动时间+pid+轮次),candidate_id = <run_id>/I<n>;
   # ledger_base_lines 记本轮开局基线行数,归档时据此提取本轮 ledger 增量(基线轮内只追加)。
   run_id="$(date +%Y%m%dT%H%M%S)-p$$-r${round}"
@@ -888,7 +911,10 @@ while :; do
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "${run_id}/${id}" "$cat" "$verdict" "$overlap" "${votes:--}" "$story" >> "$NONSA_CLASS"
       # item #5/#6:design-fixable(→进化)或 evidence-incomplete(→复查)且有 SA 票的候选进修订队列,generate 优先取。
       # 去重按 story 精确匹配(BSD CJK strcoll 会误判相等,故用 grep -Fxq),防同一 idea 跨轮堆积。
+      # story_cnt<2 门(修 A1):同 story 在 ledger 已出现 ≥2 次=复查已用尽(至多一次),再入队也选不了,直接不入。
+      story_cnt=$(cut -f4 ledger.tsv 2>/dev/null | grep -Fxc -- "$story")
       if { [ "$cat" = design-fixable ] || [ "$cat" = evidence-incomplete ]; } && [ "$sa_votes" -ge 1 ] \
+         && [ "${story_cnt:-0}" -lt 2 ] \
          && ! cut -f3 "$NEAR_SA_QUEUE" 2>/dev/null | grep -Fxq -- "$story"; then
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "${run_id}/${id}" "$story" "$theme" "$overlap" "${votes:--}" "$cat" >> "$NEAR_SA_QUEUE"
         log "near-SA 入队:${id}(票 ${votes},overlap=${overlap},${cat})——下轮 generate 优先修订"
