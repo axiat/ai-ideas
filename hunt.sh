@@ -15,8 +15,9 @@
 # 每轮固定 run_id(启动时间+pid+轮次,candidate_id=<run_id>/I<n>);轮终点(fail/empty/verdict/
 # report-missing/published/publish-failed)把 tmp/round 全量产物+manifest+ledger 增量归档 $RUNS_DIR/<run_id>/,
 # ledger 只留摘要行(字段见 archive_round 头注);各阶段起止/rc 记 tmp/round/stages.tsv,逐阶段日志在 tmp/round/logs/。
-# 归档是审计载体,默认 RUNS_DIR 在仓库外($HOME 下):agent 后端(claude allowlist / codex·grok OS sandbox
-# 写域=仓库)都写不到,只由 hunt.sh 写;仅 agy(前段·可写 $HOME·不碰 verdict/ledger)残留。见 RUNS_DIR 定义处。
+# 归档是审计载体,默认 RUNS_DIR 在仓库外($HOME 下):三个可信后端(claude allowlist / codex·grok OS
+# sandbox 写域=仓库)都写不到,只由 hunt.sh 写。唯一够得到的是 agy(不可信、同用户、可写 $HOME)——
+# 这不是重定位能关的(同用户 untrusted 后端的本性),只能 best-effort 兜底(见 RUNS_DIR 定义处)。
 # 归档失败按终态分级:有 SA 将发布的轮,裁决归档失败即停机(exit 2),绝不发布审计链断裂的 SA;非发布轮只告警。
 #
 # 用法:
@@ -100,10 +101,16 @@ LEDGER_GOOD=tmp/ledger.good
 DEATHLIST=tmp/deathlist.md
 LOCK=tmp/hunt.lock
 METRICS=tmp/hunt.metrics.tsv
+# 裁决归档失败停机时落此哨兵:SA 行已在 ledger.good 但其归档缺失=审计链断裂的孤儿 SA。
+# 直接重启会把它当已达标发布(见 SA_TARGET/孤儿路径),归档仍缺——故启动即拦,逼人工先处理再删哨兵。
+# 放仓库内(非 $RUNS_DIR):归档目录不可写正是常见停机因,哨兵不能和它同命。
+HALT_MARK=tmp/HALTED-ARCHIVE-FAIL
 # 按运行审计归档默认放在仓库外:codex/grok 的 OS sandbox 写域=仓库工作树,claude allowlist 只含
-# ideas/tmp/(不含 $HOME),故仓库外目录三者都写不到——归档只由 hunt.sh(编排器,无沙箱)写。
-# agy(前段、不可信、可写 $HOME)是残留,但它绝不碰 verdict/ledger/publish,且只在生成/查重跑。
-# RUNS_DIR 可覆盖;若覆盖回仓库内(如 tmp/runs),agent 后端可触及,审计边界退回 best-effort。
+# ideas/tmp/(不含 $HOME),故仓库外目录三个可信后端都写不到——归档只由 hunt.sh(编排器,无沙箱)写。
+# 例外是 agy:同用户、不可信、可写 $HOME,归档在 $HOME 下它就够得到,重定位关不掉(同用户 untrusted
+# 后端本性如此)。兜底只有 best-effort:agy-worker prompt 明令禁写本目录,且 agy 永不担任 verdict 席
+# (归档的可还原性只在有 SA 的可信裁决轮才被依赖)——真正的隔离要把 agy 放独立 uid/容器。
+# RUNS_DIR 可覆盖;若覆盖回仓库内(如 tmp/runs),连可信后端也触及得到,审计边界整体退回 best-effort。
 RUNS_DIR=${RUNS_DIR:-$HOME/.ai-ideas-runs/$(basename "$PWD")}
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
@@ -299,7 +306,11 @@ archive_round() {   # $1=退出原因(fail:<stage>|empty:<stage>|verdict|report-
     frozen=0; rm -rf "$dst"
     mkdir -p "$dst/round" || { log "归档失败:${run_id} 无法建 $dst/round(磁盘满/不可写?)"; return 1; }
   fi
-  tail -n +"$((ledger_base_lines + 1))" "$LEDGER_GOOD" > "$dst/ledger.delta.tsv" 2>/dev/null || true
+  # ledger 增量=本轮产出了哪些 ledger 行,是审计载体的一部分;写失败须进 rc(SA 轮据此停机),
+  # 不能像观测日志那样吞掉。fail/empty 轮增量可能为空,那是合法的(空文件写成功,rc 不动)。
+  if ! tail -n +"$((ledger_base_lines + 1))" "$LEDGER_GOOD" > "$dst/ledger.delta.tsv" 2>/dev/null; then
+    log "归档失败:${run_id} ledger 增量写入失败"; rc=1
+  fi
   rev_cmds=""
   for r in $(seq 1 "$REVIEWERS"); do
     v="REV_CMD_$r"; rev_cmds="${rev_cmds:+$rev_cmds | }${!v:-$BACK_CMD}"
@@ -582,6 +593,14 @@ echo $$ > "$LOCK/pid"
 mkdir -p "$RUNS_DIR" 2>/dev/null || { log "无法创建归档目录 $RUNS_DIR(权限?),停机"; exit 2; }
 log "按运行归档目录: $RUNS_DIR(仓库外,agent 后端不可写)"
 
+# 上次因裁决归档失败停机则拦启动:否则重启会沿孤儿 SA 路径把无归档的 SA 发布掉,重开 #10 的洞。
+# 人工须先补回该 run 的归档,或从 ledger.good 删掉那条孤儿 SA 行让它重新查重,再删本哨兵。
+if [ -e "$HALT_MARK" ]; then
+  log "检测到审计链断裂哨兵 $HALT_MARK(上次裁决归档失败停机):存在无归档的孤儿 SA,直接启动会把它当已达标发布。"
+  log "先按哨兵内说明处理(补归档 或 从 $LEDGER_GOOD 删该 SA 行),再删 $HALT_MARK 重启。停机。"
+  exit 2
+fi
+
 # 启动瞬间的工作树 ledger 视为人工/operator 基线;后续阶段中 agent 的任何擅改都只会被重置回此基线。
 if [ -f ledger.tsv ]; then
   if ! git diff --quiet -- ledger.tsv 2>/dev/null; then
@@ -823,10 +842,15 @@ while :; do
   log "本轮聚合:${sa_count} 个 Strong Accept(全票且过硬门槛),已记账 ledger.tsv"
   metrics_write verdict '-' "${m_verdicts:--}"
   # 裁决归档=SA 可还原性承诺的载体,须在发布前落定。有 SA 将发布时归档失败即停机(exit 2),
-  # 绝不发布一个审计链断裂的 SA。SA 行已在 ledger.good,修复 $RUNS_DIR 后重启会补归档并发布。
-  # 无 SA 轮归档失败只由 archive_round 内部告警,不废轮(无发布物,低风险)。
+  # 绝不发布一个审计链断裂的 SA。注意:重启不会自动补回本 run 的归档——SA 行已在 ledger.good,
+  # 重启走的是孤儿 SA 路径(新 run_id、以已达标发布),原 run 的归档永不回填。故落哨兵拦下次启动,
+  # 逼人工二选一:补回 ${run_id} 归档,或从 ledger.good 删该 SA 行重查。无 SA 轮归档失败只告警(无发布物)。
   if ! archive_round verdict && [ "$sa_count" -gt 0 ]; then
-    log "本轮 ${sa_count} 个 SA 将发布但裁决归档失败——审计链断裂,停机人工处理(修复归档目录 $RUNS_DIR 后重跑)"
+    printf '%s\trun_id=%s\tsa_count=%s\treason=verdict-archive-failed\n' \
+      "$(date '+%F %T')" "$run_id" "$sa_count" > "$HALT_MARK" 2>/dev/null || true
+    log "本轮 ${sa_count} 个 SA 已记入 ledger.good 但裁决归档失败——审计链断裂,停机人工处理。"
+    log "重启不会补归档(会以新 run_id 把孤儿 SA 当已达标发布)。修复 $RUNS_DIR 后须:补回 ${run_id} 的归档,"
+    log "或从 $LEDGER_GOOD 删掉该 SA 行让其重新查重;然后删哨兵 $HALT_MARK 再启动。"
     exit 2
   fi
 
