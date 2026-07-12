@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-07-12 P1 #1:独立 selector——生成只发散,排序交独立进程
+
+落 `P1-PROGRAM-DRAFT.md` 的 #1(用户授权改 PROGRAM.md + policy)。原 generate 在同一 context 里"发散 10 再自筛 4-6",自筛混在生成里、违背角色分离;shortlist 排序只有 `keep_rank` 机械定。改成生成只发散、排序交独立进程。至此 P1-PROGRAM-DRAFT.md 三项(#4-schema/#6/#1)全部并入,按其说明删除该文件。
+
+- 新增 `roles/select.md`:独立 context、便宜可错、只排不杀,按四准则(命题强度 / clear-accept 上限 / 最小否证实验质量 / 可执行性)给发散全集全序排名,写 `tmp/round/select.tsv`。排序在深查前跑、拿不到 priorwork,故"novelty"维只评命题强度(逼不逼得出可证伪判别),不是"已确认无人做过"。
+- `roles/generate.md`:"发散 10 再自筛 4-6" → "发散约 10 个全部写入,不自筛";透镜/删公理配额里"自筛后 4-6"改为"selector 排进深查名额";铁律"自筛避开已占机制"→"发散避开"。
+- `hunt.sh`:generate 与 prescreen 之间插 `select` 阶段(FRONT_CMD,rc≠0 只告警不停);`select_rank_of` 查 select.tsv 名次、缺失/非法回落 999;`keeps.tsv` 加 select名次列;`select_shortlist` 排序键 = keep_rank(硬配额)> select名次 > 低存量主题 > 生成序。selector 缺失不废轮(退化为生成序)。
+- `PROGRAM.md` §回路:step1 改"发散约 10(不自筛)"、新增 step1.4 排序、step9 "约 10 个经独立排序 + 预筛裁剪";canonical `brainstorming_policy.md:8` 删公理配额"自筛后 4-6"同步改。`README.md` 流程串补"独立排序"。
+- 验证:`bash -n` OK;stub——select.tsv order=I3,I1,I2 + SHORT_MAX=2 → shortlist=I3,I1(I2 溢出丢、日志带 select名次),调用序列 generate→select→prescreen→research、stages.tsv 有 select 行;STUB_NO_SELECT(无 select.tsv)→ 回落生成序 shortlist=I1,I2;#10 归档停机 A/B/C 无回归(select 每轮跑、SA 轮发布正常)。
+
 ## 2026-07-12 P1 #6:复活软化——只 direct-hit/CRITICAL 永久禁,evidence-incomplete 准复查
 
 用户授权改 `brainstorming_policy.md`(#6 复活规则 canonical 在此),落 `P1-PROGRAM-DRAFT.md` 的 #6。原"reject 行一律不得复活"把"全票 SA 仅因硬门槛降级、票够只差证据"的候选也永久封,near-SA 转化率上不去。
