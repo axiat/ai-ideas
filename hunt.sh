@@ -13,8 +13,9 @@
 # vs 正常跑完但无达标(随机短间隔继续重试)。
 # 轮级机器可读指标追加写 tmp/hunt.metrics.tsv(阶段失败/空产出/预筛 fail-open/聚合定谳各一行,字段见 metrics_write 头注)。
 # 每轮固定 run_id(启动时间+pid+轮次,candidate_id=<run_id>/I<n>);轮终点(fail/empty/verdict/
-# report-missing/published)把 tmp/round 全量产物+manifest+ledger 增量归档 tmp/runs/<run_id>/,
+# report-missing/published/publish-failed)把 tmp/round 全量产物+manifest+ledger 增量归档 tmp/runs/<run_id>/,
 # ledger 只留摘要行(字段见 archive_round 头注);各阶段起止/rc 记 tmp/round/stages.tsv,逐阶段日志在 tmp/round/logs/。
+# tmp/runs 是审计载体:agent 写域禁写(claude deny + grok deny;codex workspace-write 无子树 deny,残留同 tmp/ledger.good)。
 #
 # 用法:
 #   ./hunt.sh [异常重试间隔分钟,默认 150]
@@ -277,11 +278,14 @@ metrics_write() {   # $1=outcome $2=阶段名(-=不适用) $3=verdicts 串(-=不
 # 连同 manifest(来源/backend/policy 版本/退出原因/票向量)、ledger 增量行固化到 tmp/runs/<run_id>/;
 # ledger 本体只留摘要行,任一结论可由归档还原输入与判定过程。candidate_id = <run_id>/I<n>。
 # 同一 run_id 重复调用整体刷新(verdict 后 report 再失败,exit_reason 覆盖为 fail:report,产物照最新拷)。
-archive_round() {   # $1=退出原因(fail:<stage>|empty:<stage>|verdict|report-missing|published)
-  local dst rev_cmds r v
+archive_round() {   # $1=退出原因(fail:<stage>|empty:<stage>|verdict|report-missing|published|publish-failed)
+  local dst rev_cmds r v frozen
   [ -n "${run_id:-}" ] && [ "$run_id" != '-' ] || return 0
   dst="$RUNS_DIR/$run_id"
-  rm -rf "$dst"; mkdir -p "$dst/round"
+  # 首次归档(fail/empty/verdict)全量拷入 tmp/round=「裁判当时所见」。二次归档(verdict 之后的
+  # published/report-missing/publish-failed 复用同一 run_id)只刷新 manifest 与观测产物,绝不覆盖
+  # 已冻结的评审输入(ideas/priorwork/rev)——report 阶段对 tmp/round 的任何改写都不得篡改裁决快照。
+  if [ -d "$dst/round" ]; then frozen=1; else frozen=0; rm -rf "$dst"; mkdir -p "$dst/round"; fi
   tail -n +"$((ledger_base_lines + 1))" "$LEDGER_GOOD" > "$dst/ledger.delta.tsv" 2>/dev/null || true
   rev_cmds=""
   for r in $(seq 1 "$REVIEWERS"); do
@@ -304,7 +308,17 @@ archive_round() {   # $1=退出原因(fail:<stage>|empty:<stage>|verdict|report-
     printf 'verdicts\t%s\n' "${m_verdicts:--}"
     printf 'archived_at\t%s\n' "$(date '+%F %T')"
   } > "$dst/manifest.tsv"
-  cp -R "$RD/." "$dst/round/" 2>/dev/null || true
+  if [ "$frozen" = 1 ]; then
+    # 冻结评审输入不动,只补观测产物(stages/logs 现含 report 阶段)
+    cp "$RD/stages.tsv" "$dst/round/stages.tsv" 2>/dev/null || true
+    if [ -d "$RD/logs" ]; then
+      mkdir -p "$dst/round/logs"
+      cp -R "$RD/logs/." "$dst/round/logs/" 2>/dev/null || log "归档警告:${run_id} 阶段日志补拷失败"
+    fi
+  elif ! cp -R "$RD/." "$dst/round/" 2>/dev/null; then
+    # 归档是 P0 可还原性承诺的载体,拷贝失败不得静默吞掉——响亮告警,不halt(tmp 拷失败不值废整轮)
+    log "归档警告:${run_id} 产物拷贝失败(磁盘满/不可写?),该运行审计快照可能不完整"
+  fi
 }
 
 rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) echo 0 ;; esac; }
@@ -800,7 +814,7 @@ while :; do
     if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
     if [ "$(reports_today)" -gt "$reports_before" ]; then
       cp "$LEDGER_GOOD" ledger.tsv   # 发布前再确保 ledger = 定谳 good,抹掉 report 阶段对 ledger 的任何擅改
-      ./publish.sh >> "$LOG" 2>&1 || { log "publish.sh 失败,见 hunt.log;停机人工处理"; exit 2; }
+      ./publish.sh >> "$LOG" 2>&1 || { log "publish.sh 失败,见 hunt.log;停机人工处理"; archive_round publish-failed; exit 2; }
       archive_round published
       sa_now=$(sa_today)
       if [ "$SA_TARGET" -gt 0 ] && [ "$sa_now" -ge "$SA_TARGET" ]; then

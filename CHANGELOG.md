@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## 2026-07-12 code review 修复:归档冻结/审计边界、E2E 检索证据、run_all 假绿堵漏
+
+对 P0(#20)与 gold set 诚实化(#22)的 code review 确认 10 项缺陷,全部修复(P1×5、P2×5):
+
+- 【P1】按运行归档在 agent 写域内(tmp/runs 可被 file-tool 写、且在 guard 视野外,后续阶段可静默回改旧运行的 manifest/证据)→ grok-worker 加 `deny_tree tmp/runs`、`.claude/settings.json` 加 `deny Write/Edit(tmp/runs/**)`;归档由 bash 写、agent 禁改。codex workspace-write 无子树 deny,残留同 `tmp/ledger.good`,头注注明。
+- 【P1】report 阶段覆盖裁决快照:`archive_round` 在 verdict 后还会被 published/report-missing 复用同一 run_id,原实现 `rm -rf`+全量重拷 tmp/round,把 report 之后的状态写进归档 → 改冻结语义:首次全量拷入即冻结评审输入(ideas/priorwork/rev),二次只刷 manifest + 补 stages/logs,绝不重拷。
+- 【P1】E2E 跑道不验证真检索:grader 只算 link 数不校验,只发记忆里的占位 URL + `重叠判定:high` 即可过 expect → 加检索硬门槛(每块 ≥E2E_MIN_LINKS=5 条非 API 近邻 + ≥1 条结构化 API query URL,同 hunt.sh priorwork_ok 口径),不足判 retrieval-thin。
+- 【P1】awr-judge.md 引用 sandbox 里没有的 PROGRAM.md(#20 引入):awr-side run_agent 只拷 awr roles/rubric/policy 进沙箱 → 改成只引沙箱确有的 policy(SA 唯一定义)+ rubric(SA gate/定级证据)。
+- 【P1】rubric.md 残留机械否决:214-218 已改「维度分不单独决定 SA」,但 740-741 仍写「无 8+ 维的 SA 不自洽」,对全 7 维的 clear-accept 候选给出互相矛盾的强制规则 → 740-741 改指 policy clear-accept 标准,维度分只作诊断提示。
+- 【P2】E2E 镜像拷真仓 settings(含 `Write(//tmp/**)`、`Write(//private/tmp/**)`),research 席可把持久写留在镜像外 → 改写 E2E 专用受限 settings:只放行 `Edit/Write(tmp/**)` + WebSearch/WebFetch。
+- 【P2】run_all 假绿:显式请求但缺 expect 只 skip、空/纯注释 expect 零断言仍计 pass、全 skip 仍 exit 0 → 加 `config-error` 计数(缺 expect、零有效断言均计入),退出谓词要求 `fail=0 && panel-fail=0 && config-error=0 && pass+probe≥1`。
+- 【P2】run_all panel-fail 仍读 aggregate.tsv:run_panel 若在清场前早退(如 PANEL_CMD 非法),残留上轮票据被记进 panel-fail 行 = 谎报本次从未产生的票 → panel-fail 时 votes 置 `-`。
+- 【P2】publish.sh 失败在 archive_round 之前 exit,终态只留 exit_reason=verdict(缺 report 日志与真实失败)→ 失败分支补 `archive_round publish-failed`(冻结刷新,带 report 阶段)。
+- 【P2】归档 `cp -R || true` 静默吞错,磁盘满/不可写时审计快照静默残缺却继续发布 → 改响亮 `log` 告警(不 halt:tmp 拷失败不值废整轮,但绝不静默)。
+- 验证:全脚本 `bash -n` + settings.json JSON 校验过;run_all 三种坏 expect(空/纯注释/缺)端到端记 config-error 且退出非零、正常 case 仍 exit 0、panel-fail 行 votes=`-` 不带旧票;检索门槛对真产物(7 links+1 API)放行、对薄产物(1 link+0 API)拦为 retrieval-thin;E2E 受限 settings 端到端(Opus)复跑 neg-meanflow-mp1。gold set 单模型全量回归(3 席 Opus 4.8)pass=4/probe=1/fail=0/panel-fail=0。
+
 ## 2026-07-12 gold set 材料诚实化:两条被点名条款判对,真 bug 在旧材料谎报低重叠
 
 首轮完整校准(见 `calib/results-2026-07-12.md`)两个正式阳性 0 SA,理由落在 novelty 封顶 + 查重缺 web/工业占位。为解耦「材料不达现行门槛」与「条款过严」,对三个阳性 case 的 priorwork 做诚实全知重建(实际 web+API 检索核实各 case 投稿时点真实文献格局),条款一字不动重跑:
