@@ -101,7 +101,7 @@ RD=tmp/round
 LEDGER_GOOD=tmp/ledger.good
 DEATHLIST=tmp/deathlist.md
 NONSA_CLASS=tmp/nonsa-class.tsv                                  # 非 SA 四分类观测(item #4;tmp/ 持久,不入固定 ledger schema)
-NEAR_SA_QUEUE=tmp/near-sa-queue.tsv                             # near-SA 修订队列(item #5;design-fixable 且有 SA 票,generate 优先取)
+NEAR_SA_QUEUE=tmp/near-sa-queue.tsv                             # near-SA 修订队列(item #5/#6;design-fixable/evidence-incomplete 且有 SA 票,generate 优先取)
 LOCK=tmp/hunt.lock
 METRICS=tmp/hunt.metrics.tsv
 # 裁决归档失败停机时落此哨兵:SA 行已在 ledger.good 但其归档缺失=审计链断裂的孤儿 SA。
@@ -355,11 +355,12 @@ rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) ech
 verdict_of() { case "$1" in 2) echo strong-accept ;; 1) echo accept-w-rev ;; *) echo reject ;; esac; }
 # 非 SA 四分类(item #4;$1=降级前最低票 0/1/2、$2=是否全票 SA 但硬门槛降级(1/0)、$3=overlap):
 #   evidence-incomplete 票够但证据不完整(全票 SA 被硬门槛降级)——应补证重评,不是判死
-#   novelty-dead        头条已被占据(overlap=high)——按当前 PROGRAM 永久,不复活
+#   novelty-dead        头条已被占据(overlap=high)或 CRITICAL——永久禁复活(PROGRAM §不动项6)
 #   design-fixable      accept-w-rev 且 overlap=low——实验设计类可修,合法进化父本
 #   ceiling-limited     accept-w-rev 但 novelty 被近邻封顶(overlap≠low)——上限受限,搁置
-# 注:overlap≠high 的裸 reject(min=0,CRITICAL/≥2 MAJOR)当前归 novelty-dead(PROGRAM 下 reject 恒不复活);
-# 「只 direct-hit/CRITICAL 永久禁、其余留复查」需改 PROGRAM step6/12,见 P1-PROGRAM-DRAFT.md(item #6),本轮不动。
+# 注:reject(min=0)恒归 novelty-dead——裁判判 reject 必因 CRITICAL,叠加 overlap=high 的 direct-hit,
+# 正是「只 direct-hit/CRITICAL 永久禁」的集合;唯一可复活的 reject 是 evidence-incomplete(全票 SA 仅因
+# 硬门槛降级),入 near-sa-queue 走复查补证(PROGRAM/policy 已按 item #6 放开,见 CHANGELOG)。
 classify_nonsa() {
   local raw_min=$1 downgraded=$2 overlap=$3
   [ "$downgraded" -eq 1 ] && { echo evidence-incomplete; return; }
@@ -871,12 +872,12 @@ while :; do
       printf '%s\t%s\t%s\n' "$id" "$story" "$reason" >> "$RD/rejects.tsv"
       # item #4:非 SA 四分类同步落 tmp/ 观测(与 ledger category 列同源;cid=<run_id>/<id>)
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "${run_id}/${id}" "$cat" "$verdict" "$overlap" "${votes:--}" "$story" >> "$NONSA_CLASS"
-      # item #5:design-fixable 且有 SA 票(near-SA)进修订队列,generate 优先取它做进化父本。
+      # item #5/#6:design-fixable(→进化)或 evidence-incomplete(→复查)且有 SA 票的候选进修订队列,generate 优先取。
       # 去重按 story 精确匹配(BSD CJK strcoll 会误判相等,故用 grep -Fxq),防同一 idea 跨轮堆积。
-      if [ "$cat" = design-fixable ] && [ "$sa_votes" -ge 1 ] \
+      if { [ "$cat" = design-fixable ] || [ "$cat" = evidence-incomplete ]; } && [ "$sa_votes" -ge 1 ] \
          && ! cut -f3 "$NEAR_SA_QUEUE" 2>/dev/null | grep -Fxq -- "$story"; then
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "${run_id}/${id}" "$story" "$theme" "$overlap" "${votes:--}" "$cat" >> "$NEAR_SA_QUEUE"
-        log "near-SA 入队:${id}(票 ${votes},overlap=${overlap},design-fixable)——下轮 generate 优先修订"
+        log "near-SA 入队:${id}(票 ${votes},overlap=${overlap},${cat})——下轮 generate 优先修订"
       fi
     fi
   done < "$RD/ideas.tsv"

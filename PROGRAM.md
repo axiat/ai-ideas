@@ -9,7 +9,7 @@
 3. 指标唯一:verdict。keep ⇔ Strong Accept。verdict 不由任何单个 agent 决定,而由 orchestrator(`hunt.sh`)对 N 位独立裁判取**最低**票聚合;Strong Accept 需全票。
 4. 定级证据:候选 Strong Accept 必须附 policy 要求的定向查重记录(最相近 5-8 篇 + 链接,含「最强反例」行与 ≥1 条可复现的 arXiv/Semantic Scholar API 检索记录)与「最小否证实验」(数据 × 算力 × 预期信号);删承重假设形态另须「裂缝证据核验」节且 ≥2 条相符;缺任一不得定级。查重由独立进程完成,裁判的 novelty 只认该证据、feasibility 只认最小否证实验,不认生成方的说法。
 5. `ledger.tsv` schema 固定(见下);每个生成的 idea 无论 verdict 一律记一行,只追加,不改历史行。**只由 orchestrator 写入**,agent 不碰。
-6. 生成前必读 `ledger.tsv`,新 idea 不得与任何已有行实质雷同(包括已拒的)。唯一例外(每轮至多 1 个,进化与复查共用名额):进化——只准选 verdict=accept-w-rev 且 overlap=low 且死因属实验设计类缺陷的行做定向修复(novelty 封顶/已被占据的行不得进化);复查——查重薄弱型 accept-w-rev 行原样重交补查重,同一 story 至多一次。均按全新 idea 走完整查重与评审,不继承旧票;reject 行不得复活。
+6. 生成前必读 `ledger.tsv`,新 idea 不得与任何已有行实质雷同(包括已拒的)。唯一例外(每轮至多 1 个,进化与复查共用名额):进化——只准选 verdict=accept-w-rev 且 overlap=low 且死因属实验设计类缺陷的行做定向修复(novelty 封顶/已被占据的行不得进化);复查——查重薄弱型 accept-w-rev 行、或 category=evidence-incomplete 的 reject 行(全票 SA 仅因硬门槛降级、票够只差证据)原样重交补证/补查重,块首记「复活自」「复活条件」,同一 story 至多一次。均按全新 idea 走完整查重与评审,不继承旧票。reject 行复活资格按 category(第 8 列):novelty-dead(direct-hit / overlap=high / CRITICAL)永久禁复活;evidence-incomplete 准上述一次复查,补后仍不达标即并入永久禁。
 7. 角色分离(反串通):生成 / 查重 / 打分是互不共享 context 的独立进程,prompt 见 `roles/`。生成方不查重定性、不打分;裁判默认 Reject、互不通气、也不知道停机条件。
 8. 写入范围:agent 只允许写 `tmp/`(草稿区,gitignored)与 `ideas/`(仅报告角色);不得碰 `ledger.tsv` 及其它文件,不得运行 git/gh/publish。记账与发布由 orchestrator 负责,产出经 `./publish.sh` 走特性分支 + PR。
 9. 一轮 = 生成一批候选(4-6 个)经预筛裁剪后完整走完"深查 → 打分 → 记账"。预筛 kill 的候选按 reject 记账(不得静默丢弃);预筛存活超出 SHORT_MAX 的截断候选不深查、不记账(未获任何评审,下轮可重新生成),此外不得半途丢弃已写入本轮产物的 idea。
