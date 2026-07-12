@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 外层循环:每轮把一批 idea 走完「生成 → 预筛(杀 direct hit)→ 对抗式深查重 → N 位裁判打分」,
+# 外层循环:每轮把一批 idea 走完「生成 → 独立排序 → 预筛(杀 direct hit)→ 对抗式深查重 → N 位裁判打分」,
 # 由本脚本(而非任何 agent)聚合 verdict、写 ledger、发布。当日全票 Strong Accept 累计达 SA_TARGET(默认 1)即停。
 #
 # 反串通设计:
@@ -568,22 +568,31 @@ keep_rank() {   # $1=id(查 ideas.all.md 块)
   else echo 2; fi
 }
 
-# shortlist 选取:keeps.tsv(rank 主题存量 生成序 id story theme)排序取前 SHORT_MAX 个写
-# ideas.tsv/ideas.md,溢出照旧丢弃(不深查、不入账)。替代按生成顺序 FIFO——复查/进化/删公理
-# 排位靠后时曾被随机丢掉(hunt.log 至 07-07 已 51 次)。设全局 kept。
+# 独立 selector 的名次(item #1):查 tmp/round/select.tsv 第 2 列;缺失/非法回落 999
+# (排最后 ⇒ 该维退化为生成序,不废轮)。selector 只排序、复查/进化/删公理配额仍是硬约束(见 keep_rank)。
+select_rank_of() {   # $1=id
+  local r
+  [ -s "$RD/select.tsv" ] || { echo 999; return; }
+  r=$(awk -F'\t' -v id="$1" '$1==id{print $2; exit}' "$RD/select.tsv" 2>/dev/null)
+  case "$r" in ''|*[!0-9]*) echo 999 ;; *) echo "$r" ;; esac
+}
+
+# shortlist 选取:keeps.tsv(keep_rank select名次 主题存量 生成序 id story theme)排序取前 SHORT_MAX
+# 个写 ideas.tsv/ideas.md,溢出照旧丢弃(不深查、不入账)。排序键 = keep_rank(复查/进化>删公理>普通,
+# 硬配额)> selector 名次(item #1,独立排序;缺失回落 999)> 低存量主题 > 生成序。设全局 kept。
 select_shortlist() {
-  local rank tcount oidx id story theme
+  local rank srank tcount oidx id story theme
   kept=0
   [ -s "$RD/keeps.tsv" ] || return 0
-  sort -t$'\t' -k1,1n -k2,2n -k3,3n -o "$RD/keeps.tsv" "$RD/keeps.tsv"
-  while IFS=$'\t' read -r rank tcount oidx id story theme; do
+  sort -t$'\t' -k1,1n -k2,2n -k3,3n -k4,4n -o "$RD/keeps.tsv" "$RD/keeps.tsv"
+  while IFS=$'\t' read -r rank srank tcount oidx id story theme; do
     if [ "$kept" -lt "$SHORT_MAX" ]; then
       printf '%s\t%s\t%s\n' "$id" "$story" "$theme" >> "$RD/ideas.tsv"
       awk -v id="$id" '$1=="##"{f=($2==id)} f' "$RD/ideas.all.md" >> "$RD/ideas.md"
       printf '\n' >> "$RD/ideas.md"
       kept=$((kept + 1))
     else
-      log "预筛:${id} keep 但超出 SHORT_MAX=${SHORT_MAX}(rank=${rank} 主题存量=${tcount}),本轮不深查、不入账(下轮可重新生成)"
+      log "预筛:${id} keep 但超出 SHORT_MAX=${SHORT_MAX}(keep_rank=${rank} select名次=${srank} 主题存量=${tcount}),本轮不深查、不入账(下轮可重新生成)"
     fi
   done < "$RD/keeps.tsv"
 }
@@ -637,7 +646,7 @@ trap 'cp "$LEDGER_GOOD" ledger.tsv 2>/dev/null || true; rm -rf "$LOCK"' EXIT
 # 只信前段产物(它们本就是 agent 产物、由门槛+裁判消化);评审票据残留在循环内一律清除,verdict 永不续用。
 resume_front=0
 if [ "$RESUME_FRONT" = "1" ] && [ -s "$RD/ideas.tsv" ] && [ -s "$RD/ideas.md" ] && [ -s "$RD/priorwork.md" ]; then
-  # 主题门槛查发散全集(ideas.all.tsv,预筛前的 4-6 个);老格式遗留(无 all 文件)退回查 ideas.tsv
+  # 主题门槛查发散全集(ideas.all.tsv,预筛前的约 10 个);老格式遗留(无 all 文件)退回查 ideas.tsv
   themes_src="$RD/ideas.tsv"
   [ -s "$RD/ideas.all.tsv" ] && themes_src="$RD/ideas.all.tsv"
   if themes_ok "$themes_src" && axiom_ok "$RD/ideas.md" "$RD/ideas.tsv" 0 && priorwork_ok && cracks_ok; then
@@ -734,6 +743,11 @@ while :; do
       empty_and_wait; continue
     fi
 
+    # 1.4) 排序(item #1;禁写 ideas/;独立 context、便宜可错、只排不杀):按四准则给发散全集排序,定深查名额优先级。
+    #      缺失/非法由 select_rank_of 回落生成序、不废轮;调起失败也只告警(下游 prescreen/research 兜系统性故障)。
+    run_stage "$FRONT_CMD" "读 roles/select.md,按其执行" select; rc=$?; guard 0
+    [ "$rc" -ne 0 ] && log "排序阶段调起失败(rc=$rc),本轮回落生成序"
+
     # 1.5) 预筛(禁写 ideas/;便宜可错、只杀不保):深查花钱前杀掉"单篇直接占据头条"的 direct hit。
     #      agent 只给判定与证据链接;shortlist 与 kill 台账由本脚本机械构建,防预筛擅改候选内容。
     mv "$RD/ideas.tsv" "$RD/ideas.all.tsv"
@@ -764,7 +778,7 @@ while :; do
         # 主题存量必须 grep -Fx 字节比较:BSD awk/sort 的字符串 == 走 strcoll,
         # en_US.UTF-8 下 CJK 串会互判相等(动作表征==效率与系统),计数全错
         tcount=$(cut -f3 "$LEDGER_GOOD" 2>/dev/null | grep -Fxc -- "$theme" || true)
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(keep_rank "$id")" "$tcount" "$oidx" "$id" "$story" "$theme" >> "$RD/keeps.tsv"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(keep_rank "$id")" "$(select_rank_of "$id")" "$tcount" "$oidx" "$id" "$story" "$theme" >> "$RD/keeps.tsv"
       fi
     done < "$RD/ideas.all.tsv"
     # kill 行立即 bash 定谳入账(verdict=reject,overlap=high):防同类 idea 下轮重生成;
