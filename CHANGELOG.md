@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-07-12 P1 #6:复活软化——只 direct-hit/CRITICAL 永久禁,evidence-incomplete 准复查
+
+用户授权改 `brainstorming_policy.md`(#6 复活规则 canonical 在此),落 `P1-PROGRAM-DRAFT.md` 的 #6。原"reject 行一律不得复活"把"全票 SA 仅因硬门槛降级、票够只差证据"的候选也永久封,near-SA 转化率上不去。
+
+- `PROGRAM.md §不动项6` + canonical `brainstorming_policy.md:7` 同步:reject 复活资格按 category——**novelty-dead**(direct-hit / overlap=high / CRITICAL)永久禁;**evidence-incomplete** 准一次复查(补证),块首记「复活自」「复活条件」,同一 story 至多一次、补后仍不达标并入永久禁。
+- `roles/generate.md`:复查条从"仅 accept-w-rev"扩到"也含 category=evidence-incomplete 的 reject 行";进化条改为"只修 accept-w-rev,reject 复活见复查";near-sa-queue 读注标明 design-fixable→进化、evidence-incomplete→复查。
+- `hunt.sh`:near-sa-queue 入队条件 `design-fixable` → `design-fixable || evidence-incomplete`(两者都 sa_votes≥1);classify_nonsa 注释更新(reject 恒 novelty-dead 正是 direct-hit/CRITICAL 集,唯一可复活 reject 是 evidence-incomplete)。
+- **对草案的更正**:草案把 design-fixable/ceiling-limited 也列为"可复活 reject"不准确——它们是 accept-w-rev 的类别(走既有进化/复查);reject(min=0)只会是 novelty-dead 或 evidence-incomplete,故 #6 实际放开的唯一 reject 类是 evidence-incomplete。
+- 验证:`bash -n` OK;stub——全票 SA(2,2,2)+ 空 review.md → sa_gate 降级 → ledger `verdict=reject, cat=evidence-incomplete`,near-sa-queue 收该行(标 evidence-incomplete);#10 归档停机 A/B/C 无回归。
+
 ## 2026-07-12 P1 #4-schema:ledger 加 category 列(非 SA 四分类持久化)
 
 用户临时授权改 PROGRAM.md,落 `P1-PROGRAM-DRAFT.md` 的 #4-schema。非 SA 四分类原只在 `tmp/nonsa-class.tsv` 观测、跨运行不持久;进 ledger 后可持久、可供 generate 复活判定(#6 的前置)。
