@@ -708,14 +708,22 @@ mechanism.
 For each dimension, assign an integer 1-10 based on the tiers above.
 Then aggregate as follows:
 
+These aggregations are diagnostic heuristics. The verdict itself is set
+by the fatal-flaws logic (Step 5: any CRITICAL → Reject; two or more
+MAJOR → cap at Accept with Revisions) and the clear-accept SA bar in
+`brainstorming_policy.md`, not by dimension counts alone.
+
 - Top dimension at 8+ and a second dimension at 6+: this is the
   paper's thesis. Emphasise these two in the Introduction.
-- Three or more dimensions at 5 or below: the idea is thin. Either
-  find the dimension where the idea really shines and sharpen it, or
-  pivot.
-- All five dimensions at 4 or below: Reject and Pivot.
-- No single dimension reaches 7: the idea is vague. Ask the user to
-  name the single dominant axis before re-evaluating.
+- Three or more dimensions at 5 or below: the idea is thin — find the
+  dimension where it really shines and sharpen it, or pivot.
+- All five dimensions at 4 or below: no dimension carries the idea, so
+  the value assessment lands at Reject and Pivot — corroborated by, not
+  decided by, the count.
+- No single dimension reaches 7: treat the idea as vague. This caps
+  enthusiasm (it does not clear the SA bar) and the dominant axis
+  should be named in the evaluation, but it does not by itself set the
+  verdict.
 
 ## 8. Summary table
 
