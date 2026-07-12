@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## 2026-07-12 gold set 材料诚实化:两条被点名条款判对,真 bug 在旧材料谎报低重叠
+
+首轮完整校准(见 `calib/results-2026-07-12.md`)两个正式阳性 0 SA,理由落在 novelty 封顶 + 查重缺 web/工业占位。为解耦「材料不达现行门槛」与「条款过严」,对三个阳性 case 的 priorwork 做诚实全知重建(实际 web+API 检索核实各 case 投稿时点真实文献格局),条款一字不动重跑:
+
+- pos-axiom-adam(删公理探针):补齐 web/工业占位「未检出」记录后 **1/3 → 3/3 SA**,四条件逐票点名——上轮 1/3 纯是材料不达门槛,删公理通道机制正确。
+- pos-meanflow → **neg-meanflow-mp1**:核实发现头条被 MP1(2507.10543,2025-07,带代码)在 ICLR 投稿前 72 天精确占据,「一步全靠蒸馏」前提早被 FlowPolicy(AAAI 2025 oral)证伪;真实 oral(2602.13810)靠 IVC 增量+RL 赛道错位+未引 MP1 存活,不构成诚实全知下值 SA 的阳性。`git mv` 降级为 direct-hit 阴性(2025 新占位,补 neg-replai 的 2022 老占位形态),3/3 reject,e2e 召回 2507.10543 记 high。
+- pos-robomme:核实发现 MIKASA-Robo(2502.10550,早 11 个月)已占四类记忆分类学+隔离任务族,诚实重叠 medium(旧材料谎报 low);重跑仍 3/3 AwR,但理由变为 novelty 封顶+单人建构 feasibility MAJOR+无 8+ 维叠加。expect 改 min_vote>=accept-w-rev(真 oral 不该被 reject;本仓单人 phase-1 SA 门槛下 medium 重叠+建构负担使 SA 非 ground truth)。
+- 结论:被点名两条 verdict 条款(机制迁移「适配非平凡」、诊断天花板)均判对——meanflow 的 AwR 是旧材料谎报低重叠把 negative 抬成 AwR;诊断天花板是条件式(无 8+ 维才封顶)非绝对禁令,low 重叠高 Broader 的 benchmark 会拿 8+ 逃逸。**条款不改**,brainstorming_policy.md / roles/review.md 未动。真缺陷在 gold set 材料。
+- 缺口(记入 results):无干净 low 重叠 benchmark 正对照正面验证诊断天花板逃逸出口;method 型正对照席位随 meanflow 降级而空缺。
+- bugfix:`calib/run_e2e.sh` 与 `hunt.sh` 的 overlap 解析改锚定行首 `^重叠判定`——查重块其它行会路过「重叠判定」字样(如 API 召回说明"不作重叠判定依据"),非锚定 `grep -m1 '重叠判定'` 抓错行、把真实 high 误读成 low(neg-meanflow e2e 首跑即中招)。
+- 模型注记:初次面板 Fable 5 用量触顶,robomme/meanflow 重跑于 Opus 4.8;axiom 触顶前在 Fable 5 跑完(与初次同模型,材料是唯一变量)。未改材料的 neg-replai/neg-axiom-cosplay 条款材料均未动,沿用初次 3/3 reject 不重跑。
+
 ## 2026-07-12 P0 落地:SA 口径单源 + run_id/按运行归档 + calib 机器判读与端到端跑道
 
 DEVELOPMENT.md「优化 autoresearch 成功率」P0 五项(统一判定与完整观测):

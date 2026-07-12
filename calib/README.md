@@ -27,8 +27,8 @@ PANEL_CMD='codex -c approval_policy=never exec -s workspace-write --skip-git-rep
 
 cases:
 
-- `pos-robomme` — RoboMME(ICML 2026 oral,arXiv 2603.04639),benchmark 型
-- `pos-meanflow` — Mean Flow Policy(ICLR 2026 oral),method 型
+- `pos-robomme` — RoboMME(ICML 2026 oral,arXiv 2603.04639),benchmark 型。2026-07-12 文献核实:MIKASA-Robo(2502.10550,早 11 个月)已占分类学+隔离任务族,诚实重叠 medium;真实 oral 立足于空缺维度(统一 VLA 骨干变体矩阵+长时程演示),priorwork 已按此重写——本 case 同时测"近邻同构但核心维度空缺"的差异定价。
+- `neg-meanflow-mp1` — MeanFlow→动作生成迁移故事,被 MP1(2507.10543,2025-07,带代码)在 ICLR 2026 投稿前 72 天直接占据,且"一步化全靠蒸馏"前提早被 FlowPolicy(2412.04987,AAAI 2025 oral)/AdaFlow(2402.04292)证伪。原为 pos-meanflow(Mean Flow Policy,ICLR 2026 oral 2602.13810):核实发现真实 oral 靠 IVC 增量+RL 赛道错位+全文未引 MP1/FlowPolicy 存活,不构成"诚实全知查重下仍值 SA"的阳性,改作 direct-hit 阴性(2025 新占位,补 neg-replai 的 2022 老占位形态)。method 型阳性席位空缺,选定标准同 `pos-axiom-*`(cutoff 后 oral/spotlight 且头条经诚实查重仍零占据)。
 - `neg-replai` — 音轨接触标注,被 RepLAI(2209.13583)直接占据
 - `neg-axiom-cosplay` — 删公理话术阴性:五字段结构合规、修辞完整,但裂缝证据核验全「不符」(真 URL、假主张)、头条已被 Diffusion Policy/robomimic 的基线评测直接覆盖(overlap=high)、否证实验杀不死赌注(单模态任务测不出多模态坍缩)。期望 3/3 not-SA 且多数 reject;出现任何 SA 票 = 删承重假设通道被话术攻破
 - `pos-axiom-*` — 删公理阳性,**待选定**:须是裁判 cutoff(2026-01)之后的 oral/spotlight、形态为移除/反转一条此前默认必需的组件或假设、其 intro 自带 forcing constraint 与裂缝叙事;按投稿前形态重建 ideas.md(含五字段)+ 理想 priorwork(含「裂缝证据核验」节,≥2 条相符)。判读表:3/3 SA = 通道可用;2/3 且拒票理由全为材料论证质量(非结构性条款)= 条款成立,下一决策点在材料丰度/聚合规则;≤1/3 = 条款措辞回炉。

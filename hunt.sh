@@ -774,9 +774,10 @@ while :; do
     m_verdicts="${m_verdicts:+${m_verdicts};}${id}=${votes}->${verdict}"
     [ -z "$reason" ] && reason="(无理由,按最严处理)"
     [ -z "$theme" ] && theme="未标注"
-    # overlap 列:取独立查重的「重叠判定」(high/medium/low),供进化父本资格的机械筛选
+    # overlap 列:取独立查重的「重叠判定」(high/medium/low),供进化父本资格的机械筛选。
+    # 锚定行首:查重块其它行可能路过「重叠判定」字样(如"不作重叠判定依据"),非锚定会抓错行
     overlap=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/priorwork.md" 2>/dev/null \
-              | grep -m1 '重叠判定' | grep -oE 'high|medium|low' | head -1)
+              | grep -m1 '^重叠判定' | grep -oE 'high|medium|low' | head -1)
     [ -z "$overlap" ] && overlap="未知"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "hunt" "$theme" "$story" "$verdict" "$reason" "$overlap" >> ledger.tsv
     if [ "$min" -eq 2 ]; then
