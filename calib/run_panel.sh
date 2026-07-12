@@ -55,25 +55,10 @@ cp "$CASE/ideas.md" "$CASE/priorwork.md" "$OUT/"
 
 # case 的 id 清单,裁判产物校验(verdict_ok 必备集)与末尾聚合共用。单源取快照 ideas.md 的 `## I<n>`——
 # 那正是发进镜像、裁判唯一所见的文件;若另立 ideas.tsv 为源,裁判按 md 投的票会因 id 集不符被 verdict_ok 全判失败、面板必败。
-# 围栏代码块内不算:idea 正文若引用 `## I<n>` 样例,幻影 id 会让 verdict_ok 向每张票索要不存在的行、面板必败;
-# 反向同样致命——状态错翻吞掉真标题,票里冒出「未知 id」也是每席 rc=1。按 CommonMark 认栏:```/~~~ 都算、
-# 容 ≤3 前导空格、关栏须同字符且长度 ≥ 开栏且除尾随空白无它(裸 !fence 翻转会被 ~~~、缩进栏、四内嵌三穿透);
-# 反引号开栏行 info 串含反引号是行内代码不是栏。不写 {0,3} 区间——BSD awk 对 brace 区间支持不稳,用 " ? ? ?"
-awk '
-  fence { if ($0 ~ close_re) fence = 0; next }
-  match($0, /^ ? ? ?(```+|~~~+)/) {
-    seg = substr($0, RSTART, RLENGTH); sub(/^ +/, "", seg)
-    c = substr(seg, 1, 1)
-    if (c == "`" && substr($0, RSTART + RLENGTH) ~ /`/) { print; next }
-    close_re = "^ ? ? ?" seg c "*[ \t]*$"
-    fence = 1; next
-  }
-  { print }
-  END { if (fence) exit 3 }
-' "$OUT/ideas.md" | grep -oE '^## I[0-9]+' | awk '{print $2}' > "$OUT/ids"
-# 未闭合围栏按 CommonMark 吞到文件尾——语义上没错,但其后全部真标题会静默进不了 id 清单,
-# 裁判照读照投、verdict_ok 全席判未知 id,正确的面板被误作废。这里不静默照办,报错让人修 case。
-[ "${PIPESTATUS[0]}" -eq 0 ] || { echo "[calib] $CASE/ideas.md 有未闭合围栏(\`\`\`/~~~ 开栏无同字符等长关栏),其后标题会被吞,先修 case 再跑"; exit 2; }
+# 围栏感知提取单源 lib/md_ids.sh(run_e2e.sh 共用);未闭合围栏不静默照办,报错让人修 case。
+. "$repo/lib/md_ids.sh"
+md_idea_ids "$OUT/ideas.md" > "$OUT/ids" \
+  || { echo "[calib] $CASE/ideas.md 有未闭合围栏(\`\`\`/~~~ 开栏无同字符等长关栏),其后标题会被吞,先修 case 再跑"; exit 2; }
 [ -s "$OUT/ids" ] || { echo "[calib] 从 $CASE/ideas.md 提不出 id 清单(需 '## I<n>' 标题)"; exit 2; }
 
 # $1=拷回时已规范化的 verdict.tsv(剥 CR/trim 见 run_judge)。合格 = 对 $OUT/ids 每个 id
@@ -160,19 +145,22 @@ fi
 echo
 echo "=== 校准结果: $name(取最低票;SA 需全票)==="
 rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) echo 0 ;; esac; }
+: > "$OUT/aggregate.tsv"   # 机器可读聚合(id、逗号票串、min-vote),run_all.sh 按 expect 断言打分用
 while read -r id; do
   [ -z "$id" ] && continue
-  min=2; votes=""
+  min=2; votes=""; vcsv=""
   for r in $(seq 1 "$REVIEWERS"); do
     v=$(awk -F'\t' -v id="$id" '$1==id{print $2; exit}' "$OUT/rev/$r/verdict.tsv" 2>/dev/null)
     # rc 校验+verdict_ok 已保证每 id 恰好一票,这里查不到只能是内部矛盾(读错文件/竞态),
     # 响亮中止;不做「缺票=reject」静默降级——那会把故障伪装成阴性对照的正确全 reject。
     [ -z "$v" ] && { echo "[calib] 内部不一致: 裁判#$r 已过 verdict_ok 却查不到 $id 的票,校准作废" >&2; exit 2; }
     votes="$votes  #$r=$v"
+    vcsv="${vcsv:+$vcsv,}$v"
     rk=$(rank_of "$v"); [ "$rk" -lt "$min" ] && min=$rk
   done
   case "$min" in 2) agg=strong-accept ;; 1) agg=accept-w-rev ;; *) agg=reject ;; esac
   echo "$id:$votes  =>  min-vote: $agg"
+  printf '%s\t%s\t%s\n' "$id" "$vcsv" "$agg" >> "$OUT/aggregate.tsv"
 done < "$OUT/ids"
 # 泄漏标记全局打印一次(裁判在 review.md 末尾标,不带 id 归属);放循环内会对每个 id 重复整份、
 # 让人把 1 条泄漏读成 N 条。LC_ALL=C:BSD sort 在 UTF-8 locale 下等长不同 CJK 串互判相等,会把多条吞成一条

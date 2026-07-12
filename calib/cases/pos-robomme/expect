@@ -1,0 +1,3 @@
+# 阳性对照(benchmark 型):给足理想 priorwork 仍不满足下列断言 ⇒ 瓶颈在 verdict 逻辑/聚合规则
+min_vote>=accept-w-rev
+sa_votes>=1

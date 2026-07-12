@@ -12,6 +12,9 @@
 # 全程记录 hunt.log。失败分类:某阶段异常退出(额度/权限/命令错,连续 MAX_FAILS 次即停)
 # vs 正常跑完但无达标(随机短间隔继续重试)。
 # 轮级机器可读指标追加写 tmp/hunt.metrics.tsv(阶段失败/空产出/预筛 fail-open/聚合定谳各一行,字段见 metrics_write 头注)。
+# 每轮固定 run_id(启动时间+pid+轮次,candidate_id=<run_id>/I<n>);轮终点(fail/empty/verdict/
+# report-missing/published)把 tmp/round 全量产物+manifest+ledger 增量归档 tmp/runs/<run_id>/,
+# ledger 只留摘要行(字段见 archive_round 头注);各阶段起止/rc 记 tmp/round/stages.tsv,逐阶段日志在 tmp/round/logs/。
 #
 # 用法:
 #   ./hunt.sh [异常重试间隔分钟,默认 150]
@@ -94,6 +97,7 @@ LEDGER_GOOD=tmp/ledger.good
 DEATHLIST=tmp/deathlist.md
 LOCK=tmp/hunt.lock
 METRICS=tmp/hunt.metrics.tsv
+RUNS_DIR=tmp/runs
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 
@@ -155,13 +159,20 @@ random_no_hit_sleep_min() {
   echo $((NO_HIT_SLEEP_MIN_LO + RANDOM % (NO_HIT_SLEEP_MIN_HI - NO_HIT_SLEEP_MIN_LO + 1)))
 }
 
-# 调一次 agent(串行阶段用),rc 作为返回值;$1=命令 $2=prompt $3=阶段名
+# 调一次 agent(串行阶段用),rc 作为返回值;$1=命令 $2=prompt $3=阶段名。
+# 输出除 hunt.log 外另 tee 一份进 $RD/logs/<阶段>.log(按运行归档后可单独还原该阶段的检索/失败现场);
+# 起止时间与 rc 追加 $RD/stages.tsv(stage start end rc)。
 run_stage() {
-  local cmd=$1
+  local cmd=$1 rc t0 t1
   m_stage=$3
   log "调起 [$3]: $cmd"
-  $cmd "$2" >> "$LOG" 2>&1
-  return $?
+  mkdir -p "$RD/logs"
+  t0=$(date '+%F %T')
+  $cmd "$2" 2>&1 | tee -a "$RD/logs/$3.log" >> "$LOG"
+  rc=${PIPESTATUS[0]}
+  t1=$(date '+%F %T')
+  printf '%s\t%s\t%s\t%s\n' "$3" "$t0" "$t1" "$rc" >> "$RD/stages.tsv"
+  return "$rc"
 }
 
 # 固定层守卫:本轮相对 before/pre_dirty 的新增已跟踪改动只允许落在指定路径。
@@ -210,6 +221,7 @@ guard() {
 # 阶段异常退出:计失败数,达上限停机,否则睡眠(调用方随后 continue)
 fail_and_wait() {
   metrics_write fail "$m_stage" '-'
+  archive_round "fail:${m_stage}"
   fails=$((fails + 1))
   log "阶段异常退出,连续第 ${fails}/${MAX_FAILS} 次(额度耗尽/权限被拒/命令拼错,见上方 agent 输出)"
   if [ "$fails" -ge "$MAX_FAILS" ]; then
@@ -224,6 +236,7 @@ fail_and_wait() {
 empty_and_wait() {
   local m
   metrics_write empty "$m_stage" '-'
+  archive_round "empty:${m_stage}"
   empties=$((empties + 1))
   if [ "$empties" -ge "$EMPTY_MAX" ]; then
     log "前段连续 ${empties} 次空产出,疑似非偶发(认证/命令问题),升级长间隔重试"
@@ -245,18 +258,53 @@ count_lines() { if [ -f "$1" ]; then grep -c . "$1" || true; else echo '-'; fi; 
 # -=文件不存在:gen 生成全集、kill 预筛杀、keep 预筛存活、short 入深查 shortlist(drop=keep-short);
 # pw_links/pw_api 查重块链接行/结构化 API 检索行总数。verdicts 每 idea 一段 id=票,票,..->终判,
 # 票为 rank(2=SA 1=aWr 0=rej -=缺票);全票 2 却 ->reject 即 SA 硬门槛降级。
+# 末列 run_id 关联 tmp/runs/<run_id>/ 归档(2026-07-12 起;此前旧行 12 列无此列,消费端按列名或前 12 列位置解析)。
 metrics_write() {   # $1=outcome $2=阶段名(-=不适用) $3=verdicts 串(-=不适用)
   local n_gen n_kill n_keep n_short pw_links pw_api
-  [ -s "$METRICS" ] || printf 'ts\tround\toutcome\tstage\tlens\tgen\tkill\tkeep\tshort\tpw_links\tpw_api\tverdicts\n' > "$METRICS"
+  [ -s "$METRICS" ] || printf 'ts\tround\toutcome\tstage\tlens\tgen\tkill\tkeep\tshort\tpw_links\tpw_api\tverdicts\trun_id\n' > "$METRICS"
   n_gen=$(count_lines "$RD/ideas.all.tsv"); [ "$n_gen" = '-' ] && n_gen=$(count_lines "$RD/ideas.tsv")
   n_kill=$(count_lines "$RD/kills.tsv"); n_keep=$(count_lines "$RD/keeps.tsv"); n_short=$(count_lines "$RD/ideas.tsv")
   if [ -f "$RD/priorwork.md" ]; then
     pw_links=$(grep -cE 'https?://' "$RD/priorwork.md" || true)
     pw_api=$(grep -cE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' "$RD/priorwork.md" || true)
   else pw_links='-'; pw_api='-'; fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date '+%F %T')" "$round" "$1" "$2" "$m_lens" "$n_gen" "$n_kill" "$n_keep" "$n_short" \
-    "$pw_links" "$pw_api" "$3" >> "$METRICS"
+    "$pw_links" "$pw_api" "$3" "${run_id:--}" >> "$METRICS"
+}
+
+# 按运行归档:把本轮 tmp/round 全量产物(ideas/priorwork/预筛/三席票据与完整评审/阶段日志与起止时间)
+# 连同 manifest(来源/backend/policy 版本/退出原因/票向量)、ledger 增量行固化到 tmp/runs/<run_id>/;
+# ledger 本体只留摘要行,任一结论可由归档还原输入与判定过程。candidate_id = <run_id>/I<n>。
+# 同一 run_id 重复调用整体刷新(verdict 后 report 再失败,exit_reason 覆盖为 fail:report,产物照最新拷)。
+archive_round() {   # $1=退出原因(fail:<stage>|empty:<stage>|verdict|report-missing|published)
+  local dst rev_cmds r v
+  [ -n "${run_id:-}" ] && [ "$run_id" != '-' ] || return 0
+  dst="$RUNS_DIR/$run_id"
+  rm -rf "$dst"; mkdir -p "$dst/round"
+  tail -n +"$((ledger_base_lines + 1))" "$LEDGER_GOOD" > "$dst/ledger.delta.tsv" 2>/dev/null || true
+  rev_cmds=""
+  for r in $(seq 1 "$REVIEWERS"); do
+    v="REV_CMD_$r"; rev_cmds="${rev_cmds:+$rev_cmds | }${!v:-$BACK_CMD}"
+  done
+  {
+    printf 'run_id\t%s\n' "$run_id"
+    printf 'date\t%s\n' "$today"
+    printf 'source\thunt\n'
+    printf 'round\t%s\n' "$round"
+    printf 'lens\t%s\n' "$m_lens"
+    printf 'exit_reason\t%s\n' "$1"
+    printf 'sa_count\t%s\n' "${sa_count:--}"
+    printf 'reviewers\t%s\n' "$REVIEWERS"
+    printf 'front_cmd\t%s\n' "$FRONT_CMD"
+    printf 'back_cmd\t%s\n' "$BACK_CMD"
+    printf 'rev_cmds\t%s\n' "$rev_cmds"
+    printf 'git_head\t%s\n' "${before:--}"
+    printf 'policy_sha\t%s\n' "$(cat brainstorming_policy.md rubric.md roles/*.md 2>/dev/null | shasum -a 256 | cut -c1-12)"
+    printf 'verdicts\t%s\n' "${m_verdicts:--}"
+    printf 'archived_at\t%s\n' "$(date '+%F %T')"
+  } > "$dst/manifest.tsv"
+  cp -R "$RD/." "$dst/round/" 2>/dev/null || true
 }
 
 rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) echo 0 ;; esac; }
@@ -481,6 +529,10 @@ select_shortlist() {
 }
 
 mkdir -p "$(dirname "$LEDGER_GOOD")"                             # tmp/ 在干净 checkout 里不存在,先建(否则种子/重置全失败)
+# metrics 老文件一次性升级:header 缺 run_id 列则补上(仅改首行;旧数据行保持 12 列,消费端按前 12 列位置解析)
+if [ -s "$METRICS" ] && ! head -1 "$METRICS" | grep -q 'run_id'; then
+  awk 'NR==1{print $0 "\trun_id"; next} {print}' "$METRICS" > "$METRICS.mig" && mv "$METRICS.mig" "$METRICS"
+fi
 validate_sleep_config
 if [ "$SA_TARGET" -gt 0 ]; then TARGET_DESC="$SA_TARGET"; else TARGET_DESC="∞(不设上限)"; fi
 
@@ -528,6 +580,7 @@ fi
 fails=0
 empties=0
 round=0
+run_id='-'
 while :; do
   today=$(date +%F)
   sa_now=$(sa_today)
@@ -553,21 +606,33 @@ while :; do
 
   round=$((round + 1))
   m_stage='-'; m_lens='-'
+  # 运行标识与轮级观测:run_id 稳定唯一(启动时间+pid+轮次),candidate_id = <run_id>/I<n>;
+  # ledger_base_lines 记本轮开局基线行数,归档时据此提取本轮 ledger 增量(基线轮内只追加)。
+  run_id="$(date +%Y%m%dT%H%M%S)-p$$-r${round}"
+  sa_count='-'; m_verdicts=''
   before=$(git rev-parse HEAD)
   cp "$LEDGER_GOOD" ledger.tsv                       # 重置到上一轮定谳后的良好 ledger,抹掉任何遗留篡改(F2)
   pre_dirty=$(git status --porcelain | cut -c4- | sort -u)
 
+  front_resumed=0
   if [ "$resume_front" = "1" ]; then
     # 前段续跑:沿用遗留 ideas.tsv/ideas.md/priorwork.md(启动时已过门槛),直接进评审。
     # 评审及以后的残留必须清除——遗留 rev/ 里的票据与评审块可能是前段伪造,verdict 永不续用。
+    # stages.tsv/logs/ 保留:它们是中断前段的真实现场,随本轮一起归档。
     resume_front=0
+    front_resumed=1
     rm -rf "$RD/rev"
     rm -f "$RD/rev_rc" "$RD/accepted.tsv" "$RD/rejects.tsv" "$RD/meta.txt"
     empties=0
     log "续跑:沿用中断遗留的前段产物,跳过生成/预筛/查重,直接进入评审"
   else
     rm -rf "$RD"; mkdir -p "$RD"
+  fi
+  # 空文件时 grep -c 输出 0 且 rc=1,不能接 || echo 0(会双行);缺文件才回落 0
+  ledger_base_lines=$(grep -c '' "$LEDGER_GOOD" 2>/dev/null || true)
+  [ -n "$ledger_base_lines" ] || ledger_base_lines=0
 
+  if [ "$front_resumed" = "0" ]; then
     # 0) 失败蒸馏(可错,失败不阻塞):每 META_EVERY 轮、失败行足量时,让独立进程把 ledger 的
     #    reject 拒因与 accept-w-rev 封顶原因归纳成 tmp/deathlist.md(致命模式/封顶模式/进化候选),
     #    生成阶段据此避开高频失败模式、选对进化父本(Co-Scientist meta-review 的廉价版)。
@@ -664,6 +729,7 @@ while :; do
 
   # 3) N 位裁判,并行 + 各自独立输入目录(开跑时看不到彼此产出)(F3);禁写 ideas/
   m_stage=review
+  rev_t0=$(date '+%F %T')
   : > "$RD/rev_rc"; pids=()
   for r in $(seq 1 "$REVIEWERS"); do
     d="$RD/rev/$r"; mkdir -p "$d"
@@ -679,8 +745,10 @@ while :; do
   guard 0
   # 需恰好 REVIEWERS 行、每行 rc=0;缺席/非0 均视为失败重试(BSD grep 的 -qv 组合不可靠,用 awk 判)
   if ! awk -v n="$REVIEWERS" 'NF==2 && $2==0{ok++} END{exit !(ok==n)}' "$RD/rev_rc"; then
+    printf 'review\t%s\t%s\t1\n' "$rev_t0" "$(date '+%F %T')" >> "$RD/stages.tsv"
     log "有裁判异常退出或缺席:$(tr '\n' ' ' < "$RD/rev_rc")"; fail_and_wait; continue
   fi
+  printf 'review\t%s\t%s\t0\n' "$rev_t0" "$(date '+%F %T')" >> "$RD/stages.tsv"
 
   # 4) 聚合(bash 定谳):取最低票,SA 需全票 + 过 SA 硬门槛(F4);缺失/无法解析的票一律当 reject(失败关闭)。
   cp "$LEDGER_GOOD" ledger.tsv                       # 干净基线,本轮增量只来自下面 bash 追加
@@ -721,6 +789,7 @@ while :; do
   guard 0
   log "本轮聚合:${sa_count} 个 Strong Accept(全票且过硬门槛),已记账 ledger.tsv"
   metrics_write verdict '-' "${m_verdicts:--}"
+  archive_round verdict
 
   # 5) 达标轮 → 组装报告并发布;当日累计达 SA_TARGET 才停,否则继续攒
   if [ "$sa_count" -gt 0 ]; then
@@ -731,6 +800,7 @@ while :; do
     if [ "$(reports_today)" -gt "$reports_before" ]; then
       cp "$LEDGER_GOOD" ledger.tsv   # 发布前再确保 ledger = 定谳 good,抹掉 report 阶段对 ledger 的任何擅改
       ./publish.sh >> "$LOG" 2>&1 || { log "publish.sh 失败,见 hunt.log;停机人工处理"; exit 2; }
+      archive_round published
       sa_now=$(sa_today)
       if [ "$SA_TARGET" -gt 0 ] && [ "$sa_now" -ge "$SA_TARGET" ]; then
         log "已发布;当日 Strong Accept 累计 ${sa_now},达目标 ${SA_TARGET},结束"
@@ -743,6 +813,7 @@ while :; do
       continue
     fi
     log "报告阶段声称达标但未新增 ideas/${today}_hunt*.md 报告,本轮作废重试"
+    archive_round report-missing
   fi
 
   fails=0

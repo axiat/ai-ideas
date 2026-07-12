@@ -45,11 +45,11 @@
 
 #### P0：统一判定与完整观测
 
-- [ ] 以 `brainstorming_policy.md` 的 clear-accept 标准为唯一 SA 定义，消除 `rubric.md`、各 role prompt 与 sidecar 的冲突口径。
-- [ ] 建立具身领域 gold set，覆盖普通 method、benchmark/new problem、删承重假设和 direct-hit 阴性。
-- [ ] 分开验证冻结 `ideas + priorwork` 的 verdict 校准，以及允许真实检索的端到端校准。
-- [ ] 为每次运行生成稳定 `run_id` / `candidate_id`，记录来源、backend、policy 版本、阶段时间和退出原因。
-- [ ] 按运行保存 `ideas`、`priorwork`、三席票向量、完整理由、聚合结果和检索故障；ledger 只保留摘要。
+- [x] 以 `brainstorming_policy.md` 的 clear-accept 标准为唯一 SA 定义，消除 `rubric.md`、各 role prompt 与 sidecar 的冲突口径。（2026-07-12：rubric Step 8 与 Integrity gate #5 改为指向 policy；review.md 撤销「且能冲 oral/spotlight」加严；awr-judge/trigger/README 错误指向修正）
+- [x] 建立具身领域 gold set，覆盖普通 method、benchmark/new problem、删承重假设和 direct-hit 阴性。（五 case + `expect` 机器判读 + `calib/run_all.sh` 批跑打分；具身删公理正式阳性待 2026 秋会议揭晓，现以跨域探针 pos-axiom-adam 代位）
+- [x] 分开验证冻结 `ideas + priorwork` 的 verdict 校准，以及允许真实检索的端到端校准。（冻结=`calib/run_all.sh`，端到端=`calib/run_e2e.sh` 检索召回侧；阳性对照无端到端跑法——已发表工作会被真检索判成自占据）
+- [x] 为每次运行生成稳定 `run_id` / `candidate_id`，记录来源、backend、policy 版本、阶段时间和退出原因。（run_id=启动时间+pid+轮次，candidate_id=`<run_id>/I<n>`；manifest + `stages.tsv`）
+- [x] 按运行保存 `ideas`、`priorwork`、三席票向量、完整理由、聚合结果和检索故障；ledger 只保留摘要。（轮终点归档 `tmp/runs/<run_id>/`：tmp/round 全量 + manifest + ledger 增量 + 逐阶段日志）
 
 验收：已知 A 类阳性可复现地全票通过，direct-hit 阴性保持全票 Reject；任一 ledger 结论可还原输入与判定过程。
 

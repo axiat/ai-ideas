@@ -5,12 +5,21 @@
 - 阳性对照 = 已知 oral/spotlight 论文的投稿前 idea 形态 + 理想 priorwork(实读 8 篇、low 重叠、编号经 arXiv API 核验)。期望 min-vote ≥ accept-w-rev 且出现 strong-accept 票;给足理想证据仍无人投 SA,说明瓶颈在 verdict 逻辑/聚合规则,不在生成与查重。
 - 阴性对照 = 头条被单篇工作直接占据、priorwork 如实标 high。期望全票 reject;否则面板放水。
 
+两条校准跑道分开验证:**冻结校准**(`run_panel.sh`/`run_all.sh`)固定 ideas+priorwork,只验 verdict 逻辑与聚合规则;**端到端校准**(`run_e2e.sh`)放开真实检索,只验查重进程能否召回已知占位。阳性对照没有端到端跑法——已发表工作会被真检索找到、判成"被自己占据"的假阴性,故端到端只跑 direct-hit 阴性(检索召回侧)。
+
 ```bash
 ./calib/run_panel.sh calib/cases/neg-replai      # 3 位禁搜裁判(默认 claude),min-vote 聚合
 PANEL_CMD='./grok-worker.sh' ./calib/run_panel.sh calib/cases/pos-meanflow           # grok 席,自动禁内建检索
 PANEL_CMD='codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral' \
   ./calib/run_panel.sh calib/cases/pos-robomme 5                                     # codex 席,禁搜故不开 --search/网络
+
+./calib/run_all.sh                               # 批跑全部带 expect 的 case,按 expect 断言打分,
+                                                 # 打印校准正确率;逐 case 结果追加 tmp/calib/summary.tsv
+./calib/run_e2e.sh calib/cases/neg-replai        # 端到端检索召回:真检索跑 roles/research.md,
+                                                 # 断言 priorwork 召回已知占位(e2e.expect:overlap/url_contains)
 ```
+
+每个 case 的判读预期机器化在 `cases/<case>/expect`(冻结面板断言:min_vote/sa_votes/reject_votes/all_votes;`probe` 只跑不打分)与 `cases/<case>/e2e.expect`(端到端断言);DSL 见 `run_all.sh`/`run_e2e.sh` 头注。票数阈值按默认 3 裁判书写,换裁判数须一并复核。
 
 裁判禁用检索:对照多为已发表工作,联网检索会把它们判成"被自己占据"的假阴性。裁判怀疑某 idea 对应已发表论文时,只在 review.md 末尾加「怀疑对应已发表工作:<名>」做泄漏标记,verdict 仍按材料评。
 
