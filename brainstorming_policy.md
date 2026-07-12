@@ -4,7 +4,7 @@
 
 - `research_context.md` 只是可选的灵感来源，**不是约束**。每轮生成的 idea 中至多 1-2 个与用户现有工作（DSRL / π0.5 栈）直接相关，其余必须跳出该栈，在 WorldModel / VLA 乃至具身智能更大范围内自由发散。
 - 优先级排序：纯 novelty（改变问题定义或基础机制，Transformer 级别的野心）＞ 问题发现 + 初步探究 ＞ 现有方向的增量改进。
-- 每轮可含至多 1 个**进化或复查 idea**（共用名额）。进化：只准选 verdict=accept-w-rev、overlap=low 且死因属实验设计类缺陷的行做定向修复（novelty 封顶/已被占据的不修，修不掉）；复查：查重薄弱型 AwR 原样重交补查重，同一 story 至多一次，补完仍封顶即永久放弃。均按全新 idea 走完整查重与评审，不继承旧票；reject 行不得复活。
+- 每轮可含至多 1 个**进化或复查 idea**（共用名额）。进化：只准选 verdict=accept-w-rev、overlap=low 且死因属实验设计类缺陷的行做定向修复（novelty 封顶/已被占据的不修，修不掉）；复查：查重薄弱型 AwR、或 category=evidence-incomplete 的 reject 行（全票 SA 仅因硬门槛降级、票够只差证据）原样重交补证/补查重，块首记「复活自」「复活条件」，同一 story 至多一次，补完仍不达标即永久放弃。均按全新 idea 走完整查重与评审，不继承旧票。reject 行复活资格按 category：novelty-dead（direct-hit / overlap=high / CRITICAL）不得复活；evidence-incomplete 准一次上述复查。
 - **删公理配额**：每轮发散的 10 个原料候选中至少 1 个尝试「删承重假设」形态（第 5 形态）；是否进入自筛后的 4-6 个只由质量决定，不强制。五字段填不齐即不算成——在产物标记行如实写「未成」及卡在哪个字段，未成标记不是 idea、不入 ledger。禁止为凑配额编造话术合规、证据空心的假删公理：空着比造假好，话术候选会被裂缝核验与裁判按普通形态从严处理。
 
 ## 主题词表（ledger 的 theme 列，生成时逐 idea 标注）
