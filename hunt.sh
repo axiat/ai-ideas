@@ -355,6 +355,19 @@ archive_round() {   # $1=退出原因(fail:<stage>|empty:<stage>|verdict|report-
 
 rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) echo 0 ;; esac; }
 verdict_of() { case "$1" in 2) echo strong-accept ;; 1) echo accept-w-rev ;; *) echo reject ;; esac; }
+# 票有效性(B2):裁判票须精确落在词表 {strong-accept, accept-w-rev, reject}(review.md 写侧)。
+# 缺票/大小写错/拼写错/多余词一律无效——rank_of 会把它们全塌成 0,与真 reject 无法区分;若直接采信,
+# 基础设施/格式故障就被当 novelty-dead 永久禁复活。故聚合前独立校验,无效即按 review 失败重跑整轮。
+vote_valid() { case "$1" in strong-accept|accept-w-rev|reject) return 0 ;; *) return 1 ;; esac; }
+# MAJOR 硬顶(B3):裁判自报 MAJOR 数(verdict.tsv 第 3 列)≥2 时,rubric 硬顶 accept-w-rev
+# (review.md「含 ≥2 MAJOR → 封顶 Accept-w-Rev」)。$1=rank(0/1/2)、$2=MAJOR 字段原文;回显机械复核后的
+# 有效 rank。防裁判自评 strong-accept 却自报 ≥2 MAJOR 的自相矛盾被原样采信。MAJOR 字段解析宽松(取首个
+# 整数),无法解析则不顶、回落信任第 2 列——本项是纵深防御的交叉核验,不因格式小疵废轮(缺票的强校验归 B2)。
+major_cap() {   # $1=rank $2=MAJOR字段 -> 有效 rank
+  local rank=$1 mj
+  mj=$(printf '%s' "$2" | grep -oE '[0-9]+' | head -1)
+  if [ -n "$mj" ] && [ "$mj" -ge 2 ] && [ "$rank" -gt 1 ]; then echo 1; else echo "$rank"; fi
+}
 # 非 SA 四分类(item #4;$1=降级前最低票 0/1/2、$2=是否全票 SA 但硬门槛降级(1/0)、$3=overlap):
 #   evidence-incomplete 票够但证据不完整(全票 SA 被硬门槛降级)——应补证重评,不是判死
 #   novelty-dead        overlap=high 头条被占,或非降级 reject(min=0)——永久禁复活(PROGRAM §不动项6)
@@ -867,9 +880,26 @@ while :; do
     printf 'review\t%s\t%s\t1\n' "$rev_t0" "$(date '+%F %T')" >> "$RD/stages.tsv"
     log "有裁判异常退出或缺席:$(tr '\n' ' ' < "$RD/rev_rc")"; fail_and_wait; continue
   fi
+  # 内容级校验(B2):进程退出干净 ≠ 票据可用——裁判可能 rc=0 却漏写某 id 的票、或写了词表外 token。
+  # 缺票/非词表票若在聚合里塌成 rank 0,会把基础设施/格式故障误判成 novelty-dead 永久禁复活。故在动 ledger
+  # 之前逐 id×逐席校验:任一票不在 {strong-accept,accept-w-rev,reject} 即按 review 失败重跑整轮(不写 ledger)。
+  bad_vote=""
+  while IFS=$'\t' read -r id story theme; do
+    [ -z "$id" ] && continue
+    for r in $(seq 1 "$REVIEWERS"); do
+      v=$(awk -F'\t' -v id="$id" '$1==id{print $2; exit}' "$RD/rev/$r/verdict.tsv" 2>/dev/null)
+      vote_valid "$v" || bad_vote="${bad_vote:+$bad_vote }${id}@rev${r}[${v:-缺票}]"
+    done
+  done < "$RD/ideas.tsv"
+  if [ -n "$bad_vote" ]; then
+    printf 'review\t%s\t%s\t1\n' "$rev_t0" "$(date '+%F %T')" >> "$RD/stages.tsv"
+    log "裁判票缺失或非词表(每 id 须一张 strong-accept|accept-w-rev|reject):${bad_vote};按 review 失败重跑整轮(不塌成 novelty-dead 永久禁)"
+    fail_and_wait; continue
+  fi
   printf 'review\t%s\t%s\t0\n' "$rev_t0" "$(date '+%F %T')" >> "$RD/stages.tsv"
 
-  # 4) 聚合(bash 定谳):取最低票,SA 需全票 + 过 SA 硬门槛(F4);缺失/无法解析的票一律当 reject(失败关闭)。
+  # 4) 聚合(bash 定谳):取最低票,SA 需全票 + 过 SA 硬门槛(F4)。缺票/非词表票已在上面 B2 内容级校验拦下
+  #    (按 review 失败重跑整轮,不塌成 reject),故到此每张票都在词表内;失败关闭只余 SA 硬门槛降级一路。
   cp "$LEDGER_GOOD" ledger.tsv                       # 干净基线,本轮增量只来自下面 bash 追加
   : > "$RD/accepted.tsv"; : > "$RD/rejects.tsv"
   sa_count=0
@@ -879,8 +909,13 @@ while :; do
     min=2; reason=""; votes=""; sa_votes=0
     for r in $(seq 1 "$REVIEWERS"); do
       line=$(awk -F'\t' -v id="$id" '$1==id{print; exit}' "$RD/rev/$r/verdict.tsv" 2>/dev/null || true)
-      v=$(printf '%s' "$line" | cut -f2); rs=$(printf '%s' "$line" | cut -f4)
+      v=$(printf '%s' "$line" | cut -f2); mj=$(printf '%s' "$line" | cut -f3); rs=$(printf '%s' "$line" | cut -f4)
       rank=$(rank_of "$v")
+      capped=$(major_cap "$rank" "$mj")               # B3:自报 ≥2 MAJOR 机械硬顶 accept-w-rev,防自相矛盾的 SA 被采信
+      if [ "$capped" != "$rank" ]; then
+        log "MAJOR 复核:${id} rev${r} 自报 MAJOR=${mj},strong-accept 硬顶 accept-w-rev"; rank=$capped
+      fi
+      # B2 已保证 $v 落在词表(非空且合法),故此处必走 ${rank} 分支;- 分支为纵深防御保留
       if [ -n "$v" ]; then votes="${votes:+$votes,}${rank}"; else votes="${votes:+$votes,}-"; fi
       [ "$rank" -eq 2 ] && sa_votes=$((sa_votes + 1))
       if [ "$rank" -lt "$min" ]; then min=$rank; reason=$rs; fi
