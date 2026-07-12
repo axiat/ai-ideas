@@ -74,7 +74,9 @@ while read -r id; do
     detail="${detail:+$detail;}${id}=missing"
     continue
   fi
-  ov=$(printf '%s\n' "$block" | grep -m1 '重叠判定' | grep -oE 'high|medium|low' | head -1)
+  # 锚定行首:块内其它行可能提及「重叠判定」字样(如 API 召回说明"不作重叠判定依据"),
+  # 非锚定 grep -m1 会抓错行、把真实判定 high 误读成路过词
+  ov=$(printf '%s\n' "$block" | grep -m1 '^重叠判定' | grep -oE 'high|medium|low' | head -1)
   links=$(printf '%s\n' "$block" | grep -cE '^- .*https?://' || true)
   detail="${detail:+$detail;}${id}=${ov:-无判定},links=${links}"
   while IFS= read -r line; do

@@ -30,7 +30,7 @@
 - `tmp/hunt.metrics.tsv`：96 个候选完成三席评审，288 张票中仅 6 张 SA；3 个候选得到 `2×SA + 1×AwR`，无全票 SA。
 - 59 次有指标记录的尝试中，32 次到达 verdict，27 次停在 empty/fail。
 - `tmp/sa-potential-ideas.md` 是动态候选池；其中的 `SA-可能` 未获正式主环确认，不计作 SA。
-- `calib/results-2026-07-12.md`（口径统一后首跑）：冻结校准正确率 2/4——阴性全票 reject，两个正式阳性全票 AwR、0 张 SA 票（诊断天花板 / 机制迁移条款封顶，非材料单因）；端到端检索召回 pass。
+- `calib/results-2026-07-12.md`（口径统一 + gold set 材料诚实化）：诚实全知重建三个阳性 priorwork 后——删公理探针 1/3→3/3 SA（材料补齐即恢复）；pos-meanflow 暴露为高重叠 direct-hit（被 MP1 占位），降级为阴性 neg-meanflow-mp1；pos-robomme 暴露为 medium 重叠 borderline（分类学被 MIKASA-Robo 占）。结论：被点名两条 verdict 条款均判对，真缺陷在旧 gold set 谎报低重叠；条款不改。gold set 现 5 case 全绿。
 
 #### 优化指标
 
