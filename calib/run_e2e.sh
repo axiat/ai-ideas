@@ -20,6 +20,7 @@ repo=$(pwd)
 
 CASE=${1:?用法: ./calib/run_e2e.sh calib/cases/<case>}
 E2E_CMD=${E2E_CMD:-claude -p --strict-mcp-config}
+E2E_MIN_LINKS=${E2E_MIN_LINKS:-5}   # 每 idea 块非 API 近邻链接下限,同 hunt.sh PRIOR_MIN_LINKS 默认;检索证据硬门槛
 name=$(basename "$CASE")
 OUT="tmp/calib/e2e-$name"
 SUMMARY=tmp/calib/summary.tsv
@@ -50,7 +51,15 @@ mkdir -p "$mirror/roles" "$mirror/tmp/round"
 cp "$repo/roles/research.md" "$mirror/roles/"
 cp "$OUT/ideas.md" "$mirror/tmp/round/ideas.md"
 mkdir -p "$mirror/.claude"
-cp "$repo/.claude/settings.json" "$mirror/.claude/settings.json"   # 真仓 allowlist 本就放行检索与 tmp 写
+# E2E 专用 claude 权限:放行检索(与冻结面板相反,E2E 要真检索)+ 只写镜像内 tmp/**;
+# 不拷真仓 settings——那含 Write(//tmp/**)、Write(//private/tmp/**),会让 research 席把持久写留在镜像外。
+cat > "$mirror/.claude/settings.json" <<'JSON'
+{
+  "permissions": {
+    "allow": ["Edit(tmp/**)", "Write(tmp/**)", "WebSearch", "WebFetch"]
+  }
+}
+JSON
 pre=$(mirror_pre "$mirror" "tmp/round/priorwork.md")
 logf="$repo/$OUT/research.log"   # 子 shell 已 cd 进镜像,日志重定向必须用绝对路径
 ( cd "$mirror" && GROK_REPO="$mirror" $RESOLVED_CMD "${pre}
@@ -77,8 +86,17 @@ while read -r id; do
   # 锚定行首:块内其它行可能提及「重叠判定」字样(如 API 召回说明"不作重叠判定依据"),
   # 非锚定 grep -m1 会抓错行、把真实判定 high 误读成路过词
   ov=$(printf '%s\n' "$block" | grep -m1 '^重叠判定' | grep -oE 'high|medium|low' | head -1)
-  links=$(printf '%s\n' "$block" | grep -cE '^- .*https?://' || true)
-  detail="${detail:+$detail;}${id}=${ov:-无判定},links=${links}"
+  # 近邻链接排除 API URL(与 hunt.sh priorwork_ok 同口径);API 检索记录单独计数
+  links=$(printf '%s\n' "$block" | grep -E '^- .*https?://' \
+          | grep -cvE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' || true)
+  api=$(printf '%s\n' "$block" | grep -cE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' || true)
+  detail="${detail:+$detail;}${id}=${ov:-无判定},links=${links},api=${api}"
+  # 检索证据硬门槛(独立于 e2e.expect):E2E 这条跑道的目的就是验证真检索发生了。
+  # 只给记忆里的占位 URL + 「重叠判定:high」不做检索也能过 expect,故要求 ≥E2E_MIN_LINKS 条
+  # 非 API 近邻 + ≥1 条结构化 API query URL(roles/research.md 本就强制),不足即判 retrieval-thin。
+  if [ "$links" -lt "$E2E_MIN_LINKS" ] || [ "$api" -lt 1 ]; then
+    failed="${failed:+$failed;}${id}:retrieval-thin(links=${links}<${E2E_MIN_LINKS} 或 api=${api}<1)"
+  fi
   while IFS= read -r line; do
     line=${line%%#*}
     line=$(printf '%s' "$line" | tr -d '[:space:]')

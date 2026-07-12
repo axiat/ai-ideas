@@ -64,11 +64,12 @@ check_one() {
   esac
 }
 
-pass=0; fail=0; probe=0; panelfail=0
+pass=0; fail=0; probe=0; panelfail=0; configerr=0
 for c in ${cases[@]+"${cases[@]}"}; do
   name=$(basename "$c")
   expectf="$c/expect"
-  [ -f "$expectf" ] || { echo "run_all: $c 缺 expect,跳过" >&2; continue; }
+  # 显式请求但缺 expect = 配置错误,计入 config-error(影响退出码),不静默跳过成假绿
+  [ -f "$expectf" ] || { echo "run_all: $c 缺 expect,记 config-error" >&2; configerr=$((configerr + 1)); continue; }
   echo
   echo "########## run_all: $name(${REVIEWERS} 裁判)##########"
   grade=pass; failed=""
@@ -78,7 +79,7 @@ for c in ${cases[@]+"${cases[@]}"}; do
   else
     agg_file="tmp/calib/$name/aggregate.tsv"
     [ -s "$agg_file" ] || { echo "run_all: $name 面板成功但缺 aggregate.tsv(run_panel 版本过旧?)" >&2; exit 2; }
-    is_probe=0
+    is_probe=0; checks=0
     while IFS= read -r line; do
       line=${line%%#*}
       line=$(printf '%s' "$line" | tr -d '[:space:]')
@@ -90,6 +91,7 @@ for c in ${cases[@]+"${cases[@]}"}; do
         sa=$(printf '%s' "$vcsv" | tr ',' '\n' | grep -cx 'strong-accept' || true)
         rej=$(printf '%s' "$vcsv" | tr ',' '\n' | grep -cx 'reject' || true)
         total=$(printf '%s' "$vcsv" | tr ',' '\n' | grep -c . || true)
+        checks=$((checks + 1))
         if ! check_one "$line" "$agg" "$sa" "$rej" "$total"; then
           failed="${failed:+$failed;}${id}:${line}"
         fi
@@ -97,13 +99,23 @@ for c in ${cases[@]+"${cases[@]}"}; do
     done < "$expectf"
     if [ "$is_probe" = "1" ]; then
       grade=probe; probe=$((probe + 1))
+    elif [ "$checks" -eq 0 ]; then
+      # expect 存在但无有效断言(空/纯注释)= 配置错误,不得当 pass 计成假绿
+      grade=config-error; configerr=$((configerr + 1))
+      echo "run_all: $name expect 无有效断言(空/纯注释),记 config-error" >&2
     elif [ -n "$failed" ]; then
       grade=fail; fail=$((fail + 1))
     else
       pass=$((pass + 1))
     fi
   fi
-  votes=$(awk -F'\t' '{printf "%s%s=%s->%s", (NR>1?";":""), $1, $2, $3} END{if(!NR)printf "-"}' "tmp/calib/$name/aggregate.tsv" 2>/dev/null)
+  # panel-fail 时不读 aggregate.tsv:run_panel 可能在清场前早退(如 PANEL_CMD 非法),
+  # 残留的是上一轮票据,记进本行 = 谎报本次从未产生的票
+  if [ "$grade" = "panel-fail" ]; then
+    votes='-'
+  else
+    votes=$(awk -F'\t' '{printf "%s%s=%s->%s", (NR>1?";":""), $1, $2, $3} END{if(!NR)printf "-"}' "tmp/calib/$name/aggregate.tsv" 2>/dev/null)
+  fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date '+%F %T')" "$name" "$REVIEWERS" "${PANEL_CMD:-claude -p --strict-mcp-config}" \
     "$grade" "${votes:--}" "${failed:--}" >> "$SUMMARY"
@@ -112,10 +124,11 @@ done
 
 echo
 graded=$((pass + fail))
-echo "=== run_all 汇总: pass=$pass fail=$fail probe=$probe panel-fail=$panelfail ==="
+echo "=== run_all 汇总: pass=$pass fail=$fail probe=$probe panel-fail=$panelfail config-error=$configerr ==="
 if [ "$graded" -gt 0 ]; then
   echo "校准正确率: $pass/$graded(probe 与 panel-fail 不计入;逐 case 见 $SUMMARY)"
 else
-  echo "无计分 case(全为 probe/panel-fail),校准正确率不适用"
+  echo "无计分 case(全为 probe/panel-fail/config-error),校准正确率不适用"
 fi
-[ "$fail" -eq 0 ] && [ "$panelfail" -eq 0 ]
+# 全绿要求:无 fail、无 panel-fail、无 config-error,且至少跑成一个 pass/probe(全 skip 不算绿)
+[ "$fail" -eq 0 ] && [ "$panelfail" -eq 0 ] && [ "$configerr" -eq 0 ] && [ "$((pass + probe))" -ge 1 ]

@@ -110,6 +110,7 @@ deny_tree() {
 
 deny_file 'ledger.tsv'
 deny_file 'tmp/ledger.good'   # hunt.sh 唯一可信台账基线:tmp/ 对 file-tool 可写且在守卫视野外,毒它=毒下次聚合
+deny_tree 'tmp/runs'          # 按运行审计归档:bash 写、agent 禁改,防后续阶段回改旧运行的 manifest/证据
 for p in \
   PROGRAM.md rubric.md brainstorming_policy.md research_context.md \
   hunt.sh publish.sh settle.sh agy-worker.sh grok-worker.sh awr-side.sh
