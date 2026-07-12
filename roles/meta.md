@@ -4,7 +4,7 @@
 
 ## 读
 
-- `ledger.tsv`:reject 行(含"预筛直接占位"行)与 accept-w-rev 行,重点看 reason 列与行末 overlap 列(high/medium/low;老行可能缺此列,视为未知)。
+- `ledger.tsv`:reject 行(含"预筛直接占位"行)与 accept-w-rev 行,重点看 reason 列、overlap 列(第 7 列;high/medium/low,老行可能缺此列视为未知)与 category 列(第 8 列;novelty-dead/evidence-incomplete/design-fixable/ceiling-limited,老行留 `-`)。
 
 ## 做
 

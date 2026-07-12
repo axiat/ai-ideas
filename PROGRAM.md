@@ -24,15 +24,15 @@
 1.5 **预筛**(`roles/prescreen.md`,便宜可错、只杀不保):只杀"单篇工作直接占据头条"的 direct hit,kill 必附占位链接;被杀者由 orchestrator 立即按 reject 记账(overlap=high),存活取前 SHORT_MAX 个进深查。keep 不构成任何 novelty 结论。
 2. **深查重**(`roles/research.md`):对抗式定向查重,先 direct-hit 猎杀再铺开三类检索词;每个 idea 找最相近 5-8 篇实读摘要/方法,产出独立证据(含"最强反例"行);每个 idea 块须有至少 5 条带链接近邻与至少 1 条 API 检索记录(query URL);形态=删承重假设的 idea 另须逐条实读核验其自报「裂缝证据」URL(相符/部分/不符/不可达),写入该块「裂缝证据核验」节。
 3. **打分**(`roles/review.md`,跑 N 次):各裁判按 `rubric.md` 完整评审、用 policy 校准,默认 Reject,输出各自 verdict。
-4. **聚合记账**(orchestrator):每个 idea 取 N 位裁判最低票(SA 需全票),连同查重的重叠判定(overlap 列)全部追加进 `ledger.tsv`。
+4. **聚合记账**(orchestrator):每个 idea 取 N 位裁判最低票(SA 需全票),连同查重的重叠判定(overlap 列)与非 SA 四分类(category 列)全部追加进 `ledger.tsv`。
 5. 有全票 Strong Accept → `roles/report.md` 组装报告到 `ideas/`,orchestrator 调 `./publish.sh` 发布;当日累计达入口定义的目标数(`SA_TARGET`,默认 1)即停,未达则继续下一轮(调研可增量补充)。
 
 ## ledger.tsv
 
-制表符分隔,7 列:
+制表符分隔,8 列:
 
 ```
-date	source	theme	idea	verdict	reason	overlap
+date	source	theme	idea	verdict	reason	overlap	category
 ```
 
 - date: YYYY-MM-DD
@@ -42,3 +42,7 @@ date	source	theme	idea	verdict	reason	overlap
 - verdict: strong-accept | accept-w-rev | reject
 - reason: 一句话(拒因,或 keep 的核心价值);预筛杀的以"预筛直接占位:"开头
 - overlap: high | medium | low | 未知(查重的重叠判定;进化父本资格的机械筛选依据;旧行缺此列视为未知)
+- category: novelty-dead | evidence-incomplete | design-fixable | ceiling-limited | -(SA 行与旧行留 `-`)
+  非 SA 的四分类,由 orchestrator 按(降级前最低票、是否硬门槛降级、overlap)机械判定(见 hunt.sh `classify_nonsa`):
+  novelty-dead=头条被占据(overlap=high)/CRITICAL;evidence-incomplete=全票 SA 被硬门槛降级(票够只差证据);
+  design-fixable=accept-w-rev 且 overlap=low(实验设计类可修);ceiling-limited=accept-w-rev 但被近邻封顶(overlap≠low)。
