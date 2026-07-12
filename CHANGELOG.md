@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-07-12 复验修复四:重启补归档语义纠错 + delta 入 rc + 声称/注释收敛
+
+第四轮复验:6/10 PASS,4 项仍有缺口。
+
+- 【#10 PARTIAL 恢复语义错 + delta 被吞】停机文案/注释谎称「修复 `$RUNS_DIR` 后重启会补归档并发布」,实则重启走孤儿 SA 路径(新 run_id、以已达标发布),原 run 的归档永不回填——等于重启就重开这个洞。**修法**:(a) 停机时落哨兵 `tmp/HALTED-ARCHIVE-FAIL`(记 run_id/sa_count/reason,放仓库内、不与常见停机因 `$RUNS_DIR` 不可写同命),启动即检测、有则 exit 2,逼人工二选一(补回该 run 归档,或从 `ledger.good` 删孤儿 SA 行重查)再删哨兵;(b) `ledger.delta.tsv` 写失败原被 `|| true` 吞、不进 rc,改为写失败即 rc=1(SA 轮据此停机)——增量是审计载体的一部分;(c) 文案改成如实描述恢复步骤。
+- 【#3 FAIL 标签仍称真检索】源码 98-100 已诚实免责,但脚本头注、`calib/README.md`、输出仍写「真实检索/E2E」→ 收敛为「端到端检索召回校准(效力以后端联网为前提)」,README 补「效力边界」段(机械断言只查召回结构、不自证联网),`run_e2e.sh` 头注同改,示例注释「真检索跑」→「联网后端跑」。
+- 【#5 FAIL 维度否决残留】720/723 两条 bullet 仍是「count ⇒ verdict」措辞 → all≤4 改「thin idea 的算术投影,不是 Reject 规则;Reject 由 value assessment 或 CRITICAL 定,绝不由计数」;no-dim-7 改「clear-accept bar 需一个 standout(约 8),无 7+ 者定义上够不到——是 bar 生效、非独立计数否决,只封 SA、不单独在 AwR/Reject 间定谳」。
+- 【#1 PARTIAL agy 可写归档】重定位关不掉同用户 untrusted 的 agy(可写 `$HOME`)——本性如此,非位置 bug。兜底收敛为诚实 best-effort:hunt.sh 头注/RUNS_DIR 注释如实说明「唯一够得到的是 agy、真隔离需独立 uid/容器」;`agy-worker.sh` prompt 禁写清单补入 `~/.ai-ideas-runs/`;归档的可还原性只在有 SA 的可信裁决轮被依赖(agy 永不担任 verdict 席)。
+- 验证:全脚本 `bash -n`;stub 三场景——A 归档坏+SA → exit 2、写哨兵(run_id/sa_count/reason 齐)、无报告;B 哨兵在(目录已修好)→ 启动即 exit 2、循环未跑(0 聚合日志、0 新 manifest);C 删哨兵+清孤儿行+修目录 → exit 0、发布,manifest+报告+`ledger.delta.tsv` 齐。
+
 ## 2026-07-12 复验修复三:归档失败对 SA 轮改停机(不再发布审计链断裂的 SA)
 
 复验指出上一版 P2-5 仍不彻底:归档拷贝失败只告警不停机,探针令 `$RUNS_DIR` 中途不可写后 archive 完全缺失,hunt 仍发布 SA 且 rc=0——P0 可还原性承诺对一个已进 ledger+PR 的 SA 静默作废。

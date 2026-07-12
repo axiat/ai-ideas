@@ -62,7 +62,7 @@ if [ "$gap" -gt 0 ]; then
 fi
 
 # 绝对路径前缀:agy 相对路径不稳,显式钉死仓库根,所有读写按此解析。
-pre="仓库根(绝对路径)= ${repo}。当前工作目录已在此根下。所有读写路径(tmp/round/… roles/… rubric.md brainstorming_policy.md research_context.md ledger.tsv 等)一律相对该根解析;产物必须落在 ${repo}/tmp/round/,严禁写到 ~/.gemini、任何 scratch 目录或 \$HOME 其它位置。"
+pre="仓库根(绝对路径)= ${repo}。当前工作目录已在此根下。所有读写路径(tmp/round/… roles/… rubric.md brainstorming_policy.md research_context.md ledger.tsv 等)一律相对该根解析;产物必须落在 ${repo}/tmp/round/,严禁写到 ~/.gemini、任何 scratch 目录、按运行审计归档目录(~/.ai-ideas-runs/ 及任何 *ai-ideas-runs* 路径)或 \$HOME 其它位置。"
 
 cd "$repo" || { echo "agy-worker: 无法进入仓库根 $repo" >&2; exit 1; }
 exec agy --model "$model" --add-dir "$repo" --print-timeout "$ptimeout" -p "${pre}
