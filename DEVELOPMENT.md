@@ -56,12 +56,14 @@
 
 #### P1：提高候选质量与 near-SA 转化
 
-- [ ] 生成负责发散；独立 selector 按 novelty 证据、clear-accept 上限、最小否证实验和可执行性排序。
-- [ ] `roles/research.md` 只报告 prior-work 覆盖事实，不提前裁决 clear-accept 上限。
-- [ ] 区分 `direct-hit`、`medium-overlap` 与检索不完整；检索不完整先补查，不进入正式定级。
-- [ ] 将非 SA 分为 `novelty-dead`、`evidence-incomplete`、`design-fixable`、`ceiling-limited`。
-- [ ] 保存 revision lineage 和明确 delta；near-SA 队列优先于盲目扩池。
-- [ ] direct-hit / CRITICAL 才进入永久禁复活集合，其余结论保留可审计的复查条件。
+- [x] 生成负责发散；独立 selector 按 novelty 证据、clear-accept 上限、最小否证实验和可执行性排序。
+- [x] `roles/research.md` 只报告 prior-work 覆盖事实，不提前裁决 clear-accept 上限。
+- [x] 区分 `direct-hit`、`medium-overlap` 与检索不完整；检索不完整先补查，不进入正式定级。
+- [x] 将非 SA 分为 `novelty-dead`、`evidence-incomplete`、`design-fixable`、`ceiling-limited`。
+- [x] 保存 revision lineage 和明确 delta；near-SA 队列优先于盲目扩池。
+- [x] direct-hit / CRITICAL 才进入永久禁复活集合，其余结论保留可审计的复查条件。
+
+机制已落地（#27–#31）。口径校正：selector 投前拿不到 novelty 证据，实际按命题强度排序（novelty 留给查重/裁判）；lineage/delta 现落在 generate 产物与 near-sa-queue，尚无独立机械载体（`tmp/lineage.tsv` 归存储 milestone）；检索“不完整”仍只机检结构（语义完整靠后端诚实）。验收的候选质量率 / near-SA 转化率是 outcome 指标，须用可信后端实跑量化。
 
 验收：至少一张 SA 票的候选比例提高；每个 near-SA 均有补证、修订、重评或判死的终态。
 
