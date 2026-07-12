@@ -178,8 +178,12 @@ section below.
 
 Issue one of three verdicts:
 
-- **Strong Accept**: execute now. Two or more dimensions at 8+, no
-  fatal flaws, capability match green, lifecycle fit.
+- **Strong Accept**: execute now. The bar is defined solely by the
+  clear-accept standard in `brainstorming_policy.md` 评审校准 (done
+  well, the idea likely reaches clear accept, ≈6,6,8 or above, at an
+  A-tier venue); zero CRITICAL flaws, at most one MAJOR, capability
+  match green, lifecycle fit. Dimension scores are diagnostic
+  evidence for that judgment, not a mechanical SA threshold.
 - **Accept with Revisions**: pivot the scope per recommendations
   before starting. Some dimensions weak, fixable flaws, or lifecycle
   mismatch that can be shortened.
@@ -207,9 +211,11 @@ Before returning the verdict:
    or are labelled "unverified; literature check required".
 4. **[inspection]** Fatal flaws are specific and actionable; "this
    might not work" is not a flaw statement.
-5. **[inspection]** Verdict is consistent with scoring: Strong
-   Accept requires at least two dimensions at 8+ and zero CRITICAL
-   flaws.
+5. **[inspection]** Verdict is consistent with scoring and with the
+   SA bar in `brainstorming_policy.md` (clear-accept standard): zero
+   CRITICAL flaws, at most one MAJOR, and dimension scores that
+   plausibly support a clear accept. Dimension counts alone neither
+   grant nor block Strong Accept.
 6. **[inspection]** Paradigm-shift claim cites which probing
    question was answered positively.
 7. **[attestation]** Lifecycle prediction is reasoned from the
