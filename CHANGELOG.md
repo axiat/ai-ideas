@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-07-12 复验硬化:缺票/非词表票不再塌成永久禁(B2)+ 自报 ≥2 MAJOR 机械硬顶(B3)
+
+P1 复验 B2/B3 两项聚合硬化。均在 hunt.sh 评审聚合环,不改任何协议/role 文件——B2 落实 review.md 写侧「每个 id 必须有一行」、B3 落实 review.md 铁律「含 ≥2 MAJOR → 封顶 Accept-w-Rev」,原先这两条只写在 prompt 里、bash 编排器未机械兜底。
+
+- 【B2 缺票塌成永久禁】原聚合对每个 id 逐席 `rank_of $(cut -f2)`,缺票/词表外 token 一律 → rank 0,与真 `reject` 无从区分 → min=0 → `classify_nonsa` 归 novelty-dead → 永久禁复活。即裁判 rc=0 却漏写某 id 的票、或票拼错大小写(基础设施/格式故障),会把一个候选永久判死。修:新增 `vote_valid`(票须精确 ∈ {strong-accept,accept-w-rev,reject}),聚合前(动 ledger 之前)逐 id×逐席内容级校验,任一票无效即 `fail_and_wait` 按 review 失败**重跑整轮**(与既有 rev_rc 进程级守卫同款处理),日志点名 `I<n>@rev<r>[票内容]`。真 `reject` 仍照常入账,不误触发。
+- 【B3 MAJOR 列未用】verdict.tsv 第 3 列 `MAJOR数` 聚合时被完全忽略,裁判自评 `strong-accept` 却自报 ≥2 MAJOR 的自相矛盾被原样采信。修:新增 `major_cap`(rank=2 且自报整数 ≥2 → 硬顶 1),在 `rank_of` 后、票向量/sa_votes/min 之前施顶,使降级流经全部下游(不计 SA 票、min 随之下降、分类随之变)。MAJOR 字段解析宽松(取首个整数),无法解析则不顶、回落信任第 2 列——纵深防御的交叉核验,不因格式小疵废轮(缺票的强校验归 B2)。
+- 边界(诚实标注):B2 只强校验第 2 列 verdict 落词表,不强校验 MAJOR 列可解析(避免格式小疵放大成整轮重跑);B3 对不可解析 MAJOR 回落信任 verdict,故极端下"strong-accept + 乱写 MAJOR"仍可能漏顶——但须同时全票 SA 且过 sa_gate 硬门槛,交叉核验仍在。AwR 复活 sidecar(awr-side.sh)另有独立聚合,不在本次改动范围。
+- 验证:`bash -n` OK。单测(从 hunt.sh 抽真函数 source,非副本)36 项——`vote_valid` 词表内/外(含大小写错、拼写错、含空格、空票)、`major_cap` 真值表(2,3→1;2,0→2;1,3→1;0,3→0;"约2个"→顶;"abc"→不顶)、`rank_of`/`classify_nonsa` 回归。集成(隔离沙箱跑真 hunt.sh,RESUME_FRONT 跳前段只 stub 评审/报告)21 项——全票 SA 全链路发布回归;MAJOR=3 顶为 AwR + 日志 `MAJOR 复核` + 票记 1,1,1;MAJOR=0 的 2,2,1 不误顶、入 near-sa-queue;全票 reject 正常入账 + B2 不误触发;裁判3 漏票 → B2 废轮 + ledger.good 无该行(不塌成永久禁)+ stages.tsv review=1;裁判3 大写 Reject(非词表)→ B2 废轮。
+
 ## 2026-07-12 复验修复:near-SA 队列生命周期(A1)+ design-fixable 收窄(A2)+ 分类注释纠错(B1)
 
 P1 复验(8 项全确认)后修 Top 2 真 bug。A1/A2 耦合:A2 制造"AwR+low 但非进化/复查资格(如 feasibility 封顶)"的行被误入队,A1 队列无 dequeue + generate 被要求"先取队首不得越过" → 不合格队首毒死唯一进化/复查名额。
