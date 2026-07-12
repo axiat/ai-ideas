@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-07-12 P1 候选质量:研究只报事实 + 检索不完整补查 + 非 SA 四分类 + near-SA 队列
+
+P1「提高候选质量与 near-SA 转化」的 agent 可改子集(#2/#3/#4-观测/#5-队列)。#1(独立 selector)、#6(复活软化)、#4 落 ledger schema 要改 human-only 的 PROGRAM.md/schema,草案见 `P1-PROGRAM-DRAFT.md`,不在本次代码内。
+
+- 【#2 research 只报事实】`roles/research.md`「最强反例」行原要 research 判"差异是否足以支撑 clear-accept",违背该角色自己的铁律「只陈述事实、不打分」→ 改成只报"具体差异在哪"这个事实,clear-accept 上限交裁判(裁判本就据 priorwork 的 overlap+差异独立判 ceiling,不依赖 research 代判)。
+- 【#3 检索不完整→定向补查,不进定级】原查重不达机械门槛(链接/API/块/裂缝核验不足)= `empty_and_wait` 整轮作废,连同同轮好候选一起丢、也把"没查完"当成了"低重叠"定论。改:`RESEARCH_RETRY`(默认 1)次对同一 shortlist 定向重跑 research(补查前 `rm priorwork.md` 防新旧块混算门槛),耗尽才整轮作废;research.md 加铁律"检索没做完如实标,别为凑门槛把没读透的近邻硬写成 low"。
+- 【#4 非 SA 四分类(观测,不动 schema)】新增 `classify_nonsa`(按 降级前最低票 / 是否硬门槛降级 / overlap):evidence-incomplete(全票 SA 被硬门槛降级=票够只差证据)、novelty-dead(overlap=high 头条被占)、design-fixable(accept-w-rev+low)、ceiling-limited(accept-w-rev 但被近邻封顶)。落 `tmp/nonsa-class.tsv`(持久观测),不进固定 ledger schema——进 schema 的版本见草案 #4。
+- 【#5 near-SA 队列 + lineage/delta】聚合处对 design-fixable 且有 SA 票的 near-SA 写 `tmp/near-sa-queue.tsv`(去重按 story `grep -Fxq`,防跨轮堆积);`generate.md` 父本优先级改 near-sa-queue ＞ deathlist 进化候选 ＞ ledger 自筛,唯一进化名额先取队首、不越过它盲目扩池,并要求进化块加「delta:<相对上版改了什么、为何突破上次封顶>」行。仍守 PROGRAM step6 的 accept-w-rev+low 父本资格与"至多 1 个"名额(队列只改优先级、不新开复活路径);"每个 near-SA 达终态"的完整簿记归 AwR 复活链路重建(另一 P1)+ #6。
+- 验证:`bash -n hunt.sh` OK;stub 回归三场景全绿(见下)。
+
 ## 2026-07-12 复验修复四:重启补归档语义纠错 + delta 入 rc + 声称/注释收敛
 
 第四轮复验:6/10 PASS,4 项仍有缺口。

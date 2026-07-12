@@ -89,6 +89,7 @@ REV_STAGGER_SEC=${REV_STAGGER_SEC:-0}
 EMPTY_MAX=${EMPTY_MAX:-3}
 PRIOR_MIN_LINKS=${PRIOR_MIN_LINKS:-5}
 PRIOR_MIN_API=${PRIOR_MIN_API:-1}
+RESEARCH_RETRY=${RESEARCH_RETRY:-1}   # 检索不完整(结构未达门槛)对同一 shortlist 定向补查的次数上限;耗尽才整轮作废
 SHORT_MAX=${SHORT_MAX:-3}
 THEME_MIN_LOW=${THEME_MIN_LOW:-2}
 AXIOM_MIN_CRACKS=${AXIOM_MIN_CRACKS:-2}
@@ -99,6 +100,8 @@ LOG=hunt.log
 RD=tmp/round
 LEDGER_GOOD=tmp/ledger.good
 DEATHLIST=tmp/deathlist.md
+NONSA_CLASS=tmp/nonsa-class.tsv                                  # 非 SA 四分类观测(item #4;tmp/ 持久,不入固定 ledger schema)
+NEAR_SA_QUEUE=tmp/near-sa-queue.tsv                             # near-SA 修订队列(item #5;design-fixable 且有 SA 票,generate 优先取)
 LOCK=tmp/hunt.lock
 METRICS=tmp/hunt.metrics.tsv
 # 裁决归档失败停机时落此哨兵:SA 行已在 ledger.good 但其归档缺失=审计链断裂的孤儿 SA。
@@ -139,6 +142,7 @@ validate_sleep_config() {
   is_uint "$EMPTY_MAX" && [ "$EMPTY_MAX" -ge 1 ] || { log "EMPTY_MAX 必须是 >=1 的整数: $EMPTY_MAX"; exit 2; }
   is_uint "$PRIOR_MIN_LINKS" || { log "PRIOR_MIN_LINKS 必须是非负整数: $PRIOR_MIN_LINKS"; exit 2; }
   is_uint "$PRIOR_MIN_API" || { log "PRIOR_MIN_API 必须是非负整数: $PRIOR_MIN_API"; exit 2; }
+  is_uint "$RESEARCH_RETRY" || { log "RESEARCH_RETRY 必须是非负整数: $RESEARCH_RETRY"; exit 2; }
   is_uint "$SHORT_MAX" && [ "$SHORT_MAX" -ge 1 ] || { log "SHORT_MAX 必须是 >=1 的整数: $SHORT_MAX"; exit 2; }
   is_uint "$THEME_MIN_LOW" || { log "THEME_MIN_LOW 必须是非负整数: $THEME_MIN_LOW"; exit 2; }
   is_uint "$AXIOM_MIN_CRACKS" && [ "$AXIOM_MIN_CRACKS" -ge 1 ] || { log "AXIOM_MIN_CRACKS 必须是 >=1 的整数: $AXIOM_MIN_CRACKS"; exit 2; }
@@ -349,6 +353,21 @@ archive_round() {   # $1=退出原因(fail:<stage>|empty:<stage>|verdict|report-
 
 rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) echo 0 ;; esac; }
 verdict_of() { case "$1" in 2) echo strong-accept ;; 1) echo accept-w-rev ;; *) echo reject ;; esac; }
+# 非 SA 四分类(item #4;$1=降级前最低票 0/1/2、$2=是否全票 SA 但硬门槛降级(1/0)、$3=overlap):
+#   evidence-incomplete 票够但证据不完整(全票 SA 被硬门槛降级)——应补证重评,不是判死
+#   novelty-dead        头条已被占据(overlap=high)——按当前 PROGRAM 永久,不复活
+#   design-fixable      accept-w-rev 且 overlap=low——实验设计类可修,合法进化父本
+#   ceiling-limited     accept-w-rev 但 novelty 被近邻封顶(overlap≠low)——上限受限,搁置
+# 注:overlap≠high 的裸 reject(min=0,CRITICAL/≥2 MAJOR)当前归 novelty-dead(PROGRAM 下 reject 恒不复活);
+# 「只 direct-hit/CRITICAL 永久禁、其余留复查」需改 PROGRAM step6/12,见 P1-PROGRAM-DRAFT.md(item #6),本轮不动。
+classify_nonsa() {
+  local raw_min=$1 downgraded=$2 overlap=$3
+  [ "$downgraded" -eq 1 ] && { echo evidence-incomplete; return; }
+  [ "$overlap" = high ] && { echo novelty-dead; return; }
+  { [ "$raw_min" -eq 1 ] && [ "$overlap" = low ]; } && { echo design-fixable; return; }
+  [ "$raw_min" -eq 1 ] && { echo ceiling-limited; return; }
+  echo novelty-dead
+}
 
 # 当日(hunt 源)Strong Accept 计数:只数 bash 定谳基线 $LEDGER_GOOD,不信工作树 ledger
 sa_today() {
@@ -769,10 +788,21 @@ while :; do
     log "预筛:${kept} 个按优先级进深查(复查/进化>删公理>低存量主题): $(cut -f1 "$RD/ideas.tsv" | tr '\n' ' ')"
 
     # 2) 对抗式深查重(禁写 ideas/;只查预筛存活的 shortlist,每个 idea 5-8 篇实读)
-    run_stage "$FRONT_CMD" "读 roles/research.md,按其执行" research; rc=$?; guard 0
+    # 检索不完整(产物薄/缺块/裂缝核验不足)不是「低重叠」定论,而是「没查完」:对同一 shortlist
+    # 定向补查(重跑本阶段),不废本轮生成/透镜;补查 RESEARCH_RETRY 次仍不达门槛才退回整轮作废。
+    research_try=0
+    while :; do
+      rm -f "$RD/priorwork.md"                        # 补查前清旧产物,防新旧块混算门槛
+      run_stage "$FRONT_CMD" "读 roles/research.md,按其执行" research; rc=$?; guard 0
+      [ "$rc" -ne 0 ] && break                        # 调起失败:属基础设施故障,不算不完整,走 fail 分支
+      { [ -s "$RD/priorwork.md" ] && priorwork_ok && cracks_ok; } && break
+      [ "$research_try" -ge "$RESEARCH_RETRY" ] && break
+      research_try=$((research_try + 1))
+      log "查重不完整(结构未达门槛),对同一 shortlist 定向补查(第 ${research_try}/${RESEARCH_RETRY} 次,不废本轮生成)"
+    done
     if [ "$rc" -ne 0 ]; then fail_and_wait; continue; fi
     if [ ! -s "$RD/priorwork.md" ] || ! priorwork_ok || ! cracks_ok; then
-      log "查重阶段未产出 priorwork.md 或结构(含裂缝核验)不达标,本轮作废重试"; fails=0
+      log "查重补查 ${RESEARCH_RETRY} 次后结构(含裂缝核验)仍不达门槛,本轮作废重试"; fails=0
       empty_and_wait; continue
     fi
     empties=0                                        # 前段两阶段产物齐备,空产出计数清零
@@ -808,17 +838,19 @@ while :; do
   m_verdicts=""
   while IFS=$'\t' read -r id story theme; do
     [ -z "$id" ] && continue
-    min=2; reason=""; votes=""
+    min=2; reason=""; votes=""; sa_votes=0
     for r in $(seq 1 "$REVIEWERS"); do
       line=$(awk -F'\t' -v id="$id" '$1==id{print; exit}' "$RD/rev/$r/verdict.tsv" 2>/dev/null || true)
       v=$(printf '%s' "$line" | cut -f2); rs=$(printf '%s' "$line" | cut -f4)
       rank=$(rank_of "$v")
       if [ -n "$v" ]; then votes="${votes:+$votes,}${rank}"; else votes="${votes:+$votes,}-"; fi
+      [ "$rank" -eq 2 ] && sa_votes=$((sa_votes + 1))
       if [ "$rank" -lt "$min" ]; then min=$rank; reason=$rs; fi
       [ -z "$reason" ] && reason=$rs
     done
+    raw_min=$min; downgraded=0                        # 记降级前最低票,供非 SA 分类区分「票够但证据不完整」
     if [ "$min" -eq 2 ] && ! sa_gate_ok "$id"; then
-      min=0; reason="全票 SA 但硬门槛不达标(实读<${MIN_READ}、缺查重块、缺最小否证实验、无完整评审或删公理裂缝核验相符不足),orchestrator 硬降级"
+      min=0; downgraded=1; reason="全票 SA 但硬门槛不达标(实读<${MIN_READ}、缺查重块、缺最小否证实验、无完整评审或删公理裂缝核验相符不足),orchestrator 硬降级"
       log "SA 硬门槛未过,${id} 降级 reject"
     fi
     verdict=$(verdict_of "$min")
@@ -835,6 +867,16 @@ while :; do
       printf '%s\t%s\n' "$id" "$story" >> "$RD/accepted.tsv"; sa_count=$((sa_count + 1))
     else
       printf '%s\t%s\t%s\n' "$id" "$story" "$reason" >> "$RD/rejects.tsv"
+      # item #4:非 SA 四分类落 tmp/ 观测(不入固定 ledger schema);cid=<run_id>/<id>
+      cat=$(classify_nonsa "$raw_min" "$downgraded" "$overlap")
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "${run_id}/${id}" "$cat" "$verdict" "$overlap" "${votes:--}" "$story" >> "$NONSA_CLASS"
+      # item #5:design-fixable 且有 SA 票(near-SA)进修订队列,generate 优先取它做进化父本。
+      # 去重按 story 精确匹配(BSD CJK strcoll 会误判相等,故用 grep -Fxq),防同一 idea 跨轮堆积。
+      if [ "$cat" = design-fixable ] && [ "$sa_votes" -ge 1 ] \
+         && ! cut -f3 "$NEAR_SA_QUEUE" 2>/dev/null | grep -Fxq -- "$story"; then
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "${run_id}/${id}" "$story" "$theme" "$overlap" "${votes:--}" "$cat" >> "$NEAR_SA_QUEUE"
+        log "near-SA 入队:${id}(票 ${votes},overlap=${overlap},design-fixable)——下轮 generate 优先修订"
+      fi
     fi
   done < "$RD/ideas.tsv"
   cp ledger.tsv "$LEDGER_GOOD"                       # 定谳:把本轮 bash 追加固化为新的良好基线(F2)
