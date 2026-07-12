@@ -1,43 +1,16 @@
 # P1 待人工过的 PROGRAM.md / schema 改动草案
 
-P1「提高候选质量与 near-SA 转化」六条里,#2、#3、#5(near-SA 队列+lineage)已由 agent 落在 roles/hunt.sh(见 CHANGELOG 2026-07-12)。
-下列三处必须改 `PROGRAM.md`(其头部声明"此文件及不动项只由人修改,agent 只读")或固定的 ledger schema,故只给草案,由人核后手工并入,并删本文件。
+P1「提高候选质量与 near-SA 转化」六条里,#2、#3、#5(near-SA 队列+lineage)已由 agent 落在 roles/hunt.sh(PR #27)。**#4-schema 已应用(见下)**;剩 **#6、#1 待改**。
 
-三处有依赖:**#4-schema 是 #6 的前置**(reject 要按类别决定能否复查,类别得能持久化落 ledger)。建议并入顺序:#4-schema → #6 → #1。
+**新发现的授权边界**:#6 的复活规则 canonical 在 `brainstorming_policy.md:7`,#1 的"自筛后 4-6"也在 `brainstorming_policy.md:8` —— 两者都要改 **policy**(另一个 human-only 文件),不止 PROGRAM.md。只授权 PROGRAM.md 不足以做 #1/#6,否则 PROGRAM 与 policy 冲突(policy 是这两条规则的权威源)。
+
+建议并入顺序:~~#4-schema~~(已完成)→ #6 → #1。
 
 ---
 
-## #4-schema:ledger 加 `category` 列(非 SA 四分类机器可读)
+## #4-schema:ledger 加 `category` 列 —— ✅ 已应用
 
-**为何要改**:非 SA 四分类(novelty-dead / evidence-incomplete / design-fixable / ceiling-limited)现在只落 `tmp/nonsa-class.tsv`(agent 侧 `classify_nonsa` 已算),重启/跨运行不持久、也进不了 generate 的复活判定。要让 #6 按类别筛复活资格,类别必须进 ledger。
-
-**改法**:7 列 → 8 列,末尾加 `category`。旧 7 列行缺此列,消费端按"未知"处理(与 overlap 旧行同规矩)。
-
-`PROGRAM.md` §ledger.tsv,把
-
-```
-制表符分隔,7 列:
-
-date	source	theme	idea	verdict	reason	overlap
-```
-
-改为
-
-```
-制表符分隔,8 列:
-
-date	source	theme	idea	verdict	reason	overlap	category
-```
-
-并在字段说明末尾追加:
-
-```
-- category: novelty-dead | evidence-incomplete | design-fixable | ceiling-limited | -(SA 行或旧行留 -)
-  非 SA 的四分类,由 orchestrator 按(降级前最低票、是否硬门槛降级、overlap)机械判定(见 hunt.sh classify_nonsa);
-  复活资格的机械依据:novelty-dead 永久禁,其余留可审计复查条件(见 §不动项 6)。
-```
-
-**hunt.sh 侧配套**(schema 落地后 agent 可改):聚合处把 `$cat` 作第 8 列写进 ledger 行(现在只写 `tmp/nonsa-class.tsv`);SA 行写 `-`。`classify_nonsa` 已就绪,只差把结果接到 ledger 写行那句 `printf`。
+7 列 → 8 列,末尾加 `category`(novelty-dead / evidence-incomplete / design-fixable / ceiling-limited / `-`);旧 7 列行缺此列按"未知"处理(与 overlap 旧行同规矩)。`PROGRAM.md` §ledger.tsv + §回路 step4 已改;hunt.sh 两处 ledger 写(聚合、预筛 kill)与 `classify_nonsa` 接通、SA 行写 `-`;`generate.md`/`meta.md`/`trigger.md` 的"行末 overlap 列"位置引用同步改为"第 7 列 overlap / 第 8 列 category"。所有 positional 读(theme=f3、verdict=f5、overlap=f7)不受影响。
 
 ---
 

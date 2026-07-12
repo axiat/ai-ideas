@@ -771,7 +771,7 @@ while :; do
     if [ -s "$RD/kills.tsv" ]; then
       cp "$LEDGER_GOOD" ledger.tsv
       while IFS=$'\t' read -r id story theme kill_url; do
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "hunt" "$theme" "$story" "reject" "预筛直接占位: $kill_url" "high" >> ledger.tsv
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "hunt" "$theme" "$story" "reject" "预筛直接占位: $kill_url" "high" "novelty-dead" >> ledger.tsv
       done < "$RD/kills.tsv"
       cp ledger.tsv "$LEDGER_GOOD"
       log "预筛:$(grep -c . "$RD/kills.tsv") 个 direct hit 已按 reject 入账"
@@ -862,13 +862,14 @@ while :; do
     overlap=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"{if(f)exit} f' "$RD/priorwork.md" 2>/dev/null \
               | grep -m1 '^重叠判定' | grep -oE 'high|medium|low' | head -1)
     [ -z "$overlap" ] && overlap="未知"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "hunt" "$theme" "$story" "$verdict" "$reason" "$overlap" >> ledger.tsv
+    # category(ledger 第 8 列):SA 行留 -,非 SA 走四分类(见 classify_nonsa)
+    if [ "$min" -eq 2 ]; then cat="-"; else cat=$(classify_nonsa "$raw_min" "$downgraded" "$overlap"); fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "hunt" "$theme" "$story" "$verdict" "$reason" "$overlap" "$cat" >> ledger.tsv
     if [ "$min" -eq 2 ]; then
       printf '%s\t%s\n' "$id" "$story" >> "$RD/accepted.tsv"; sa_count=$((sa_count + 1))
     else
       printf '%s\t%s\t%s\n' "$id" "$story" "$reason" >> "$RD/rejects.tsv"
-      # item #4:非 SA 四分类落 tmp/ 观测(不入固定 ledger schema);cid=<run_id>/<id>
-      cat=$(classify_nonsa "$raw_min" "$downgraded" "$overlap")
+      # item #4:非 SA 四分类同步落 tmp/ 观测(与 ledger category 列同源;cid=<run_id>/<id>)
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$today" "${run_id}/${id}" "$cat" "$verdict" "$overlap" "${votes:--}" "$story" >> "$NONSA_CLASS"
       # item #5:design-fixable 且有 SA 票(near-SA)进修订队列,generate 优先取它做进化父本。
       # 去重按 story 精确匹配(BSD CJK strcoll 会误判相等,故用 grep -Fxq),防同一 idea 跨轮堆积。

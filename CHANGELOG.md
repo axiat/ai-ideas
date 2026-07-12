@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-07-12 P1 #4-schema:ledger 加 category 列(非 SA 四分类持久化)
+
+用户临时授权改 PROGRAM.md,落 `P1-PROGRAM-DRAFT.md` 的 #4-schema。非 SA 四分类原只在 `tmp/nonsa-class.tsv` 观测、跨运行不持久;进 ledger 后可持久、可供 generate 复活判定(#6 的前置)。
+
+- `PROGRAM.md`:ledger schema 7 列 → 8 列,末列 `category`(novelty-dead / evidence-incomplete / design-fixable / ceiling-limited / `-`);§回路 step4 聚合记账补 category 列;旧 7 列行缺此列按"未知"处理(同 overlap 旧行规矩)。
+- `hunt.sh`:两处 ledger 写补第 8 列——聚合处 SA 行写 `-`、非 SA 走 `classify_nonsa`;预筛 kill(direct-hit)写 `novelty-dead`。所有 positional 读(theme=f3 主题存量、verdict=f5 SA 计数/META 统计、overlap=awk on priorwork)不受影响。
+- `generate.md`/`meta.md`/`trigger.md`:"行末 overlap 列"位置引用改为"overlap 第 7 列 / category 第 8 列"(否则新 schema 下"行末"会指到 category)。
+- **未做**:#6(复活软化)、#1(独立 selector)的规则 canonical 在 `brainstorming_policy.md`(#6 复活规则在第 7 行、#1 的"自筛后 4-6"在第 8 行),要改 policy(另一 human-only 文件),仅授权 PROGRAM.md 不够;见 `P1-PROGRAM-DRAFT.md`。
+- 验证:`bash -n` OK;stub——near-SA 轮 ledger 每行 8 字段且 col8=design-fixable;#10 归档停机 A/B/C 无回归(scenario C 发布的 SA 行 8 字段、col8=`-`,publish/settle 正常)。
+
 ## 2026-07-12 P1 候选质量:研究只报事实 + 检索不完整补查 + 非 SA 四分类 + near-SA 队列
 
 P1「提高候选质量与 near-SA 转化」的 agent 可改子集(#2/#3/#4-观测/#5-队列)。#1(独立 selector)、#6(复活软化)、#4 落 ledger schema 要改 human-only 的 PROGRAM.md/schema,草案见 `P1-PROGRAM-DRAFT.md`,不在本次代码内。
