@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-07-12 复验修复三:归档失败对 SA 轮改停机(不再发布审计链断裂的 SA)
+
+复验指出上一版 P2-5 仍不彻底:归档拷贝失败只告警不停机,探针令 `$RUNS_DIR` 中途不可写后 archive 完全缺失,hunt 仍发布 SA 且 rc=0——P0 可还原性承诺对一个已进 ledger+PR 的 SA 静默作废。
+
+- `archive_round` 改返回 rc(建目录/manifest/拷贝任一失败即 rc=1,不再一律吞错),按终态分级:
+  - **有 SA 将发布的轮**:裁决归档(verdict,发布前)失败 → 停机 exit 2,绝不发布审计链断裂的 SA;SA 行已在 ledger.good,修复 `$RUNS_DIR` 后重启补归档并发布。
+  - **无 SA 轮 / 发布后的 published 刷新**:失败只告警(前者无发布物;后者裁决归档已成、已带完整 adjudication,只缺 report 日志刷新)。
+- 验证:stub 探针(归档目录 review 阶段置只读 + 全票 SA)→ hunt exit 2、不生成报告、不发布;正常对照(归档可写 + SA)→ exit 0、1 manifest + 1 报告正常发布。
+
 ## 2026-07-12 复验修复:归档移出 workspace、E2E 声称收敛、awr-judge 硬门内联、rubric 维度否决
 
 上一条修复的复验指出 4 项未做彻底(#2/report 冻结、run_all/publish/cp 三条 P2 复验通过):
