@@ -12,7 +12,7 @@
 6. 生成前必读 `ledger.tsv`,新 idea 不得与任何已有行实质雷同(包括已拒的)。唯一例外(每轮至多 1 个,进化与复查共用名额):进化——只准选 verdict=accept-w-rev 且 overlap=low 且死因属实验设计类缺陷的行做定向修复(novelty 封顶/已被占据的行不得进化);复查——查重薄弱型 accept-w-rev 行、或 category=evidence-incomplete 的 reject 行(全票 SA 仅因硬门槛降级、票够只差证据)原样重交补证/补查重,块首记「复活自」「复活条件」,同一 story 至多一次。均按全新 idea 走完整查重与评审,不继承旧票。reject 行复活资格按 category(第 8 列):novelty-dead(direct-hit / overlap=high / CRITICAL)永久禁复活;evidence-incomplete 准上述一次复查,补后仍不达标即并入永久禁。
 7. 角色分离(反串通):生成 / 查重 / 打分是互不共享 context 的独立进程,prompt 见 `roles/`。生成方不查重定性、不打分;裁判默认 Reject、互不通气、也不知道停机条件。
 8. 写入范围:agent 只允许写 `tmp/`(草稿区,gitignored)与 `ideas/`(仅报告角色);不得碰 `ledger.tsv` 及其它文件,不得运行 git/gh/publish。记账与发布由 orchestrator 负责,产出经 `./publish.sh` 走特性分支 + PR。
-9. 一轮 = 生成一批候选(4-6 个)经预筛裁剪后完整走完"深查 → 打分 → 记账"。预筛 kill 的候选按 reject 记账(不得静默丢弃);预筛存活超出 SHORT_MAX 的截断候选不深查、不记账(未获任何评审,下轮可重新生成),此外不得半途丢弃已写入本轮产物的 idea。
+9. 一轮 = 生成一批候选(约 10 个)经独立排序 + 预筛裁剪后完整走完"深查 → 打分 → 记账"。预筛 kill 的候选按 reject 记账(不得静默丢弃);预筛存活超出 SHORT_MAX 的截断候选不深查、不记账(未获任何评审,下轮可重新生成),此外不得半途丢弃已写入本轮产物的 idea。
 10. 循环期间不停下询问人、不请求确认;停机条件只由入口文件定义,未达标不得提前放水结束。
 
 ## 回路
@@ -20,7 +20,8 @@
 `hunt.sh` 按序调起独立进程,每轮:
 
 0. **失败蒸馏**(`roles/meta.md`,每 META_EVERY 轮、reject+accept-w-rev 行足量时,可错):把拒因与封顶原因归纳成 `tmp/deathlist.md`(致命模式/封顶模式/进化候选),失败只记日志不阻塞。
-1. **生成**(`roles/generate.md`):读 policy、ledger 与失败清单,先发散 10 个候选,再自筛出 4-6 个差异最大的 idea 到 `tmp/round/`,遵守 policy 发散要求、主题反坍缩与五种合法形态(删承重假设形态带结构化字段与「删公理尝试」标记),避开 ledger 已有行、死因模式和已饱和套路;每个 idea 标注主题并附最小否证实验(点名最强基线、给样本量与预期效应);发散透镜由 `hunt.sh` 随机抽取注入。
+1. **生成**(`roles/generate.md`):读 policy、ledger 与失败清单,发散约 10 个候选(不自筛,排序与裁剪交下游)到 `tmp/round/`,遵守 policy 发散要求、主题反坍缩与五种合法形态(删承重假设形态带结构化字段与「删公理尝试」标记),避开 ledger 已有行、死因模式和已饱和套路;每个 idea 标注主题并附最小否证实验(点名最强基线、给样本量与预期效应);发散透镜由 `hunt.sh` 随机抽取注入。
+1.4 **排序**(`roles/select.md`,独立 context、便宜可错、只排不杀):按命题强度、clear-accept 上限、最小否证实验质量、可执行性四准则给发散全集排序,写 `tmp/round/select.tsv`;orchestrator 据名次定深查名额优先级(缺失/非法回落生成序,不废轮)。只 triage,不出 verdict、不查重、不背书;复查/进化与删公理配额、低存量主题仍是硬约束/tie-break,不被名次推翻。
 1.5 **预筛**(`roles/prescreen.md`,便宜可错、只杀不保):只杀"单篇工作直接占据头条"的 direct hit,kill 必附占位链接;被杀者由 orchestrator 立即按 reject 记账(overlap=high),存活取前 SHORT_MAX 个进深查。keep 不构成任何 novelty 结论。
 2. **深查重**(`roles/research.md`):对抗式定向查重,先 direct-hit 猎杀再铺开三类检索词;每个 idea 找最相近 5-8 篇实读摘要/方法,产出独立证据(含"最强反例"行);每个 idea 块须有至少 5 条带链接近邻与至少 1 条 API 检索记录(query URL);形态=删承重假设的 idea 另须逐条实读核验其自报「裂缝证据」URL(相符/部分/不符/不可达),写入该块「裂缝证据核验」节。
 3. **打分**(`roles/review.md`,跑 N 次):各裁判按 `rubric.md` 完整评审、用 policy 校准,默认 Reject,输出各自 verdict。
