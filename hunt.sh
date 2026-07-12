@@ -17,6 +17,7 @@
 # ledger 只留摘要行(字段见 archive_round 头注);各阶段起止/rc 记 tmp/round/stages.tsv,逐阶段日志在 tmp/round/logs/。
 # 归档是审计载体,默认 RUNS_DIR 在仓库外($HOME 下):agent 后端(claude allowlist / codex·grok OS sandbox
 # 写域=仓库)都写不到,只由 hunt.sh 写;仅 agy(前段·可写 $HOME·不碰 verdict/ledger)残留。见 RUNS_DIR 定义处。
+# 归档失败按终态分级:有 SA 将发布的轮,裁决归档失败即停机(exit 2),绝不发布审计链断裂的 SA;非发布轮只告警。
 #
 # 用法:
 #   ./hunt.sh [异常重试间隔分钟,默认 150]
@@ -283,20 +284,27 @@ metrics_write() {   # $1=outcome $2=阶段名(-=不适用) $3=verdicts 串(-=不
 # 连同 manifest(来源/backend/policy 版本/退出原因/票向量)、ledger 增量行固化到 tmp/runs/<run_id>/;
 # ledger 本体只留摘要行,任一结论可由归档还原输入与判定过程。candidate_id = <run_id>/I<n>。
 # 同一 run_id 重复调用整体刷新(verdict 后 report 再失败,exit_reason 覆盖为 fail:report,产物照最新拷)。
+# rc:0=归档完整,1=任一环节(建目录/manifest/拷贝)失败。调用方按终态分级——
+# 有 SA 将发布的轮要求 rc=0 才放行发布(见 verdict 归档处),非发布轮失败只告警。
 archive_round() {   # $1=退出原因(fail:<stage>|empty:<stage>|verdict|report-missing|published|publish-failed)
-  local dst rev_cmds r v frozen
+  local dst rev_cmds r v frozen rc=0
   [ -n "${run_id:-}" ] && [ "$run_id" != '-' ] || return 0
   dst="$RUNS_DIR/$run_id"
   # 首次归档(fail/empty/verdict)全量拷入 tmp/round=「裁判当时所见」。二次归档(verdict 之后的
   # published/report-missing/publish-failed 复用同一 run_id)只刷新 manifest 与观测产物,绝不覆盖
   # 已冻结的评审输入(ideas/priorwork/rev)——report 阶段对 tmp/round 的任何改写都不得篡改裁决快照。
-  if [ -d "$dst/round" ]; then frozen=1; else frozen=0; rm -rf "$dst"; mkdir -p "$dst/round"; fi
+  if [ -d "$dst/round" ]; then
+    frozen=1
+  else
+    frozen=0; rm -rf "$dst"
+    mkdir -p "$dst/round" || { log "归档失败:${run_id} 无法建 $dst/round(磁盘满/不可写?)"; return 1; }
+  fi
   tail -n +"$((ledger_base_lines + 1))" "$LEDGER_GOOD" > "$dst/ledger.delta.tsv" 2>/dev/null || true
   rev_cmds=""
   for r in $(seq 1 "$REVIEWERS"); do
     v="REV_CMD_$r"; rev_cmds="${rev_cmds:+$rev_cmds | }${!v:-$BACK_CMD}"
   done
-  {
+  if ! {
     printf 'run_id\t%s\n' "$run_id"
     printf 'date\t%s\n' "$today"
     printf 'source\thunt\n'
@@ -312,18 +320,20 @@ archive_round() {   # $1=退出原因(fail:<stage>|empty:<stage>|verdict|report-
     printf 'policy_sha\t%s\n' "$(cat brainstorming_policy.md rubric.md roles/*.md 2>/dev/null | shasum -a 256 | cut -c1-12)"
     printf 'verdicts\t%s\n' "${m_verdicts:--}"
     printf 'archived_at\t%s\n' "$(date '+%F %T')"
-  } > "$dst/manifest.tsv"
+  } > "$dst/manifest.tsv" 2>/dev/null; then
+    log "归档失败:${run_id} manifest 写入失败"; rc=1
+  fi
   if [ "$frozen" = 1 ]; then
     # 冻结评审输入不动,只补观测产物(stages/logs 现含 report 阶段)
-    cp "$RD/stages.tsv" "$dst/round/stages.tsv" 2>/dev/null || true
+    cp "$RD/stages.tsv" "$dst/round/stages.tsv" 2>/dev/null || rc=1
     if [ -d "$RD/logs" ]; then
-      mkdir -p "$dst/round/logs"
-      cp -R "$RD/logs/." "$dst/round/logs/" 2>/dev/null || log "归档警告:${run_id} 阶段日志补拷失败"
+      mkdir -p "$dst/round/logs" 2>/dev/null
+      cp -R "$RD/logs/." "$dst/round/logs/" 2>/dev/null || { log "归档警告:${run_id} 阶段日志补拷失败"; rc=1; }
     fi
   elif ! cp -R "$RD/." "$dst/round/" 2>/dev/null; then
-    # 归档是 P0 可还原性承诺的载体,拷贝失败不得静默吞掉——响亮告警,不halt(tmp 拷失败不值废整轮)
-    log "归档警告:${run_id} 产物拷贝失败(磁盘满/不可写?),该运行审计快照可能不完整"
+    log "归档失败:${run_id} 产物拷贝失败(磁盘满/不可写?)"; rc=1
   fi
+  return "$rc"
 }
 
 rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) echo 0 ;; esac; }
@@ -812,7 +822,13 @@ while :; do
   guard 0
   log "本轮聚合:${sa_count} 个 Strong Accept(全票且过硬门槛),已记账 ledger.tsv"
   metrics_write verdict '-' "${m_verdicts:--}"
-  archive_round verdict
+  # 裁决归档=SA 可还原性承诺的载体,须在发布前落定。有 SA 将发布时归档失败即停机(exit 2),
+  # 绝不发布一个审计链断裂的 SA。SA 行已在 ledger.good,修复 $RUNS_DIR 后重启会补归档并发布。
+  # 无 SA 轮归档失败只由 archive_round 内部告警,不废轮(无发布物,低风险)。
+  if ! archive_round verdict && [ "$sa_count" -gt 0 ]; then
+    log "本轮 ${sa_count} 个 SA 将发布但裁决归档失败——审计链断裂,停机人工处理(修复归档目录 $RUNS_DIR 后重跑)"
+    exit 2
+  fi
 
   # 5) 达标轮 → 组装报告并发布;当日累计达 SA_TARGET 才停,否则继续攒
   if [ "$sa_count" -gt 0 ]; then
