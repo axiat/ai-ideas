@@ -63,18 +63,29 @@
 - [x] 保存 revision lineage 和明确 delta；near-SA 队列优先于盲目扩池。
 - [x] direct-hit / CRITICAL 才进入永久禁复活集合，其余结论保留可审计的复查条件。
 
-两条边界到此为止，非待机械化的欠账：检索完整性只做结构机检，语义完整靠可信后端（语义判定不可纯机械化）；revision 血缘由 generate 产物与 near-sa-queue 承载，独立载体（`tmp/lineage.tsv`）属存储 milestone（#3）。
+检索完整性只做结构机检，语义完整由可信后端判断。跨修订（改写后 R≠L）、跨 A/B 路径的 story-once 归存储里程碑 #3：`lineages` 保存不可变身份，`reentry_grants` 分路径保存资格证据，`reentry_requests` 以 `UNIQUE(lineage_key)` 统一 readiness、claim 与消耗记录；rich 修订链保存逐版 delta 和语义血缘归并。#3 落地前保留 Path A 的 generate 自律门。
 
 验收：至少一张 SA 票的候选比例提高；每个 near-SA 均有补证、修订、重评或判死的终态。
 
 #### P1：重建 AwR 复活链路
 
-- [ ] 入队顺序为主环 near-SA、low-overlap 且 design-fixable、evidence-incomplete。
-- [ ] 裁判席使用独立可信模型；通过时逐项保存 novelty、feasibility、clear-accept gate 的证据。
-- [ ] `SA-可能` 只授予主环复审资格；修订稿重新执行 priorwork 与三席评审。
-- [ ] 保存 backend、模型与 policy 版本；第三轮反馈后的最新版必须重新评审。
+整体搁置——实验闸已判定不建；完整设计规格与 crash matrix 见 [`AWR-REBUILD-DRAFT.md`](AWR-REBUILD-DRAFT.md)，保留待更强候选证据。
 
-验收：每个 sidecar 通过项都有可审计理由和正式主环 verdict。
+实验闸（2026-07-14 跑，零新管道）：
+
+- [x] 挑池内最强且唯一标注就绪的候选 `2b500d736c99`（VLA autopilot），用当前工具重建主环 ideas/priorwork/三席，忠实重判。
+- [x] 判据 ≥1 条全票 SA 进薄切片、0 条搁置 —— **结果 = 从未达 SA**。核查产出 row 172 的原始轮全程 claude（非 agy）：其 priorwork 已查到最近邻 Fighting Copycat（2010.14876）、判 overlap=low → 三席 2,2,1 → accept-w-rev（near-SA）。本次严查（priorwork 补 de Haan 1905.11979 + 闭环 causal benchmark 2504.14709）判 overlap=high → 三席 reject。同一条 idea 在 low↔high 间摆动，取决于 copycat 这个命名七年的相邻现象算不算占掉「VLA + autopilot 分数 + 观测强制」这个组合；overlap 判定对 priorwork 措辞高度敏感（本次严查 brief 点名了 copycat，有引导成分，非纯中立）。
+
+结论：AwR 复活链路（含下面薄切片）整体搁置。候选卡在 near-SA↔reject 的 overlap 校准刀刃上、从未到过真 SA；真正的杠杆是 overlap 校准口径（low/high 的尺度）与候选质量，不是复活管道。回到候选质量与校准（与 P0 校准直接相关）。下面的薄切片与搁置清单保留为设计记录，gate 未过不启动。
+
+薄切片（实验闸通过后，只碰研究质量）：
+
+- [ ] 把「最强反例 + distinct-neighbor + 实读」证据门（`AWR-REBUILD-DRAFT.md` §3.5）接到现有 `check_judge`。
+- [ ] trusted judge 换 claude/codex，用现有 `--ignore-user-config`/`workspace-write`/`--strict-mcp-config` 约束；接受 `asserted` 独立性，不卡 OS 级封闭。
+
+搁置到有 ≥1 SA 证据后再评估（细节全在 `AWR-REBUILD-DRAFT.md`）：入口真值表与 capability predicate、invocation bundle 与 provenance DAG（§3.4）、原子 `ledger.good` 发布 receipt（§3.7）、legacy migration sealed plan（§4）、人工 promote 的 exactly-once 发布（§3.8）、存储 #3 的 lineages/grants/requests/outbox（§5）。这些是 pipeline 能产出值得正确提交的东西之后才付的正确性成本。
+
+验收：实验闸有明确的有 SA / 无 SA 结论并据此决定去留；若上薄切片，`SA-可能` 质量可人工复评，dormant 零副作用不变。正式主环回灌 verdict 属 #3。
 
 #### P2：减少无效运行
 
@@ -111,7 +122,7 @@
 
 优先评估 SQLite；保留 TSV 导入导出，不直接删除现有 ledger。
 
-- [ ] 明确 idea、run、candidate、review、artifact、revision lineage 的最小 schema。
+- [ ] 明确 idea、run、candidate、review、artifact、invocation、revision lineage 的最小 schema；`lineages` 只存不可变身份和一个 deterministic root candidate，row-specific `origin_stable_id` 唯一存于各 candidate；`story_aliases(canonical_hash UNIQUE)` 防同一修订 story 跨 lineage，`reentry_grants` 分路径保存资格证据与规则版本并用 deterministic fact key 去重，`reentry_requests` 以 `UNIQUE(lineage_key)` 承载 readiness 与 claim generation，`round_slots` 以 `round_id UNIQUE + CHECK(slot_kind='reentry')` 让 evolve/recheck/Path B 共用单一名额并绑定 state/lineage/candidate/generation/token，`materialization_outbox(candidate_id UNIQUE)` 隔离事务外 effect。历史导入先把 ledger/父指针/promotion/mapping inputs 与 union plan 存 immutable CAS，建立 `import_epochs`，再单事务写 epoch done + lineage/alias/candidate/consumed request，禁止 provisional lineage 或无 plan 结果；普通未消费导入不创建 ready grant/request。expired claim 可跨 round reclaim；claim 绑定具体 grant，撤销该 grant 即原子 fence，request 再由剩余 grants 派生；committed slot 永不因 lease 到期复用；P1 与 #3 共用版本化 canonical lineage + `origin_stable_id`（ledger instance + 1-based data-row number + raw-row SHA），snapshot SHA 只作 provenance，promotion 对 lineage key 唯一；复查消费、进化父指针、sidecar origin fingerprint、tracked attestation、已正式提交的 `promoted.tsv` 和人工映射共同保持 story-once；见 `AWR-REBUILD-DRAFT.md` §5。
 - [ ] 比较 SQLite 与继续使用 TSV 的查询、并发写、迁移和维护成本，形成迁移决定。
 - [ ] 若迁移，先提供一次性导入、双读校验和稳定 TSV export，再切换主写入路径。
 - [ ] 数据写入支持事务、唯一约束、幂等 resume 和 schema version。
@@ -131,6 +142,7 @@
 
 ### 5. 重写 README，并决定仓库结构
 
+- [ ] P1 Phase 0 已要求先修正 sidecar 启动示例与失败语义；本项是其后的完整用户路径重写，不得反向延迟该安全勘误。
 - [ ] README 按用户路径组织：项目用途、前置条件、快速开始、核心配置、输出位置、恢复方式和故障定位。
 - [ ] 详细内部机制链接到专门文档，README 不复制开发规划和策略正文。
 - [ ] 在完成 Harness / topic 边界设计后评估目录重构；只有新边界能降低耦合时才迁移。
