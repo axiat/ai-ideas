@@ -285,6 +285,62 @@ assert calls["n"] == 3, calls             # 1 + 2 retries
 PY
 then ok "T13 _http_get 429/503 退避重试 + Retry-After"; else no "T13 _http_get 退避重试"; fi
 
+# ---------- OAI-PMH fixture ----------
+cat > "$work/oai.xml" <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <ListRecords>
+    <record>
+      <header><identifier>oai:arXiv.org:2607.10001</identifier><datestamp>2026-07-10</datestamp></header>
+      <metadata><arXiv xmlns="http://arxiv.org/OAI/arXiv/">
+        <id>2607.10001</id><created>2026-07-08</created>
+        <title>A Vision-Language-Action Policy with Reinforcement Learning</title>
+        <categories>cs.RO cs.LG</categories>
+        <abstract>We post-train a vision-language-action policy using reinforcement learning.</abstract>
+      </arXiv></metadata>
+    </record>
+    <record>
+      <header status="deleted"><identifier>oai:arXiv.org:2607.10002</identifier><datestamp>2026-07-10</datestamp></header>
+    </record>
+    <record>
+      <header><identifier>oai:arXiv.org:2607.10003</identifier><datestamp>2026-07-10</datestamp></header>
+      <metadata><arXiv xmlns="http://arxiv.org/OAI/arXiv/">
+        <id>2607.10003</id><created>2026-07-09</created>
+        <title>Sector Rotation by Factor Model</title>
+        <categories>q-fin.PM</categories>
+        <abstract>An analytical approach to sector rotation using factor models.</abstract>
+      </arXiv></metadata>
+    </record>
+    <resumptionToken>tok123</resumptionToken>
+  </ListRecords>
+</OAI-PMH>
+XML
+
+# ---------- T14 parse_oai(deleted 跳过 + categories/date/token)----------
+if python3 - "$work/oai.xml" <<'PY'
+import sys; sys.path.insert(0, "lib"); import litwatch
+recs, tok = litwatch.parse_oai(open(sys.argv[1], encoding="utf-8").read())
+assert tok == "tok123", tok
+assert [r["id"] for r in recs] == ["arxiv:2607.10001", "arxiv:2607.10003"], recs
+assert recs[0]["categories"] == "cs.RO cs.LG", recs[0]
+assert recs[0]["date"] == "2026-07-08", recs[0]
+assert recs[0]["url"] == "https://arxiv.org/abs/2607.10001", recs[0]
+PY
+then ok "T14 parse_oai:deleted 跳过 + categories/date/token"; else no "T14 parse_oai"; fi
+
+# ---------- T15 filter_tag(类别白名单 + 关键词命中 + 打标 + 去重)----------
+if python3 - "$work/oai.xml" <<'PY'
+import sys; sys.path.insert(0, "lib"); import litwatch
+recs, _ = litwatch.parse_oai(open(sys.argv[1], encoding="utf-8").read())
+themes = [("vla", ["vision-language-action"])]
+kept = litwatch.filter_tag(recs, themes, cats=["cs.RO", "cs.LG"])
+assert [r["id"] for r in kept] == ["arxiv:2607.10001"], kept   # q-fin 被类别挡,vla 命中
+assert kept[0]["theme"] == "vla", kept[0]
+assert len(litwatch.filter_tag(recs + recs, themes, cats=["cs.RO", "cs.LG"])) == 1   # 去重
+assert litwatch.filter_tag(recs, [("x", ["nonexistent-kw"])], cats=None) == []       # 无命中全丢
+PY
+then ok "T15 filter_tag:类别白名单 + 关键词命中 + 打标 + 去重"; else no "T15 filter_tag"; fi
+
 echo "----"
 printf 'litwatch tests: %d ok, %d fail, %d skip\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]
