@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-07-14 litwatch 加前台常驻模式(LITWATCH_LOOP_SEC)
+
+想把 litwatch 挂前台一直跑而非只跑一遍。
+
+- `litwatch.sh`:stage-1/2/3 收进 `one_pass()`;`LITWATCH_LOOP_SEC=0`(默认)跑一遍就退,`>0` 则每遍 sleep 该秒数后重跑(Ctrl-C 停)。取数走 OAI-PMH 批量端点(非限流的 search API),一遍约 8 次请求、翻页间隔 3s;近作每天才更新,间隔建议 ≥ 数小时。ingest 失败由 `exit 1` 改 `return 1`(常驻下不整体退出)。
+- `README.md`:加 `caffeinate -is env LITWATCH_LOOP_SEC=21600 ./litwatch.sh`(每 6h 刷一遍 + 防休眠)。
+- 验证:`bash -n` + `py_compile` OK;`litwatch_test.sh` 15/15(one_pass 重构后一次性 e2e T7/T8 仍绿);常驻 2s 间隔真跑 3 遍、拆卸干净。
+
 ## 2026-07-14 litwatch 取数改 arXiv OAI-PMH——相关性解决 + 真 agy 端到端验过
 
 arXiv search API 对具体主题查询限流极狠(429/超时,Mac + xyh 两 IP 都验)、唯一稳定返回的 term-soup+date 排序给离题噪声,cache 零价值。改用 OAI-PMH 批量抓 + 本地过滤;S2 口子保留。
