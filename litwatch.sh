@@ -10,9 +10,11 @@
 #   LITWATCH_DIR          输出目录(默认 tmp/litwatch)
 #   LITWATCH_MAX          每主题每源最多取几条(默认 25)
 #   LITWATCH_WINDOW       近 N 天(默认 60;0 关闭窗口过滤)
-#   LITWATCH_SOURCES      空格分隔,arxiv/s2(默认 "arxiv s2")
-#   LITWATCH_THEMES_FILE  每行一个 query,覆盖默认主题
-#   LITWATCH_FETCH_GAP    每次取数之间 sleep 秒(默认 3,温柔限速;测试设 0)
+#   LITWATCH_SOURCES      空格分隔,arxiv/s2(默认 "arxiv";S2 免 key 基本 429,要用设 LITWATCH_S2_KEY)
+#   LITWATCH_S2_KEY       Semantic Scholar API key(有则 s2 才可靠;经 x-api-key 头传给 litwatch.py)
+#   LITWATCH_SORT         arXiv 排序:submittedDate(默认,近作优先)| relevance(相关优先,OR 噪声少)
+#   LITWATCH_THEMES_FILE  每行一个 query(可写 arXiv 表达式如 all:"..." AND all:...),覆盖默认主题
+#   LITWATCH_FETCH_GAP    每次取数之间 sleep 秒(默认 3,温柔限速;arXiv 突发会返回空,别调太低)
 #   LITWATCH_NO_AGY=1     跳过 agy 标注段(纯确定性)
 #   LITWATCH_AGY_CMD      agy 标注命令(默认 ./agy-worker.sh,经它继承冷却闸)
 #   LITWATCH_PREBUILT_STAGING  给定则跳过取数、直接用该 staging(测试/离线用)
@@ -22,7 +24,8 @@ py="$repo/lib/litwatch.py"
 dir=${LITWATCH_DIR:-tmp/litwatch}
 max=${LITWATCH_MAX:-25}
 window=${LITWATCH_WINDOW:-60}
-sources=${LITWATCH_SOURCES:-arxiv s2}
+sources=${LITWATCH_SOURCES:-arxiv}
+sortby=${LITWATCH_SORT:-submittedDate}
 gap=${LITWATCH_FETCH_GAP:-3}
 mkdir -p "$dir"
 log(){ printf '[litwatch %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
@@ -62,7 +65,7 @@ else
     [ -n "$theme" ] || continue
     for src in $sources; do
       if python3 "$py" fetch --source "$src" --query "$theme" --max "$max" \
-           --window-days "$window" --theme "$theme" >> "$staging"; then :; else
+           --window-days "$window" --sort "$sortby" --theme "$theme" >> "$staging"; then :; else
         log "取数失败(继续): src=$src theme=$theme"
       fi
       [ "$gap" = "0" ] || sleep "$gap"

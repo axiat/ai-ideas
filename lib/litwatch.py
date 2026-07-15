@@ -14,6 +14,7 @@ agy 标注逐行 JSON: {id, theme?, note}   id 必须 ∈ staging
 import argparse
 import datetime
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -44,6 +45,16 @@ def _squash(s):
     if not isinstance(s, str):
         s = "" if s is None else str(s)
     return " ".join(s.split())
+
+
+def _arxiv_search_query(q):
+    # theme 行可直接写 arXiv 查询表达式(带 all:/ti:/abs: 字段或 AND/OR 布尔);
+    # 纯文本则整体裹进 all:(),否则空格分词会被当松散 OR、配 date 排序召回近作噪声。
+    ql = q.lower()
+    if any(op in ql for op in ("all:", "ti:", "abs:", "cat:")) or \
+       any(b in " " + ql + " " for b in (" and ", " or ", " andnot ")):
+        return q
+    return "all:" + q
 
 
 def parse_arxiv(xml_text):
@@ -107,31 +118,42 @@ def parse_s2(json_text):
     return recs
 
 
-def _http_get(url):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+def _http_get(url, headers=None):
+    h = {"User-Agent": UA}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read().decode("utf-8", "replace")
 
 
-def fetch(source, query, max_results, window_days=0):
+def fetch(source, query, max_results, window_days=0, sort="submittedDate"):
+    headers = None
     if source == "arxiv":
         url = ARXIV_API + "?" + urllib.parse.urlencode({
-            "search_query": "all:" + query,
+            "search_query": _arxiv_search_query(query),
             "start": 0,
             "max_results": max_results,
-            "sortBy": "submittedDate",
+            "sortBy": sort,          # submittedDate=近作优先(可能带 OR 噪声);relevance=相关优先
             "sortOrder": "descending",
         })
-        recs = parse_arxiv(_http_get(url))
     elif source == "s2":
         url = S2_API + "?" + urllib.parse.urlencode({
             "query": query,
             "limit": max_results,
             "fields": "title,abstract,url,publicationDate,externalIds",
         })
-        recs = parse_s2(_http_get(url))
+        key = os.environ.get("LITWATCH_S2_KEY")   # 免 key 的 S2 免费额度基本 429;有 key 才可靠
+        if key:
+            headers = {"x-api-key": key}
     else:
         raise SystemExit("unknown source: " + source)
+    try:
+        body = _http_get(url, headers)
+    except (urllib.error.URLError, OSError) as e:   # 含 HTTPError(429)/超时/连接错:干净跳过,不 traceback
+        sys.stderr.write("litwatch fetch %s 取数失败(%s): %s\n" % (source, type(e).__name__, e))
+        return [], url
+    recs = parse_arxiv(body) if source == "arxiv" else parse_s2(body)
     if window_days:
         cutoff = (datetime.date.today() - datetime.timedelta(days=window_days)).isoformat()
         recs = [r for r in recs if (r.get("date") or "0000-00-00") >= cutoff]
@@ -223,6 +245,8 @@ def main(argv=None):
     f.add_argument("--query", required=True)
     f.add_argument("--max", type=int, default=25)
     f.add_argument("--window-days", type=int, default=0)
+    f.add_argument("--sort", default="submittedDate",
+                   choices=["submittedDate", "relevance", "lastUpdatedDate"])
     f.add_argument("--theme", default="")
     f.add_argument("--out", default="")
 
@@ -244,7 +268,7 @@ def main(argv=None):
                 r["theme"] = args.theme
         _emit(recs, args.out)
     elif args.cmd == "fetch":
-        recs, url = fetch(args.source, args.query, args.max, args.window_days)
+        recs, url = fetch(args.source, args.query, args.max, args.window_days, args.sort)
         for r in recs:
             r["query"] = args.query
             if args.theme:

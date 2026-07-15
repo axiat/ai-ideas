@@ -12,6 +12,7 @@
 - `LITWATCH-DRAFT.md`:§1/§2/§3 与实现对齐——取数用 python stdlib(非字面 curl);正确性写成「结构隔离 + 纵深复核」两层,不再声称绝对结构保证;agy 拟检索词标为 v1 未做的后续扩展。
 - 边界(诚实标注):agy-worker 路径钉死是 prompt 级、非强制 OS 沙箱,一个存心写它没被给过的父路径的 agy 在 FS 层仍能改 `staging.jsonl` 投毒;这条归纵深复核层(research 对每条缓存 id live 复核、结构门槛一条不减),投毒缓存产不出错误 verdict、只白费一次查重。
 - 验证:`bash -n` + `py_compile` OK;`litwatch_test.sh` 12/12 全绿(离线单元/编排 + 一条 live arXiv smoke),含信任边界(越界标注 / 篡改沙箱 staging)、零回归(agy 写类型垃圾或失败仍产 index)、去重、OUT_HINT 落点、parse/ingest。两轮独立测试席对抗复验:首轮揪出 ingest 遇类型垃圾标注崩溃(破零回归,已修 + T9/T10 锁),次轮揪出 staging 与 agy 写目录同置的注入向量(已结构隔离 + T12 锁),末轮 PASS。
+- 真机测试(2026-07-14,见 `LITWATCH-DRAFT.md` 末节):arXiv 取数可用但突发会被限流(空响应/超时,已确认 fetch 干净跳过不 traceback);S2 免 key 基本 429 → 默认关 s2、加 `LITWATCH_S2_KEY`;真机 agy dry-run 成立(~46s、无登录卡,读沙箱 staging、遵守「拿不准不标」、产干净空标注、零回归到 index)。取数相关性(决定 cache 价值)未证:默认 `all:` 松散 OR + date 排序离题,已把 `LITWATCH_SORT`(relevance 可选)与布尔主题做成可调,但 arXiv 今日对本 IP 限流,relevance/布尔的实际相关性待一次未限流的运行肉眼核。
 
 ## 2026-07-12 复验硬化:缺票/非词表票不再塌成永久禁(B2)+ 自报 ≥2 MAJOR 机械硬顶(B3)
 
