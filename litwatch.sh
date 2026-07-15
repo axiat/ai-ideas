@@ -19,6 +19,8 @@
 #   LITWATCH_NO_AGY=1     跳过 agy 标注段(纯确定性)
 #   LITWATCH_AGY_CMD      agy 标注命令(默认 ./agy-worker.sh,经它继承冷却闸)
 #   LITWATCH_PREBUILT_STAGING  给定则跳过取数、直接用该 staging(测试/离线用)
+#   LITWATCH_LOOP_SEC     0(默认)=跑一遍就退;>0=前台常驻,每遍 sleep 该秒数后重跑(Ctrl-C 停)
+#                         近作每天才更新,别调到几小时以下;常驻建议配 caffeinate -is 防休眠
 set -u
 repo="$(cd "$(dirname "$0")" && pwd)"; cd "$repo" || { echo "litwatch: 无法进入仓库根 $repo" >&2; exit 1; }
 py="$repo/lib/litwatch.py"
@@ -72,9 +74,14 @@ index="$dir/index.jsonl"
 drop="$dir/drops.jsonl"
 mkdir -p "$agydir"
 
+loop_sec=${LITWATCH_LOOP_SEC:-0}
+case "$loop_sec" in ''|*[!0-9]*) echo "litwatch: LITWATCH_LOOP_SEC 必须是非负整数秒: $loop_sec" >&2; exit 2 ;; esac
+
+# 一遍 = 取数 → agy 标注 → 准入。LITWATCH_LOOP_SEC>0 时被文件末尾的循环反复调起(前台常驻)。
+one_pass(){
 # 1) 取数(或用预置 staging)
 if [ -n "${LITWATCH_PREBUILT_STAGING:-}" ]; then
-  cp "$LITWATCH_PREBUILT_STAGING" "$staging" || { log "预置 staging 拷贝失败: $LITWATCH_PREBUILT_STAGING"; exit 1; }
+  cp "$LITWATCH_PREBUILT_STAGING" "$staging" || { log "预置 staging 拷贝失败: $LITWATCH_PREBUILT_STAGING"; return 1; }
   log "使用预置 staging(跳过取数): $LITWATCH_PREBUILT_STAGING"
 else
   : > "$staging"
@@ -119,7 +126,17 @@ fi
 
 # 3) 准入:标注只能挂到已取 id,越界/坏行/重复丢弃并记 drops
 python3 "$py" ingest --staging "$staging" --annotations "$ann" \
-  --drop-log "$drop" --out "$index" || { log "ingest 失败"; exit 1; }
+  --drop-log "$drop" --out "$index" || { log "ingest 失败"; return 1; }
 n=$(grep -c '' "$index" 2>/dev/null); n=${n:-0}
 nd=$(grep -c '' "$drop" 2>/dev/null); nd=${nd:-0}
 log "index 就绪: $index ($n 条;丢弃标注 $nd 条,见 $drop)"
+}
+
+# 一次性(默认 LITWATCH_LOOP_SEC=0)或前台常驻(>0:每轮抓一遍,sleep 后重跑,Ctrl-C 停)。
+# 近作每天才更新,间隔别调到几小时以下——白抓同一批,还可能被 OAI 流控。
+while :; do
+  one_pass; rc=$?
+  [ "$loop_sec" -gt 0 ] || exit "$rc"
+  log "本轮结束(rc=$rc);${loop_sec}s 后重跑(Ctrl-C 停)"
+  sleep "$loop_sec"
+done
