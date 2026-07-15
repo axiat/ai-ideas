@@ -2,13 +2,9 @@
   "permissions": {
     "allow": [
       "Edit(ideas/**)",
-      "Write(ideas/**)",
       "Edit(tmp/**)",
-      "Write(tmp/**)",
       "Edit(//tmp/**)",
-      "Write(//tmp/**)",
       "Edit(//private/tmp/**)",
-      "Write(//private/tmp/**)",
       "WebSearch",
       "WebFetch",
       "Bash(ls)",
@@ -16,8 +12,7 @@
       "Bash(sleep 10)"
     ],
     "deny": [
-      "Edit(tmp/runs/**)",
-      "Write(tmp/runs/**)"
+      "Edit(tmp/runs/**)"
     ]
   }
 }
