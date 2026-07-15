@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-07-15 awr-side 判定侧独立化:1 搜 1 判,治 agy 自判过宽放行
+
+agy 自判(研究席=判席同为 agy)过宽放行,根因是判席拿草稿自报的「## 检索记录」当 novelty 证据——等于让写草稿的 agy 给自己背书。对齐 hunt.sh「novelty 只由独立查重支持」,把判前的查重拆成独立一席:每轮 研究→查重→判 三席各只做一件小事(也正治 agy「一口气做搜+判」易鲁棒盖章的弱点)。
+
+- 新增 `roles/awr-priorwork.md`:查重席,只读草稿「## 修订版 idea」主张定检索词,独立检索最近邻出 priorwork(5–8 篇 + 可复现 API 查询串 + 最强反例 + 删承重假设裂缝核验),**严禁采信、复制草稿自报检索记录**;只报事实不打分。(协议新增,PR 留审)
+- `roles/awr-judge.md`:novelty 只认 priorwork.md、不认草稿自说;判席自己不再检索;SA 硬门 ①定向查重 / ③裂缝核验的证据源改为 priorwork.md,②最小否证实验仍核草稿。priorwork 缺失/不足即判「还不行」。(协议改动,PR 留审)
+- `awr-side.sh`:判前插一个查重门(与研究门对称);新 `SIDE_PRIORWORK_CMD`(不设回落 `SIDE_JUDGE_CMD`——查重是判的证据基,随判席信任等级走);新状态文件 `<key>.priorwork.md`,判前对当轮草稿现搜(priorwork 比 draft 新才复用,仅崩溃/判失败重试;换轮草稿被研究席重写故必重搜——判据永远对得上当前草稿);新机械门 `check_priorwork`(带 URL 近邻 ≥5、`- 查询串:` URL 行、`最强反例:` 行、AGY-DONE 末行),失败存 `.priorwork.badN` 计入拉黑(复用既有 `$key.*.bad*` glob);finalize 成品带「独立查重证据(判据)」节。
+- 荐配从「agy 研究 + claude 判」变为「agy 研究 + claude 查重&判」(priorwork 回落 judge_cmd);全 agy 自判 → agy 搜 + agy 判各自独立单任务。
+- 验证:`bash -n` OK;`check_priorwork` 单元 6/6(合格 / 近邻不足 / 缺查询串 / 缺最强反例 / 缺 AGY-DONE / 空);假 agent e2e 全绿——SA 路径时序 研究<查重<裁判、成品带独立查重证据;「还不行 × max_rounds=2」路径每轮各重搜一次(2 查重 / 2 判)、收尾未达标、反馈回灌 2 轮(既有 check_draft/check_judge 两路径同被覆盖,未回归)。未跑真 agy(留用户按需实测)。
+
 ## 2026-07-14 litwatch 加前台常驻模式(LITWATCH_LOOP_SEC)
 
 想把 litwatch 挂前台一直跑而非只跑一遍。

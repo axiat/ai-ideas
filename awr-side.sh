@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # AwR 复活 sidecar:主环之外用多轮 agent(默认 agy,便宜可错;可换 claude/codex/grok)把 ledger 中
-# accept-w-rev 的 idea 改进成可复审的成品。研究员检索补缺口、出修订稿(roles/awr.md);裁判按主环 rubric 判
-# 「SA-可能/还不行」(roles/awr-judge.md);判还不行则缺陷回灌任务文件,研究员下轮继续改;
-# MAX_ROUNDS 轮反馈用尽则带最后修订稿收尾。成品 tmp/awr-side/awr/<key>.md 给人/claude 复审,
-# verdict 不进主环。只读 ledger 基线、roles/awr*.md、rubric.md、brainstorming_policy.md;
+# accept-w-rev 的 idea 改进成可复审的成品。每轮三席各只做一件事、互不代劳(1 搜 1 判独立,治 agy 自判
+# 过宽放行):研究员检索补缺口、出修订稿(roles/awr.md);查重席独立检索最近邻、出 priorwork
+# (roles/awr-priorwork.md),严禁采信草稿自报的检索记录;裁判判「SA-可能/还不行」(roles/awr-judge.md),
+# novelty 只认独立 priorwork、不认草稿自说(对齐 hunt.sh:novelty 只由独立查重支持)。判还不行则缺陷回灌
+# 任务文件,研究员下轮继续改;MAX_ROUNDS 轮反馈用尽则带最后修订稿收尾。成品 tmp/awr-side/awr/<key>.md
+# 给人/claude 复审,verdict 不进主环。只读 ledger 基线、roles/awr*.md、rubric.md、brainstorming_policy.md;
 # 只写 tmp/awr-side/awr/;不碰 tmp/round/、ideas/、不 git(prompt 约定+后端沙箱写域,非机械封进程;
 # grok 席细节见 grok-worker.sh 头注 3/3b)。与 hunt.sh 可同时跑。
 #
@@ -19,17 +21,20 @@
 #            调起端本体故障,冷却 COOLDOWN 秒再试,防超限后不停调起危及账号。
 #
 # 每 key 状态全由文件派生,无状态文件,中断随便杀:
-#   <key>.md 成品(终态)  <key>.task.md 任务+历轮反馈  <key>.draft.md 现行草稿  <key>.judge.md 最新判定
-#   草稿比任务新 → 待判;任务比草稿新(有新反馈)→ 待修订;任务里反馈节数 = 已完成轮数。
+#   <key>.md 成品(终态)  <key>.task.md 任务+历轮反馈  <key>.draft.md 现行草稿
+#   <key>.priorwork.md 当轮独立查重证据  <key>.judge.md 最新判定
+#   草稿比任务新 → 待判;任务比草稿新(有新反馈)→ 待修订;任务里反馈节数 = 已完成轮数;
+#   priorwork 比草稿新才复用(仅崩溃/判失败重试),否则判前对当轮草稿重搜——判据永远对得上当前草稿。
 #
 # 用法: caffeinate -is ./awr-side.sh        # 常驻:队列全终态后每 POLL 秒重扫(等主环产新 AwR)
 #
 # 接入 claude/codex/grok(与 hunt.sh AGENT_CMD 同约定:命令字符串按空白切分,prompt 作最后一个参数传入):
-#   SIDE_CMD           两席统一覆盖(不设=内置 agy,行为与原来一致)
+#   SIDE_CMD           三席统一覆盖(不设=内置 agy,行为与原来一致)
 #   SIDE_RESEARCH_CMD  研究员席单独覆盖(不设回落 SIDE_CMD)
 #   SIDE_JUDGE_CMD     裁判席单独覆盖(不设回落 SIDE_CMD)
+#   SIDE_PRIORWORK_CMD 查重席单独覆盖(不设回落 SIDE_JUDGE_CMD——查重是判的证据基,随判席信任等级走)
 # 例:
-#   SIDE_JUDGE_CMD='claude -p --strict-mcp-config' ./awr-side.sh   # agy 研究(便宜可错)+ claude 裁判(可信),推荐
+#   SIDE_JUDGE_CMD='claude -p --strict-mcp-config' ./awr-side.sh   # agy 研究(便宜可错)+ claude 查重&裁判(可信),推荐
 #   SIDE_CMD='claude -p --strict-mcp-config' ./awr-side.sh         # 两席全 claude(与 hunt.sh 同:不加载 MCP)
 #   SIDE_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral' ./awr-side.sh
 #       # codex 以沙箱镜像为 workspace,写限镜像;镜像无 .git,须 --skip-git-repo-check;--ephemeral 避免写会话
@@ -57,6 +62,7 @@ ptimeout=${AGY_PRINT_TIMEOUT:-10m}
 side_cmd=${SIDE_CMD:-}                       # 空=内置 agy
 research_cmd=${SIDE_RESEARCH_CMD:-$side_cmd}
 judge_cmd=${SIDE_JUDGE_CMD:-$side_cmd}
+priorwork_cmd=${SIDE_PRIORWORK_CMD:-$judge_cmd}   # 查重席回落判席:查重是判的证据基,随判席信任等级走
 gap=${SIDE_GAP_SEC:-120}
 gap_min=${SIDE_GAP_MIN_SEC:-60}              # 随机节流下限(禁背靠背,全后端)
 gap_max=${SIDE_GAP_MAX_SEC:-600}             # 随机节流上限;0 关闭随机节流
@@ -144,8 +150,11 @@ nofile=0
 # SIDE_JUDGE_CMD 拼错的用户支去查一个没设或没错的变量。
 research_label="awr-side: SIDE_CMD"; [ -n "${SIDE_RESEARCH_CMD:-}" ] && research_label="awr-side: SIDE_RESEARCH_CMD"
 judge_label="awr-side: SIDE_CMD"; [ -n "${SIDE_JUDGE_CMD:-}" ] && judge_label="awr-side: SIDE_JUDGE_CMD"
+# 查重席按 :- 回落链定报错前缀:PRIORWORK 优先,否则其回落源 JUDGE,再否则 CMD。
+priorwork_label="awr-side: SIDE_CMD"; [ -n "${SIDE_JUDGE_CMD:-}" ] && priorwork_label="awr-side: SIDE_JUDGE_CMD"; [ -n "${SIDE_PRIORWORK_CMD:-}" ] && priorwork_label="awr-side: SIDE_PRIORWORK_CMD"
 research_cmd=$(resolve_cmd "$repo" "$research_label" "$research_cmd") || exit 2
 judge_cmd=$(resolve_cmd "$repo" "$judge_label" "$judge_cmd") || exit 2
+priorwork_cmd=$(resolve_cmd "$repo" "$priorwork_label" "$priorwork_cmd") || exit 2
 
 # $1=命令字符串(空=内置 agy) $2=唯一允许写的文件 $3=prompt 正文 $4=原始输出日志。
 # agent 只看 tmp/awr-side 下的临时镜像;合格与否由外层机械校验决定,主仓库只接收指定输出文件。
@@ -161,6 +170,7 @@ run_agent() {
   target_in_sandbox="$sandbox/$rel"
   mkdir -p "$sandbox/roles" "$sandbox/tmp/awr-side/awr" "$(dirname "$target_in_sandbox")"
   cp "$repo/roles/awr.md" "$sandbox/roles/awr.md"
+  cp "$repo/roles/awr-priorwork.md" "$sandbox/roles/awr-priorwork.md"
   cp "$repo/roles/awr-judge.md" "$sandbox/roles/awr-judge.md"
   cp "$repo/rubric.md" "$sandbox/rubric.md"
   cp "$repo/brainstorming_policy.md" "$sandbox/brainstorming_policy.md"
@@ -210,6 +220,18 @@ check_draft() {
   [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "AGY-DONE" ] || { echo "缺 AGY-DONE 末行(疑似早停)"; return 1; }
 }
 
+# 独立查重机械校验(早停/糊弄检测):带 URL 最近邻 ≥5 条、含「- 查询串:」URL 行、含「最强反例:」行、末行 AGY-DONE。
+# 只做结构门,不核内容质量(裂缝核验数按形态条件、由裁判核 priorwork);失败时 stdout 给原因。
+check_priorwork() {
+  local f=$1 n
+  [ -s "$f" ] || { echo "空产物"; return 1; }
+  n=$(grep -cE '^- .*https?://' "$f" || true)
+  [ "${n:-0}" -ge 5 ] || { echo "带 URL 的最近邻不足(${n:-0}<5)"; return 1; }
+  grep -qE '^- 查询串[::].*https?://' "$f" || { echo "缺可复现 API 查询串 URL 行"; return 1; }
+  grep -qE '^最强反例[::]' "$f" || { echo "缺「最强反例」行"; return 1; }
+  [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "AGY-DONE" ] || { echo "缺 AGY-DONE 末行(疑似早停)"; return 1; }
+}
+
 # 判定机械校验:判定行二选一、判还不行须附 ≥1 条缺陷、末行 AGY-DONE。
 check_judge() {
   local f=$1 dec
@@ -227,12 +249,13 @@ check_judge() {
 finalize() {
   { printf '# AwR 复活成品 %s\n- 状态: %s\n- 原始 idea: %s\n- 过程档: %s.task.md(含历轮反馈)\n\n' "$1" "$2" "$idea" "$1"
     cat "$draft"
+    if [ -s "$pwork" ]; then printf '\n---\n## 独立查重证据(判据,非草稿自报)\n'; cat "$pwork"; fi
     if [ -s "$judgef" ]; then printf '\n---\n## 最后裁判意见\n'; cat "$judgef"; fi
   } > "$out"
 }
 
 cd "$repo" || { echo "awr-side: 无法进入仓库根 $repo" >&2; exit 1; }
-log "awr-side 启动: 研究=${research_cmd:-agy(内置,$model)} 裁判=${judge_cmd:-agy(内置,$model)} throttle=${gap_min}-${gap_max}s gap=${gap}s poll=${poll}s max_bad=$max_bad max_rounds=$max_rounds cooldown=${cooldown}s"
+log "awr-side 启动: 研究=${research_cmd:-agy(内置,$model)} 查重=${priorwork_cmd:-agy(内置,$model)} 裁判=${judge_cmd:-agy(内置,$model)} throttle=${gap_min}-${gap_max}s gap=${gap}s poll=${poll}s max_bad=$max_bad max_rounds=$max_rounds cooldown=${cooldown}s"
 
 while :; do
   # 只信 bash 定谳基线(主环运行期间工作树 ledger.tsv 可能被 agent 篡改);快照后再遍历,避开读写窗口。
@@ -254,6 +277,7 @@ while :; do
     pending=1
     task="$outdir/$key.task.md"; draft="$outdir/$key.draft.md"
     judgef="$outdir/$key.judge.md"; new="$outdir/$key.new.md"; alog="$outdir/$key.agy.log"
+    pwork="$outdir/$key.priorwork.md"; pworknew="$outdir/$key.priorwork.new.md"
     if [ ! -s "$task" ]; then
       { printf '# AwR 任务 %s\n' "$key"
         printf -- '- 日期: %s\n- 主题: %s\n- idea: %s\n- reason(缺口来源): %s\n' "$d" "$theme" "$idea" "$reason"
@@ -279,9 +303,22 @@ while :; do
       log "收尾 [awr:$key]: 未达标,${max_rounds} 轮反馈用尽"
       did=1; continue
     fi
+    # 独立查重:判前对当轮修订稿现搜一份 priorwork,作判的唯一 novelty 证据(1 搜 1 判,治 agy 自判过宽)。
+    # priorwork 比 draft 新才复用(仅崩溃/判失败重试用);draft 每轮被研究席重写,故换轮必重搜。
+    if ! { [ -s "$pwork" ] && [ "$pwork" -nt "$draft" ]; }; then
+      log "调起 [查重:$key 第$((rounds + 1))轮]"
+      run_agent "$priorwork_cmd" "$pworknew" "读 ${repo}/roles/awr-priorwork.md,按其执行;待查草稿在 ${draft}(只读其「## 修订版 idea」主张定检索词,严禁采信其「## 检索记录」),任务背景在 ${task};独立查重结果写 ${pworknew}。" "$alog"; rc=$?
+      if why=$(check_priorwork "$pworknew"); then
+        mv -f "$pworknew" "$pwork"
+      else
+        mv -f "$pworknew" "$outdir/$key.priorwork.bad$((nbad + 1))" 2>/dev/null || true
+        log "作废 [查重:$key](agy rc=$rc): ${why}$([ $((nbad + 1)) -ge "$max_bad" ] && printf ',已达 %s 次,拉黑' "$max_bad")"
+        continue
+      fi
+    fi
     # 判定
     log "调起 [裁判:$key 第$((rounds + 1))轮]"
-    run_agent "$judge_cmd" "$judgef" "读 ${repo}/roles/awr-judge.md,按其执行;待评草稿在 ${draft},任务背景在 ${task},评分标准在 ${repo}/rubric.md 与 ${repo}/brainstorming_policy.md;判定写 ${judgef}(覆盖旧内容)。" "$alog"; rc=$?
+    run_agent "$judge_cmd" "$judgef" "读 ${repo}/roles/awr-judge.md,按其执行;待评草稿在 ${draft},独立查重证据在 ${pwork}(novelty 只认它,不认草稿自报的检索记录),任务背景在 ${task},评分标准在 ${repo}/rubric.md 与 ${repo}/brainstorming_policy.md;判定写 ${judgef}(覆盖旧内容)。" "$alog"; rc=$?
     if ! why=$(check_judge "$judgef"); then
       mv -f "$judgef" "$outdir/$key.judge.bad$((nbad + 1))" 2>/dev/null || true
       log "作废 [裁判:$key](agy rc=$rc): ${why}$([ $((nbad + 1)) -ge "$max_bad" ] && printf ',已达 %s 次,拉黑' "$max_bad")"
