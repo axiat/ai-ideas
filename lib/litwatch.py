@@ -17,12 +17,13 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-ARXIV_API = "http://export.arxiv.org/api/query"
+ARXIV_API = "https://export.arxiv.org/api/query"   # http 会 301→https
 S2_API = "https://api.semanticscholar.org/graph/v1/paper/search"
 ATOM = "{http://www.w3.org/2005/Atom}"
 UA = "litwatch/0.1 (ai-ideas idea-hunt; research use)"
@@ -118,13 +119,35 @@ def parse_s2(json_text):
     return recs
 
 
-def _http_get(url, headers=None):
+def _http_get(url, headers=None, retries=2, backoff=5):
+    # arXiv API 实测会间歇 429/503/超时(尤其未缓存的复杂 query);退避重试并认 Retry-After。
     h = {"User-Agent": UA}
     if headers:
         h.update(headers)
-    req = urllib.request.Request(url, headers=h)
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode("utf-8", "replace")
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, headers=h)
+            with urllib.request.urlopen(req, timeout=45) as r:
+                return r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 503) and attempt < retries:
+                ra = e.headers.get("Retry-After") if e.headers else None
+                try:
+                    wait = int(ra)
+                except (TypeError, ValueError):
+                    wait = backoff * (attempt + 1)
+                wait = min(wait, 60)
+                sys.stderr.write("litwatch http %d,%ds 后重试(%d/%d)\n" % (e.code, wait, attempt + 1, retries))
+                time.sleep(wait)
+                continue
+            raise
+        except (urllib.error.URLError, OSError) as e:
+            if attempt < retries:
+                wait = backoff * (attempt + 1)
+                sys.stderr.write("litwatch http %s,%ds 后重试(%d/%d)\n" % (type(e).__name__, wait, attempt + 1, retries))
+                time.sleep(wait)
+                continue
+            raise
 
 
 def fetch(source, query, max_results, window_days=0, sort="submittedDate"):
