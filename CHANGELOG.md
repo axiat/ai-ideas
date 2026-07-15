@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-07-14 litwatch 取数改 arXiv OAI-PMH——相关性解决 + 真 agy 端到端验过
+
+arXiv search API 对具体主题查询限流极狠(429/超时,Mac + xyh 两 IP 都验)、唯一稳定返回的 term-soup+date 排序给离题噪声,cache 零价值。改用 OAI-PMH 批量抓 + 本地过滤;S2 口子保留。
+
+- `lib/litwatch.py`:新增 `parse_oai`/`harvest_oai`/`load_themes`/`filter_tag` 与 `harvest` 子命令。走 OAI-PMH(`oaipmh.arxiv.org/oai`,`export.arxiv.org/oai2` 会 301 到这)按 set + 日期段批量抓、跟 resumptionToken 翻页(封顶),本地按类别白名单 + 行内 |-关键词过滤打标、keep-first 去重。record 只来自 OAI 响应 parse,agy 无法新增。
+- `litwatch.sh`:默认 `LITWATCH_SOURCES=oai`;stage-1 按 source 分支(oai=一次 harvest;s2/arxiv=per-query 循环)。加 `LITWATCH_OAI_DAYS/SETS/MAXPAGES/CATS`,OAI 与 query 两套默认主题。S2 口子(`LITWATCH_S2_KEY` + `LITWATCH_SORT`)完整保留。
+- 真机(2026-07-14):Mac 直连 OAI 不限流,抓 2600 篇 cs → 过滤 83 篇相关近作、主题标注正确;对其中 24 篇跑真 agy → 7 条高质量标注(识别近邻风险、结合 research_context、≤5/主题、id 全实来自 staging、0 丢弃、沙箱/零回归成立)。**agy 有料输入下正常工作。**
+- 验证:`py_compile` + `bash -n` OK;`litwatch_test.sh` 15/15(新增 T14 parse_oai、T15 filter_tag;含信任边界/零回归/退避重试/去重)。
+
 ## 2026-07-14 litwatch:领域近作监视(免费 agy 额度落点,回路外常驻)
 
 落 `LITWATCH-DRAFT.md`。免费 agy 额度不进 hunt 主回路(agy 太不可靠,进回路会拖慢/污染),改成独立常驻进程预取领域近作成本地缓存,供查重阶段当近邻种子。经两轮独立测试席对抗复验(见末条)。

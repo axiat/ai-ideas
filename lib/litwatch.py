@@ -25,7 +25,10 @@ import xml.etree.ElementTree as ET
 
 ARXIV_API = "https://export.arxiv.org/api/query"   # http 会 301→https
 S2_API = "https://api.semanticscholar.org/graph/v1/paper/search"
+OAI_API = "https://oaipmh.arxiv.org/oai"           # export.arxiv.org/oai2 会 301 到这里
 ATOM = "{http://www.w3.org/2005/Atom}"
+OAI = "{http://www.openarchives.org/OAI/2.0/}"
+OAI_ARX = "{http://arxiv.org/OAI/arXiv/}"
 UA = "litwatch/0.1 (ai-ideas idea-hunt; research use)"
 
 
@@ -117,6 +120,121 @@ def parse_s2(json_text):
             "date": (p.get("publicationDate") or "")[:10],
         })
     return recs
+
+
+def parse_oai(xml_text):
+    """OAI-PMH ListRecords/GetRecord → (records[带 categories], resumptionToken 或 None)。"""
+    recs = []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        sys.stderr.write("litwatch parse_oai: 无法解析 xml: %s\n" % e)
+        return recs, None
+    err = root.find(OAI + "error")
+    if err is not None:
+        sys.stderr.write("litwatch oai error [%s]: %s\n" % (err.get("code"), _squash(err.text)))
+        return recs, None
+    body = root.find(OAI + "ListRecords")
+    if body is None:
+        body = root.find(OAI + "GetRecord")
+    if body is None:
+        return recs, None
+    for rec in body.findall(OAI + "record"):
+        hdr = rec.find(OAI + "header")
+        if hdr is not None and hdr.get("status") == "deleted":
+            continue
+        meta = rec.find(OAI + "metadata")
+        if meta is None:
+            continue
+        arx = meta.find(OAI_ARX + "arXiv")
+        if arx is None:
+            continue
+        aid = _squash(arx.findtext(OAI_ARX + "id"))
+        title = _squash(arx.findtext(OAI_ARX + "title"))
+        if not aid or not title:
+            continue
+        recs.append({
+            "id": "arxiv:" + aid,
+            "source": "arxiv",
+            "title": title,
+            "abstract": _squash(arx.findtext(OAI_ARX + "abstract")),
+            "url": "https://arxiv.org/abs/" + aid,
+            "date": _squash(arx.findtext(OAI_ARX + "created"))[:10],
+            "categories": _squash(arx.findtext(OAI_ARX + "categories")),
+        })
+    tok_el = body.find(OAI + "resumptionToken")
+    tok = _squash(tok_el.text) if tok_el is not None else ""
+    return recs, (tok or None)
+
+
+def harvest_oai(from_date, until_date, sets, max_pages, sleep_s=3):
+    """按 set + 日期段批量抓,跟 resumptionToken 翻页(封顶 max_pages)。"""
+    all_recs = []
+    for setspec in sets:
+        base = {"verb": "ListRecords", "metadataPrefix": "arXiv", "set": setspec, "from": from_date}
+        if until_date:
+            base["until"] = until_date
+        token = None
+        for page in range(max_pages):
+            q = {"verb": "ListRecords", "resumptionToken": token} if token else base
+            url = OAI_API + "?" + urllib.parse.urlencode(q)
+            try:
+                body = _http_get(url)
+            except (urllib.error.URLError, OSError) as e:
+                sys.stderr.write("litwatch oai harvest 失败(%s,set=%s): %s\n" % (type(e).__name__, setspec, e))
+                break
+            recs, token = parse_oai(body)
+            all_recs.extend(recs)
+            sys.stderr.write("litwatch oai set=%s page=%d recs=%d more=%s\n"
+                             % (setspec, page + 1, len(recs), "y" if token else "n"))
+            if not token:
+                break
+            if page + 1 < max_pages:
+                time.sleep(sleep_s)
+    return all_recs
+
+
+def load_themes(themes_file):
+    """每行一个主题;行内 | 分隔为等价关键词(小写子串匹配)。→ [(label, [kw...])]。"""
+    themes = []
+    with open(themes_file, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            alts = [a.strip().lower() for a in line.split("|") if a.strip()]
+            if alts:
+                themes.append((line.split("|")[0].strip(), alts))
+    return themes
+
+
+def filter_tag(records, themes, cats=None):
+    """保留 (类别∈cats) 且 命中≥1 主题关键词 的记录,打 theme 标;keep-first 去重。
+    themes 为空则不按关键词过滤;cats 为空则不按类别过滤。"""
+    catset = set(cats) if cats else None
+    out, seen = [], set()
+    for r in records:
+        rid = r.get("id")
+        if not rid or rid in seen:
+            continue
+        if catset is not None:
+            if not any(c in catset for c in (r.get("categories") or "").split()):
+                continue
+        hit = None
+        if themes:
+            hay = (r.get("title", "") + " " + r.get("abstract", "")).lower()
+            for label, alts in themes:
+                if any(a in hay for a in alts):
+                    hit = label
+                    break
+            if hit is None:
+                continue
+        seen.add(rid)
+        rr = dict(r)
+        if hit:
+            rr["theme"] = hit
+        out.append(rr)
+    return out
 
 
 def _http_get(url, headers=None, retries=2, backoff=5):
@@ -279,6 +397,16 @@ def main(argv=None):
     g.add_argument("--drop-log", default="")
     g.add_argument("--out", default="")
 
+    hv = sub.add_parser("harvest", help="arXiv OAI-PMH 批量抓 + 本地类别/关键词过滤 → staging")
+    hv.add_argument("--days", type=int, default=4)
+    hv.add_argument("--from", dest="from_date", default="")   # 覆盖 --days
+    hv.add_argument("--until", dest="until_date", default="")
+    hv.add_argument("--sets", default="cs")                   # 逗号分隔 OAI set
+    hv.add_argument("--max-pages", type=int, default=8)
+    hv.add_argument("--cats", default="")                     # 逗号分隔类别白名单;空=不按类别过滤
+    hv.add_argument("--themes-file", default="")              # 空=不按关键词过滤(全留)
+    hv.add_argument("--out", default="")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "parse":
@@ -302,6 +430,15 @@ def main(argv=None):
         recs, drops = ingest(args.staging, args.annotations or None, args.drop_log or None)
         sys.stderr.write("litwatch ingest -> %d recs, %d annotations dropped\n" % (len(recs), len(drops)))
         _emit(recs, args.out)
+    elif args.cmd == "harvest":
+        from_date = args.from_date or (datetime.date.today() - datetime.timedelta(days=args.days)).isoformat()
+        sets = [s.strip() for s in args.sets.split(",") if s.strip()]
+        raw = harvest_oai(from_date, args.until_date or None, sets, args.max_pages)
+        themes = load_themes(args.themes_file) if args.themes_file else []
+        cats = [c.strip() for c in args.cats.split(",") if c.strip()] if args.cats else None
+        kept = filter_tag(raw, themes, cats)
+        sys.stderr.write("litwatch harvest from=%s -> 抓 %d,过滤后 %d\n" % (from_date, len(raw), len(kept)))
+        _emit(kept, args.out)
 
 
 if __name__ == "__main__":
