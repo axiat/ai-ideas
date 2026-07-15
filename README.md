@@ -140,6 +140,8 @@ LITWATCH_OAI_DAYS=7 LITWATCH_OAI_MAXPAGES=12 ./litwatch.sh    # 更宽窗口
 LITWATCH_THEMES_FILE=my.txt ./litwatch.sh  # 覆盖默认主题(oai:行内 |-关键词组)
 # 备选源:S2(相关性更强,需 key)/ arXiv search API(已知限流,不推荐)
 LITWATCH_SOURCES="oai s2" LITWATCH_S2_KEY=<key> ./litwatch.sh
+# 挂前台常驻:每 6h 刷一遍(Ctrl-C 停),caffeinate -is 防笔记本休眠打断
+caffeinate -is env LITWATCH_LOOP_SEC=21600 ./litwatch.sh
 ```
 
 看缓存:`tmp/litwatch/index.jsonl`(每行 `{id,title,abstract,url,date,theme,agy_note}`);越界标注在 `tmp/litwatch/drops.jsonl`。可调项(`LITWATCH_OAI_DAYS/SETS/MAXPAGES/CATS`、`LITWATCH_SORT` 等)见 `litwatch.sh` 头注。
