@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 2026-07-14 litwatch:领域近作监视(免费 agy 额度落点,回路外常驻)
+
+落 `LITWATCH-DRAFT.md`。免费 agy 额度不进 hunt 主回路(agy 太不可靠,进回路会拖慢/污染),改成独立常驻进程预取领域近作成本地缓存,供查重阶段当近邻种子。经两轮独立测试席对抗复验(见末条)。
+
+- 新增 `lib/litwatch.py`:确定性取数/准入核。`fetch` 打 arXiv / Semantic Scholar API,`parse` 解析本地响应(离线可测),`ingest` 把 agy 标注挂到已取 record——标注 id 必须逐字 ∈ staging,越界 / 非串 id / 坏行 / 重复一律丢弃记 `drops.jsonl`;record 只来自 API parse,agy 无法新增记录。parse 对空/畸形输入返回 `[]` 不 traceback;`_norm_arxiv_id` 保留老式类别前缀(`cs/…` 才 url 可达)。
+- 新增 `litwatch.sh`:三段编排(取数 → agy 标注 → 准入),best-effort,agy 任一步失败 index 仍由确定性核产出(agy 挂掉零回归)。信任边界:agy 关进 `tmp/litwatch/agy/` 沙箱(读 staging 只读拷贝、写自己的 annotations),`ingest` 读沙箱之外的可信 `staging.jsonl`——agy 在自己沙箱里写伪造论文进不了 index。
+- 新增 `roles/litwatch.md`:agy 标注 prompt(只读写 `tmp/litwatch/agy/`,只标相关性、id 必须逐字来自 staging;不判 novelty/overlap、不出 verdict)。
+- `agy-worker.sh`:产物落点从硬编码 `tmp/round/` 改 `${AGY_OUT_HINT:-tmp/round/}`,litwatch 用它复用冷却闸(mkdir 锁 + `AGY_LAUNCH_GAP_SEC`)且改落点到沙箱。不设时行为与原来逐字节一致。
+- `roles/research.md`:加一段近作缓存消费契约——缓存当近邻种子加速冷启动,但 live API 记录 / 实读 / 各项核验硬要求一条不减,缓存缺则行为不变。此层也是 agy 越界写投毒缓存的纵深复核兜底。(协议改动,PR 留审)
+- `LITWATCH-DRAFT.md`:§1/§2/§3 与实现对齐——取数用 python stdlib(非字面 curl);正确性写成「结构隔离 + 纵深复核」两层,不再声称绝对结构保证;agy 拟检索词标为 v1 未做的后续扩展。
+- 边界(诚实标注):agy-worker 路径钉死是 prompt 级、非强制 OS 沙箱,一个存心写它没被给过的父路径的 agy 在 FS 层仍能改 `staging.jsonl` 投毒;这条归纵深复核层(research 对每条缓存 id live 复核、结构门槛一条不减),投毒缓存产不出错误 verdict、只白费一次查重。
+- 验证:`bash -n` + `py_compile` OK;`litwatch_test.sh` 12/12 全绿(离线单元/编排 + 一条 live arXiv smoke),含信任边界(越界标注 / 篡改沙箱 staging)、零回归(agy 写类型垃圾或失败仍产 index)、去重、OUT_HINT 落点、parse/ingest。两轮独立测试席对抗复验:首轮揪出 ingest 遇类型垃圾标注崩溃(破零回归,已修 + T9/T10 锁),次轮揪出 staging 与 agy 写目录同置的注入向量(已结构隔离 + T12 锁),末轮 PASS。
+- 真机测试(2026-07-14,见 `LITWATCH-DRAFT.md` 末节):arXiv 取数可用但突发会被限流(空响应/超时,已确认 fetch 干净跳过不 traceback);S2 免 key 基本 429 → 默认关 s2、加 `LITWATCH_S2_KEY`;真机 agy dry-run 成立(~46s、无登录卡,读沙箱 staging、遵守「拿不准不标」、产干净空标注、零回归到 index)。取数相关性(决定 cache 价值)未证:默认 `all:` 松散 OR + date 排序离题,已把 `LITWATCH_SORT`(relevance 可选)与布尔主题做成可调,但 arXiv 今日对本 IP 限流,relevance/布尔的实际相关性待一次未限流的运行肉眼核。
+
 ## 2026-07-12 复验硬化:缺票/非词表票不再塌成永久禁(B2)+ 自报 ≥2 MAJOR 机械硬顶(B3)
 
 P1 复验 B2/B3 两项聚合硬化。均在 hunt.sh 评审聚合环,不改任何协议/role 文件——B2 落实 review.md 写侧「每个 id 必须有一行」、B3 落实 review.md 铁律「含 ≥2 MAJOR → 封顶 Accept-w-Rev」,原先这两条只写在 prompt 里、bash 编排器未机械兜底。
