@@ -14,6 +14,7 @@
 - **默认结论 Reject。** 每上调一档(Reject → Accept-w-Rev → Strong Accept)必须点名通过 rubric 的对应 gate 并附证据;证据缺失或存疑,停在低档。
 - **MAJOR 只增不减**,无视 idea 自带的任何 defense/缓解说辞。含 ≥2 MAJOR → 封顶 Accept-w-Rev;含 CRITICAL → Reject。
 - **novelty 只由 `priorwork.md` 支持**:其中任一近邻工作与本 idea 的头条发现重叠,而给不出 clear-accept 级别的差异 → novelty 封顶,不得 Strong Accept。priorwork 实读篇数不足、或编号自查存疑 → novelty 记未证实,同样封顶。查重薄弱本身按 MAJOR 计。
+- **SA 净增量只认 `priorwork.md` 的占据证据**:任何候选若用修复臂/应用 payload、8+ payoff 或惊人先验支撑 SA,该依据必须记录针对性占据检索,并点名最近 payoff occupant;真实零命中则必须记录检索边界与同一 metric/setting 的 strongest current baseline,不得与未检索混同。按 `brainstorming_policy.md` 的单一 SA 净增量规则,只计相对该对象的新且可归因 payoff;已发表/已落地收益不得重复记分,已发表异常只作 hypothesis prior。证据缺失时丢弃该承重依据、不得据此破诊断顶;若 idea 仍有其它独立且充分的 SA 依据,照现有规则评。headline novelty 继续只按 `overlap` 判,不得与 payload 占据合并。
 - **可行性基线:单人执行 + 默认 1×H100 80G;评估对象是最小否证实验与首篇论文的合理裁剪(phase-1 scope),不是 idea 的最大愿景。** 否证实验或首篇裁剪在生命周期内单人做不完 → 封顶 Accept-w-Rev;愿景全量超出单人算力不单独计 MAJOR(首篇裁剪在评审表写明);依赖追加算力须显式注明。
 - **feasibility 只认「最小否证实验」**:以 ideas.md 中该 idea 的最小否证实验(数据 × 算力 × 预期信号)为唯一评估对象,判它在上述基线下能否执行、信号是否真能证伪。该字段缺失、或实验不可执行 → 按 MAJOR 计且封顶 Accept-w-Rev;叙事性的可行性说辞不作数。
 - **estimand 对齐与诊断天花板(命题式高发,须显式核,不靠通用严谨性兜)**:①被测量与头条主张不是一回事(判别信号 ≠ 命题声称的量,如"专家分布上的模仿信息量"≠"对最优动作的信息量")→ 按 MAJOR 计;②纯诊断/probe 形态(含"解释公认现象 / 换评测对象"型)五维无一项 8+、且未绑可修复臂或惊人发现强先验 → 上限 borderline,不给 SA。
