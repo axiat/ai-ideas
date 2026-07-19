@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-07-19 Harness:SA 净增量计分 + report 事实边界
+
+- `brainstorming_policy.md` / `rubric.md`:Strong Accept 只计相对最近 payoff occupant(真实零命中则为同 metric/setting 的 strongest current baseline)的新增且可归因 payoff;已发表或已落地收益不得重复记分。(协议改动,PR 留审)
+- `roles/research.md` / `roles/review.md`:查重须点名 payoff occupant 或有边界零命中;已发表异常须通过 exact arm、setting 与单变量 estimand 对齐,否则整条异常及派生数字不进入评分、flaws、verdict、Integrity gate 或 actions。(协议改动,PR 留审)
+- `roles/report.md` / `ideas/2026-07-17_hunt.md`:report 只允许 panel-wide 全票 verdict 句,裁判 1 评审与 priorwork 按 accepted id 连续逐字搬运,不跨席汇总 CRITICAL/MAJOR 或自行重算文献对照;07-17 报告顶部补 A2World `+1.2` / `+2.7` 勘误,冻结历史票据不回写。边界:单独从旧 archive 重跑 report 会原样搬出其 `1.6%` 旧句,须以已发布报告顶部勘误为准。
+- `ledger.tsv`:经用户明确授权,对 07-17 I3 历史行作一次性例外纠错:`strong-accept` 改为 `accept-w-rev`,reason 采用 byte-identical 冻结输入 fresh 三票中的原句,category 按现行聚合规则记 `design-fixable`;冻结 verdict/review 票据不改,`PROGRAM.md` 后续只追加规则不变。
+- 验证:以冻结 07-17 I3 archive 的 byte-identical 输入分别重跑,三张新票均为 Accept-w-Rev,错误异常派生值零命中;正式 calibration 为 4 pass + 1 probe、0 fail。两组验证均使用 sandboxed Codex 后端;默认 Claude 后端因 timeout 未形成有效终票,不混票。
+
 ## 2026-07-15 awr-side 判定侧独立化:1 搜 1 判,治 agy 自判过宽放行
 
 agy 自判(研究席=判席同为 agy)过宽放行,根因是判席拿草稿自报的「## 检索记录」当 novelty 证据——等于让写草稿的 agy 给自己背书。对齐 hunt.sh「novelty 只由独立查重支持」,把判前的查重拆成独立一席:每轮 研究→查重→判 三席各只做一件小事(也正治 agy「一口气做搜+判」易鲁棒盖章的弱点)。
