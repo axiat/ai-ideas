@@ -216,9 +216,14 @@ Before returning the verdict:
    CRITICAL flaws, at most one MAJOR, and dimension scores that
    plausibly support a clear accept. Dimension counts alone neither
    grant nor block Strong Accept.
-6. **[inspection]** Paradigm-shift claim cites which probing
+6. **[inspection]** Every 8+ dimension used to support Strong Accept
+   satisfies the SA net-increment rule: it identifies the nearest
+   payoff occupant, or records a genuine zero-hit search boundary and
+   the strongest current baseline under the same metric and setting;
+   only the attributable gain is scored.
+7. **[inspection]** Paradigm-shift claim cites which probing
    question was answered positively.
-7. **[attestation]** Lifecycle prediction is reasoned from the
+8. **[attestation]** Lifecycle prediction is reasoned from the
    field's recent pace; the user should sanity-check against their
    own knowledge of the subfield before acting on it.
 
@@ -277,7 +282,7 @@ Disruptive potential: <none, possible, strong>.
 | Timeline | ... | ... |
 
 ### 7. Integrity gate result
-- Gate 1 through 7: <pass or fail>
+- Gate 1 through 8: <pass or fail>
 
 ### 8. Verdict
 **<Strong Accept or Accept with Revisions or Reject and Pivot>**
@@ -516,6 +521,14 @@ idea, score how strongly it advances each axis versus the current
 baseline. Strong ideas usually dominate on one axis and hold their own
 on at least one more. Weak ideas are vague on four or more axes.
 
+Scores that support Strong Accept follow the single SA net-increment
+rule in `brainstorming_policy.md`. When the same payoff is occupied,
+name the nearest payoff occupant and score only the attributable gain
+over it. For a genuine zero hit, record the search boundary, name the
+strongest current baseline under the same metric and setting, and score
+only the attributable gain over that baseline. Published or deployed
+payoffs are not credited again.
+
 ## 2. Dimension 1: Higher (Effectiveness)
 
 ### Definition
@@ -656,6 +669,10 @@ preserving effectiveness.
 
 ### How to score
 
+- Apply the SA net-increment rule in `brainstorming_policy.md`; these
+  bands score attributable cost reduction over the required occupant
+  or same-metric, same-setting baseline, not an already published
+  payoff.
 - 9-10: the idea produces a high-quality dataset at a fraction of
   naive-annotation cost, or deploys at an order-of-magnitude lower
   cost than the baseline.
