@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 2026-07-19 calib:具身域删公理正式阳性落位(pos-axiom-torque 3/3 SA)
+
+- 新增 `calib/cases/pos-axiom-torque`:RSS 2026 Outstanding Systems Paper「NeuralActuator」(arXiv 2607.11734,post-cutoff)投稿前形态重建——删「actuator 学习必须扭矩真值监督」;9 近邻经 arXiv API 核验、时窗扫描 18+8 篇零命中、裂缝 2/2 实读相符、力感知轴占据者(解析 DOB,2507.06174)如实入档。面板 3/3 SA,按 `pos-axiom-*` 判读表=通道可用;票据核对见 `calib/results-2026-07-19.md`。
+- `calib/README.md`:cases 节补 `pos-axiom-torque`,`pos-axiom-*` 由「待选定」改为已落位;RSS 2026 官方金标页滞后(07-19 仍回 2025 内容,名单经 Instagram+arXiv 编号交叉验证)记录在案。
+
 ## 2026-07-19 Harness:SA 净增量计分 + report 事实边界
 
 - `brainstorming_policy.md` / `rubric.md`:Strong Accept 只计相对最近 payoff occupant(真实零命中则为同 metric/setting 的 strongest current baseline)的新增且可归因 payoff;已发表或已落地收益不得重复记分。(协议改动,PR 留审)
