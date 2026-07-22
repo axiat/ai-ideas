@@ -9,7 +9,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 EXPECTED = {
-    "stable_projection": "4350ee8caad0fb81b1b8d962236c7a1be3ba345f65ed4c41725c06628b1ccb9a",
+    "stable_projection": "810adad8122a7761ba394e6a67cdfa12d8c4f869fc888a5c2a8e8cb61c3a29cb",
     "theme_projection": "5dd438abbc8fd9e71f42256fd453afa9a538d13201dd19ae59fdb4400cb6d435",
     "urls": "6c26006c40788e96d0d5e91662867644f7720287b787d4d43f5257fc85bea23a",
     "numbers": "1f8236a7f082296dc1e754189e7a921ff625fb51e61fe6e8dc77f53ba6741e1a",
@@ -208,9 +208,15 @@ def verify_ledger():
     nf8 = sum(len(row) == 8 for row in data)
     if (nf7, nf8) != (216, 315):
         raise AssertionError(f"ledger shape changed: nf7={nf7}, nf8={nf8}")
+    overlap_values = sorted({row[6] for row in data})
+    if overlap_values != ["high", "low", "medium", "unknown"]:
+        raise AssertionError(f"unmigrated or unknown overlap values: {overlap_values}")
+    unknown_overlap = sum(row[6] == "unknown" for row in data)
+    if unknown_overlap != 29:
+        raise AssertionError(f"legacy unknown-overlap count changed: {unknown_overlap}")
     projection = "\n".join("\t".join([row[0], row[1], row[4], row[6], row[7] if len(row) == 8 else ""]) for row in data)
     if digest(projection) != EXPECTED["stable_projection"]:
-        raise AssertionError("stable ledger columns changed")
+        raise AssertionError("stable ledger columns or overlap row association changed")
     unknown = sorted({row[2] for row in data} - THEMES)
     if unknown:
         raise AssertionError(f"unmigrated or unknown themes: {unknown}")
