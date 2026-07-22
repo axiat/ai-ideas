@@ -92,9 +92,9 @@ FRONT_CMD='./agy-worker.sh' BACK_CMD='./grok-worker.sh' ./hunt.sh
 REV_CMD_1='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
 REV_CMD_2='./grok-worker.sh' REV_CMD_3='./agy-worker.sh' REV_STAGGER_SEC=15 ./hunt.sh
 
-# agy 前段可调,默认 AGY_MODEL='Gemini 3.5 Flash (High)'(只认展示名,见 agy-worker.sh 头注释),AGY_PRINT_TIMEOUT=8m,
+# agy 前段可调,默认 AGY_MODEL='gemini-3.6-flash-high'(使用 `agy models` 打印的完整 model ID),AGY_PRINT_TIMEOUT=8m,
 # AGY_LAUNCH_GAP_SEC=60(两次 agy 启动的最小间隔秒数,防快速重复调起触发登录验证;0 关闭)
-AGY_MODEL='Gemini 3.5 Flash (High)' AGY_PRINT_TIMEOUT=10m AGY_LAUNCH_GAP_SEC=90 FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p --strict-mcp-config' ./hunt.sh
+AGY_MODEL='gemini-3.6-flash-high' AGY_PRINT_TIMEOUT=10m AGY_LAUNCH_GAP_SEC=90 FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p --strict-mcp-config' ./hunt.sh
 
 # grok 可调:GROK_MODEL(默认 grok-4.5) GROK_MAX_TURNS(默认 80) GROK_SANDBOX(默认 workspace;off 关闭)
 # GROK_DISABLE_WEB=1 禁内建检索(校准面板用)
@@ -114,9 +114,9 @@ SIDE_CMD='claude -p --strict-mcp-config' ./awr-side.sh         # 两席全 claud
 SIDE_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral' ./awr-side.sh
 SIDE_CMD='./grok-worker.sh' ./awr-side.sh                      # 两席全 grok
 SIDE_JUDGE_CMD='./grok-worker.sh' ./awr-side.sh                # agy 研究 + grok 裁判
-# 内置 agy 换模型:AGY_MODEL 只认 `agy models` 的完整展示名,连字符形式会被静默忽略(详见 agy-worker.sh 头注释)
-AGY_MODEL='Claude Sonnet 4.6 (Thinking)' caffeinate -is ./awr-side.sh
-AGY_MODEL='Claude Opus 4.6 (Thinking)' caffeinate -is ./awr-side.sh
+# 内置 agy 换模型:AGY_MODEL 使用 `agy models` 打印的完整 model ID
+AGY_MODEL='claude-sonnet-4-6' caffeinate -is ./awr-side.sh
+AGY_MODEL='claude-opus-4-6-thinking' caffeinate -is ./awr-side.sh
 # 其余可调:AGY_PRINT_TIMEOUT=10m(仅内置 agy) SIDE_MAX_BAD=3 SIDE_MAX_ROUNDS=3
 ```
 
