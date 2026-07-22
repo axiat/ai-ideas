@@ -82,14 +82,49 @@ awk -F'\t' 'NF==6 && $1=="I1" && $2==1{ok++} END{exit !(ok==1)}' "$REPO/tmp/roun
 grep -q '^Papers Read: 5$' "$REPO/tmp/round/priorwork.md"
 EXPECTED_VERDICT=$(printf 'I1\tstrong-accept\t0\tIndependent evidence supports a clear-accept contribution under the stated experiment.')
 grep -qxF "$EXPECTED_VERDICT" "$REPO/tmp/round/rev/1/verdict.tsv"
-for section in 1 2 3 4 5 6 7 8; do
-  grep -q "^### ${section}\." "$REPO/tmp/round/rev/1/review.md"
-done
-grep -qxF '| # | Flaw | Severity | Defense |' "$REPO/tmp/round/rev/1/review.md"
-grep -qxF "| Aspect | User's input | Assessment |" "$REPO/tmp/round/rev/1/review.md"
-grep -qxF '| Dimension | Score 1-10 | Evidence | Lift suggestion |' "$REPO/tmp/round/rev/1/review.md"
-grep -qxF '| Probe | Yes or No | Rationale |' "$REPO/tmp/round/rev/1/review.md"
-grep -qxF '| Risk | Level | Mitigation |' "$REPO/tmp/round/rev/1/review.md"
+REVIEW_PATH="$REPO/tmp/round/rev/1/review.md"
+while IFS= read -r required_review_line; do
+  grep -qxF -- "$required_review_line" "$REVIEW_PATH"
+done <<'REVIEW_CONTRACT'
+### 1. First impression
+### 2. Fatal-flaws audit (early gate)
+| # | Flaw | Severity | Defense |
+| - | None identified in the supplied evidence. | - | No defense required. |
+### 3. Lifecycle and capability match
+| Aspect | User's input | Assessment |
+| Idea category | Innovative Technique | Matches a bounded method contribution. |
+| Lifecycle | 3 months | Fits the pilot and first-paper scope. |
+| Weekly effective hours | 20 | Sufficient for the stated experiment. |
+| Fit | One researcher and one H100 | Green |
+### 4. Five-dimension radar
+| Dimension | Score 1-10 | Evidence | Lift suggestion |
+| Higher | 6 | The kill threshold bounds control-success loss at two points. | Report success confidence intervals. |
+| Faster | 9 | The decisive experiment requires at least 30 percent lower latency. | Profile each control stage. |
+| Stronger | 6 | Two crack-evidence checks support stable control under skipped updates. | Add drift stress tests. |
+| Cheaper | 8 | Skipped latent updates directly reduce inference demand. | Report energy per episode. |
+| Broader | 5 | Evidence covers one manipulation setting. | Defer broader claims until cross-task evidence exists. |
+### 5. Paradigm-shift probe
+| Probe | Yes or No | Rationale |
+| First Principles | Yes | It tests whether fixed-rate latent updates are necessary. |
+| Elephant in the Room | No | The evidence does not establish a field-wide avoidance pattern. |
+| Technology Cycle | Yes | Confidence estimates make event-triggered updates executable. |
+| Hamming's Rule | Yes | Reliable sparse updates would materially reduce deployment cost. |
+Disruptive potential: possible.
+### 6. Feasibility
+| Risk | Level | Mitigation |
+| Compute | Low | Run the 128-episode comparison on the stated one H100. |
+| Data | Low | Use the stated held-out manipulation episodes. |
+| Engineering | Low | Limit the first paper to the confidence gate and dense baseline. |
+| Timeline | Low | Kill the idea when either explicit threshold fails. |
+### 7. Integrity gate result
+- Gate 1 through 8: pass
+### 8. Verdict
+**Strong Accept**
+Top three actions to take first:
+1. Implement the confidence gate and dense baseline under one profiler.
+2. Run the 128-episode falsification experiment with fixed seeds.
+3. Report success, latency, and energy against the stated kill thresholds.
+REVIEW_CONTRACT
 awk -F'|' '
   function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
   $0 == "### 3. Lifecycle and capability match" { section=3; next }
@@ -99,13 +134,17 @@ awk -F'|' '
   $0 ~ /^### [1-8]\./ { section=0; next }
   section == 3 && /^\|/ {
     key=trim($2)
-    if (key == "Idea category" || key == "Lifecycle" || key == "Weekly effective hours" || key == "Fit") lifecycle[key]++
+    if (key == "Idea category" || key == "Lifecycle" || key == "Weekly effective hours" || key == "Fit") {
+      lifecycle[key]++
+      lifecycle_order[++lifecycle_count]=key
+    }
   }
   section == 4 && /^\|/ {
     key=trim($2); score=trim($3)
     if (key == "Higher" || key == "Faster" || key == "Stronger" || key == "Cheaper" || key == "Broader") {
       if (score !~ /^([1-9]|10)$/) exit 1
       dimensions[key]++
+      dimension_order[++dimension_count]=key
     }
   }
   section == 5 && /^\|/ {
@@ -113,19 +152,27 @@ awk -F'|' '
     if (key == "First Principles" || key == "Elephant in the Room" || key == "Technology Cycle" || key == "Hamming\047s Rule") {
       if (answer != "Yes" && answer != "No") exit 1
       probes[key]++
+      probe_order[++probe_count]=key
     }
   }
   section == 6 && /^\|/ {
     key=trim($2)
-    if (key == "Compute" || key == "Data" || key == "Engineering" || key == "Timeline") risks[key]++
+    if (key == "Compute" || key == "Data" || key == "Engineering" || key == "Timeline") {
+      risks[key]++
+      risk_order[++risk_count]=key
+    }
   }
   END {
     if (lifecycle["Idea category"] != 1 || lifecycle["Lifecycle"] != 1 || lifecycle["Weekly effective hours"] != 1 || lifecycle["Fit"] != 1) exit 1
+    if (lifecycle_order[1] != "Idea category" || lifecycle_order[2] != "Lifecycle" || lifecycle_order[3] != "Weekly effective hours" || lifecycle_order[4] != "Fit") exit 1
     if (dimensions["Higher"] != 1 || dimensions["Faster"] != 1 || dimensions["Stronger"] != 1 || dimensions["Cheaper"] != 1 || dimensions["Broader"] != 1) exit 1
+    if (dimension_order[1] != "Higher" || dimension_order[2] != "Faster" || dimension_order[3] != "Stronger" || dimension_order[4] != "Cheaper" || dimension_order[5] != "Broader") exit 1
     if (probes["First Principles"] != 1 || probes["Elephant in the Room"] != 1 || probes["Technology Cycle"] != 1 || probes["Hamming\047s Rule"] != 1) exit 1
+    if (probe_order[1] != "First Principles" || probe_order[2] != "Elephant in the Room" || probe_order[3] != "Technology Cycle" || probe_order[4] != "Hamming\047s Rule") exit 1
     if (risks["Compute"] != 1 || risks["Data"] != 1 || risks["Engineering"] != 1 || risks["Timeline"] != 1) exit 1
+    if (risk_order[1] != "Compute" || risk_order[2] != "Data" || risk_order[3] != "Engineering" || risk_order[4] != "Timeline") exit 1
   }
-' "$REPO/tmp/round/rev/1/review.md"
+' "$REVIEW_PATH"
 awk '
   $0 == "Top three actions to take first:" { actions=1; next }
   actions && /^[1-3]\. / {
@@ -133,7 +180,7 @@ awk '
     if (substr($0, 1, 1) != count) exit 1
   }
   END { exit !(count == 3) }
-' "$REPO/tmp/round/rev/1/review.md"
+' "$REVIEW_PATH"
 
 EXPECTED_OVERLAP=low
 if [ "$MODE" = "overlap-commentary" ]; then
