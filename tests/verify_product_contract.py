@@ -73,6 +73,7 @@ BACKEND_DEFAULTS = {
         "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral",
     ),
 }
+AGY_MODEL_DEFAULT = "gemini-3.6-flash-high"
 SHELL_ASSIGNMENT = re.compile(
     r"^\s*(?:(?:export|readonly|local)\s+)*([A-Za-z_][A-Za-z0-9_]*)=(.*)$"
 )
@@ -235,6 +236,17 @@ def assert_backend_defaults():
         if assignments != [expected]:
             raise AssertionError(
                 f"default backend mismatch in {name}: expected {expected!r}, found {assignments!r}"
+            )
+    expected = f"model=${{AGY_MODEL:-{AGY_MODEL_DEFAULT}}}"
+    for name in ("agy-worker.sh", "awr-side.sh"):
+        assignments = [
+            line
+            for line in (ROOT / name).read_text().splitlines()
+            if re.match(r"^\s*model=", line)
+        ]
+        if assignments != [expected]:
+            raise AssertionError(
+                f"agy model default mismatch in {name}: expected {expected!r}, found {assignments!r}"
             )
 
 def shell_code_lines(text):

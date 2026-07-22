@@ -4,6 +4,7 @@
 
 - Established the README, generated hero, focused operator guides, contribution contract, and project scope as the public product surface.
 - Standardized the runtime artifact ABI across producers, parsers, prompts, fixtures, calibration, and reports. Codex is the default backend; every provider override is explicit.
+- Integrated `gemini-3.6-flash-high` as the default model ID for the explicit agy adapter.
 - Hardened ballot coverage, complete reviewer blocks, prior-work section order, structured API endpoints, cached-artifact validation, and stable physical-row AwR state with compatibility aliases.
 - Curated the complete 531-row ledger and historical reports while preserving verdicts, evidence classifications, URLs, identifiers, quantitative claims, row order, and legacy row shapes.
 
