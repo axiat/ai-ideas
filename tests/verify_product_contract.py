@@ -10,8 +10,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 EXPECTED = {
     "stable_projection": "4350ee8caad0fb81b1b8d962236c7a1be3ba345f65ed4c41725c06628b1ccb9a",
+    "theme_projection": "5dd438abbc8fd9e71f42256fd453afa9a538d13201dd19ae59fdb4400cb6d435",
     "urls": "6c26006c40788e96d0d5e91662867644f7720287b787d4d43f5257fc85bea23a",
     "numbers": "1f8236a7f082296dc1e754189e7a921ff625fb51e61fe6e8dc77f53ba6741e1a",
+    "row_urls": "6894b19bbc53362874f64c17dec1d593e9d54dabac4c7b0242036d7df10ba707",
+    "row_numbers": "6d026efe735888bd0a83639537f7630975133b9a30599fc6d5b68c7445849e35",
+    "row_code_spans": "42985fa08be8aa8ff358d322a13120470bdb579d7468d9126b2cd84852edc2d1",
     "case_ids": "aed82be120ea6d26d1735050352867fafa4551e9681b8da3abce496915fae1c4",
     "assertions": "a85dfbcece8c4c223ab0dfca3eb6a2ef17f091d71b67cebccfc7e3348aaea3f0",
 }
@@ -37,6 +41,27 @@ RUNTIME_FILES = [
     "calib/run_panel.sh", "calib/run_all.sh", "calib/run_e2e.sh",
     ".githooks/pre-push", ".github/workflows/auto-merge-claude.yml",
 ]
+BACKEND_DEFAULTS = {
+    "hunt.sh": (
+        "AGENT_CMD",
+        "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write",
+    ),
+    "calib/run_panel.sh": (
+        "PANEL_CMD",
+        "codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral",
+    ),
+    "calib/run_e2e.sh": (
+        "E2E_CMD",
+        "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral",
+    ),
+}
+SHELL_ASSIGNMENT = re.compile(
+    r"^\s*(?:(?:export|readonly|local)\s+)*([A-Za-z_][A-Za-z0-9_]*)=(.*)$"
+)
+FALLBACK_EXPANSION = re.compile(
+    r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::?[-=])([^}\n]*)\}"
+)
+VARIABLE_REFERENCE = re.compile(r"\$(?:\{)?([A-Za-z_][A-Za-z0-9_]*)")
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
@@ -65,12 +90,87 @@ def runtime_paths():
     paths.extend(sorted((ROOT / "calib/cases").glob("**/*")))
     return [path for path in paths if path.is_file()]
 
+def tracked_shell_paths():
+    raw = subprocess.check_output(
+        ["git", "ls-files", "-z", "--", "*.sh", ".githooks/*"],
+        cwd=ROOT,
+    )
+    return [ROOT / item.decode() for item in raw.split(b"\0") if item]
+
+def assert_backend_defaults():
+    for name, (variable, command) in BACKEND_DEFAULTS.items():
+        expected = f"{variable}=${{{variable}:-{command}}}"
+        assignments = [
+            line
+            for line in (ROOT / name).read_text().splitlines()
+            if re.match(rf"^\s*{re.escape(variable)}=", line)
+        ]
+        if assignments != [expected]:
+            raise AssertionError(
+                f"default backend mismatch in {name}: expected {expected!r}, found {assignments!r}"
+            )
+
+def shell_code_lines(text):
+    lines = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        code = line.split("#", 1)[0]
+        if code.strip():
+            lines.append((number, code))
+    return lines
+
+def claude_tainted_variables(lines):
+    values = {}
+    for _, code in lines:
+        match = SHELL_ASSIGNMENT.match(code)
+        if match:
+            values.setdefault(match.group(1), []).append(match.group(2))
+    tainted = set()
+    while True:
+        expanded = {
+            variable
+            for variable, assignments in values.items()
+            if any(
+                "claude" in value.lower()
+                or any(reference in tainted for reference in VARIABLE_REFERENCE.findall(value))
+                for value in assignments
+            )
+        }
+        if expanded == tainted:
+            return tainted
+        tainted = expanded
+
+def claude_fallback_lines(text):
+    lines = shell_code_lines(text)
+    tainted = claude_tainted_variables(lines)
+    failures = []
+    for number, code in lines:
+        for match in FALLBACK_EXPANSION.finditer(code):
+            fallback = match.group(1)
+            references = VARIABLE_REFERENCE.findall(fallback)
+            if "claude" in fallback.lower() or any(item in tainted for item in references):
+                failures.append(number)
+                break
+    return failures
+
+def assert_no_claude_fallbacks():
+    failures = []
+    for path in tracked_shell_paths():
+        text = read_text(path)
+        if text is None:
+            continue
+        failures.extend(
+            f"{path.relative_to(ROOT)}:{number}"
+            for number in claude_fallback_lines(text)
+        )
+    if failures:
+        raise AssertionError("automatic Claude fallback remains in " + ", ".join(failures))
+
 def verify_runtime():
+    assert_backend_defaults()
+    assert_no_claude_fallbacks()
     assert_english(runtime_paths())
-    for name in ("hunt.sh", "calib/run_panel.sh", "calib/run_all.sh", "calib/run_e2e.sh"):
-        text = (ROOT / name).read_text()
-        if re.search(r":-claude(?:\s|$)", text):
-            raise AssertionError(f"automatic Claude fallback remains in {name}")
     required = {
         "brainstorming_policy.md": ["## Divergence Lenses", "## Theme Vocabulary"],
         "hunt.sh": ["Papers Read", "Minimal Falsification Experiment", "Overlap"],
@@ -86,6 +186,18 @@ def verify_runtime():
 def ledger_rows():
     with (ROOT / "ledger.tsv").open(newline="") as handle:
         return list(csv.reader(handle, delimiter="\t"))
+
+def row_token_projection(data, pattern, group=0, normalize=None):
+    normalize = normalize or (lambda token: token)
+    lines = []
+    for i, row in enumerate(data, 1):
+        tokens = sorted(
+            normalize(match.group(group))
+            for field in (row[3], row[5])
+            for match in pattern.finditer(field)
+        )
+        lines.append(f"{i}:{'|'.join(tokens)}")
+    return "\n".join(lines)
 
 def verify_ledger():
     rows = ledger_rows()
@@ -110,6 +222,19 @@ def verify_ledger():
     numbers = sorted(token for row in data for field in (row[3], row[5]) for token in number_re.findall(field))
     if digest("\n".join(numbers)) != EXPECTED["numbers"]:
         raise AssertionError("ledger numeric token set changed")
+    row_urls = row_token_projection(data, url_re, normalize=lambda token: token.rstrip(".,;:"))
+    if digest(row_urls) != EXPECTED["row_urls"]:
+        raise AssertionError("ledger row-bound URL tokens changed")
+    row_numbers = row_token_projection(data, number_re)
+    if digest(row_numbers) != EXPECTED["row_numbers"]:
+        raise AssertionError("ledger row-bound numeric tokens changed")
+    code_span_re = re.compile(r"`([^`\n]+)`")
+    row_code_spans = row_token_projection(data, code_span_re, group=1)
+    if digest(row_code_spans) != EXPECTED["row_code_spans"]:
+        raise AssertionError("ledger row-bound code spans changed")
+    theme_projection = "\n".join(row[2] for row in data)
+    if digest(theme_projection) != EXPECTED["theme_projection"]:
+        raise AssertionError("ledger theme sequence changed")
     assert_english([ROOT / "ledger.tsv"])
 
 def verify_fixtures():
@@ -144,8 +269,8 @@ def tracked_text_paths():
     return paths
 
 def verify_all():
-    assert_english(tracked_text_paths())
     verify_runtime()
+    assert_english(tracked_text_paths())
     verify_fixtures()
     verify_ledger()
 
