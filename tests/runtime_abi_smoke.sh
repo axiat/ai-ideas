@@ -85,6 +85,55 @@ grep -qxF "$EXPECTED_VERDICT" "$REPO/tmp/round/rev/1/verdict.tsv"
 for section in 1 2 3 4 5 6 7 8; do
   grep -q "^### ${section}\." "$REPO/tmp/round/rev/1/review.md"
 done
+grep -qxF '| # | Flaw | Severity | Defense |' "$REPO/tmp/round/rev/1/review.md"
+grep -qxF "| Aspect | User's input | Assessment |" "$REPO/tmp/round/rev/1/review.md"
+grep -qxF '| Dimension | Score 1-10 | Evidence | Lift suggestion |' "$REPO/tmp/round/rev/1/review.md"
+grep -qxF '| Probe | Yes or No | Rationale |' "$REPO/tmp/round/rev/1/review.md"
+grep -qxF '| Risk | Level | Mitigation |' "$REPO/tmp/round/rev/1/review.md"
+awk -F'|' '
+  function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+  $0 == "### 3. Lifecycle and capability match" { section=3; next }
+  $0 == "### 4. Five-dimension radar" { section=4; next }
+  $0 == "### 5. Paradigm-shift probe" { section=5; next }
+  $0 == "### 6. Feasibility" { section=6; next }
+  $0 ~ /^### [1-8]\./ { section=0; next }
+  section == 3 && /^\|/ {
+    key=trim($2)
+    if (key == "Idea category" || key == "Lifecycle" || key == "Weekly effective hours" || key == "Fit") lifecycle[key]++
+  }
+  section == 4 && /^\|/ {
+    key=trim($2); score=trim($3)
+    if (key == "Higher" || key == "Faster" || key == "Stronger" || key == "Cheaper" || key == "Broader") {
+      if (score !~ /^([1-9]|10)$/) exit 1
+      dimensions[key]++
+    }
+  }
+  section == 5 && /^\|/ {
+    key=trim($2); answer=trim($3)
+    if (key == "First Principles" || key == "Elephant in the Room" || key == "Technology Cycle" || key == "Hamming\047s Rule") {
+      if (answer != "Yes" && answer != "No") exit 1
+      probes[key]++
+    }
+  }
+  section == 6 && /^\|/ {
+    key=trim($2)
+    if (key == "Compute" || key == "Data" || key == "Engineering" || key == "Timeline") risks[key]++
+  }
+  END {
+    if (lifecycle["Idea category"] != 1 || lifecycle["Lifecycle"] != 1 || lifecycle["Weekly effective hours"] != 1 || lifecycle["Fit"] != 1) exit 1
+    if (dimensions["Higher"] != 1 || dimensions["Faster"] != 1 || dimensions["Stronger"] != 1 || dimensions["Cheaper"] != 1 || dimensions["Broader"] != 1) exit 1
+    if (probes["First Principles"] != 1 || probes["Elephant in the Room"] != 1 || probes["Technology Cycle"] != 1 || probes["Hamming\047s Rule"] != 1) exit 1
+    if (risks["Compute"] != 1 || risks["Data"] != 1 || risks["Engineering"] != 1 || risks["Timeline"] != 1) exit 1
+  }
+' "$REPO/tmp/round/rev/1/review.md"
+awk '
+  $0 == "Top three actions to take first:" { actions=1; next }
+  actions && /^[1-3]\. / {
+    count++
+    if (substr($0, 1, 1) != count) exit 1
+  }
+  END { exit !(count == 3) }
+' "$REPO/tmp/round/rev/1/review.md"
 
 EXPECTED_OVERLAP=low
 if [ "$MODE" = "overlap-commentary" ]; then
@@ -131,12 +180,68 @@ if rg -n --pcre2 '\p{Script=Han}' "$REPO/$REPORT_REL"; then
   exit 1
 fi
 grep -qxF 'The single independent reviewer returned Strong Accept.' "$REPO/$REPORT_REL"
-grep -qxF 'Summary: Gate latent-dynamics updates with model confidence so redundant control transitions consume no world-model inference. Compare the gated controller with the strongest dense-update baseline.' "$REPO/$REPORT_REL"
-for section in 1 2 3 4 5 6 7 8; do
-  grep -q "^### ${section}\." "$REPO/$REPORT_REL"
-done
-grep -q '^### Directed Prior Work$' "$REPO/$REPORT_REL"
-grep -q '^Papers Read: 5$' "$REPO/$REPORT_REL"
+
+IDEA_SOURCE="$SANDBOX_ROOT/idea.source"
+IDEA_REPORT="$SANDBOX_ROOT/idea.report"
+awk '
+  $0 == "## I1" { copy=1; next }
+  copy && /^## I[0-9]+$/ { exit }
+  copy { print }
+' "$REPO/tmp/round/ideas.md" > "$IDEA_SOURCE"
+awk '
+  $0 == "### I1" { copy=1; next }
+  copy && $0 == "The single independent reviewer returned Strong Accept." { exit }
+  copy { print }
+' "$REPO/$REPORT_REL" > "$IDEA_REPORT"
+cmp -s "$IDEA_SOURCE" "$IDEA_REPORT"
+
+REVIEW_SOURCE="$SANDBOX_ROOT/review.source"
+REVIEW_REPORT="$SANDBOX_ROOT/review.report"
+awk '
+  $0 == "## I1" { copy=1; next }
+  copy && /^## I[0-9]+$/ { exit }
+  copy { print }
+' "$REPO/tmp/round/rev/1/review.md" > "$REVIEW_SOURCE"
+awk '
+  $0 == "### Reviewer 1 Full Review" { copy=1; next }
+  copy && $0 == "### Directed Prior Work" {
+    if (have && held != "") print held
+    exit
+  }
+  copy {
+    if (have) print held
+    held=$0
+    have=1
+  }
+' "$REPO/$REPORT_REL" > "$REVIEW_REPORT"
+cmp -s "$REVIEW_SOURCE" "$REVIEW_REPORT"
+
+PRIORWORK_SOURCE="$SANDBOX_ROOT/priorwork.source"
+PRIORWORK_REPORT="$SANDBOX_ROOT/priorwork.report"
+awk '
+  $0 == "## I1" { copy=1 }
+  copy && $0 != "## I1" && /^## I[0-9]+$/ { exit }
+  copy { print }
+' "$REPO/tmp/round/priorwork.md" > "$PRIORWORK_SOURCE"
+awk '
+  $0 == "### Directed Prior Work" { copy=1; next }
+  copy && $0 == "## Rejected Ideas" {
+    if (have && held != "") print held
+    exit
+  }
+  copy {
+    if (have) print held
+    held=$0
+    have=1
+  }
+' "$REPO/$REPORT_REL" > "$PRIORWORK_REPORT"
+cmp -s "$PRIORWORK_SOURCE" "$PRIORWORK_REPORT"
+
+METADATA_SOURCE="$SANDBOX_ROOT/metadata.source"
+METADATA_REPORT="$SANDBOX_ROOT/metadata.report"
+awk '/^(Rounds Attempted|Review Date): / { print }' "$REPO/tmp/round/meta.txt" > "$METADATA_SOURCE"
+awk '$0 == "## Metadata" { copy=1; next } copy { print }' "$REPO/$REPORT_REL" > "$METADATA_REPORT"
+cmp -s "$METADATA_SOURCE" "$METADATA_REPORT"
 
 grep -q '^publication-no-op$' "$REPO/tmp/publication.noop"
 printf 'ok: runtime ABI smoke (%s)\n' "$MODE"
