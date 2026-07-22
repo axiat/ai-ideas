@@ -21,6 +21,8 @@ def expect_lines(source, expected, label):
 def main():
     if CONTRACT.stable_calibration_title("Policy(OneDP)") != CONTRACT.stable_calibration_title("Policy (OneDP)"):
         raise AssertionError("calibration title projection over-constrains spacing before parentheses")
+    if CONTRACT.stable_calibration_title("Policy(OneDP )") != CONTRACT.stable_calibration_title("Policy (OneDP)"):
+        raise AssertionError("calibration title projection over-constrains spacing before a closing parenthesis")
     expect_lines("claude -p prompt\n", [1], "direct invocation")
     expect_lines("    claude -p prompt\n", [1], "indented direct invocation")
     expect_lines("env claude -p prompt\n", [1], "environment-wrapped direct invocation")
