@@ -42,7 +42,7 @@ The coordinated migration includes:
 - Operator logs, error messages, source comments, test descriptions, and workflow comments.
 - The eleven theme values used by policy parsing, generation validation, ledger history, and theme-frequency accounting.
 
-Stable machine tokens keep their exact spelling: `strong-accept`, `accept-w-rev`, `reject`, `low`, `medium`, `high`, `novelty-dead`, `evidence-incomplete`, `design-fixable`, `ceiling-limited`, `hunt`, and `weekly`. Dates, URLs, paper identifiers, model names, commands, counts, thresholds, and table values do not change.
+Stable machine tokens keep their exact spelling: `strong-accept`, `accept-w-rev`, `reject`, `low`, `medium`, `high`, `unknown`, `novelty-dead`, `evidence-incomplete`, `design-fixable`, `ceiling-limited`, `hunt`, and `weekly`. The 29 legacy unknown-overlap labels map one-to-one to `unknown`; their rows and semantics do not change. Dates, URLs, paper identifiers, model names, commands, counts, thresholds, and table values do not change.
 
 ## Backend Policy
 
@@ -56,7 +56,7 @@ Provider-specific paths keep honest trust-boundary descriptions. Documentation d
 
 The working-tree ledger is the source input. The rewrite preserves all 531 data rows, including the 111 uncommitted rows copied into the feature worktree.
 
-The historical seven-column and eight-column row shapes remain unchanged. Translation changes the theme, idea, and reason text only. It does not normalize old rows, reorder history, reconcile frozen reports with later corrections, or alter verdicts and evidence classifications.
+The historical seven-column and eight-column row shapes remain unchanged. Curation changes the theme, idea, and reason text, plus the 29 legacy unknown-overlap labels that become `unknown`. It does not otherwise normalize old rows, reorder history, reconcile frozen reports with later corrections, or alter verdicts and evidence classifications.
 
 The theme migration is a one-to-one mapping shared by policy, parsers, fixtures, and every ledger row. In the canonical policy order, the English values are:
 
@@ -81,7 +81,7 @@ Completion requires evidence from all of these gates:
 - No Han characters in tracked human-readable files or `s1_report_20260720.md`.
 - No obsolete Chinese artifact labels in producers, parsers, prompts, or fixtures.
 - Ledger row count remains 531; field-count distribution remains 216 seven-column rows and 315 eight-column rows.
-- Ledger date, source, verdict, overlap, category, URL, and numeric projections remain unchanged; themes match the documented one-to-one mapping.
+- Ledger date, source, verdict, category, URL, and numeric projections remain unchanged. Themes match the documented mapping, and the 29 legacy unknown-overlap labels become `unknown` in the same rows.
 - Every calibration fixture retains the same `I<n>` identifiers and expectation assertions.
 - `git diff --check`, shell syntax checks, Python parsing, and deterministic litwatch tests pass.
 - Fake-agent tests exercise the English `hunt.sh` and AwR artifact contracts without invoking an external model.
