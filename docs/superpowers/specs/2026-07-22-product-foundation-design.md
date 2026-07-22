@@ -8,9 +8,9 @@ Turn `ai-ideas` into a coherent English-language project without changing its co
 
 `ai-ideas` is an auditable research-idea discovery harness for embodied AI. Independent workers generate candidates, search prior work, and review evidence. Deterministic orchestration aggregates the lowest vote, records every candidate, and publishes only results that pass the configured acceptance gates.
 
-The rewrite covers every tracked human-readable file and the current untracked `s1_report_20260720.md`. It includes source comments, operator messages, prompts, fixtures, historical reports, calibration records, and every prose field in `ledger.tsv`. Ignored runtime artifacts under `tmp/` are operational state rather than repository content and remain untouched.
+The product-content rollout covers every tracked human-readable file and the current untracked `s1_report_20260720.md`. It includes source comments, operator messages, prompts, fixtures, historical reports, calibration records, and every prose field in `ledger.tsv`. Ignored runtime artifacts under `tmp/` are operational state rather than repository content and remain untouched.
 
-The product remains named `ai-ideas`. The rewrite does not invent a license, claim topic independence, add a packaging system, or implement roadmap features that do not exist.
+The product remains named `ai-ideas`. The rollout does not invent a license, claim topic independence, add a packaging system, or implement roadmap features that do not exist.
 
 ## Repository Entry and Documentation
 
@@ -32,9 +32,9 @@ The project includes `assets/ai-ideas-hero.png`, generated as a wide README head
 
 ## Runtime Content Contract
 
-All newly produced artifacts use English field names and headings. Producers and consumers change atomically so no parser reads a translated label before its producer emits it.
+All newly produced artifacts use English field names and headings. Producers and consumers change atomically so every parser reads the field emitted by its producer.
 
-The coordinated migration includes:
+The coordinated product contract includes:
 
 - `hunt.sh`, `awr-side.sh`, calibration scripts, and their parsed labels.
 - `PROGRAM.md`, `brainstorming_policy.md`, `rubric.md`, entry prompts, and every role prompt.
@@ -46,7 +46,7 @@ Stable machine tokens keep their exact spelling: `strong-accept`, `accept-w-rev`
 
 ## Backend Policy
 
-Codex is the default trusted backend in `hunt.sh`, calibration, and end-to-end retrieval examples. Default commands use `approval_policy=never` and the repository's existing workspace and network boundaries.
+Codex is the default trusted backend in `hunt.sh`, `awr-side.sh`, `litwatch.sh`, calibration, and end-to-end retrieval examples. Default commands use `approval_policy=never` and the repository's existing workspace and network boundaries. The AwR and litwatch entry points keep explicit provider adapters for compatibility, but those adapters are never an automatic fallback.
 
 Claude remains supported only through an explicitly supplied command such as `AGENT_CMD`, `BACK_CMD`, `SIDE_CMD`, `PANEL_CMD`, or `E2E_CMD`. No script, test, example marked as default, fallback, hook, worker, or orchestration path may start Claude without that explicit selection.
 
@@ -54,11 +54,11 @@ Provider-specific paths keep honest trust-boundary descriptions. Documentation d
 
 ## Ledger and Historical Integrity
 
-The working-tree ledger is the source input. The rewrite preserves all 531 data rows, including the 111 uncommitted rows copied into the feature worktree.
+The working-tree ledger is the source input. The curation preserves all 531 data rows, including the 111 uncommitted rows copied into the feature worktree.
 
 The historical seven-column and eight-column row shapes remain unchanged. Curation changes the theme, idea, and reason text, plus the 29 legacy unknown-overlap labels that become `unknown`. It does not otherwise normalize old rows, reorder history, reconcile frozen reports with later corrections, or alter verdicts and evidence classifications.
 
-The theme migration is a one-to-one mapping shared by policy, parsers, fixtures, and every ledger row. In the canonical policy order, the English values are:
+The theme vocabulary is a one-to-one mapping shared by policy, parsers, fixtures, and every ledger row. In canonical policy order, the product values are:
 
 1. `World Models - Architecture`
 2. `World Models - Training Objectives`
