@@ -25,6 +25,8 @@ REV_CMD_3='./agy-worker.sh' \
 ./hunt.sh
 ```
 
+`./agy-worker.sh` and the AwR built-in adapter default to `AGY_MODEL=gemini-3.6-flash-high`. Overrides use the complete model ID printed by `agy models`.
+
 Claude is available only through an explicit command supplied for the current run:
 
 ```bash

@@ -9,14 +9,14 @@
 # Usage:
 #   FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
 # Configuration:
-#   AGY_MODEL          Full display name printed by `agy models`; default
-#                      `Gemini 3.5 Flash (High)`. Alias-like names may silently
-#                      fall back. Verify the selected-model line in the CLI log.
+#   AGY_MODEL          Full model ID printed by `agy models`; default
+#                      `gemini-3.6-flash-high`. Verify the selected-model line
+#                      in the CLI log.
 #   AGY_PRINT_TIMEOUT  Default 8m.
 #   AGY_LAUNCH_GAP_SEC Minimum seconds between launches; default 60, 0 disables.
 set -u
 repo="$(cd "$(dirname "$0")" && pwd)"
-model=${AGY_MODEL:-Gemini 3.5 Flash (High)}
+model=${AGY_MODEL:-gemini-3.6-flash-high}
 ptimeout=${AGY_PRINT_TIMEOUT:-8m}
 gap=${AGY_LAUNCH_GAP_SEC:-60}
 prompt=${1:?usage: agy-worker.sh <prompt>}

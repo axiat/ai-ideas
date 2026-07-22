@@ -39,7 +39,7 @@
 # circuit breaker. `AGY-DONE` remains the required final nonempty line.
 #
 # Tuning:
-#   AGY_MODEL                         default: Gemini 3.5 Flash (High)
+#   AGY_MODEL                         default: gemini-3.6-flash-high
 #   AGY_PRINT_TIMEOUT                 default: 10m
 #   SIDE_GAP_SEC                      default: 120; built-in agy gate, 0 disables
 #   SIDE_GAP_MIN_SEC/MAX_SEC          default: 60/600; all-backend throttle
@@ -48,7 +48,7 @@
 #   SIDE_COOLDOWN_SEC                 default: 3600; 0 exits on circuit break
 set -u
 repo="$(cd "$(dirname "$0")" && pwd)"
-model=${AGY_MODEL:-Gemini 3.5 Flash (High)}
+model=${AGY_MODEL:-gemini-3.6-flash-high}
 ptimeout=${AGY_PRINT_TIMEOUT:-10m}
 SIDE_CMD=${SIDE_CMD:-codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral}
 side_cmd=$SIDE_CMD
