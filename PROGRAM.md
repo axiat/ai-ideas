@@ -44,7 +44,7 @@ date	source	theme	idea	verdict	reason	overlap	category
 - `theme`: one value from the policy theme vocabulary; used for cross-round anti-collapse accounting
 - `idea`: one-sentence story
 - `verdict`: `strong-accept`, `accept-w-rev`, or `reject`
-- `reason`: one sentence containing the rejection cause or the kept idea's core value; a prescreen kill begins with `prescreen direct hit:`
+- `reason`: one sentence containing the rejection cause or the kept idea's core value; a prescreen kill begins with `Prescreen direct hit:`
 - `overlap`: `high`, `medium`, `low`, or `unknown`; the prior-work overlap judgment. Evolution parent eligibility uses this field, and a legacy row without column 7 is treated as `unknown`.
 - `category`: `novelty-dead`, `evidence-incomplete`, `design-fixable`, `ceiling-limited`, or `-`. Strong Accept rows use `-`; legacy seven-column rows omit category and are treated as `-`. The orchestrator assigns a non-SA category mechanically from the lowest vote before hard-gate reduction, hard-gate status, and overlap (see `classify_nonsa` in `hunt.sh`):
   - `novelty-dead`: the headline is occupied (`overlap=high`) or a CRITICAL defect exists.
