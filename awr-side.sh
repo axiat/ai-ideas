@@ -6,7 +6,7 @@
 # Final artifacts live under `tmp/awr-side/awr/` and never alter verdicts,
 # `ledger.tsv`, `ideas/`, or the main loop's `tmp/round/` state.
 #
-# Each key is file-derived and restartable:
+# Each key is derived from the append-only physical ledger row and restartable:
 #   <key>.md             final artifact
 #   <key>.task.md        source task and feedback history
 #   <key>.draft.md       current revision
@@ -64,9 +64,11 @@ max_rounds=${SIDE_MAX_ROUNDS:-3}
 cooldown=${SIDE_COOLDOWN_SEC:-3600}
 statedir="$repo/tmp/awr-side"
 outdir="$statedir/awr"
+alias_file="$repo/awr-state-aliases.tsv"
 sidelock="$repo/tmp/awr-side.lock"
 gate_stamp="$repo/tmp/agy.last-launch"
 gate_lock="$repo/tmp/agy.launch.lock"
+structured_api_re='^- Query:[[:space:]]*https?://(export\.arxiv\.org/api/query\?[^[:space:]]+|api\.semanticscholar\.org/graph/v1/[A-Za-z0-9._~%/:+-]+\?[^[:space:]]+)[[:space:]]*$'
 for v in "$gap" "$gap_min" "$gap_max" "$poll" "$max_bad" "$max_rounds" "$cooldown"; do
   case "$v" in ''|*[!0-9]*) echo "awr-side: GAP/GAP_MIN/GAP_MAX/POLL/MAX_BAD/MAX_ROUNDS/COOLDOWN must be nonnegative integers: $v" >&2; exit 2 ;; esac
 done
@@ -74,11 +76,90 @@ done
 
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" | tee -a "$outdir/side.log"; }
 
-# Preserve queue state created under the former `tmp/agy-side` name.
+# Adopt queue state from the `tmp/agy-side` compatibility path when canonical state is absent.
 if [ -d "$repo/tmp/agy-side" ] && [ ! -d "$statedir" ]; then
   mv "$repo/tmp/agy-side" "$statedir"
 fi
 mkdir -p "$outdir"
+
+legacy_key_for_row() {
+  local row=$1 legacy
+  [ -s "$alias_file" ] || return 0
+  legacy=$(awk -F'\t' -v row="$row" '$1 == row { print $2; exit }' "$alias_file")
+  case "$legacy" in
+    ????????????) case "$legacy" in *[!0-9a-f]*) return 0 ;; esac ;;
+    *) return 0 ;;
+  esac
+  printf '%s\n' "$legacy"
+}
+
+# Normalize a compatibility task to the current product ABI while retaining
+# each feedback section as an ordered repair round. Compatibility section and
+# field names are deliberately treated as opaque text.
+upgrade_legacy_task() {
+  local key=$1 task=$2 d=$3 theme=$4 idea=$5 reason=$6 migrated
+  migrated="$task.migrating.$$"
+  {
+    printf '# AwR Task %s\n' "$key"
+    printf 'Date: %s\nTheme: %s\nIdea: %s\nReason: %s\n' "$d" "$theme" "$idea" "$reason"
+    awk '
+      /^## / {
+        round++
+        print ""
+        print "## Reviewer Feedback"
+        print "Round: " round
+        in_feedback=1
+        next
+      }
+      !in_feedback || /^[[:space:]]*$/ || /^Round:[[:space:]]*[0-9]+[[:space:]]*$/ { next }
+      /^- Defect:[[:space:]]*/ { print; next }
+      /^- [^:]+:[[:space:]]*/ {
+        line=$0
+        sub(/^- [^:]+:[[:space:]]*/, "", line)
+        if (line != "") print "- Defect: " line
+        next
+      }
+      { print "- Defect: " $0 }
+    ' "$task"
+  } > "$migrated"
+  mv -f "$migrated" "$task"
+}
+
+task_needs_upgrade() {
+  local key=$1 task=$2 first
+  first=$(sed -n '1p' "$task" 2>/dev/null)
+  [ "$first" = "# AwR Task $key" ] || return 0
+  awk '/^## / && $0 != "## Reviewer Feedback" { found=1 } END { exit !found }' "$task"
+}
+
+# Copy compatibility-keyed state onto the stable row key. Some duplicate source
+# ideas intentionally share one compatibility key, so the source remains
+# available for every matching physical row. An existing stable artifact always
+# wins instead of being overwritten.
+migrate_legacy_state() {
+  local key=$1 legacy=$2 d=$3 theme=$4 idea=$5 reason=$6 old suffix target staged migrated_task=0
+  [ -n "$legacy" ] && [ "$legacy" != "$key" ] || return 0
+  for old in "$outdir/$legacy".*; do
+    [ -e "$old" ] || continue
+    suffix=${old#"$outdir/$legacy"}
+    target="$outdir/$key$suffix"
+    if [ -e "$target" ]; then
+      if [ "$suffix" = ".task.md" ] && task_needs_upgrade "$key" "$target"; then
+        migrated_task=1
+      fi
+      continue
+    fi
+    staged="$target.migrating.$$"
+    if ! cp -p "$old" "$staged" || ! mv -f "$staged" "$target"; then
+      rm -f "$staged"
+      return 1
+    fi
+    [ "$suffix" = ".task.md" ] && migrated_task=1
+  done
+  if [ "$migrated_task" -eq 1 ]; then
+    upgrade_legacy_task "$key" "$outdir/$key.task.md" "$d" "$theme" "$idea" "$reason"
+  fi
+}
 
 # A single-instance lock prevents duplicate calls and conflicting `.badN` counts.
 while ! mkdir "$sidelock" 2>/dev/null; do
@@ -209,10 +290,31 @@ check_draft() {
 check_priorwork() {
   local f=$1 n
   [ -s "$f" ] || { echo "empty artifact"; return 1; }
-  n=$(grep -cE '^- .*https?://' "$f" || true)
+  if ! n=$(awk '
+    BEGIN {valid=1}
+    /^Nearest Work:/ {
+      nearest++
+      if (phase != 0) valid=0
+      phase=1
+      next
+    }
+    /^Strongest Counterexample:/ {
+      strongest++
+      if (phase != 1) valid=0
+      phase=2
+      next
+    }
+    phase == 1 && /^- / && $0 !~ /^- Query:/ && /https?:\/\// {n++}
+    END {
+      if (nearest != 1 || strongest != 1 || valid == 0) exit 2
+      print n+0
+    }
+  ' "$f"); then
+    echo "invalid Nearest Work to Strongest Counterexample section order"
+    return 1
+  fi
   [ "${n:-0}" -ge 5 ] || { echo "insufficient linked neighbors (${n:-0}<5)"; return 1; }
-  grep -qE '^- Query:[[:space:]]*https?://' "$f" || { echo "missing reproducible API query URL"; return 1; }
-  grep -qE '^Strongest Counterexample:' "$f" || { echo "missing Strongest Counterexample"; return 1; }
+  grep -qE "$structured_api_re" "$f" || { echo "missing reproducible API query URL"; return 1; }
   grep -qE '^Overlap:[[:space:]]*(high|medium|low)([[:space:]]|$)' "$f" || { echo "missing or invalid Overlap"; return 1; }
   grep -qE '^Papers Read:[[:space:]]*[0-9]+[[:space:]]*$' "$f" || { echo "missing or invalid Papers Read"; return 1; }
   grep -qE '^arXiv ID Check:' "$f" || { echo "missing arXiv ID Check"; return 1; }
@@ -257,8 +359,8 @@ check_judge() {
 finalize() {
   { printf '# AwR Result %s\nStatus: %s\nOutcome: %s\nOriginal Idea: %s\nProcess Record: %s.task.md\n\n' "$1" "$2" "$3" "$idea" "$1"
     cat "$draft"
-    if [ -s "$pwork" ]; then printf '\n---\n## Independent Prior-Work Evidence\n'; cat "$pwork"; fi
-    if [ -s "$judgef" ]; then printf '\n---\n## Final Reviewer Decision\n'; cat "$judgef"; fi
+    if check_priorwork "$pwork" >/dev/null 2>&1; then printf '\n---\n## Independent Prior-Work Evidence\n'; cat "$pwork"; fi
+    if check_judge "$judgef" >/dev/null 2>&1; then printf '\n---\n## Final Reviewer Decision\n'; cat "$judgef"; fi
   } > "$out"
 }
 
@@ -269,11 +371,15 @@ while :; do
   # Prefer the shell-approved ledger snapshot, then freeze the input for this scan.
   src="$repo/tmp/ledger.good"; [ -s "$src" ] || src="$repo/ledger.tsv"
   snap="$outdir/.ledger.snap"; cp "$src" "$snap"
-  did=0; pending=0
+  did=0; pending=0; ledger_row=0
   while IFS=$'\t' read -r d source theme idea verdict reason _overlap <&3; do
+    ledger_row=$((ledger_row + 1))
     [ "$source" = "hunt" ] && [ "$verdict" = "accept-w-rev" ] || continue
     [ -n "$idea" ] || continue
-    key=$(printf '%s' "$idea" | md5 | cut -c1-12)
+    key=$(printf 'r%06d' "$ledger_row")
+    legacy_key=$(legacy_key_for_row "$ledger_row")
+    migrate_legacy_state "$key" "$legacy_key" "$d" "$theme" "$idea" "$reason" \
+      || { log "Failed to migrate compatibility state for $key"; exit 2; }
     out="$outdir/$key.md"
     [ -s "$out" ] && continue                                  # Terminal artifact.
     nbad=0
@@ -293,7 +399,7 @@ while :; do
     fi
     rounds=$(grep -c '^## Reviewer Feedback$' "$task" 2>/dev/null) || rounds=0
     # Research when no valid draft exists or feedback is newer than the draft.
-    if ! { [ -s "$draft" ] && [ "$draft" -nt "$task" ]; }; then
+    if ! { check_draft "$draft" >/dev/null 2>&1 && [ "$draft" -nt "$task" ]; }; then
       hint=""; [ -s "$draft" ] && hint=", with the existing draft at ${draft}; improve it in place"
       log "Starting [research:$key round $((rounds + 1))]: $theme"
       run_agent "$research_cmd" "$new" "Read ${repo}/roles/awr.md and follow it. The task is ${task}${hint}. Write the artifact to ${new}." "$alog"; rc=$?
@@ -312,7 +418,7 @@ while :; do
       did=1; continue
     fi
     # Prior work must target this draft. Reuse is limited to crash or reviewer retries.
-    if ! { [ -s "$pwork" ] && [ "$pwork" -nt "$draft" ]; }; then
+    if ! { check_priorwork "$pwork" >/dev/null 2>&1 && [ "$pwork" -nt "$draft" ]; }; then
       log "Starting [priorwork:$key round $((rounds + 1))]"
       run_agent "$priorwork_cmd" "$pworknew" "Read ${repo}/roles/awr-priorwork.md and follow it. The draft is ${draft}; use only its ## Revised Idea claim to form queries and do not trust its ## Search Record. The task context is ${task}. Write independent prior-work evidence to ${pworknew}." "$alog"; rc=$?
       if why=$(check_priorwork "$pworknew"); then

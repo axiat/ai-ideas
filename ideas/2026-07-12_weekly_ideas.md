@@ -1,8 +1,8 @@
 # Weekly Embodied Idea Scout — 2026-07-12
 
-> No idea met the bar this week (0 Strong Accept). The hunt completed one full round and one supplemental round: all 6+1 candidates passed through prescreening, deep prior-work review, and three independent verdicts. The closest result was 1 accept-w-rev, I2. The threshold was kept intact.
+> No idea met the bar this week (0 Strong Accept). The hunt completed one full round and one supplemental round. Of the six first-round candidates, two were rejected at prescreening, three completed deep prior-work review and three-verdict scoring, and one review was truncated. The supplemental candidate was rejected at prescreening. I2 was the closest result, with an accept-w-rev verdict.
 
-Review date: 2026-07-12 | Source: weekly | Rounds: 2 (round1 funnel with 6 candidates; round2 with 1 supplemental candidate) | Scoring: three independent verdicts per surviving idea, with the lowest verdict controlling and Reject as the default.
+Review date: 2026-07-12 | Source: weekly | Rounds: 2 (six candidates in the first-round funnel and one supplemental candidate in the second round) | Scoring: three independent verdicts per deeply reviewed idea, with the lowest verdict controlling and Reject as the default.
 
 ---
 
@@ -47,7 +47,7 @@ The scan emphasized the latest 7–14 days and used adjacent recent work for con
 
 ## 3. Qualifying ideas (Strong Accept)
 
-**No idea qualified this week.** Every candidate failed at least one hard SA gate: unanimous strong-accept verdicts, independently verified low overlap, ≥5 papers read, a minimal falsification experiment, and a complete rubric review. Novelty was the consistent bottleneck: each headline claim had direct or adjacent coverage from the preceding 1–2 months.
+**No idea qualified this week.** Every candidate failed at least one hard SA gate: unanimous strong-accept verdicts, independently verified low overlap, at least 5 papers read, a minimal falsification experiment, and a complete rubric review. Novelty was the consistent bottleneck: each headline claim had direct or adjacent coverage from the preceding 1–2 months.
 
 ## 4. Borderline result: accept-w-rev, excluded from the qualifying count
 
@@ -55,15 +55,15 @@ The scan emphasized the latest 7–14 days and used adjacent recent work for con
 
 **Claim:** When a discrete tokenizer such as FAST/BPE outperforms a continuous head, quantization removes sub-threshold action noise that the continuous head faithfully fits. An autoregressive sequence prior is not the primary cause. Giving the continuous head a **matched quantization noise floor** should close the gap.
 
-**Minimal falsification experiment:** On LIBERO/RoboCasa, use one backbone with three heads: continuous flow, discrete FAST tokens, and continuous flow with a quantization noise floor. The strongest baseline is the current SOTA discrete tokenizer, FAST. A single researcher can run each arm on 1×H100 for ~1 day. The expected signature is that the noise-floor continuous head closes to a gap below 2% relative to the discrete head, the unmodified continuous head trails by ≥5%, and the discrete advantage grows monotonically with injected expert noise. Failure to close the gap would establish an independent contribution from the sequence prior and falsify the claim.
+**Minimal falsification experiment:** On LIBERO/RoboCasa, use one backbone with three heads: continuous flow, discrete FAST tokens, and continuous flow with a quantization noise floor. The strongest baseline is the current SOTA discrete tokenizer, FAST. A single researcher can run each arm on 1×H100 for approximately 1 day. The expected signature is that the noise-floor continuous head closes to a gap below 2% relative to the discrete head, the unmodified continuous head trails by at least 5%, and the discrete advantage grows monotonically with injected expert noise. Failure to close the gap would establish an independent contribution from the sequence prior and falsify the claim.
 
-**Three verdicts:** accept-w-rev / accept-w-rev / accept-w-rev → **minimum = accept-w-rev**.
+**Three verdicts:** accept-w-rev / accept-w-rev / accept-w-rev; **minimum verdict: accept-w-rev**.
 
 **Why the result stopped at AwR:**
 
 - **Novelty ceiling from medium overlap:** [ActionCodec 2602.15397](https://arxiv.org/abs/2602.15397) already connects tokenizers with resistance to overfitting, while the vision paper [When Worse is Better 2412.16326](https://arxiv.org/abs/2412.16326) provides a structurally similar precedent in which compression denoises and improves generation. No single paper owns the competitive attribution—denoising over sequence prior—or the noise-floor equalization experiment, but the difference does not clear the clear-accept threshold.
 - **Estimand alignment issue identified by the third verdict:** A matched quantization noise floor may not isolate quantization denoising because quantization also changes optimization dynamics. Additive noise does not reproduce that factor, so the attribution remains confounded and constitutes one MAJOR issue.
-- The contribution is a diagnosis plus repair arm. Its ceiling on Higher and Broader is moderate, closer to a solid CoRL/workshop-to-main result than a spotlight result.
+- The contribution is a diagnosis plus repair arm. Its Higher and Broader ceiling is moderate, consistent with a solid workshop or main-track result at CoRL rather than a spotlight result.
 
 ## 5. Rejected ideas
 
@@ -78,8 +78,8 @@ The scan emphasized the latest 7–14 days and used adjacent recent work for con
 
 ## 6. Run record
 
-- Rounds: 2 (round1: generate 10 → self-screen 6 → prescreen rejects 2, I4/I5 → deep review 3, I1/I2/I9, plus 1 truncated candidate, I7; round2: supplemental proposition R2-2 rejected at prescreening).
-- Assumption-removal quota: **fulfilled by I4** with all five required fields and 2 crack-evidence items pointing to Latent Bridge and asynchronous dual-system work. AC2-VLA and VLA-Cache occupied the claim during prescreening, so the result remained reject.
-- Low-inventory coverage: I1 (world-model architecture), I2 (action representation), and I9 (data engine) cover the tied-lowest inventory themes at 14; the requirement of ≥2 was met.
+- Rounds: 2. The first round generated 10 candidates, retained 6 after self-screening, rejected I4 and I5 at prescreening, completed deep review for I1, I2, and I9, and truncated the review of I7. The second round rejected the supplemental candidate R2-2 at prescreening.
+- Assumption-removal quota: **fulfilled by I4** with all five required fields and two crack-evidence items pointing to Latent Bridge and asynchronous dual-system work. AC2-VLA and VLA-Cache occupied the claim during prescreening, so the result remained reject.
+- Low-inventory coverage: I1 (world-model architecture), I2 (action representation), and I9 (data engine) cover the tied-lowest inventory themes at 14; the requirement of at least 2 was met.
 - Review date: 2026-07-12. The single-agent approximation retained adversarial role separation: Reject by default, adversarial prior-work search, three verdicts with the minimum controlling, and novelty supported only by independent search evidence.
-- Closest 2 results: **I2** (accept-w-rev, medium overlap, one novelty level and one estimand MAJOR below the bar) and **I1** (the closest reject; its diagnostic increment is real but capped by Delta-JEPA).
+- Two closest results: **I2** (accept-w-rev, medium overlap, one novelty level and one estimand MAJOR below the bar) and **I1** (the closest reject; its diagnostic increment is real but capped by Delta-JEPA).

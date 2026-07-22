@@ -3,7 +3,7 @@
 Status: maintained
 Historical snapshot: 2026-07-12
 
-Goal: make `ai-ideas` a calibratable, auditable, topic-independent research harness, then add safe concurrency, portable deployment, and stable product entry points.
+Goal: make `ai-ideas` a calibratable, auditable embodied-AI research-idea discovery harness, then add safe concurrency, portable deployment, and stable product entry points.
 
 IDs follow the original plan; `6` remains unassigned.
 
@@ -12,7 +12,7 @@ IDs follow the original plan; `6` remains unassigned.
 | ID | Area | Initiative | Priority | Primary dependency |
 |---|---|---|---|---|
 | 0 | Harness engineering | Move deterministic control into `.sh` where practical; improve Claude and Codex adapters | P0 | None |
-| 1 | Research quality | Improve autoresearch success rate (w/ sol) | P0 | Decision and observability foundations from 0 |
+| 1 | Research quality | Improve success rate for autoresearch proposals with concrete solutions | P0 | Decision and observability foundations from 0 |
 | 2 | Architecture | Decouple the harness from research topics and generated content | P1 | 0 |
 | 3 | Storage | Evaluate and migrate `ledger.tsv` to a lightweight database | P1 | Data boundaries from 2 |
 | 4 | Execution | Support safe concurrency | P2 | 2 and 3 |
@@ -22,7 +22,7 @@ IDs follow the original plan; `6` remains unassigned.
 
 ## A. Research Quality
 
-### 1. Improve autoresearch success rate (w/ sol)
+### 1. Improve success rate for autoresearch proposals with concrete solutions
 
 #### Historical baseline
 
@@ -122,7 +122,7 @@ Acceptance: adding or switching a research topic requires no harness changes; to
 
 Evaluate SQLite first. Preserve TSV import/export and do not delete the existing ledger directly.
 
-- [ ] Define the minimal schema for ideas, runs, candidates, reviews, artifacts, invocations, and revision lineage. `lineages` stores only immutable identity and one deterministic root candidate; row-specific `origin_stable_id` exists only on each candidate; `story_aliases(canonical_hash UNIQUE)` prevents the same revised story from spanning lineages; `reentry_grants` stores path-specific eligibility evidence and rule versions with a deterministic fact key; `reentry_requests` uses `UNIQUE(lineage_key)` for readiness and claim generation; `round_slots` uses `round_id UNIQUE + CHECK(slot_kind='reentry')` so evolve, recheck, and Path B share one slot while binding state/lineage/candidate/generation/token; `materialization_outbox(candidate_id UNIQUE)` isolates effects outside the transaction. Historical import stores ledger, parent pointers, promotion and mapping inputs, and the union plan in immutable CAS before creating `import_epochs`; one transaction writes epoch done plus lineage/alias/candidate/consumed request, with no provisional lineage or planless result. Ordinary unconsumed import creates no ready grant/request. Expired claims may be reclaimed across rounds; claims bind a specific grant, revocation fences that grant atomically, and remaining grants derive request state. Committed slots are never reused after lease expiry. P1 and #3 share versioned canonical lineage plus `origin_stable_id` based on ledger instance, 1-based data-row number, and raw-row SHA; snapshot SHA is provenance only, and promotion is unique by lineage key. Recheck consumption, evolution parent pointers, sidecar origin fingerprints, tracked attestations, formally committed `promoted.tsv`, and manual mappings jointly enforce story-once. See `AWR-REBUILD-DRAFT.md` §5.
+- [ ] Define the minimal schema for ideas, runs, candidates, reviews, artifacts, invocations, and revision lineage. [`AWR-REBUILD-DRAFT.md` §5](AWR-REBUILD-DRAFT.md#5-automatic-re-entry-bridge-storage-milestone-3) is canonical for lineage identity, re-entry, historical import, transactions, and materialization.
 - [ ] Compare SQLite with continued TSV use across queries, concurrent writes, migration, and maintenance, then record the storage decision.
 - [ ] If migration proceeds, provide one-time import, dual-read validation, and stable TSV export before switching the primary write path.
 - [ ] Make writes transactional and support unique constraints, idempotent resume, and schema versions.

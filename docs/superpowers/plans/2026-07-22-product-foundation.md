@@ -1,10 +1,8 @@
 # Product Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+**Goal:** Deliver a coherent, operator-facing `ai-ideas` product with a stable runtime artifact ABI, a generated hero image, a fully curated ledger and project history, safe backend defaults, and evidence-backed independent review.
 
-**Goal:** Deliver a coherent English-language `ai-ideas` product with English runtime artifact contracts, a generated hero image, a fully rewritten ledger and history, safe backend defaults, and evidence-backed independent review.
-
-**Architecture:** Preserve the existing shell-orchestrated pipeline and file layout. Align every producer and parser through one English artifact glossary, preserve stable ledger and calibration facts with hash-based tests, and separate the concise product entry from detailed operational documentation.
+**Architecture:** Preserve the existing shell-orchestrated pipeline and file layout. Align every producer and parser through one artifact glossary, protect ledger and calibration facts with hash-based tests, expose explicit backend and trust boundaries, and separate the concise product entry from detailed operational documentation.
 
 **Tech Stack:** Bash 3.2-compatible shell, Python 3 standard library, Markdown, TSV, Git worktrees, GitHub Actions YAML, and a generated PNG asset.
 
@@ -15,7 +13,7 @@
 - Preserve the ledger field-count distribution: 216 seven-field rows and 315 eight-field rows.
 - Preserve dates, sources, verdicts, overlap semantics and row positions, categories, URLs, identifiers, model names, commands, counts, thresholds, and table values. Map the 29 legacy unknown-overlap labels one-to-one to `unknown`.
 - Keep these machine tokens byte-stable throughout the product rollout: `strong-accept`, `accept-w-rev`, `reject`, `low`, `medium`, `high`, `unknown`, `novelty-dead`, `evidence-incomplete`, `design-fixable`, `ceiling-limited`, `hunt`, and `weekly`.
-- Use English in every tracked human-readable file and in `s1_report_20260720.md`; ignored `tmp/` state is outside the product-content boundary.
+- Keep every tracked human-readable file and `s1_report_20260720.md` consistent with the operator-facing content contract; ignored `tmp/` state is outside the product-content boundary.
 - Codex is the default trusted backend. Claude is explicit opt-in only and must never appear in a shell fallback value.
 - Do not invent a license, claim topic independence, implement roadmap features, push, open a pull request, or merge.
 - Keep prose minimal, bounded, and dense as defined by `/Users/qinningxu/AI_SHARED_MEMORY.md`.
@@ -24,7 +22,7 @@
 
 Use these exact labels across producers, parsers, fixtures, and tests:
 
-| Purpose | Exact English label or token |
+| Purpose | Exact artifact label or token |
 | --- | --- |
 | Policy lens heading | `## Divergence Lenses` |
 | Policy theme heading | `## Theme Vocabulary` |
@@ -48,7 +46,7 @@ Use these exact labels across producers, parsers, fixtures, and tests:
 | Final status | `Status: ready` or `Status: not-ready` |
 | Calibration leak marker | `suspected published counterpart` |
 
-The English theme vocabulary, in policy order, is:
+The theme vocabulary, in policy order, is:
 
 1. `World Models - Architecture`
 2. `World Models - Training Objectives`
@@ -90,12 +88,16 @@ EXPECTED = {
     "stable_projection": "810adad8122a7761ba394e6a67cdfa12d8c4f869fc888a5c2a8e8cb61c3a29cb",
     "theme_projection": "5dd438abbc8fd9e71f42256fd453afa9a538d13201dd19ae59fdb4400cb6d435",
     "row_urls": "6015a625fa509040d974ba6bba4bf00dde25fca1763fc1ace1cdf57cded3f9c9",
-    "row_technical_tokens": "c9409a8a4cb1c0b550cfb4a06d31c513f36d8f2b5166ddecafdc632e7f202ff4",
+    "row_technical_tokens": "2c54301a75872d2f8198634652ee3e2c4706e71c0d7cc716d3a337b5933bfef6",
+    "row_count_units": "1aebc3b0cbc0a5c74b74b0e93a6cba509f28f8579cb4a7d26e84d9415ab16d91",
+    "row_labeled_quantities": "d098ed9408958d094b29ccb8cbf4c7eb2c8f1044f67d9bfcdba7698b9373d08d",
+    "row_numeric_operators": "b9e49642028714c4d04c2627bc485e8995a093a5ba2557e2526d5d43b1ded4bb",
     "row_code_spans": "4d9fe189ad926f8263062722340592a64fefb3e408cbb8a13d891f01532f4ebb",
-    "row_symbols": "863eb013f67c1df2adb92fad8a79a255181b49f735f3e42db545335c0668edbe",
+    "row_symbols": "3167603d417007adeec710fb58c67a243568d417fcdeeffbc1d6190c002e6de3",
     "case_ids": "aed82be120ea6d26d1735050352867fafa4551e9681b8da3abce496915fae1c4",
     "assertions": "a85dfbcece8c4c223ab0dfca3eb6a2ef17f091d71b67cebccfc7e3348aaea3f0",
-    "calibration_evidence": "1da4ef109b01fd5d7c7984993004009c2a888b3dc38c593569bea437b35f9fd0",
+    "calibration_evidence": "2c47c58210832672e3c3c78281fd64a2b629da8b1533719eb92628bfae903c2b",
+    "awr_state_aliases": "0eae2f95882e5ce730933cfaa206a048a97bf5347a0d5e7330885febc138690b",
 }
 THEMES = {
     "World Models - Architecture",
@@ -192,7 +194,7 @@ def read_text(path):
     except UnicodeDecodeError:
         return None
 
-def assert_english(paths):
+def assert_text_contract(paths):
     failures = []
     for path in paths:
         text = read_text(path)
@@ -290,7 +292,7 @@ def assert_no_claude_fallbacks():
 def verify_runtime():
     assert_backend_defaults()
     assert_no_claude_fallbacks()
-    assert_english(runtime_paths())
+    assert_text_contract(runtime_paths())
     required = {
         "brainstorming_policy.md": ["## Divergence Lenses", "## Theme Vocabulary"],
         "hunt.sh": ["Papers Read", "Minimal Falsification Experiment", "Overlap"],
@@ -426,7 +428,7 @@ def verify_ledger():
     theme_projection = "\n".join(row[2] for row in data)
     if digest(theme_projection) != EXPECTED["theme_projection"]:
         raise AssertionError("ledger theme sequence changed")
-    assert_english([ROOT / "ledger.tsv"])
+    assert_text_contract([ROOT / "ledger.tsv"])
 
 def verify_fixtures():
     case_ids = []
@@ -486,7 +488,7 @@ def tracked_text_paths():
 
 def verify_all():
     verify_runtime()
-    assert_english(tracked_text_paths())
+    assert_text_contract(tracked_text_paths())
     verify_fixtures()
     verify_ledger()
 
@@ -540,11 +542,11 @@ git commit -m "test: lock product content invariants"
 
 **Interfaces:**
 - Consumes: the Target Artifact Glossary and the existing stage/output paths.
-- Produces: an English generation-to-report ABI and a Codex default backend.
+- Produces: a stable generation-to-report artifact ABI and a Codex default backend.
 
 - [ ] **Step 1: Add a failing fake-agent smoke test**
 
-`tests/fake_agent.sh` must inspect the final prompt argument and emit valid English artifacts for meta, generation, selection, prescreen, prior-work, review, and report stages. `tests/runtime_abi_smoke.sh` must copy the repository into a temporary Git worktree, replace only publication with a local no-op, run one complete Strong Accept round with `AGENT_CMD=tests/fake_agent.sh`, and assert:
+`tests/fake_agent.sh` must inspect the final prompt argument and emit contract-valid artifacts for meta, generation, selection, prescreen, prior-work, review, and report stages. `tests/runtime_abi_smoke.sh` must copy the repository into a temporary Git worktree, replace only publication with a local no-op, run one complete Strong Accept round with `AGENT_CMD=tests/fake_agent.sh`, and assert:
 
 ```text
 tmp/round/ideas.tsv exists
@@ -561,7 +563,7 @@ Expected: FAIL because the current parsers still require legacy labels.
 
 - [ ] **Step 2: Apply the product content contract to core policy and prompts**
 
-Preserve every gate, default value, stage boundary, file path, and output token. Replace producer templates and parser literals with the exact Target Artifact Glossary in the same commit. Replace explicit requirements for non-English output with English output requirements.
+Preserve every gate, default value, stage boundary, file path, and output token. Replace producer templates and parser literals with the exact Target Artifact Glossary in the same commit. Require glossary-defined labels at producer boundaries.
 
 - [ ] **Step 3: Change the trusted default backend to Codex**
 
@@ -615,7 +617,7 @@ git commit -m "feat: align hunt runtime contracts"
 - Modify: `tests/verify_product_contract.py`
 
 **Interfaces:**
-- Consumes: English ledger content and the Target Artifact Glossary.
+- Consumes: curated ledger content and the Target Artifact Glossary.
 - Produces: consistent AwR, litwatch, wrapper, publishing, and automation behavior.
 
 - [ ] **Step 1: Extend the fake-agent smoke test to AwR**
@@ -696,7 +698,7 @@ git commit -m "feat: align supporting workflow contracts"
 - Modify: `docs/superpowers/plans/2026-07-22-product-foundation.md`
 
 **Interfaces:**
-- Consumes: English review and prior-work contracts.
+- Consumes: stable review and prior-work contracts.
 - Produces: product-ready gold cases with unchanged IDs and assertion DSL.
 
 - [ ] **Step 1: Add the offline calibration contract tests**
@@ -859,11 +861,11 @@ git commit -m "docs: build product documentation"
 
 **Interfaces:**
 - Consumes: the complete 531-row ledger before prose curation.
-- Produces: field-bound, order-sensitive projections for URLs, technical tokens, code spans, and comparison or mathematical symbols.
+- Produces: source-frozen, field-bound projections for URLs, technical tokens, code spans, and symbols, plus product-artifact projections for count units, labeled quantities, and numeric operators.
 
 - [ ] **Step 1: Add mutation coverage for artifact evidence**
 
-The smoke test must reject URL changes, URL field reassignment, technical-token changes, technical-token reordering, 7-to-8 or 8-to-7 field drift, symbol changes, and added code spans. Superscript identifiers, circled condition numbers, and mathematical operators are evidence-bearing tokens.
+The smoke test must reject URL changes, URL field reassignment, technical-token changes, technical-token reordering, rollout-versus-seed changes, labeled-quantity changes, numeric-operator changes, 7-to-8 or 8-to-7 field drift, symbol changes, and added code spans. Superscript identifiers, circled condition numbers, currency markers, and mathematical operators are evidence-bearing tokens.
 
 Run: `python3 tests/ledger_evidence_smoke.py`
 
@@ -871,7 +873,7 @@ Expected before implementation: failure because the evidence interface does not 
 
 - [ ] **Step 2: Implement the ledger evidence scope**
 
-Add `ledger-evidence` as a scope that runs before theme and language checks. It must preserve the header and the 216 seven-field plus 315 eight-field shape. URL extraction must stop before ASCII or full-width prose delimiters. Technical-token extraction must preserve row, field, and token order while excluding URL contents from the numeric projection. Leading or trailing prose punctuation and paired slash wrappers are normalized; internal identifier punctuation, one-sided slashes, units, and operators remain evidence-bearing.
+Add `ledger-evidence` as a scope that runs before theme and content-quality checks. It must preserve the header and the 216 seven-field plus 315 eight-field shape. URL extraction stops before ASCII or full-width prose delimiters. The source-frozen technical projection extracts ordered numeric and alphanumeric identifiers while normalizing prose-adjacent punctuation and count suffixes. Separate product-artifact projections preserve rollout-versus-seed semantics, labels such as `kg`, `MAJOR`, and `-state`, and operators such as postfix `+`, signed `+`, and numeric `/`. The symbol projection excludes prose arrows, equality marks, and plus signs while preserving currency, comparison, and mathematical symbols.
 
 - [ ] **Step 3: Verify and commit the artifact gate**
 
@@ -1037,15 +1039,18 @@ git commit -m "docs: add ai-ideas hero artwork"
 
 ```bash
 python3 tests/verify_product_contract.py all
+python3 tests/ledger_evidence_smoke.py
+python3 tests/runtime_policy_smoke.py
 git diff --check
 bash -n hunt.sh awr-side.sh agy-worker.sh grok-worker.sh litwatch.sh litwatch_test.sh publish.sh settle.sh calib/run_panel.sh calib/run_all.sh calib/run_e2e.sh lib/md_ids.sh lib/mirror_pre.sh lib/resolve_cmd.sh .githooks/pre-push tests/fake_agent.sh tests/runtime_abi_smoke.sh
 python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("lib/litwatch.py").read_text())'
 ./litwatch_test.sh
 bash tests/runtime_abi_smoke.sh
+bash tests/calibration_abi_smoke.sh
 git status --short --branch
 ```
 
-Expected: all English, invariant, syntax, deterministic, and fake-agent tests pass; only intentional branch changes remain.
+Expected: all product-contract, invariant, syntax, deterministic, and fake-agent tests pass; only intentional branch changes remain.
 
 - [ ] **Step 2: Dispatch three independent read-only Codex reviews**
 
@@ -1059,7 +1064,7 @@ Each reviewer returns findings ordered by severity with exact paths and lines. N
 
 - [ ] **Step 3: Fix all severe findings and rerun affected gates**
 
-Apply each substantiated finding in its owning file. Rerun the narrow affected test first, then repeat the full command block from Step 1.
+Apply each substantiated finding in its owning file. Rerun the narrow affected test first, then repeat the full command block from Step 1. The review-hardening boundary includes stable physical-row AwR keys with a frozen compatibility map, validation before cached-artifact reuse, exact four-field ballot coverage, ordered nonempty eight-section Strong Accept reviews, scoped prior-work neighbors and API queries, source-frozen ledger projections, and executable-workflow backend checks.
 
 - [ ] **Step 4: Run final completion audit and commit fixes**
 
@@ -1067,7 +1072,7 @@ Confirm every design-spec verification bullet with current output, inspect the h
 
 ```bash
 git add -A
-if ! git diff --cached --quiet; then git commit -m "fix: close product review findings"; fi
+if ! git diff --cached --quiet; then git commit -m "fix: harden product contracts"; fi
 git status --short --branch
 git log --oneline --decorate -12
 ```

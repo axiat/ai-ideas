@@ -1,8 +1,8 @@
 # Weekly Embodied Idea Scout — 2026-07-19
 
-> **No idea qualified this week (0 Strong Accept).** One complete round generated 10 candidates, self-screened 5, killed 2 at prescreening, and sent 3 to deep prior-work review and three-verdict scoring under a Reject-by-default policy. The closest results were 2 accept-w-rev ideas, B1 and B2, both capped below clear-accept by novelty. The threshold was kept intact.
+> **No idea qualified this week (0 Strong Accept).** One complete round generated 10 candidates, retained 5 after self-screening, rejected 2 at prescreening, and sent 3 to deep prior-work review and three-verdict scoring under a Reject-by-default policy. B1 and B2 were closest; both received accept-w-rev as their minimum verdict and were capped below clear-accept by novelty.
 
-Review date: 2026-07-19 | Source: weekly | Rounds: 1 (generate 10 → funnel) | Scoring: three independent verdicts per surviving idea, with the lowest verdict controlling and Reject as the default | Anti-collusion approximation: stage-separated generation, adversarial prior-work search, three verdicts, and an explicit SA hard-gate audit.
+Review date: 2026-07-19 | Source: weekly | Rounds: 1 (10 generated candidates entered the funnel) | Scoring: three independent verdicts per deeply reviewed idea, with the lowest verdict controlling and Reject as the default | Anti-collusion approximation: stage-separated generation, adversarial prior-work search, three verdicts, and an explicit SA hard-gate audit.
 
 ---
 
@@ -55,7 +55,7 @@ The saturated areas were inference efficiency through caching and asynchronous f
 
 ## 3. Qualifying ideas (Strong Accept)
 
-**No idea qualified this week.** Every candidate failed at least one SA hard gate: unanimous strong-accept verdicts, independently adversarial low-overlap evidence, ≥5 papers read, a minimal falsification experiment, a complete rubric, and a difference sufficient for clear-accept. All three deeply reviewed candidates, #1/#2/#8, had unpublished literal headlines but neighboring work that shared a load-bearing premise. The novelty ceiling prevented unanimous strong-accept verdicts under Reject-by-default scoring.
+**No idea qualified this week.** Every candidate failed at least one SA hard gate: unanimous strong-accept verdicts, independently adversarial low-overlap evidence, at least 5 papers read, a minimal falsification experiment, a complete rubric, and a difference sufficient for clear-accept. All three deeply reviewed candidates, #1/#2/#8, had unpublished literal headlines but neighboring work that shared a load-bearing premise. The novelty ceiling prevented unanimous strong-accept verdicts under Reject-by-default scoring.
 
 ---
 
@@ -67,16 +67,16 @@ The saturated areas were inference efficiency through caching and asynchronous f
 
 **Minimal falsification experiment:** In simulation with RoboCasa/LIBERO, construct paired policies with equal true success-rate means but different outcome variance, such as one checkpoint evaluated under different temperatures or noise. Compare ranking by a generative world-model evaluator in the GigaWorld style with few sharpened rollouts against a many-rollout, risk-adjusted ground truth. The claim is supported if a sharpened single-rollout evaluator is near-random on equal-mean pairs while a variance-preserving evaluator recovers the risk ranking. No improvement from variance preservation falsifies the claim. Simulation makes the ground truth inexpensive, and the study fits a single researcher with 1×H100.
 
-**Three verdicts:** accept-w-rev / accept-w-rev / accept-w-rev → **minimum = accept-w-rev**.
+**Three verdicts:** accept-w-rev / accept-w-rev / accept-w-rev; **minimum verdict: accept-w-rev**.
 
-**Targeted prior-work record, ≥5 papers read:**
+**Targeted prior-work record, at least 5 papers read:**
 
 - Nearest neighbor, **StressDream** ([2606.00267](https://arxiv.org/abs/2606.00267)), steers the world model's initial noise toward plausible high-impact tail futures. It shares the load-bearing premise that mean or nominal rollouts miss tails unless sampled extensively. It targets risk surfacing and policy improvement, not the ranking estimand; it does not claim systematic undervaluation of low-variance policies or test deterministic-versus-stochastic ranking recovery. **Strongest counterexample.**
 - **WorldGym / Evaluating Robot Policies in a WM** ([2506.00613](https://arxiv.org/abs/2506.00613)) establishes **optimism bias** by underestimating in-distribution actions, overestimating OOD actions, and hallucinating OOD success. That excluded headline is distinct from variance blindness.
 - **GigaWorld-1** ([2607.02642](https://arxiv.org/abs/2607.02642)) defines consistency as single-trajectory visual fidelity, not cross-sample variance, and does not analyze variance-discrimination.
 - **WorldEval** ([2505.19017](https://arxiv.org/abs/2505.19017)), **dWorldEval** (2604.22152), and **Scalable Policy Eval with Video WM** (2511.11520) report Pearson or rank correlation without decomposing bias and variance.
-- Adjacent risk-sensitive OPE work includes Universal OPE from Chandak at NeurIPS'21 and CVaR-OPE (2312.00342). Risk-aware ranking solutions exist, but variance blindness has not been named as a failure diagnosis for a learned world-model evaluator.
-- API results: `abs:"world model" AND abs:"policy evaluation" AND abs:variance`→1, an unrelated TD-Flows result; `all:"world model" AND all:"policy selection" AND all:risk`→**0**.
+- Adjacent risk-sensitive OPE work includes Universal OPE from Chandak at NeurIPS 2021 and CVaR-OPE (2312.00342). Risk-aware ranking solutions exist, but variance blindness has not been named as a failure diagnosis for a learned world-model evaluator.
+- API results: `abs:"world model" AND abs:"policy evaluation" AND abs:variance` returned 1 unrelated TD-Flows result; `all:"world model" AND all:"policy selection" AND all:risk` returned **0**.
 - **Overlap: low–medium.** Independent search found no direct hit on the headline or estimand, but StressDream's shared premise raises the upper bound above pure low overlap.
 
 **Why it stopped at AwR:** The headline and estimand were unoccupied, but StressDream shared the load-bearing premise; mean-seeking-to-variance-blindness is an expected implication of MSE-to-mode-collapse and therefore carries limited surprise; and independent search explicitly judged the result below automatic clear-accept. It would require a bias-versus-variance decomposition of ranking error and evidence that StressDream-style steering does not already solve ranking. The variance-preserving repair arm cleared Reject, but novelty capped all three verdicts at borderline.
@@ -85,21 +85,21 @@ The saturated areas were inference efficiency through caching and asynchronous f
 
 **Claim:** The information-theoretic properties that optimize an action tokenizer for **imitation learning**—low vocabulary redundancy and high temporal overlap in ActionCodec—may impair RL fine-tunability. Low-redundancy, peaked token distributions can produce degenerate or flat gradients under GRPO, a flow-noise MDP, or a π_RL-style update. Define the decoupled estimand **tokenizer RL-fine-tunability** and test whether RL lift is **anti-correlated** with IL-optimal redundancy.
 
-**Minimal falsification experiment:** With one VLA and RoboCasa, sweep tokenizer redundancy from the low-redundancy ActionCodec-style structure to a high-redundancy structure. For each tokenizer, run both GRPO **and** flow-noise-MDP RL post-training and compare RL lift with IL lift. Support requires an anti-correlation between RL lift and IL-optimal redundancy with ≥5pt separation that holds across both RL regimes. No anti-correlation, or a signal confined to one regime, falsifies the claim as confounded. A small VLA plus simulated RL fits a single researcher with 1×H100.
+**Minimal falsification experiment:** With one VLA and RoboCasa, sweep tokenizer redundancy from the low-redundancy ActionCodec-style structure to a high-redundancy structure. For each tokenizer, run both GRPO **and** flow-noise-MDP RL post-training and compare RL lift with IL lift. Support requires an anti-correlation between RL lift and IL-optimal redundancy with at least 5 percentage points of separation across both RL regimes. No anti-correlation, or a signal confined to one regime, falsifies the claim as confounded. A small VLA plus simulated RL fits a single researcher with 1×H100.
 
-**Three verdicts:** accept-w-rev / accept-w-rev / accept-w-rev → **minimum = accept-w-rev**.
+**Three verdicts:** accept-w-rev / accept-w-rev / accept-w-rev; **minimum verdict: accept-w-rev**.
 
-**Targeted prior-work record, ≥5 papers read:**
+**Targeted prior-work record, at least 5 papers read:**
 
 - **ActionCodec** ([2602.15397](https://arxiv.org/abs/2602.15397)) defines the IL-optimal information axes and reports **IL only, with no RL**. It supplies the premise rather than the conclusion, but occupies the framework for tokenizer information quality.
-- Strongest counterexample in the opposite direction, **Subwords as Skills** ([2309.04459](https://arxiv.org/abs/2309.04459), NeurIPS'24), shows that coarse-grained BPE action tokenization, compression, and temporal overlap **help** sparse-reward RL exploration. This published directional contradiction must be resolved by the experiment.
+- Strongest counterexample in the opposite direction, **Subwords as Skills** ([2309.04459](https://arxiv.org/abs/2309.04459), NeurIPS 2024), shows that coarse-grained BPE action tokenization, compression, and temporal overlap **help** sparse-reward RL exploration. This published directional contradiction must be resolved by the experiment.
 - **Sparse but Critical** ([2603.22446](https://arxiv.org/abs/2603.22446)) finds that RL fine-tuning changes only a sparse subset of token distributions. It supports a peaked-token mechanism but measures RL-induced change rather than connecting an existing tokenizer's peakedness with fine-tunability.
-- **RL Token** ([2604.23073](https://arxiv.org/abs/2604.23073)), **ExToken** (IROS'26), and **π_RL** ([2510.25889](https://arxiv.org/abs/2510.25889)) hold the tokenizer fixed while optimizing RL and do not treat tokenizer information structure as an independent variable for RL lift.
+- **RL Token** ([2604.23073](https://arxiv.org/abs/2604.23073)), **ExToken** (IROS 2026), and **π_RL** ([2510.25889](https://arxiv.org/abs/2510.25889)) hold the tokenizer fixed while optimizing RL and do not treat tokenizer information structure as an independent variable for RL lift.
 - Adjacent LLM-RL mechanisms include Ignore-the-KL-Penalty ([2502.06533](https://arxiv.org/abs/2502.06533)) and High-Entropy-Minority-Tokens. Low-entropy, peaked token positions constrain RL exploration in text models and support the mechanism indirectly.
-- API results: `all:"action tokenizer" AND all:reinforcement AND all:fine-tuning`→**1**, unrelated; `all:"action tokenizer" AND all:reinforcement`→21, all with fixed tokenizers; `all:"vocabulary size" AND all:reinforcement AND all:exploration`→**0**.
+- API results: `all:"action tokenizer" AND all:reinforcement AND all:fine-tuning` returned **1** unrelated result; `all:"action tokenizer" AND all:reinforcement` returned 21 results, all with fixed tokenizers; `all:"vocabulary size" AND all:reinforcement AND all:exploration` returned **0**.
 - **Overlap: low–medium.** Independent search found no direct hit for the IL-optimal-to-RL-adverse anti-correlation or the named estimand. ActionCodec occupies the information axis, and Subwords as Skills supplies a close result in the opposite direction, raising the upper bound above pure low overlap.
 
-**Why it stopped at AwR:** ActionCodec already occupied the tokenizer-information framework, and Subwords as Skills supplied published evidence that compression and temporal overlap help RL, weakening the proposed monotonic direction. The experiment must isolate codebook coverage and action-error calibration and reproduce the result across ≥2 RL regimes. Independent prior-work review judged the claim readable as an expected implication of ActionCodec plus critical-token RL work rather than an automatic clear-accept result. The dual-regime falsification experiment cleared Reject, but novelty capped all three verdicts at borderline.
+**Why it stopped at AwR:** ActionCodec already occupied the tokenizer-information framework, and Subwords as Skills supplied published evidence that compression and temporal overlap help RL, weakening the proposed monotonic direction. The experiment must isolate codebook coverage and action-error calibration and reproduce the result across at least 2 RL regimes. Independent prior-work review found the claim to be an expected implication of ActionCodec plus critical-token RL work rather than an automatic clear-accept result. The dual-regime falsification experiment cleared Reject, but novelty capped all three verdicts at borderline.
 
 ## 5. Rejected ideas
 
@@ -113,9 +113,9 @@ The saturated areas were inference efficiency through caching and asynchronous f
 
 ## 6. Run record
 
-- **Rounds: 1** (generate 10 → self-screen 5 → prescreen kills 2, #3/#6 with overlap=high → deep review 3, #1/#2/#8 → three verdicts with the minimum controlling).
-- **Assumption-removal quota: fulfilled by #3.** The five fields were: remove equal-budget frame-by-frame world-model generation; newly actionable because WoW/WorldArena reveal non-uniform long-horizon collapse; forcing function from evaluator long-horizon inference compute; 2 crack-evidence items from WoW-World-Eval at ~17% long-horizon performance and the WorldArena perception-functionality gap; falsification by comparing decision-branch fidelity with a uniform budget on ranking agreement. Adaptive-compute world-model work occupied the claim at prescreening, so the result was reject.
-- **Low-inventory coverage: passed.** Among the 5 candidates entering the funnel, #1 in action representation with inventory 36, #2 in world-model training objectives with inventory 36, and #3 in world-model architecture with inventory 35 all fell at or below the third-lowest inventory level, 36 with ties included; the ≥2 requirement was met.
-- **Three-verdict results for every SA:** no SA.
-- **Closest 2 results:** B1, evaluator variance blindness with low–medium overlap, missed by one novelty level because StressDream shared the premise and the MSE-mode-collapse implication was expected; B2, the tokenizer IL-to-RL anti-correlation with low–medium overlap, required stronger isolation because Subwords as Skills supplied evidence in the opposite direction.
+- **Rounds: 1.** The round generated 10 candidates, retained 5 after self-screening, rejected #3 and #6 at prescreening with high overlap, and completed deep review and three-verdict scoring for #1, #2, and #8.
+- **Assumption-removal quota: fulfilled by #3.** The five fields were: remove equal-budget frame-by-frame world-model generation; newly actionable because WoW/WorldArena reveal non-uniform long-horizon collapse; forcing function from evaluator long-horizon inference compute; two crack-evidence items from WoW-World-Eval at ~17% long-horizon performance and the WorldArena perception-functionality gap; falsification by comparing decision-branch fidelity with a uniform budget on ranking agreement. Adaptive-compute world-model work occupied the claim at prescreening, so the result was reject.
+- **Low-inventory coverage: passed.** Among the 5 candidates entering the funnel, #1 in action representation with inventory 36, #2 in world-model training objectives with inventory 36, and #3 in world-model architecture with inventory 35 all fell at or below the third-lowest inventory level, 36 with ties included; the requirement of at least 2 was met.
+- **Three-verdict results for every Strong Accept:** no candidate reached Strong Accept.
+- **Two closest results:** B1, evaluator variance blindness with low–medium overlap, missed by one novelty level because StressDream shared the premise and the MSE-mode-collapse implication was expected; B2, the tokenizer IL-to-RL anti-correlation with low–medium overlap, required stronger isolation because Subwords as Skills supplied evidence in the opposite direction.
 - **Review discipline:** single-agent anti-collusion approximation with Reject as the default; stage-separated generation, prior-work search, and scoring; adversarial prior-work instructions to prove occupancy; the minimum of three verdicts; novelty accepted only from independent search evidence; and explicit SA hard-gate checks.

@@ -2,13 +2,13 @@
 
 ## Goal
 
-Turn `ai-ideas` into a coherent English-language project without changing its core research protocol or historical conclusions. The repository must present a clear product story, run with English artifact contracts, preserve the complete ledger and report history, and default to a backend that does not invoke Claude automatically.
+Establish `ai-ideas` as a coherent, operator-facing product without changing its core research protocol or historical conclusions. The repository must present a clear product boundary, expose a stable runtime artifact ABI, preserve an auditable ledger and report history, and default to a backend that does not invoke Claude automatically.
 
 ## Product Boundary
 
 `ai-ideas` is an auditable research-idea discovery harness for embodied AI. Independent workers generate candidates, search prior work, and review evidence. Deterministic orchestration aggregates the lowest vote, records every candidate, and publishes only results that pass the configured acceptance gates.
 
-The product-content rollout covers every tracked human-readable file and the current untracked `s1_report_20260720.md`. It includes source comments, operator messages, prompts, fixtures, historical reports, calibration records, and every prose field in `ledger.tsv`. Ignored runtime artifacts under `tmp/` are operational state rather than repository content and remain untouched.
+The product-foundation rollout covers every tracked human-readable file, including `s1_report_20260720.md`. It includes source comments, operator messages, prompts, fixtures, historical reports, calibration records, and every prose field in `ledger.tsv`. Ignored runtime artifacts under `tmp/` are operational state rather than repository content and remain untouched.
 
 The product remains named `ai-ideas`. The rollout does not invent a license, claim topic independence, add a packaging system, or implement roadmap features that do not exist.
 
@@ -24,7 +24,7 @@ The product remains named `ai-ideas`. The rollout does not invent a license, cla
 6. Calibration, recovery, and trust boundaries.
 7. A compact documentation index and current project status.
 
-Detailed operational material moves into focused English documents under `docs/` where that makes the README easier to scan. Runtime protocol files such as `PROGRAM.md`, `brainstorming_policy.md`, and `roles/*.md` stay at their existing paths because scripts consume them directly. Existing design drafts and development history remain as historical project records and are rewritten in place.
+Detailed operational material moves into focused operator documents under `docs/` where that makes the README easier to scan. Runtime protocol files such as `PROGRAM.md`, `brainstorming_policy.md`, and `roles/*.md` stay at their existing paths because scripts consume them directly. Existing design drafts and development history remain as historical project records and are curated in place.
 
 ## Hero Asset
 
@@ -32,7 +32,7 @@ The project includes `assets/ai-ideas-hero.png`, generated as a wide README head
 
 ## Runtime Content Contract
 
-All newly produced artifacts use English field names and headings. Producers and consumers change atomically so every parser reads the field emitted by its producer.
+All newly produced artifacts use the stable field names and headings defined below. Producers and consumers change atomically so every parser reads the field emitted by its producer.
 
 The coordinated product contract includes:
 
@@ -58,6 +58,8 @@ The working-tree ledger is the source input. The curation preserves all 531 data
 
 The historical seven-column and eight-column row shapes remain unchanged. Curation changes the theme, idea, and reason text, plus the 29 legacy unknown-overlap labels that become `unknown`. It does not otherwise normalize old rows, reorder history, reconcile frozen reports with later corrections, or alter verdicts and evidence classifications.
 
+AwR operational identity is the append-only physical ledger row, independent of mutable prose. `awr-state-aliases.tsv` freezes the compatibility mapping from every existing eligible row to its prior state key. Migration copies compatible terminal and partial artifacts onto stable row keys, preserves shared state for duplicate ideas, upgrades feedback records to the current ABI, and validates cached drafts and prior-work evidence before reuse.
+
 The theme vocabulary is a one-to-one mapping shared by policy, parsers, fixtures, and every ledger row. In canonical policy order, the product values are:
 
 1. `World Models - Architecture`
@@ -81,14 +83,15 @@ Completion requires evidence from all of these gates:
 - No Han characters in tracked human-readable files or `s1_report_20260720.md`.
 - No obsolete Chinese artifact labels in producers, parsers, prompts, or fixtures.
 - Ledger row count remains 531; field-count distribution remains 216 seven-column rows and 315 eight-column rows.
-- Ledger date, source, verdict, category, URL, and numeric projections remain unchanged. Themes match the documented mapping, and the 29 legacy unknown-overlap labels become `unknown` in the same rows.
+- Ledger date, source, verdict, category, URL, technical-token, labeled-quantity, and numeric-operator projections remain unchanged. Themes match the documented mapping, and the 29 legacy unknown-overlap labels become `unknown` in the same rows.
 - Every calibration fixture retains the same `I<n>` identifiers and expectation assertions.
 - `git diff --check`, shell syntax checks, Python parsing, and deterministic litwatch tests pass.
-- Fake-agent tests exercise the English `hunt.sh` and AwR artifact contracts without invoking an external model.
+- Fake-agent tests exercise the `hunt.sh` and AwR artifact ABI without invoking an external model.
+- AwR compatibility aliases cover every existing `accept-w-rev` row and preserve terminal and partial restart behavior.
 - The generated hero is inspected at full resolution and at README scale.
 - README links, commands, paths, and stated defaults match the repository.
 
-Three independent Codex reviewers audit the completed branch: product usability and information architecture, English copy and shared writing-style compliance, and runtime/schema correctness. Severe findings are fixed and the relevant gates rerun before completion.
+Three independent Codex reviewers audit the completed branch: product usability and information architecture, operator-facing copy and shared writing-style compliance, and runtime/schema correctness. Severe findings are fixed and the relevant gates rerun before completion.
 
 ## Delivery
 

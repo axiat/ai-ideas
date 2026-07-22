@@ -97,6 +97,9 @@ def main():
         for key in (
             "row_urls",
             "row_technical_tokens",
+            "row_count_units",
+            "row_labeled_quantities",
+            "row_numeric_operators",
             "row_code_spans",
             "row_symbols",
         )
@@ -149,7 +152,7 @@ def main():
         "row_technical_tokens",
         "count-unit plurality",
     )
-    changed(
+    unchanged(
         replace_first(
             rows,
             numeric_unit,
@@ -157,6 +160,16 @@ def main():
         ),
         baseline,
         "row_technical_tokens",
+        "count-unit wording in the source-frozen token projection",
+    )
+    changed(
+        replace_first(
+            rows,
+            numeric_unit,
+            lambda token: " seeds" if "rollout" in token else " rollouts",
+        ),
+        baseline,
+        "row_count_units",
         "count-unit semantics",
     )
     changed(
@@ -165,6 +178,40 @@ def main():
         "row_technical_tokens",
         "technical-token reordering",
     )
+    for pattern, label in (
+        (re.compile(r"(?<=\d)\s*kg\b", re.I), "mass unit"),
+        (re.compile(r"(?<=\d)\s*MAJOR\b", re.I), "review-severity unit"),
+        (re.compile(r"(?<=\d)-state\b", re.I), "state-count label"),
+    ):
+        changed(
+            replace_first(rows, pattern, lambda token: ""),
+            baseline,
+            "row_labeled_quantities",
+            label,
+        )
+    for pattern, replacement, label in (
+        (
+            re.compile(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?\+(?![A-Za-z0-9])"),
+            lambda token: token[:-1],
+            "postfix lower bound",
+        ),
+        (
+            re.compile(r"(?<![A-Za-z0-9])\+[0-9]+(?:\.[0-9]+)?(?![A-Za-z0-9])"),
+            lambda token: token[1:],
+            "signed positive value",
+        ),
+        (
+            re.compile(r"(?<![A-Za-z0-9])\d+/\d+(?![A-Za-z0-9])"),
+            lambda token: token.replace("/", " "),
+            "numeric ratio",
+        ),
+    ):
+        changed(
+            replace_first(rows, pattern, replacement, strip_urls=True),
+            baseline,
+            "row_numeric_operators",
+            label,
+        )
     changed(
         replace_first(rows, CONTRACT.LEDGER_SYMBOL, lambda token: token + "≥"),
         baseline,
@@ -182,11 +229,13 @@ def main():
         "3x.": "3x",
         "0.5": "0.5",
         "/100-500Hz/": "100-500Hz",
-        "50rollout": "50rollout",
-        "50rollouts": "50rollout",
-        "4seed": "4seed",
-        "4seeds": "4seed",
-        "50×3seed": "50×3seed",
+        "50rollout": "50",
+        "50rollouts": "50",
+        "4seed": "4",
+        "4seeds": "4",
+        "1MAJOR": "1",
+        "4-state": "4",
+        "2kg": "2",
         "2602.03203:oracle": "2602.03203",
     }
     for token, expected_token in normalized_tokens.items():
@@ -196,14 +245,14 @@ def main():
         "100-300 ms": "100-300ms",
         "100-500 Hz": "100-500Hz",
         "0.5-1 s": "0.5-1s",
-        "50 rollouts": "50rollout",
-        "4 seeds": "4seed",
+        "50 rollouts": "50rollouts",
+        "4 seeds": "4seeds",
     }
     for value, expected_value in normalized_text.items():
         if CONTRACT.normalize_ledger_technical_text(value) != expected_value:
             raise AssertionError(f"incorrect technical-text normalization: {value}")
 
-    required_symbols = "①②③④−≡∈⇒∝⟂≫↑∧^+=|~"
+    required_symbols = "①②③④−≡∈⇒∝⟂≫↑∧^$|~"
     ledger_text = "\n".join(
         row[field_index]
         for row in rows
@@ -219,7 +268,14 @@ def main():
             f"{symbol} mutation",
         )
 
-    for delimiter in "，。；（）":
+    unchanged(
+        replace_first(rows, re.compile(r"\+"), lambda token: ""),
+        baseline,
+        "row_symbols",
+        "prose plus-sign cleanup",
+    )
+
+    for delimiter in ",;，。；（）":
         sample = f"https://example.test/path{delimiter}tail"
         match = CONTRACT.LEDGER_URL.match(sample)
         if not match or match.group(0) != "https://example.test/path":
