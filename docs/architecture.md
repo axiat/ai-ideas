@@ -34,7 +34,7 @@ A prescreen direct hit becomes `reject/high/novelty-dead` immediately. Prescreen
 
 `hunt.sh` copies the operator's startup `ledger.tsv` into `tmp/ledger.good`. Each round restores that baseline before backend work, then Bash appends validated decisions and advances the baseline. Backends never own the ledger.
 
-Each round receives a stable `run_id`. The first decision archive freezes `tmp/round/`, `manifest.tsv`, and `ledger.delta.tsv` under `RUNS_DIR/<run_id>`. Later publication updates may refresh stage logs and the manifest without replacing the frozen review inputs. An archive failure after a Strong Accept creates a blocking sentinel before publication.
+Each round receives a stable `run_id`. The first decision archive freezes the decision inputs and ballots under `RUNS_DIR/<run_id>`. Later archive passes rewrite `manifest.tsv` and `ledger.delta.tsv`, then refresh `round/stages.tsv` and `round/logs/`; the remaining decision artifacts stay frozen. An archive failure after a Strong Accept creates a blocking sentinel before publication.
 
 | Surface | Writer | Persistence |
 | --- | --- | --- |
@@ -47,7 +47,7 @@ Each round receives a stable `run_id`. The first decision archive freezes `tmp/r
 
 ## Auxiliary Loops
 
-`awr-side.sh` revises `accept-w-rev` ledger entries through independent researcher, prior-work, and reviewer roles. It writes only `tmp/awr-side/awr/`; it does not change verdicts, `ledger.tsv`, `ideas/`, or the main loop's `tmp/round/` state.
+`awr-side.sh` revises `accept-w-rev` ledger entries through independent researcher, prior-work, and reviewer roles. Final revision artifacts stay under `tmp/awr-side/awr/`; coordination also uses `tmp/awr-side.lock`, the shared agy launch stamp and lock, and disposable `tmp/awr-side/run.*` mirrors. It does not change verdicts, `ledger.tsv`, `ideas/`, or the main loop's `tmp/round/` state.
 
 `litwatch.sh` harvests recent records into trusted staging, optionally annotates a copy, and deterministically admits only annotations whose IDs exist in staging. Its index under `tmp/litwatch/` is an optional prior-work seed; failure does not block the main hunt.
 
