@@ -92,6 +92,7 @@ HALT_MARK=tmp/HALTED-ARCHIVE-FAIL
 # isolate that backend by uid or container when the archive is a hard boundary.
 # Overriding RUNS_DIR to a repository path reduces the boundary to best effort.
 RUNS_DIR=${RUNS_DIR:-$HOME/.ai-ideas-runs/$(basename "$PWD")}
+STRUCTURED_API_RE='^- Query:[[:space:]]*https?://(export\.arxiv\.org/api/query\?[^[:space:]]+|api\.semanticscholar\.org/graph/v1/[A-Za-z0-9._~%/:+-]+\?[^[:space:]]+)[[:space:]]*$'
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 
@@ -251,7 +252,7 @@ metrics_write() {   # $1=outcome $2=stage $3=verdict vector
   n_kill=$(count_lines "$RD/kills.tsv"); n_keep=$(count_lines "$RD/keeps.tsv"); n_short=$(count_lines "$RD/ideas.tsv")
   if [ -f "$RD/priorwork.md" ]; then
     pw_links=$(grep -cE 'https?://' "$RD/priorwork.md" || true)
-    pw_api=$(grep -cE '^- Query:[[:space:]]*https?://(export\.arxiv\.org/api/query|api\.semanticscholar\.org)' "$RD/priorwork.md" || true)
+    pw_api=$(grep -cE "$STRUCTURED_API_RE" "$RD/priorwork.md" || true)
   else pw_links='-'; pw_api='-'; fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date '+%F %T')" "$round" "$1" "$2" "$m_lens" "$n_gen" "$n_kill" "$n_keep" "$n_short" \
@@ -313,8 +314,6 @@ archive_round() {   # $1=exit reason
 
 rank_of() { case "$1" in strong-accept) echo 2 ;; accept-w-rev) echo 1 ;; *) echo 0 ;; esac; }
 verdict_of() { case "$1" in 2) echo strong-accept ;; 1) echo accept-w-rev ;; *) echo reject ;; esac; }
-# Ballots must use the exact verdict vocabulary before rank conversion.
-vote_valid() { case "$1" in strong-accept|accept-w-rev|reject) return 0 ;; *) return 1 ;; esac; }
 # Two or more reviewer-reported MAJOR findings cap the effective rank at AwR.
 major_cap() {   # $1=rank $2=MAJOR field -> effective rank
   local rank=$1 mj
@@ -362,6 +361,61 @@ reports_today() {
   echo "$n"
 }
 
+# Require one ordered, nonempty eight-section review block for a candidate.
+review_block_complete() {
+  local id=$1 file=$2
+  awk -v id="$id" '
+    BEGIN {
+      expected[1]="### 1. First impression"
+      expected[2]="### 2. Fatal-flaws audit (early gate)"
+      expected[3]="### 3. Lifecycle and capability match"
+      expected[4]="### 4. Five-dimension radar"
+      expected[5]="### 5. Paradigm-shift probe"
+      expected[6]="### 6. Feasibility"
+      expected[7]="### 7. Integrity gate result"
+      expected[8]="### 8. Verdict"
+    }
+    fence {
+      if ($0 ~ close_re) fence=0
+      next
+    }
+    match($0, /^ ? ? ?(```+|~~~+)/) {
+      seg=substr($0, RSTART, RLENGTH)
+      sub(/^ +/, "", seg)
+      c=substr(seg, 1, 1)
+      # A backtick in the info string prevents a backtick fence opener.
+      if (!(c == "`" && substr($0, RSTART + RLENGTH) ~ /`/)) {
+        close_re="^ ? ? ?" seg c "*[ \t]*$"
+        fence=1
+        next
+      }
+    }
+    $0 ~ "^##[[:space:]]+" id "[[:space:]]*$" {
+      found++
+      if (found != 1) invalid=1
+      active=1
+      next
+    }
+    $0 ~ /^##[[:space:]]+I[0-9]+[[:space:]]*$/ {
+      if (active) active=0
+      next
+    }
+    active && /^### [1-8]\. / {
+      if (section > 0 && content[section] == 0) invalid=1
+      section++
+      if ($0 != expected[section]) invalid=1
+      next
+    }
+    active && /^[[:space:]]*#/ {invalid=1; next}
+    active && section > 0 && $0 !~ /^[[:space:]]*$/ {content[section]++}
+    END {
+      if (section > 0 && content[section] == 0) invalid=1
+      if (fence) invalid=1
+      exit !(found == 1 && section == 8 && invalid == 0)
+    }
+  ' "$file" 2>/dev/null
+}
+
 # Strong Accept gate: sufficient papers, a substantive falsification experiment,
 # a complete review block from every seat, and verified crack evidence when used.
 sa_gate_ok() {
@@ -376,7 +430,7 @@ sa_gate_ok() {
   fal=$(printf '%s\n' "$iblock" | grep '^Minimal Falsification Experiment:' | head -1 | sed -E 's/^Minimal Falsification Experiment:[[:space:]]*//')
   [ "$(printf '%s' "$fal" | wc -c | tr -d ' ')" -ge 30 ] || return 1
   for r in $(seq 1 "$REVIEWERS"); do
-    grep -qE "^##[[:space:]]+${id}([[:space:]]|$)" "$RD/rev/$r/review.md" 2>/dev/null || return 1
+    review_block_complete "$id" "$RD/rev/$r/review.md" || return 1
   done
   # Assumption removal requires enough independently supported crack evidence.
   if is_axiom_idea "$id" "$RD/ideas.md"; then
@@ -395,14 +449,35 @@ priorwork_ok() {
     block=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"&&$2~/^I[0-9]+$/{if(f)exit} f' "$RD/priorwork.md")
     if [ -z "$block" ]; then log "Research gate: priorwork.md is missing the ${id} block"; return 1; fi
     # Count only the linked bullets inside Nearest Work.
-    links=$(printf '%s\n' "$block" | awk '/^Nearest Work:/{f=1;next} /^Strongest Counterexample:/{f=0} f' \
-            | grep -cE '^- .*https?://' || true)
+    if ! links=$(printf '%s\n' "$block" | awk '
+      BEGIN {valid=1}
+      /^Nearest Work:/ {
+        nearest++
+        if (phase != 0) valid=0
+        phase=1
+        next
+      }
+      /^Strongest Counterexample:/ {
+        strongest++
+        if (phase != 1) valid=0
+        phase=2
+        next
+      }
+      phase == 1 && /^- / && $0 !~ /^- Query:/ && /https?:\/\// {n++}
+      END {
+        if (nearest != 1 || strongest != 1 || valid == 0) exit 2
+        print n+0
+      }
+    '); then
+      log "Research gate: ${id} has invalid Nearest Work to Strongest Counterexample section order"
+      return 1
+    fi
     if [ "$links" -lt "$PRIOR_MIN_LINKS" ]; then
       log "Research gate: ${id} has too few linked neighbors (${links} < ${PRIOR_MIN_LINKS})"; return 1
     fi
     # Structured API queries keep retrieval reproducible and auditable.
     if [ "$PRIOR_MIN_API" -gt 0 ]; then
-      api=$(printf '%s\n' "$block" | grep -cE '^- Query:[[:space:]]*https?://(export\.arxiv\.org/api/query|api\.semanticscholar\.org)' || true)
+      api=$(printf '%s\n' "$block" | grep -cE "$STRUCTURED_API_RE" || true)
       if [ "$api" -lt "$PRIOR_MIN_API" ]; then
         log "Research gate: ${id} has too few structured API queries (${api} < ${PRIOR_MIN_API})"; return 1
       fi
@@ -458,7 +533,7 @@ prescreen_dec() {
 kill_evidence() {   # $1=id -> direct-hit URL; nonzero means insufficient evidence
   local block url
   block=$(awk -v id="$1" '$1=="##"&&$2==id{f=1;next} $1=="##"&&$2~/^I[0-9]+$/{if(f)exit} f' "$RD/prescreen.md" 2>/dev/null)
-  printf '%s\n' "$block" | grep -qE '^- Query:[[:space:]]*https?://(export\.arxiv\.org/api/query|api\.semanticscholar\.org)' || return 1
+  printf '%s\n' "$block" | grep -qE "$STRUCTURED_API_RE" || return 1
   url=$(printf '%s\n' "$block" | grep -m1 '^Occupant:' | grep -oE 'https?://[^ )|,;>]+' \
         | grep -vE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' | head -1)
   [ -n "$url" ] || return 1
@@ -793,16 +868,34 @@ while :; do
   fi
   # Validate every candidate-seat ballot before rank conversion or ledger writes.
   bad_vote=""
-  while IFS=$'\t' read -r id story theme; do
-    [ -z "$id" ] && continue
-    for r in $(seq 1 "$REVIEWERS"); do
-      v=$(awk -F'\t' -v id="$id" '$1==id{print $2; exit}' "$RD/rev/$r/verdict.tsv" 2>/dev/null)
-      vote_valid "$v" || bad_vote="${bad_vote:+$bad_vote }${id}@rev${r}[${v:-missing}]"
-    done
-  done < "$RD/ideas.tsv"
+  for r in $(seq 1 "$REVIEWERS"); do
+    if ! awk -F'\t' '
+      FNR == NR {
+        if ($1 != "") {
+          if (expected[$1]++) exit 1
+          expected_count++
+        }
+        next
+      }
+      {
+        reason=$4
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", reason)
+        if (NF != 4 || !($1 in expected) || seen[$1]++ ||
+            ($2 != "strong-accept" && $2 != "accept-w-rev" && $2 != "reject") ||
+            $3 !~ /^[0-9]+$/ || reason == "") exit 1
+        ballot_count++
+      }
+      END {
+        if (ballot_count != expected_count) exit 1
+        for (id in expected) if (seen[id] != 1) exit 1
+      }
+    ' "$RD/ideas.tsv" "$RD/rev/$r/verdict.tsv" 2>/dev/null; then
+      bad_vote="${bad_vote:+$bad_vote }rev${r}[schema-or-coverage]"
+    fi
+  done
   if [ -n "$bad_vote" ]; then
     printf 'review\t%s\t%s\t1\n' "$rev_t0" "$(date '+%F %T')" >> "$RD/stages.tsv"
-    log "Missing or invalid ballots (${bad_vote}); rerunning without ledger mutation"
+    log "Malformed or incomplete ballots (${bad_vote}); rerunning without ledger mutation"
     fail_and_wait; continue
   fi
   printf 'review\t%s\t%s\t0\n' "$rev_t0" "$(date '+%F %T')" >> "$RD/stages.tsv"

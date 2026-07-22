@@ -47,7 +47,7 @@ Each round receives a stable `run_id`. The first decision archive freezes the de
 
 ## Auxiliary Loops
 
-`awr-side.sh` revises `accept-w-rev` ledger entries through independent researcher, prior-work, and reviewer roles. Final revision artifacts stay under `tmp/awr-side/awr/`; coordination also uses `tmp/awr-side.lock`, the shared agy launch stamp and lock, and disposable `tmp/awr-side/run.*` mirrors. It does not change verdicts, `ledger.tsv`, `ideas/`, or the main loop's `tmp/round/` state.
+`awr-side.sh` revises `accept-w-rev` ledger entries through independent researcher, prior-work, and reviewer roles. Each queue item uses an append-only physical-row key such as `r000123`; `awr-state-aliases.tsv` maps content-derived compatibility keys onto those row keys, including shared state for duplicate ideas. Cached drafts and prior-work evidence must pass the current artifact ABI before reuse. Final revision artifacts stay under `tmp/awr-side/awr/`; coordination also uses `tmp/awr-side.lock`, the shared agy launch stamp and lock, and disposable `tmp/awr-side/run.*` mirrors. The sidecar does not change verdicts, `ledger.tsv`, `ideas/`, or the main loop's `tmp/round/` state.
 
 `litwatch.sh` harvests recent records into trusted staging, optionally annotates a copy, and deterministically admits only annotations whose IDs exist in staging. Its index under `tmp/litwatch/` is an optional prior-work seed; failure does not block the main hunt.
 

@@ -13,6 +13,7 @@ Minimal preflight:
 
 ```bash
 command -v bash git gh codex
+codex login status
 gh auth status
 git remote get-url origin
 mkdir -p "$HOME/.ai-ideas-runs/$(basename "$PWD")"
@@ -62,6 +63,7 @@ The positional argument changes the failure cooldown in minutes. `SA_TARGET=0` r
 | `tmp/round/` | live run state | Generated set, shortlist, prior work, ballots, reviews, stage logs, and timing |
 | `tmp/ledger.good` | live recovery state | Last Bash-owned ledger baseline |
 | `tmp/hunt.metrics.tsv` | local runtime history | Round outcomes, counts, vote vectors, and run IDs |
+| `tmp/awr-side/awr/` | local AwR history | Stable row-keyed tasks, drafts, evidence, reviews, and terminal results |
 | `hunt.log` | local runtime history | Operator log and backend-stage summaries |
 | `$HOME/.ai-ideas-runs/$(basename "$PWD")/<run_id>/` | external durable archive | Frozen round inputs, manifest, stage logs, and ledger delta |
 
@@ -76,6 +78,8 @@ An ordinary interruption is restartable:
 ```
 
 Mechanically valid `tmp/round/ideas.tsv`, `ideas.md`, and `priorwork.md` resume once when `RESUME_FRONT=1`; all review ballots and aggregate verdicts are discarded and rerun. Set `RESUME_FRONT=0` to force a fresh front stage. A stale `tmp/hunt.lock` is removed automatically only when its recorded process is absent.
+
+AwR restarts use stable physical-row keys. On first access, `awr-state-aliases.tsv` copies compatible content-derived state to the row key; terminal results remain terminal, feedback rounds retain their order, and cached artifacts that fail the current ABI are regenerated.
 
 If a report exists but publication stopped between commit, push, and pull-request creation, startup reruns the idempotent publication path. Full repair still requires network access, a valid `origin`, push permission, and authenticated `gh`.
 

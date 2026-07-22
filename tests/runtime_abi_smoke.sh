@@ -193,7 +193,301 @@ run_awr_agy_case() {
   printf 'ok: explicit SIDE_CMD=agy built-in ABI smoke\n'
 }
 
+write_awr_alias_fixture() {
+  printf 'ledger_row\tlegacy_key\n2\tabc123def456\n' > "$REPO/awr-state-aliases.tsv"
+}
+
+run_awr_legacy_terminal_case() {
+  local old="$REPO/tmp/awr-side/awr/abc123def456.md"
+  local stable="$REPO/tmp/awr-side/awr/r000002.md"
+  prepare_awr_case
+  write_awr_alias_fixture
+  mkdir -p "$(dirname "$old")"
+  printf '%s\n' '# Historical terminal result' > "$old"
+  (
+    cd "$REPO"
+    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=1 \
+    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    bash ./awr-side.sh
+  )
+  [ -s "$stable" ]
+  [ -s "$old" ]
+  printf 'ok: AwR preserves terminal state across stable-key migration\n'
+}
+
+run_awr_legacy_partial_case() {
+  local base="$REPO/tmp/awr-side/awr/abc123def456"
+  local stable="$REPO/tmp/awr-side/awr/r000002"
+  prepare_awr_case
+  write_awr_alias_fixture
+  mkdir -p "$(dirname "$base")"
+  printf '%s\n' \
+    '# Historical AwR task' \
+    'Date: 2026-07-01' \
+    '## Historical reviewer record' \
+    '- Historical defect: Preserve the recovered latency control.' > "$base.task.md"
+  printf '%s\n' 'stale draft without the artifact ABI' > "$base.draft.md"
+  printf '%s\n' 'stale prior work without the artifact ABI' > "$base.priorwork.md"
+  cp "$base.task.md" "$stable.task.md"  # Simulate interruption after the compatibility copy.
+  (
+    cd "$REPO"
+    SIDE_CMD=tests/fake_agent.sh \
+    SIDE_RESEARCH_CMD=tests/fake_agent.sh \
+    SIDE_PRIORWORK_CMD=tests/fake_agent.sh \
+    SIDE_JUDGE_CMD=tests/fake_agent.sh \
+    SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=1 \
+    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    FAKE_AGENT_MODE=awr-ready \
+    bash ./awr-side.sh
+  )
+  [ -s "$stable.md" ]
+  grep -qxF 'Status: not-ready' "$stable.md"
+  grep -qxF '## Reviewer Feedback' "$stable.task.md"
+  grep -qxF 'Round: 1' "$stable.task.md"
+  grep -qxF -- '- Defect: Preserve the recovered latency control.' "$stable.task.md"
+  grep -qxF '## Revised Idea' "$stable.draft.md"
+  if grep -qF 'stale prior work without the artifact ABI' "$stable.md"; then
+    printf 'AwR terminal artifact reused invalid migrated prior work\n' >&2
+    return 1
+  fi
+  [ -s "$base.task.md" ]
+  printf 'ok: AwR upgrades partial legacy state without reusing invalid caches\n'
+}
+
+run_hunt_ballot_reject_case() {
+  local fixture=$1
+  rm -rf "$REPO/tmp/round" "$REPO/tmp/hunt.lock" "$REPO/tmp/ledger.good"
+  rm -f "$REPO/tmp/fake-agent.calls" "$REPO/tmp/hunt.metrics.tsv"
+  cp "$BEFORE_LEDGER" "$REPO/ledger.tsv"
+  if (
+    cd "$REPO"
+    AGENT_CMD=tests/fake_agent.sh FRONT_CMD=tests/fake_agent.sh BACK_CMD=tests/fake_agent.sh \
+    REV_CMD_1=tests/fake_agent.sh FAKE_AGENT_MODE="$fixture" REVIEWERS=1 RESUME_FRONT=0 \
+    META_EVERY=1 META_MIN_REJECTS=0 THEME_MIN_LOW=0 RESEARCH_RETRY=0 \
+    FAIL_SLEEP_MIN=0 NO_HIT_SLEEP_MIN_LO=0 NO_HIT_SLEEP_MIN_HI=0 \
+    ALLOW_ZERO_NO_HIT_SLEEP=1 EMPTY_MAX=1 MAX_FAILS=1 SA_TARGET=1 \
+    RUNS_DIR="$SANDBOX_ROOT/runs-$fixture" bash ./hunt.sh
+  ); then
+    printf 'hunt unexpectedly accepted malformed ballot fixture: %s\n' "$fixture" >&2
+    return 1
+  fi
+  cmp -s "$BEFORE_LEDGER" "$REPO/ledger.tsv"
+  printf 'ok: hunt rejects %s ballot ABI violation\n' "$fixture"
+}
+
+run_sa_review_contract_case() {
+  local gate="$SANDBOX_ROOT/review-gate" contract
+  mkdir -p "$gate/rev/1"
+  printf '%s\n' '## I1' 'Papers Read: 5' > "$gate/priorwork.md"
+  printf '%s\n' \
+    '## I1' \
+    'Minimal Falsification Experiment: Run a controlled comparison with fixed seeds and explicit kill thresholds.' \
+    > "$gate/ideas.md"
+  grep -q '^review_block_complete()' "$REPO/hunt.sh" || {
+    printf 'hunt review-section validator is missing\n' >&2
+    return 1
+  }
+  contract=$(awk '
+    /^(review_block_complete|sa_gate_ok)\(\)/ {copy=1}
+    copy {print}
+    copy && /^}/ {copy=0}
+  ' "$REPO/hunt.sh")
+  (
+    eval "$contract"
+    is_axiom_idea() { return 1; }
+    RD="$gate" MIN_READ=5 REVIEWERS=1 AXIOM_MIN_CRACKS=2
+    write_review_sections() {
+      printf '%s\n' \
+        '### 1. First impression' 'section 1 evidence' \
+        '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
+        '### 3. Lifecycle and capability match' 'section 3 evidence' \
+        '### 4. Five-dimension radar' 'section 4 evidence' \
+        '### 5. Paradigm-shift probe' 'section 5 evidence' \
+        '### 6. Feasibility' 'section 6 evidence' \
+        '### 7. Integrity gate result' 'section 7 evidence' \
+        '### 8. Verdict' 'section 8 evidence'
+    }
+
+    printf '%s\n' '## I1' > "$gate/rev/1/review.md"
+    if sa_gate_ok I1; then
+      printf 'Strong Accept gate accepted a heading-only review\n' >&2
+      exit 1
+    fi
+
+    printf '%s\n' \
+      '## I1' \
+      '### 1. First impression' \
+      '### 2. Fatal-flaws audit (early gate)' \
+      '### 3. Lifecycle and capability match' \
+      '### 4. Five-dimension radar' \
+      '### 5. Paradigm-shift probe' \
+      '### 6. Feasibility' \
+      '### 7. Integrity gate result' \
+      '### 8. Verdict' \
+      > "$gate/rev/1/review.md"
+    if sa_gate_ok I1; then
+      printf 'Strong Accept gate accepted empty review sections\n' >&2
+      exit 1
+    fi
+
+    printf '%s\n' \
+      '## I1' \
+      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
+      '### 1. First impression' 'section 1 evidence' \
+      '### 3. Lifecycle and capability match' 'section 3 evidence' \
+      '### 4. Five-dimension radar' 'section 4 evidence' \
+      '### 5. Paradigm-shift probe' 'section 5 evidence' \
+      '### 6. Feasibility' 'section 6 evidence' \
+      '### 7. Integrity gate result' 'section 7 evidence' \
+      '### 8. Verdict' 'section 8 evidence' \
+      > "$gate/rev/1/review.md"
+    if sa_gate_ok I1; then
+      printf 'Strong Accept gate accepted out-of-order review sections\n' >&2
+      exit 1
+    fi
+
+    printf '%s\n' \
+      '## I1' \
+      '### 1. First impression' 'section 1 evidence' \
+      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
+      '### 2. Fatal-flaws audit (early gate)' 'duplicate section evidence' \
+      '### 3. Lifecycle and capability match' 'section 3 evidence' \
+      '### 4. Five-dimension radar' 'section 4 evidence' \
+      '### 5. Paradigm-shift probe' 'section 5 evidence' \
+      '### 6. Feasibility' 'section 6 evidence' \
+      '### 7. Integrity gate result' 'section 7 evidence' \
+      '### 8. Verdict' 'section 8 evidence' \
+      > "$gate/rev/1/review.md"
+    if sa_gate_ok I1; then
+      printf 'Strong Accept gate accepted a duplicate required section\n' >&2
+      exit 1
+    fi
+
+    { printf '%s\n' '## I1 extra'; write_review_sections; } > "$gate/rev/1/review.md"
+    if sa_gate_ok I1; then
+      printf 'Strong Accept gate accepted a nonexact candidate heading\n' >&2
+      exit 1
+    fi
+
+    {
+      printf '%s\n' '## I1' '```markdown'
+      write_review_sections
+      printf '%s\n' '```'
+    } > "$gate/rev/1/review.md"
+    if sa_gate_ok I1; then
+      printf 'Strong Accept gate accepted fenced review sections\n' >&2
+      exit 1
+    fi
+
+    {
+      printf '%s\n' '## I1' '````markdown' '```'
+      write_review_sections
+    } > "$gate/rev/1/review.md"
+    if sa_gate_ok I1; then
+      printf 'Strong Accept gate accepted a short backtick fence closer\n' >&2
+      exit 1
+    fi
+
+    {
+      printf '%s\n' '## I1' '```markdown' '```not-a-close'
+      write_review_sections
+    } > "$gate/rev/1/review.md"
+    if sa_gate_ok I1; then
+      printf 'Strong Accept gate accepted a backtick fence closer with text\n' >&2
+      exit 1
+    fi
+
+    {
+      printf '%s\n' '## I1' '~~~~markdown' '~~~'
+      write_review_sections
+    } > "$gate/rev/1/review.md"
+    if sa_gate_ok I1; then
+      printf 'Strong Accept gate accepted a short tilde fence closer\n' >&2
+      exit 1
+    fi
+
+    printf '%s\n' \
+      '## I1' \
+      '### 1. First impression' '## Notes' \
+      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
+      '### 3. Lifecycle and capability match' 'section 3 evidence' \
+      '### 4. Five-dimension radar' 'section 4 evidence' \
+      '### 5. Paradigm-shift probe' 'section 5 evidence' \
+      '### 6. Feasibility' 'section 6 evidence' \
+      '### 7. Integrity gate result' 'section 7 evidence' \
+      '### 8. Verdict' 'section 8 evidence' \
+      > "$gate/rev/1/review.md"
+    if sa_gate_ok I1; then
+      printf 'Strong Accept gate counted an arbitrary heading as section content\n' >&2
+      exit 1
+    fi
+
+    {
+      printf '%s\n' '## I1'
+      write_review_sections
+      printf '%s\n' '### 9. Extra' 'extra section content'
+    } > "$gate/rev/1/review.md"
+    if sa_gate_ok I1; then
+      printf 'Strong Accept gate accepted an extra review section\n' >&2
+      exit 1
+    fi
+
+    printf '%s\n' \
+      '## I1' \
+      '### 1. First impression' '    ```not-a-fence' \
+      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
+      '### 3. Lifecycle and capability match' 'section 3 evidence' \
+      '### 4. Five-dimension radar' 'section 4 evidence' \
+      '### 5. Paradigm-shift probe' 'section 5 evidence' \
+      '### 6. Feasibility' 'section 6 evidence' \
+      '### 7. Integrity gate result' 'section 7 evidence' \
+      '### 8. Verdict' 'section 8 evidence' \
+      > "$gate/rev/1/review.md"
+    if ! sa_gate_ok I1; then
+      printf 'Strong Accept gate treated four-space indented code as a fence\n' >&2
+      exit 1
+    fi
+
+    printf '%s\n' \
+      '## I1' \
+      '### 1. First impression' 'section 1 evidence' '```text' 'fenced example' '```' \
+      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
+      '### 3. Lifecycle and capability match' 'section 3 evidence' \
+      '### 4. Five-dimension radar' 'section 4 evidence' \
+      '### 5. Paradigm-shift probe' 'section 5 evidence' \
+      '### 6. Feasibility' 'section 6 evidence' \
+      '### 7. Integrity gate result' 'section 7 evidence' \
+      '### 8. Verdict' 'section 8 evidence' \
+      > "$gate/rev/1/review.md"
+    if ! sa_gate_ok I1; then
+      printf 'Strong Accept gate rejected a valid equal-length fence closer\n' >&2
+      exit 1
+    fi
+
+    printf '%s\n' \
+      '## I1' \
+      '### 1. First impression' 'section 1 evidence' '~~~~text' 'fenced example' '~~~~~' \
+      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
+      '### 3. Lifecycle and capability match' 'section 3 evidence' \
+      '### 4. Five-dimension radar' 'section 4 evidence' \
+      '### 5. Paradigm-shift probe' 'section 5 evidence' \
+      '### 6. Feasibility' 'section 6 evidence' \
+      '### 7. Integrity gate result' 'section 7 evidence' \
+      '### 8. Verdict' 'section 8 evidence' \
+      > "$gate/rev/1/review.md"
+    if ! sa_gate_ok I1; then
+      printf 'Strong Accept gate rejected a valid longer fence closer\n' >&2
+      exit 1
+    fi
+
+    { printf '%s\n' '## I1'; write_review_sections; } > "$gate/rev/1/review.md"
+    sa_gate_ok I1
+  )
+  printf 'ok: Strong Accept review-section contract\n'
+}
+
 cp "$REPO/ledger.tsv" "$BEFORE_LEDGER"
+run_sa_review_contract_case
 BEFORE_LINES=$(wc -l < "$BEFORE_LEDGER" | tr -d ' ')
 TODAY=$(date +%F)
 EXISTING_SA=$(awk -F'\t' -v d="$TODAY" '$1==d && $2=="hunt" && $5=="strong-accept"{n++} END{print n+0}' "$REPO/ledger.tsv")
@@ -448,12 +742,27 @@ cmp -s "$METADATA_SOURCE" "$METADATA_REPORT"
 
 grep -q '^publication-no-op$' "$REPO/tmp/publication.noop"
 if [ "$MODE" = default ]; then
+  run_hunt_ballot_reject_case ballot-short
+  run_hunt_ballot_reject_case ballot-extra
+  run_hunt_ballot_reject_case ballot-nonnumeric-major
+  run_hunt_ballot_reject_case ballot-empty-reason
+  run_hunt_ballot_reject_case ballot-duplicate
   run_awr_case ready
   run_awr_case ready awr-no-crack
   run_awr_case not-ready
+  run_awr_reject_case awr-four-neighbors prior-work-neighbor-count
+  run_awr_reject_case awr-crack-url-count prior-work-section-scope
+  run_awr_reject_case awr-non-api-query prior-work-query-domain
+  run_awr_reject_case awr-api-host-prefix prior-work-query-host-boundary
+  run_awr_reject_case awr-api-path-prefix prior-work-query-path-boundary
+  run_awr_reject_case awr-api-bare-host prior-work-query-endpoint
+  run_awr_reject_case awr-query-in-neighbors prior-work-query-neighbor-separation
+  run_awr_reject_case awr-reversed-sections prior-work-section-order
   run_awr_reject_case awr-invalid-verification prior-work
   run_awr_reject_case awr-mixed-verification prior-work-mixed-token
   run_awr_reject_case awr-mixed-decision judge
   run_awr_agy_case
+  run_awr_legacy_terminal_case
+  run_awr_legacy_partial_case
 fi
 printf 'ok: runtime ABI smoke (%s)\n' "$MODE"

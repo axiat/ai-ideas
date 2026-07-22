@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-07-23 Product foundation
+
+- Established the README, generated hero, focused operator guides, contribution contract, and project scope as the public product surface.
+- Standardized the runtime artifact ABI across producers, parsers, prompts, fixtures, calibration, and reports. Codex is the default backend; every provider override is explicit.
+- Hardened ballot coverage, complete reviewer blocks, prior-work section order, structured API endpoints, cached-artifact validation, and stable physical-row AwR state with compatibility aliases.
+- Curated the complete 531-row ledger and historical reports while preserving verdicts, evidence classifications, URLs, identifiers, quantitative claims, row order, and legacy row shapes.
+
 ## 2026-07-19 Calibration: embodied-domain axiom-removal positive (`pos-axiom-torque`, 3/3 SA)
 
 - Added `calib/cases/pos-axiom-torque`, a pre-publication reconstruction of the RSS 2026 Outstanding Systems Paper NeuralActuator (arXiv 2607.11734, post-cutoff). The candidate removes the assumption that actuator learning requires ground-truth torque supervision. Nine neighbors were verified through the arXiv API; an 18+8-paper window scan found no direct hit; 2/2 crack-evidence items matched on full reading; and the force-aware axis occupant, analytical DOB 2507.06174, was recorded. The panel returned 3/3 SA, so the `pos-axiom-*` interpretation table marks the channel operational. Ballots are recorded in `calib/results-2026-07-19.md`.

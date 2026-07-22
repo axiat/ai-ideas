@@ -16,6 +16,11 @@ record_call() {
 
 awr_base() {
   local task
+  for task in tmp/awr-side/awr/r*.task.md; do
+    [ -e "$task" ] || continue
+    printf '%s\n' "${task%.task.md}"
+    return 0
+  done
   for task in tmp/awr-side/awr/*.task.md; do
     [ -e "$task" ] || continue
     printf '%s\n' "${task%.task.md}"
@@ -40,17 +45,37 @@ case "$prompt" in
       verification_one=
       verification_two=
     fi
+    query='- Query: https://api.semanticscholar.org/graph/v1/paper/search?query=confidence-gated-latent-updates'
+    query_before=$query
+    query_inside=
+    neighbor_three='- Neighbor Three | https://example.com/awr-paper-three | Compresses a dense world model.'
+    neighbor_four='- Neighbor Four | https://example.com/awr-paper-four | Studies adaptive compute outside robot control.'
+    neighbor_five='- Neighbor Five | https://example.com/awr-paper-five | Uses event triggers without confidence gating.'
+    counterexample_before=
+    counterexample_after='Strongest Counterexample: Neighbor Four is the closest adaptive-compute result, but it omits closed-loop world-model control.'
+    case "$FAKE_AGENT_MODE" in
+      awr-four-neighbors) neighbor_five= ;;
+      awr-crack-url-count) neighbor_three=; neighbor_four=; neighbor_five= ;;
+      awr-non-api-query) query_before='- Query: https://example.com/search?q=confidence-gated-latent-updates' ;;
+      awr-api-host-prefix) query_before='- Query: https://api.semanticscholar.org.evil/graph/v1/paper/search?query=x' ;;
+      awr-api-path-prefix) query_before='- Query: https://export.arxiv.org/api/queryevil?search_query=x' ;;
+      awr-api-bare-host) query_before='- Query: https://api.semanticscholar.org' ;;
+      awr-query-in-neighbors) neighbor_five=; query_before=; query_inside=$query ;;
+      awr-reversed-sections) counterexample_before=$counterexample_after; counterexample_after= ;;
+    esac
     printf '%s\n' \
       '## Independent Prior Work' \
       'Search Terms: confidence-gated latent updates; event-triggered world models' \
-      '- Query: https://api.semanticscholar.org/graph/v1/paper/search?query=confidence-gated-latent-updates' \
+      "$query_before" \
+      "$counterexample_before" \
       'Nearest Work:' \
+      "$query_inside" \
       '- Neighbor One | https://example.com/awr-paper-one | Uses fixed-rate latent updates.' \
       '- Neighbor Two | https://example.com/awr-paper-two | Gates observations instead of latent dynamics.' \
-      '- Neighbor Three | https://example.com/awr-paper-three | Compresses a dense world model.' \
-      '- Neighbor Four | https://example.com/awr-paper-four | Studies adaptive compute outside robot control.' \
-      '- Neighbor Five | https://example.com/awr-paper-five | Uses event triggers without confidence gating.' \
-      'Strongest Counterexample: Neighbor Four is the closest adaptive-compute result, but it omits closed-loop world-model control.' \
+      "$neighbor_three" \
+      "$neighbor_four" \
+      "$neighbor_five" \
+      "$counterexample_after" \
       'Overlap: low — None of the five works occupies confidence-gated latent updates for closed-loop control.' \
       'Papers Read: 5' \
       'arXiv ID Check: yes' \
@@ -180,7 +205,14 @@ case "$prompt" in
   *roles/review.md*)
     record_call review
     mkdir -p tmp/round/rev/1
-    printf 'I1\tstrong-accept\t0\tIndependent evidence supports a clear-accept contribution under the stated experiment.\n' > tmp/round/rev/1/verdict.tsv
+    case "$FAKE_AGENT_MODE" in
+      ballot-short) printf 'I1\tstrong-accept\n' > tmp/round/rev/1/verdict.tsv ;;
+      ballot-extra) printf 'I1\tstrong-accept\t0\tValid reason.\textra\n' > tmp/round/rev/1/verdict.tsv ;;
+      ballot-nonnumeric-major) printf 'I1\tstrong-accept\tmany\tValid reason.\n' > tmp/round/rev/1/verdict.tsv ;;
+      ballot-empty-reason) printf 'I1\tstrong-accept\t0\t\n' > tmp/round/rev/1/verdict.tsv ;;
+      ballot-duplicate) printf 'I1\tstrong-accept\t0\tFirst reason.\nI1\treject\t0\tSecond reason.\n' > tmp/round/rev/1/verdict.tsv ;;
+      *) printf 'I1\tstrong-accept\t0\tIndependent evidence supports a clear-accept contribution under the stated experiment.\n' > tmp/round/rev/1/verdict.tsv ;;
+    esac
     printf '%s\n' \
       '## I1' \
       '### 1. First impression' \
