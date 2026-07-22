@@ -1,63 +1,66 @@
-# Brainstorming & Acceptance Policy（每周 idea routine 必读，优先级高于 rubric.md 的默认尺度）
+# Brainstorming and Acceptance Policy
 
-## 发散要求
+This policy is mandatory for the weekly idea routine and overrides the default verdict calibration in `rubric.md`.
 
-- `research_context.md` 只是可选的灵感来源，**不是约束**。每轮生成的 idea 中至多 1-2 个与用户现有工作（DSRL / π0.5 栈）直接相关，其余必须跳出该栈，在 WorldModel / VLA 乃至具身智能更大范围内自由发散。
-- 优先级排序：纯 novelty（改变问题定义或基础机制，Transformer 级别的野心）＞ 问题发现 + 初步探究 ＞ 现有方向的增量改进。
-- 每轮可含至多 1 个**进化或复查 idea**（共用名额）。进化：只准选 verdict=accept-w-rev、overlap=low 且死因属实验设计类缺陷的行做定向修复（novelty 封顶/已被占据的不修，修不掉）；复查：查重薄弱型 AwR、或 category=evidence-incomplete 的 reject 行（全票 SA 仅因硬门槛降级、票够只差证据）原样重交补证/补查重，块首记「复活自」「复活条件」，同一 story 至多一次，补完仍不达标即永久放弃。均按全新 idea 走完整查重与评审，不继承旧票。reject 行复活资格按 category：novelty-dead（direct-hit / overlap=high / CRITICAL）不得复活；evidence-incomplete 准一次上述复查。
-- **删公理配额**：每轮发散的 10 个原料候选中至少 1 个尝试「删承重假设」形态（第 5 形态）；是否被 selector 排进深查名额只由质量决定，不强制。五字段填不齐即不算成——在产物标记行如实写「未成」及卡在哪个字段，未成标记不是 idea、不入 ledger。禁止为凑配额编造话术合规、证据空心的假删公理：空着比造假好，话术候选会被裂缝核验与裁判按普通形态从严处理。
+## Divergence Requirements
 
-## 主题词表（ledger 的 theme 列，生成时逐 idea 标注）
+- `research_context.md` is optional inspiration, not a constraint. At most 1–2 ideas per round may directly concern the current DSRL or π0.5 stack. The rest must range freely across World Models, VLA, and embodied AI.
+- Priority: pure novelty that changes the problem definition or foundational mechanism, with Transformer-level ambition; then problem discovery with initial investigation; then incremental improvements to existing directions.
+- At most one evolution or recheck idea may appear per round; the two share a slot. Evolution may repair only an `accept-w-rev`, `overlap=low` row with an experimental-design failure; an occupied or novelty-capped story is irreparable. Recheck may resubmit unchanged either an AwR idea with weak prior-work research or a `reject`, `category=evidence-incomplete` row where unanimous Strong Accept votes were reduced only by a hard evidence gate. Begin with `Evolved from:` or `Recheck:` and state the eligibility condition. A story gets one recheck; another failure makes it permanent. Every resubmission receives fresh prior-work research and review and inherits no votes. `novelty-dead` rejects, including direct hits, `overlap=high`, and CRITICAL findings, cannot return.
+- Each round's 10 raw candidates must include at least one attempt at `Form: remove-load-bearing-assumption`, the fifth valid form. All five structured fields are mandatory for a complete attempt. Use exactly one marker: `Assumption-Removal Attempt: complete I1` or `Assumption-Removal Attempt: incomplete — <candidate>; blocked by: <field>`. Completion satisfies the raw-candidate quota only; selection for deep research depends solely on quality. An incomplete marker is not an idea and does not enter the ledger. Leave it incomplete rather than fabricate rhetorical compliance or hollow evidence; `Crack Evidence Verification` and reviewers evaluate rhetorical candidates under the ordinary standard.
 
-世界模型-架构 / 世界模型-训练目标 / VLA-架构 / VLA-训练范式 / 动作表征 / 数据引擎 / 评测与诊断 / 效率与系统 / 安全与鲁棒 / 跨域与迁移 / 人机交互与部署
+## Theme Vocabulary
 
-跨轮反坍缩：生成前统计 ledger 各主题行数，本轮至少 2 个 idea 落在存量最少的三个主题内（阈值取第三低存量，并列一并计入）。hunt 回路中该规则与词表合法性由 orchestrator 机械校验。
+World Models - Architecture / World Models - Training Objectives / VLA - Architecture / VLA - Training Paradigms / Action Representation / Data Engines / Evaluation and Diagnostics / Efficiency and Systems / Safety and Robustness / Cross-Domain Transfer / Human-Robot Interaction and Deployment
 
-## 发散透镜（orchestrator 每轮随机抽一条注入生成 prompt，agent 不得自选或替换）
+Before generation, count ledger rows by theme. At least two ideas in the round must use one of the three lowest-inventory themes; the threshold is the third-lowest count and includes ties. In the hunt loop, the orchestrator mechanically validates this rule and the vocabulary.
 
-抽签池 = 下列透镜 + 3 张空白牌，抽中空白牌则本轮不注入、完全自由发散。透镜是没思路时的起手式，不是硬约束：候选不强制逐条套透镜，想到更好的方向可直接偏离，透镜贴合度不进机械校验。
+## Divergence Lenses
 
-透镜分两类。**命题式**（解释公认现象、删承重假设、命名新问题）把 novelty 放进一句关于世界的断言，不直接落入 M×D 枚举格、较难被单篇占位——但仍须强查重，命题也会被既有工作占，只是不落在配对网格上；**换轴式**把机制搬到新轴，novelty 落在可枚举且多半已被占的配对里，默认近迁移、易封顶——故并作一条标「慎用」。抽签池按此加权，命题式为主。
+The orchestrator randomly draws one lens from this list plus three blank cards. A blank card injects no lens. Lenses are starting points when needed, not constraints: candidates may depart from them, and lens adherence is not mechanically scored.
 
-- 解释公认现象:对某个稳健事实/失败/scaling/涌现,给出与主流**不同的竞争性因果解释**,并设计能判别两解释的实验。头条写成"X 不是 Y 的因,Z 才是"这类命题、不是配对——本表最不易被 novelty 封顶的起手式,优先。
-- 删承重假设:指认当前范式里一条被默认必需的组件/假设,提出移除或反转它(第 5 形态,须带结构化字段与 ≥2 条裂缝证据;编话术凑数按普通形态从严评)。
-- 命名一个真实但还没名字的问题或被测量:把大家默认存在却没被形式化的现象/estimand 定义出来,novelty 落在**问题定义本身**而非某个机制。
-- 换评测对象:评数据、评环境、评指标本身,或指认被忽略的混杂变量并量化其影响——头条须是"现有指标测错了量"这类命题,而非换个数据集重测。
-- 统一或拆分:把两个一直分开处理的问题并成一个机制,或把一个耦合系统拆开。
-- 换一条轴(起手式,慎用):把某传感器模态/数据来源/时间尺度/规模轴/学习信号/输出表征/闭环经验(部署回流·RL 后训练·人在环·test-time)/经典 CS 原理搬到新位置。**默认近迁移、易被 novelty 封顶**——仅当换轴逼出一个新命题(某假设因此可删、某解释因此被推翻)才用,否则预期至多 AwR。
+Proposition lenses place novelty in a claim about the world rather than an enumerable mechanism × domain cell, making single-paper occupation less likely but still requiring adversarial research. Axis-transfer lenses move a mechanism along an enumerable axis and are usually occupied or incremental; the pool therefore weights proposition lenses more heavily.
 
-## 允许的 idea 形态（可以非常初步）
+- **Explain an accepted phenomenon:** Give a competing causal explanation for a robust fact, failure, scaling law, or emergence pattern and design an experiment that distinguishes it from the prevailing explanation. Frame the headline as a proposition such as “X is caused by Z rather than Y,” not a pairing.
+- **Remove a load-bearing assumption:** Identify a component or assumption treated as necessary and remove or reverse it. This is the fifth valid form and requires structured fields plus at least two lines of `Crack Evidence:`. Empty rhetoric is evaluated under the ordinary standard.
+- **Name an unnamed problem or estimand:** Formalize a real phenomenon that is assumed to exist but has not been named or measured. Novelty lies in the problem definition, not a mechanism.
+- **Change the evaluation object:** Evaluate data, environments, or metrics, or identify and quantify an ignored confounder. The headline must claim that an existing metric measures the wrong quantity, rather than merely repeating evaluation on another dataset.
+- **Unify or separate:** Give one mechanism to two problems normally treated separately, or decouple a system normally treated as one.
+- **Move one axis (use cautiously):** Move a sensor modality, data source, timescale, scale axis, learning signal, output representation, closed-loop experience (deployment feedback, RL post-training, human-in-the-loop, or test-time adaptation), or classic CS principle. This is usually an incremental near transfer and should be used only when it forces a new proposition, such as removing an assumption or overturning an explanation; otherwise expect at most `accept-w-rev`.
 
-idea 不要求完整方法与实验设计，以下五种形态均合法：
+## Valid Idea Forms
 
-1. **纯新机制 / 新问题**：只要问题成立、确认无人做过、存在一条可探索路径即可。
-2. **问题发现 + 初步数学探究**：发现瓶颈或反常现象后，给出初步的数学 formulation、复杂度分析或 back-of-envelope 推演。
-3. **经典计算机科学原理迁移**：把体系结构 / 计算机组成的经典思想套到 WM/VLA 的训练或推理上——局部性原理（缓存、分块）、log 域计算（logarithmic number system、Mitchell 近似等）、流水线、投机执行、稀疏性、内存层级、预取等——用于效率或架构创新。**默认增量、且是 deathlist 高频拒因**：经典原理只作机制材料，除非该迁移逼出一个新命题（目标域有独有失效点、或据此推翻某解释），或满足下方评审校准里机制迁移破例 SA 的三条件，否则不占纯 novelty 名额、预期至多 AwR。
-4. **瓶颈定位实验**：设计小规模 probe 实验，验证某个瓶颈到底出现在哪，为后续工作铺路。**纯诊断 / probe 上限止于 borderline（五维难有一项 8+，够不到 SA 门槛）**：要冲 SA 必须绑一条可修复臂（诊断结论指向的修法、做出来即涨点）或有惊人发现的强先验，并满足下方 SA 净增量规则；否则按 poster 预算立项、不占纯 novelty 名额。此约束同样适用于「解释公认现象 / 换评测对象」等命题式诊断，不限本形态。
-5. **删承重假设（Transformer 型赌注）**：指认当前范式里一条被默认必需的组件或假设，提出移除或反转它。必须附加下列结构化字段，字段名与冒号逐字保留供机械校验，缺一即不合法（第五项复用「最小否证实验」行并加严）：
-   - `删哪条承重假设:` 被默认必需的组件/假设，及哪些主流方法在依赖它；
-   - `为何现在能删:` 哪个新出现的条件（新证据/新工具/新数据）使移除在当下可行；
-   - `forcing constraint:` 逼出激进版本的外部压力（算力/延迟/数据成本/部署约束），「更优雅/更有趣」不算；
-   - `裂缝证据:` ≥2 行，每行一条 URL + 一句「它显示该假设已在松动」——待核验自报，查重进程逐条实读核对，不符即按普通形态评；
-   - 其「最小否证实验」须能一击杀死赌注本身（信号不出现 ⇒ 假设确属承重 ⇒ idea 判死），纯测量性 probe 不合格。
+Ideas may be preliminary and need not contain a complete method or experimental program. Five forms are valid:
 
-## 评审校准（覆盖 rubric.md 的 verdict 尺度）
+1. **New mechanism or new problem:** The problem is real, prior work does not occupy it, and at least one exploration path exists.
+2. **Problem discovery with initial mathematical investigation:** Identify a bottleneck or anomaly and add an initial formulation, complexity analysis, or back-of-the-envelope derivation.
+3. **Transfer of a classic computer-science principle:** Apply architecture or computer-organization mechanisms to World Model or VLA training or inference, including locality (caching or tiling), log-domain computation (logarithmic number systems or Mitchell approximation), pipelining, speculative execution, sparsity, memory hierarchies, or prefetching. This form is incremental by default and appears frequently in the death list. A classic principle is mechanism material, not pure novelty, unless the target domain exposes a unique failure mode, the transfer overturns an explanation, or all three mechanism-transfer Strong Accept exceptions below hold. Otherwise its expected ceiling is `accept-w-rev`.
+4. **Bottleneck-localization experiment:** Use a small probe to locate a bottleneck and support later work. A pure diagnostic or probe is capped at borderline because its five-dimensional profile rarely reaches 8+ in any dimension. Strong Accept requires either a repair arm whose successful intervention improves the result or a strong prior for a surprising finding, plus the net-new payoff rule below. The same cap applies to diagnostic proposition lenses such as explaining a phenomenon or changing the evaluation object. Poster-scale work does not consume a pure-novelty slot.
+5. **Remove a load-bearing assumption (Transformer-scale wager):** Identify a component or assumption treated as necessary and remove or reverse it. Preserve these exact fields for mechanical validation:
+   - `Form: remove-load-bearing-assumption`
+   - `Assumption to Remove:` the presumed-essential component or assumption and the mainstream methods that depend on it
+   - `Why It Can Be Removed Now:` the new evidence, tool, or data that makes removal newly feasible
+   - `Forcing Constraint:` an external pressure such as compute, latency, data cost, or deployment; elegance or curiosity does not qualify
+   - `Crack Evidence:` at least two lines, each containing a URL and one sentence explaining how the assumption is weakening; these claims remain unverified until the research process reads them
+   - `Minimal Falsification Experiment:` a decisive experiment where an absent signal proves the assumption load-bearing and kills the idea; a measurement-only probe is invalid
 
-本节的 clear-accept 标准是全仓 Strong Accept 的唯一定义；rubric.md、role prompt 或 sidecar 的表述与本节冲突时以本节为准。以 A 类会议（NeurIPS / ICLR / CoRL）及机器人强会（RSS / ICRA）的 reviewer 尺度校准：
+## Review Calibration
 
-- **Strong Accept** ⇔ 做出来有较大概率达 **clear accept**（约 6,6,8）及以上；能冲 oral/spotlight（8,8,6+，无强反对）更佳。
-- **Accept with Revisions** ⇔ borderline accept：上限低，价值有限。
-- 评分权重：**novelty 与"是否已有人做过"是第一位的**；工程完整度可放宽（idea 允许非常初步），但 novelty 存疑必须定向查文献，不得凭印象放行。
-- **SA 净增量规则**：任何用于支撑 clear accept 或解除诊断天花板的承重依据（包括修复臂/应用 payload、8+ standout 维和惊人先验）都只计本 idea 新增且可归因的 payoff。同一 payoff 已被实践占据时，以最近占据者为 baseline；真实零命中时，以有记录检索边界下同一 metric/setting 的 strongest current baseline 为比较对象。已发表或已落地的收益不得重复记分：payload 已占时，只有相对最近占据者的新增 payoff 本身足以 clear accept 才可破顶；已发表异常只作 hypothesis prior，只有新判别实验或新解释的增量本身足以 clear accept 才可破顶。
-- fatal-flaws 硬门槛：审计表含 **≥2 个 MAJOR 不得定 Strong Accept**（至多 1 个 MAJOR；含 CRITICAL 直接 Reject and Pivot）。此规则与 rubric 的 severity escalation 一致，不得绕过。
-- 可行性基线：**单人执行，默认算力 1×H100 80G**；idea 足够有说服力时可按追加 8×A100 评估，但须在评审表注明该依赖。rubric 的 lifecycle/feasibility 步骤按此基线评估，**评估对象是最小否证实验与首篇论文的合理裁剪（phase-1 scope），不是 idea 的最大愿景**：否证实验或首篇裁剪在生命周期内单人做不完的，最高只给 Accept with Revisions；愿景全量超出单人算力不单独计 MAJOR（首篇裁剪由评审在表中写明）。
-- feasibility 只认 idea 自带的**最小否证实验**（数据 × 算力 × 预期信号，信号不出现即判死）：评它在上述基线下能否执行、能否真正证伪；字段缺失或实验不可执行按 MAJOR 计，封顶 Accept with Revisions。叙事性可行性说辞不作数。
-- 机制迁移（已知机制搬新域）默认不到 Strong Accept；**同时**满足三条件可破例给 SA：目标域零命中（以独立查重证据为准）、适配机制非平凡（新域约束迫使机制实质改动，不是换数据集重训）、信号落地即够 clear accept。三条件须逐条点名证据，缺一仍封顶。
-- **删承重假设通道（第二条 break-glass，窄且硬）**：该形态「赌注未经验证」本身不计 MAJOR——仅当其最小否证实验便宜且决定性（信号不出现即杀死赌注）时成立，否则照常计。**同时**满足四条件可给 SA：①头条零命中（只认独立查重证据，overlap=low）；②裂缝证据经查重进程实读核验，≥2 条「相符」且确指向该假设在松动；③forcing constraint 是明确外部压力（算力/延迟/数据成本/部署），好奇心驱动不算；④最小否证实验单人 1×H100 生命周期内可执行、可杀死赌注。四条件逐条点名证据，缺一仍按普通尺度评。本通道**不豁免任何既有硬门**：direct-hit 预筛、CRITICAL ⇒ Reject、≥2 MAJOR 封顶、查重薄弱计 MAJOR、缺最小否证实验计 MAJOR 照常；它只替换「机制激进/尚未验证」类的 novelty 压制。五字段缺失、或裂缝核验不符/不可达 ⇒ 视为话术合规，按普通形态从严评。
-- 调研不设时长压力：宁慢勿浅，不得为尽快收束而压缩文献调研与对比分析。查重的差异论证必须基于实读相近工作的摘要与方法部分，不得仅凭标题或检索结果摘要下结论。
-- 任何候选 Strong Accept 在定级前必须做一轮**特别认真的定向查重**：多组检索词（问题表述、方法机制、相邻领域至少各一组，含 web search 与 arXiv），找最相近 5-8 篇，并覆盖工业界工具/博客等非论文占位。存在相似工作时，必须逐篇写明差异，且差异本身足以支撑 clear accept，否则降级。
+This section is the repository's sole definition of Strong Accept. It overrides conflicting language in `rubric.md`, role prompts, or sidecars. Calibrate to reviewers at NeurIPS, ICLR, CoRL, RSS, or ICRA.
 
-## 保留规则
+- **Strong Accept** means a substantial probability of clear accept, approximately 6,6,8 or better. Oral or spotlight potential, approximately 8,8,6+ with no strong objection, is preferred but not required.
+- **Accept with Revisions** means borderline accept with a low ceiling or limited value.
+- Novelty and prior occupation carry the highest weight. Engineering completeness may be preliminary, but novelty uncertainty requires directed prior-work research and never passes by intuition.
+- **Strong Accept net-new payoff rule:** Any load-bearing basis used to establish clear accept or remove a diagnostic ceiling—including a repair or application payload, an 8+ standout dimension, or a surprising prior—counts only when it is a new, attributable payoff of this idea. If the same payoff has already been demonstrated, use the nearest occupying work as the baseline. With a genuine zero hit, use the strongest current baseline for the same metric and setting within the recorded search boundary. Published or deployed gains cannot be counted again: an occupied payload breaks the ceiling only if the incremental payoff over its nearest occupier independently reaches clear accept; a published anomaly is only a hypothesis prior, and the new discriminating experiment or explanation must independently reach clear accept.
+- **Fatal-flaw gate:** At least two MAJOR findings forbid Strong Accept, so at most one MAJOR is allowed. Any CRITICAL finding requires Reject and Pivot. This matches the severity escalation in `rubric.md`.
+- **Feasibility baseline:** one researcher and 1×H100 80G. If the idea is otherwise compelling, reviewers may assess it with up to 8×A100 but must state that dependency. Lifecycle and feasibility apply to the `Minimal Falsification Experiment:` and a reasonable first-paper phase, not the maximal vision. If one researcher cannot complete either within the lifecycle, the ceiling is Accept with Revisions. A larger ultimate vision does not independently count as MAJOR; reviewers must state the first-paper scope.
+- Feasibility depends only on the idea's `Minimal Falsification Experiment:` with data × compute × expected signal and an explicit kill condition. A missing or non-executable experiment is MAJOR and caps the verdict at Accept with Revisions. Narrative feasibility claims do not count.
+- A known mechanism transferred to a new domain is below Strong Accept by default. It may break the cap only when all three conditions are evidenced: zero target-domain hits in independent research; nontrivial adaptation forced by target-domain constraints rather than dataset substitution; and a realized signal sufficient for clear accept. Missing any condition retains the cap.
+- **Assumption-removal channel:** The wager's unverified status is not itself MAJOR only if its falsification experiment is cheap, decisive, and kills the wager when the signal is absent. Strong Accept additionally requires all four conditions: zero headline hits with `overlap=low` from independent research; at least two `supports` results under `Crack Evidence Verification` that directly show the assumption weakening; an explicit external `Forcing Constraint:`; and a decisive experiment executable by one researcher on 1×H100 within the lifecycle. This channel does not waive any existing gate: a direct hit, CRITICAL finding, at least two MAJOR findings, weak prior-work research, or missing experiment retains its normal consequence. It replaces only the novelty penalty for an aggressive, unverified mechanism. Missing fields or `contradicts`/`unreachable` crack evidence returns rhetorical compliance to the ordinary standard.
+- Research has no time-pressure allowance. Do not compress literature research or comparisons to finish sooner. Difference claims require reading the abstracts and methods of close work, not titles or search snippets.
+- Before grading any prospective Strong Accept, conduct an unusually careful directed search with multiple query families covering problem wording, mechanism, and adjacent domains; include web search, arXiv, and non-paper occupation such as industry tools and blogs. Read the 5–8 closest works and explain every difference. If similar work exists, the remaining difference must independently support clear accept or the idea is reduced.
 
-- 报告正文只保留 **Strong Accept**；重试循环的达标条件是至少 1 个 Strong Accept。
-- borderline（Accept with Revisions）至多附 2 个作参考，标注"仅供一览"，不计入达标。
+## Retention Rules
+
+- The report body contains only Strong Accept ideas. Retry succeeds only with at least one Strong Accept.
+- Include at most two borderline Accept with Revisions ideas in an appendix labeled `For reference only`; they do not satisfy the target.
