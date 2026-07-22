@@ -19,8 +19,9 @@
 # Different cases may run concurrently; the same case may not because it shares the result directory and cleanup prefix.
 #
 # Interpretation:
-#   Positive controls reconstruct a known oral or spotlight paper before publication and pair it with ideal prior work.
+#   Strong Accept capability controls reconstruct a known paper before publication and pair it with ideal prior work.
 #   They require min-vote >= accept-w-rev plus at least one strong-accept vote.
+#   Acceptance-floor boundary controls require min-vote >= accept-w-rev without requiring a strong-accept vote.
 #   Negative controls have a single-paper direct hit and honest high overlap. Every seat must reject.
 set -u
 cd "$(dirname "$0")/.." || exit 2

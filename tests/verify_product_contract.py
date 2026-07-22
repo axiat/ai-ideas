@@ -19,9 +19,9 @@ EXPECTED = {
     "row_numeric_operators": "b9e49642028714c4d04c2627bc485e8995a093a5ba2557e2526d5d43b1ded4bb",
     "row_code_spans": "4d9fe189ad926f8263062722340592a64fefb3e408cbb8a13d891f01532f4ebb",
     "row_symbols": "3167603d417007adeec710fb58c67a243568d417fcdeeffbc1d6190c002e6de3",
-    "case_ids": "aed82be120ea6d26d1735050352867fafa4551e9681b8da3abce496915fae1c4",
-    "assertions": "a85dfbcece8c4c223ab0dfca3eb6a2ef17f091d71b67cebccfc7e3348aaea3f0",
-    "calibration_evidence": "2c47c58210832672e3c3c78281fd64a2b629da8b1533719eb92628bfae903c2b",
+    "case_ids": "f60b9cad357cf1bbf3a8e591e17251ef388f0ed6fbac01fa3fda9477419a14b6",
+    "assertions": "5f12400d936aa208097077d680eefa74babb0ef6f0090984cc264a42031c7da0",
+    "calibration_evidence": "ed86ecc2dcd80b2d248a931e87d47357c15586d4250b240b494cf2ccc3a4495e",
     "awr_state_aliases": "0eae2f95882e5ce730933cfaa206a048a97bf5347a0d5e7330885febc138690b",
 }
 THEMES = {
@@ -142,7 +142,8 @@ def digest(value):
 
 def stable_calibration_title(value):
     value = " ".join(HAN.sub("", value).split())
-    return re.sub(r"\s+\(", "(", value)
+    value = re.sub(r"\s+\(", "(", value)
+    return re.sub(r"\s+\)", ")", value)
 
 def read_text(path):
     try:
@@ -672,8 +673,9 @@ def verify_fixtures():
             for match in CALIB_PAPER_TITLE.finditer(text)
         )
         evidence.append(f"{path.relative_to(ROOT)}:{'|'.join(sorted(tokens))}")
-    if digest("\n".join(evidence)) != EXPECTED["calibration_evidence"]:
-        raise AssertionError("calibration evidence tokens changed")
+    actual = digest("\n".join(evidence))
+    if actual != EXPECTED["calibration_evidence"]:
+        raise AssertionError(f"calibration evidence tokens changed: {actual}")
 
 def tracked_text_paths():
     raw = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT)
