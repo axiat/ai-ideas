@@ -97,7 +97,7 @@ VARIABLE_COMMAND = re.compile(
 )
 EVAL_COMMAND = re.compile(r"(?:^|[;&|()]\s*)" + SHELL_COMMAND_PREFIX + r"eval(?:\s|$)")
 SHELL_C_COMMAND = re.compile(r"(?:^|[;&|()]\s*)" + SHELL_COMMAND_PREFIX + r"(?:ba|z)?sh\s+-c(?:\s|$)")
-LEDGER_HEADER = ["date", "source", "theme", "idea", "verdict", "reason", "overlap"]
+LEDGER_HEADER = ["date", "source", "theme", "idea", "verdict", "reason", "overlap", "category"]
 LEDGER_URL = re.compile(r"https?://[^\s\t()<>\[\]`,;，。；（）]+")
 LEDGER_TECH_DIGITS = r"0-9⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉"
 LEDGER_TECH_ALPHA = r"A-Za-zΑ-Ωα-ω"
