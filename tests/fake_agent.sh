@@ -47,6 +47,7 @@ case "$prompt" in
       'Assumption to Remove: Dense temporal updates are required for reliable closed-loop world-model control.' \
       'Why It Can Be Removed Now: Event-triggered latent updates can preserve task-relevant state while skipping redundant transitions.' \
       'Forcing Constraint: Deployment latency and energy budgets prohibit dense inference at every control tick.' \
+      'Execution Budget: One researcher at 20 effective hours per week with one H100.' \
       'Crack Evidence: https://example.com/crack-one | Confidence-triggered observation updates preserve stable control in the fixture evidence.' \
       'Crack Evidence: https://example.com/crack-two | Bounded latent drift permits redundant transitions to be skipped in the fixture evidence.' > tmp/round/ideas.md
     ;;
@@ -105,23 +106,53 @@ case "$prompt" in
       '- Paper type: Novel Method' \
       '- One-sentence story: Confidence-gated latent updates preserve control while reducing world-model inference.' \
       '### 2. Fatal-flaws audit (early gate)' \
-      'No CRITICAL or MAJOR flaw remains in the supplied evidence.' \
+      '| # | Flaw | Severity | Defense |' \
+      '|---|---|---|---|' \
+      '| - | None identified in the supplied evidence. | - | No defense required. |' \
       '### 3. Lifecycle and capability match' \
-      'The minimal experiment fits one researcher and one H100.' \
+      "| Aspect | User's input | Assessment |" \
+      '|---|---|---|' \
+      '| Idea category | Innovative Technique | Matches a bounded method contribution. |' \
+      '| Lifecycle | 3 months | Fits the pilot and first-paper scope. |' \
+      '| Weekly effective hours | 20 | Sufficient for the stated experiment. |' \
+      '| Fit | One researcher and one H100 | Green |' \
       '### 4. Five-dimension radar' \
-      'Faster and Cheaper have the strongest evidence; the remaining dimensions are neutral.' \
+      '| Dimension | Score 1-10 | Evidence | Lift suggestion |' \
+      '|---|---|---|---|' \
+      '| Higher | 6 | The kill threshold bounds control-success loss at two points. | Report success confidence intervals. |' \
+      '| Faster | 9 | The decisive experiment requires at least 30 percent lower latency. | Profile each control stage. |' \
+      '| Stronger | 6 | Two crack-evidence checks support stable control under skipped updates. | Add drift stress tests. |' \
+      '| Cheaper | 8 | Skipped latent updates directly reduce inference demand. | Report energy per episode. |' \
+      '| Broader | 5 | Evidence covers one manipulation setting. | Defer broader claims until cross-task evidence exists. |' \
       '### 5. Paradigm-shift probe' \
-      'The work challenges the fixed-rate latent-update assumption.' \
+      '| Probe | Yes or No | Rationale |' \
+      '|---|---|---|' \
+      '| First Principles | Yes | It tests whether fixed-rate latent updates are necessary. |' \
+      '| Elephant in the Room | No | The evidence does not establish a field-wide avoidance pattern. |' \
+      '| Technology Cycle | Yes | Confidence estimates make event-triggered updates executable. |' \
+      "| Hamming's Rule | Yes | Reliable sparse updates would materially reduce deployment cost. |" \
+      'Disruptive potential: possible.' \
       '### 6. Feasibility' \
-      'Compute, data, engineering, and timeline risks are low for the stated experiment.' \
+      '| Risk | Level | Mitigation |' \
+      '|---|---|---|' \
+      '| Compute | Low | Run the 128-episode comparison on the stated one H100. |' \
+      '| Data | Low | Use the stated held-out manipulation episodes. |' \
+      '| Engineering | Low | Limit the first paper to the confidence gate and dense baseline. |' \
+      '| Timeline | Low | Kill the idea when either explicit threshold fails. |' \
       '### 7. Integrity gate result' \
       '- Gate 1 through 8: pass' \
       '### 8. Verdict' \
-      '**Strong Accept**' > tmp/round/rev/1/review.md
+      '**Strong Accept**' \
+      'Top three actions to take first:' \
+      '1. Implement the confidence gate and dense baseline under one profiler.' \
+      '2. Run the 128-episode falsification experiment with fixed seeds.' \
+      '3. Report success, latency, and energy against the stated kill thresholds.' > tmp/round/rev/1/review.md
     ;;
   *roles/report.md*)
     record_call report
+    rounds_attempted=$(awk -F': ' '$1=="Rounds Attempted"{print $2; exit}' tmp/round/meta.txt 2>/dev/null || true)
     report_date=$(awk -F': ' '$1=="Review Date"{print $2; exit}' tmp/round/meta.txt 2>/dev/null || true)
+    [ -n "$rounds_attempted" ] || rounds_attempted=unknown
     [ -n "$report_date" ] || report_date=$(date +%F)
     report_path="ideas/${report_date}_hunt.md"
     suffix=2
@@ -150,7 +181,8 @@ case "$prompt" in
       sed -n '/^## I1$/,$p' tmp/round/rev/1/review.md | sed '1d'
       printf '%s\n' '' '### Directed Prior Work'
       sed -n '/^## I1$/,$p' tmp/round/priorwork.md
-      printf '%s\n' '' '## Rejected Ideas' 'None.' '' '## Metadata' "Review Date: ${report_date}"
+      printf '%s\n' '' '## Rejected Ideas' 'None.' '' '## Metadata' \
+        "Rounds Attempted: ${rounds_attempted}" "Review Date: ${report_date}"
     } > "$report_path"
     printf '%s\n' "$report_path" > tmp/fake-report.path
     ;;
