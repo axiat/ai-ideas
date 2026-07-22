@@ -1,4 +1,4 @@
-# 删公理具身域正式阳性(RSS 2026 Outstanding Systems Paper「NeuralActuator」投稿前形态):
-# 断言取 README 阳性对照标准;边缘结果(如 2/3 SA 且拒因全为材料论证质量)另按 pos-axiom-* 判读表人工判读
+# Formal embodied assumption-removal positive reconstructed before the RSS 2026 Outstanding Systems Paper NeuralActuator.
+# Assertions follow the positive-control standard. Interpret borderline outcomes such as 2/3 SA with only material-quality objections through the pos-axiom-* table.
 min_vote>=accept-w-rev
 sa_votes>=1

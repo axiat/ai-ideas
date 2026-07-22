@@ -1,6 +1,6 @@
-# benchmark 型正对照,诚实 medium 重叠(MIKASA-Robo 已占分类学+隔离任务族)。
-# 真实 RoboMME 是 ICML 2026 oral(绝对意义 SA),但本仓 SA 门槛=单人 phase-1 裁剪 + 1×H100:
-# 诚实材料下头条前半 novelty 封顶、差异轴 clear-accept 未证、可信规模基准的单人建构=feasibility MAJOR,
-# 故 SA 非 ground truth,借此不再断言 sa_votes>=1。仍断言真 oral 不该被 reject(min_vote>=AwR)。
-# 缺一个干净的 low 重叠 benchmark 正对照来正面验证诊断天花板的「8+ 维逃逸」出口(gold set 缺口,非条款 bug)。
+# Benchmark positive control with honest medium overlap because MIKASA-Robo occupies the taxonomy and isolated task family.
+# RoboMME is an ICML 2026 oral paper and therefore SA in absolute terms, but this repository evaluates a one-researcher phase-1 scope on 1×H100.
+# Honest evidence caps the first half of the headline on novelty, does not establish a clear-accept difference, and makes a credible-scale benchmark a feasibility MAJOR for one researcher, preventing an SA verdict in this scoped calibration.
+# SA is therefore not ground truth and sa_votes>=1 is no longer asserted. A real oral paper still must not be reject; min_vote>=AwR remains required.
+# The gold set still lacks a clean low-overlap benchmark positive that directly tests the diagnostic ceiling's 8+ dimension escape. This is a fixture gap, not a policy defect.
 min_vote>=accept-w-rev

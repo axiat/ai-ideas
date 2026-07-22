@@ -1,2 +1,2 @@
-# 删公理形态探针(LLM 域越出具身范围,非正式阳性):只跑不打分,判读表见 calib/README.md pos-axiom-*
+# Assumption-removal shape probe outside embodied AI in the LLM domain; not a formal positive. Run without scoring; see pos-axiom-* in calib/README.md.
 probe
