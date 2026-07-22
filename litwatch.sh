@@ -1,28 +1,32 @@
 #!/usr/bin/env bash
-# 领域近作监视 orchestrator。见 LITWATCH-DRAFT.md。
-# 独立常驻进程,不进 hunt.sh 回路。三段:
-#   1) 取数(确定性,python + arXiv/S2 API,不经 agy)→ tmp/litwatch/staging.jsonl
-#   2) agy 标注(可选、best-effort,走 agy-worker.sh 继承全局冷却闸)→ annotations.jsonl
-#   3) 准入(确定性,ingest 只让标注挂到已取 id)→ tmp/litwatch/index.jsonl
-# agy 任何一步失败只记日志,index 照样由确定性核产出(agy 挂掉零回归)。
+# Recent-work monitor, independent from the hunt.sh loop. Each pass fetches API
+# records into trusted staging, optionally annotates a sandbox copy, then admits
+# only annotations whose identifiers already exist in staging. Backend failure
+# is best-effort: deterministic ingest still produces the index.
 #
-# 配置(env):
-#   LITWATCH_DIR          输出目录(默认 tmp/litwatch)
-#   LITWATCH_MAX          每主题每源最多取几条(默认 25)
-#   LITWATCH_WINDOW       近 N 天(默认 60;0 关闭窗口过滤)
-#   LITWATCH_SOURCES      空格分隔,oai/arxiv/s2(默认 "oai";oai=OAI-PMH 批量抓+本地过滤,不限流,推荐)
-#   LITWATCH_OAI_DAYS/SETS/MAXPAGES/CATS  OAI 抓取窗口(默认近 4 天)/set(默认 cs)/翻页上限(8)/类别白名单
-#   LITWATCH_S2_KEY       Semantic Scholar API key(有则 s2 才可靠;经 x-api-key 头传给 litwatch.py)
-#   LITWATCH_SORT         arxiv-search 排序:submittedDate(默认,近作优先)| relevance(相关优先)
-#   LITWATCH_THEMES_FILE  覆盖默认主题:oai 用行内 | 分隔的关键词组;s2/arxiv 用 query 串(可写 arXiv 布尔式)
-#   LITWATCH_FETCH_GAP    s2/arxiv 每次取数之间 sleep 秒(默认 3;oai 翻页间隔在 litwatch.py 内)
-#   LITWATCH_NO_AGY=1     跳过 agy 标注段(纯确定性)
-#   LITWATCH_AGY_CMD      agy 标注命令(默认 ./agy-worker.sh,经它继承冷却闸)
-#   LITWATCH_PREBUILT_STAGING  给定则跳过取数、直接用该 staging(测试/离线用)
-#   LITWATCH_LOOP_SEC     0(默认)=跑一遍就退;>0=前台常驻,每遍 sleep 该秒数后重跑(Ctrl-C 停)
-#                         近作每天才更新,别调到几小时以下;常驻建议配 caffeinate -is 防休眠
+# Configuration:
+#   LITWATCH_DIR          Output directory; default tmp/litwatch.
+#   LITWATCH_MAX          Per-theme, per-source limit; default 25.
+#   LITWATCH_WINDOW       Recent-day window; default 60, 0 disables.
+#   LITWATCH_SOURCES      Space-separated oai/arxiv/s2; default oai.
+#   LITWATCH_OAI_DAYS/SETS/MAXPAGES/CATS configure OAI harvesting.
+#   LITWATCH_S2_KEY       Semantic Scholar key passed as x-api-key.
+#   LITWATCH_SORT         submittedDate (default) or relevance.
+#   LITWATCH_THEMES_FILE  Query themes, or `|`-separated OAI keyword groups.
+#   LITWATCH_FETCH_GAP    Seconds between arxiv/s2 fetches; default 3.
+#   LITWATCH_CMD          Annotation backend; defaults to sandboxed Codex.
+#   LITWATCH_AGY_CMD      Legacy override only when LITWATCH_CMD is unset.
+#   LITWATCH_NO_AGY=1     Compatibility switch that skips annotation.
+#   LITWATCH_PREBUILT_STAGING bypasses fetch for offline runs.
+#   LITWATCH_LOOP_SEC     0 for one pass; positive seconds for a foreground loop.
 set -u
-repo="$(cd "$(dirname "$0")" && pwd)"; cd "$repo" || { echo "litwatch: 无法进入仓库根 $repo" >&2; exit 1; }
+litwatch_cmd_was_set=${LITWATCH_CMD+x}
+LITWATCH_CMD=${LITWATCH_CMD:-codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral}
+annotation_cmd=$LITWATCH_CMD
+if [ -z "$litwatch_cmd_was_set" ] && [ -n "${LITWATCH_AGY_CMD:-}" ]; then
+  annotation_cmd=$LITWATCH_AGY_CMD
+fi
+repo="$(cd "$(dirname "$0")" && pwd)"; cd "$repo" || { echo "litwatch: cannot enter repository root $repo" >&2; exit 1; }
 py="$repo/lib/litwatch.py"
 dir=${LITWATCH_DIR:-tmp/litwatch}
 max=${LITWATCH_MAX:-25}
@@ -30,7 +34,7 @@ window=${LITWATCH_WINDOW:-60}
 sources=${LITWATCH_SOURCES:-oai}
 sortby=${LITWATCH_SORT:-submittedDate}
 gap=${LITWATCH_FETCH_GAP:-3}
-# OAI-PMH(默认取数,批量抓不限流)配置
+# OAI-PMH batch-harvest configuration.
 oai_days=${LITWATCH_OAI_DAYS:-4}
 oai_sets=${LITWATCH_OAI_SETS:-cs}
 oai_maxpages=${LITWATCH_OAI_MAXPAGES:-8}
@@ -38,7 +42,7 @@ oai_cats=${LITWATCH_OAI_CATS:-cs.RO,cs.LG,cs.AI,cs.CV,cs.CL,stat.ML}
 mkdir -p "$dir"
 log(){ printf '[litwatch %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
-# s2 / arxiv-search 用的主题(查询串);LITWATCH_THEMES_FILE 覆盖。
+# Search-query themes for s2 and arxiv.
 default_query_themes(){ cat <<'EOF'
 vision language action reinforcement learning post-training
 world model latent dynamics model-based reinforcement learning robot
@@ -48,7 +52,7 @@ long-horizon robot manipulation reinforcement learning
 flow matching action policy robot learning
 EOF
 }
-# OAI 本地关键词过滤用的主题(行内 | 为等价关键词,小写子串匹配);LITWATCH_THEMES_FILE 覆盖。
+# Local OAI themes use `|` for equivalent case-insensitive substrings.
 default_oai_themes(){ cat <<'EOF'
 vision-language-action|vision language action|VLA policy|VLA model
 world model|latent dynamics|model-based reinforcement
@@ -67,22 +71,22 @@ query_themes_stream(){
   fi
 }
 
-staging="$dir/staging.jsonl"       # 可信取数产物;ingest 只读这个
-agydir="$dir/agy"                  # agy 的读写沙箱,与可信 staging 隔离(信任边界)
+staging="$dir/staging.jsonl"       # Trusted fetch output and sole ingest input.
+agydir="$dir/agy"                  # Backend workspace isolated from trusted staging.
 ann="$agydir/annotations.jsonl"
 index="$dir/index.jsonl"
 drop="$dir/drops.jsonl"
 mkdir -p "$agydir"
 
 loop_sec=${LITWATCH_LOOP_SEC:-0}
-case "$loop_sec" in ''|*[!0-9]*) echo "litwatch: LITWATCH_LOOP_SEC 必须是非负整数秒: $loop_sec" >&2; exit 2 ;; esac
+case "$loop_sec" in ''|*[!0-9]*) echo "litwatch: LITWATCH_LOOP_SEC must be a nonnegative integer: $loop_sec" >&2; exit 2 ;; esac
 
-# 一遍 = 取数 → agy 标注 → 准入。LITWATCH_LOOP_SEC>0 时被文件末尾的循环反复调起(前台常驻)。
+# One pass: fetch, best-effort annotation, deterministic ingest.
 one_pass(){
-# 1) 取数(或用预置 staging)
+# 1) Fetch or copy prebuilt staging.
 if [ -n "${LITWATCH_PREBUILT_STAGING:-}" ]; then
-  cp "$LITWATCH_PREBUILT_STAGING" "$staging" || { log "预置 staging 拷贝失败: $LITWATCH_PREBUILT_STAGING"; return 1; }
-  log "使用预置 staging(跳过取数): $LITWATCH_PREBUILT_STAGING"
+  cp "$LITWATCH_PREBUILT_STAGING" "$staging" || { log "Failed to copy prebuilt staging: $LITWATCH_PREBUILT_STAGING"; return 1; }
+  log "Using prebuilt staging; fetch skipped: $LITWATCH_PREBUILT_STAGING"
 else
   : > "$staging"
   for src in $sources; do
@@ -90,53 +94,51 @@ else
       oai)
         tf="${LITWATCH_THEMES_FILE:-}"
         if [ -z "$tf" ] || [ ! -f "$tf" ]; then tf="$dir/oai_themes.txt"; default_oai_themes > "$tf"; fi
-        log "OAI 抓取: days=$oai_days sets=$oai_sets cats=$oai_cats maxpages=$oai_maxpages"
+        log "OAI harvest: days=$oai_days sets=$oai_sets cats=$oai_cats maxpages=$oai_maxpages"
         python3 "$py" harvest --days "$oai_days" --sets "$oai_sets" --max-pages "$oai_maxpages" \
-          --cats "$oai_cats" --themes-file "$tf" >> "$staging" || log "OAI harvest 失败(继续)"
+          --cats "$oai_cats" --themes-file "$tf" >> "$staging" || log "OAI harvest failed; continuing"
         ;;
       s2|arxiv)
         while IFS= read -r theme; do
           [ -n "$theme" ] || continue
           if python3 "$py" fetch --source "$src" --query "$theme" --max "$max" \
                --window-days "$window" --sort "$sortby" --theme "$theme" >> "$staging"; then :; else
-            log "取数失败(继续): src=$src theme=$theme"
+            log "Fetch failed; continuing: src=$src theme=$theme"
           fi
           [ "$gap" = "0" ] || sleep "$gap"
         done < <(query_themes_stream)
         ;;
-      *) log "未知 source(跳过): $src" ;;
+      *) log "Unknown source skipped: $src" ;;
     esac
   done
 fi
 
-# 2) agy 标注(可选,best-effort;走 agy-worker.sh 继承全局冷却闸)
-# 信任边界:agy 只在 $agydir 里读写——给它一份 staging 只读拷贝,产物落 $agydir;
-# ingest 仍读上层可信 $staging,agy 改烂自己沙箱里的拷贝也进不了 index。
+# 2) Best-effort annotation. The backend receives a copy under agydir. Ingest
+# still reads trusted staging, so mutations to the backend copy cannot add records.
 : > "$ann"
 if [ "${LITWATCH_NO_AGY:-0}" != "1" ] && [ -s "$staging" ]; then
   cp "$staging" "$agydir/staging.jsonl"
-  agy_cmd=${LITWATCH_AGY_CMD:-./agy-worker.sh}
-  log "agy 标注: $agy_cmd (AGY_OUT_HINT=$agydir)"
-  if AGY_OUT_HINT="$agydir" $agy_cmd "读 roles/litwatch.md,按其执行"; then
-    log "agy 标注返回 0"
+  log "Annotation backend: $annotation_cmd (AGY_OUT_HINT=$agydir)"
+  if AGY_OUT_HINT="$agydir" $annotation_cmd "Read roles/litwatch.md and follow it. Read ${agydir}/staging.jsonl and write only ${ann}."; then
+    log "Annotation backend returned 0"
   else
-    log "agy 标注失败(继续,index 仍由确定性核产出)"
+    log "Annotation failed; deterministic ingest continues"
   fi
 fi
 
-# 3) 准入:标注只能挂到已取 id,越界/坏行/重复丢弃并记 drops
+# 3) Admit annotations only for fetched IDs; log malformed, duplicate, and
+# out-of-set entries.
 python3 "$py" ingest --staging "$staging" --annotations "$ann" \
-  --drop-log "$drop" --out "$index" || { log "ingest 失败"; return 1; }
+  --drop-log "$drop" --out "$index" || { log "Ingest failed"; return 1; }
 n=$(grep -c '' "$index" 2>/dev/null); n=${n:-0}
 nd=$(grep -c '' "$drop" 2>/dev/null); nd=${nd:-0}
-log "index 就绪: $index ($n 条;丢弃标注 $nd 条,见 $drop)"
+log "Index ready: $index ($n records; $nd dropped annotations in $drop)"
 }
 
-# 一次性(默认 LITWATCH_LOOP_SEC=0)或前台常驻(>0:每轮抓一遍,sleep 后重跑,Ctrl-C 停)。
-# 近作每天才更新,间隔别调到几小时以下——白抓同一批,还可能被 OAI 流控。
+# Run once by default or remain in the foreground at the configured interval.
 while :; do
   one_pass; rc=$?
   [ "$loop_sec" -gt 0 ] || exit "$rc"
-  log "本轮结束(rc=$rc);${loop_sec}s 后重跑(Ctrl-C 停)"
+  log "Pass finished (rc=$rc); rerunning in ${loop_sec}s (Ctrl-C stops)"
   sleep "$loop_sec"
 done

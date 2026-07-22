@@ -14,7 +14,88 @@ record_call() {
   printf '%s\n' "$1" >> tmp/fake-agent.calls
 }
 
+awr_base() {
+  local task
+  for task in tmp/awr-side/awr/*.task.md; do
+    [ -e "$task" ] || continue
+    printf '%s\n' "${task%.task.md}"
+    return 0
+  done
+  printf 'fake_agent.sh: AwR task file not found\n' >&2
+  return 1
+}
+
 case "$prompt" in
+  *roles/awr-priorwork.md*)
+    base=$(awr_base)
+    crack_heading='## Crack Evidence Verification'
+    verification_one='- https://example.com/crack-one | Verification: supports — Stable control survives confidence-triggered updates.'
+    verification_two='- https://example.com/crack-two | Verification: supports — Bounded latent drift permits skipped transitions.'
+    if [ "$FAKE_AGENT_MODE" = "awr-invalid-verification" ]; then
+      verification_one='- https://example.com/crack-one | Verification: maybe — The outcome token is intentionally invalid.'
+    elif [ "$FAKE_AGENT_MODE" = "awr-mixed-verification" ]; then
+      verification_one='- https://example.com/crack-one | Verification: maybe; Verification: supports — The second token must not mask the first.'
+    elif [ "$FAKE_AGENT_MODE" = "awr-no-crack" ]; then
+      crack_heading=
+      verification_one=
+      verification_two=
+    fi
+    printf '%s\n' \
+      '## Independent Prior Work' \
+      'Search Terms: confidence-gated latent updates; event-triggered world models' \
+      '- Query: https://api.semanticscholar.org/graph/v1/paper/search?query=confidence-gated-latent-updates' \
+      'Nearest Work:' \
+      '- Neighbor One | https://example.com/awr-paper-one | Uses fixed-rate latent updates.' \
+      '- Neighbor Two | https://example.com/awr-paper-two | Gates observations instead of latent dynamics.' \
+      '- Neighbor Three | https://example.com/awr-paper-three | Compresses a dense world model.' \
+      '- Neighbor Four | https://example.com/awr-paper-four | Studies adaptive compute outside robot control.' \
+      '- Neighbor Five | https://example.com/awr-paper-five | Uses event triggers without confidence gating.' \
+      'Strongest Counterexample: Neighbor Four is the closest adaptive-compute result, but it omits closed-loop world-model control.' \
+      'Overlap: low — None of the five works occupies confidence-gated latent updates for closed-loop control.' \
+      'Papers Read: 5' \
+      'arXiv ID Check: yes' \
+      "$crack_heading" \
+      "$verification_one" \
+      "$verification_two" \
+      'AGY-DONE' > "${base}.priorwork.new.md"
+    ;;
+  *roles/awr-judge.md*)
+    base=$(awr_base)
+    case "$FAKE_AGENT_MODE" in
+      awr-not-ready)
+        printf '%s\n' \
+          'Decision: not-ready' \
+          '- Defect: Add a latency control that separates gating overhead from skipped world-model inference.' \
+          'AGY-DONE' > "${base}.judge.md"
+        ;;
+      awr-mixed-decision)
+        printf '%s\n' \
+          'Decision: SA-possible' \
+          'Decision: not-ready' \
+          '- Defect: This mixed decision is intentionally invalid.' \
+          'AGY-DONE' > "${base}.judge.md"
+        ;;
+      *)
+        printf '%s\n' \
+          'Decision: SA-possible' \
+          'AGY-DONE' > "${base}.judge.md"
+        ;;
+    esac
+    ;;
+  *roles/awr.md*)
+    base=$(awr_base)
+    printf '%s\n' \
+      '## Revised Idea' \
+      'Confidence-gated latent updates skip redundant world-model inference while preserving closed-loop control.' \
+      'Minimal Falsification Experiment: Compare dense and confidence-gated updates on 128 held-out episodes using one H100; reject the claim if success drops by more than two points or latency improves by less than thirty percent.' \
+      '## Search Record' \
+      '- Neighbor One | https://example.com/awr-paper-one | Fixed-rate latent updates.' \
+      '- Neighbor Two | https://example.com/awr-paper-two | Observation gating.' \
+      '- Neighbor Three | https://example.com/awr-paper-three | Dense world-model compression.' \
+      '## Response' \
+      'The revision isolates confidence gating and names a decisive dense-update comparison.' \
+      'AGY-DONE' > "${base}.new.md"
+    ;;
   *roles/meta.md*)
     record_call meta
     mkdir -p tmp
