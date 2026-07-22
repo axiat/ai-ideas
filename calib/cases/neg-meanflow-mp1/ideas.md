@@ -1,7 +1,7 @@
 ## I1
-一句话故事:把平均速度场(MeanFlow)从图像生成迁到机器人动作生成——策略头直接建模区间平均速度并加瞬时速度约束,单阶段训练、推理一步出整段动作,免蒸馏取代 diffusion/flow 策略的多步采样
-主题:动作表征
-形态:纯新机制/新问题
-简述:diffusion/flow 策略推理需 10-100 步去噪,限制控制频率与部署;现有一步化路线(consistency 蒸馏)要先训教师再蒸馏,两阶段且常掉多模态保真。MeanFlow 在图像生成证明平均速度场可单阶段训练一步生成;动作分布维度低、多模态强,是该机制的自然迁移域,瞬时速度约束用于保住动作模式不塌缩。
-最小否证实验:Robomimic 3 个任务 + OGBench,同一视觉骨干下对比 Diffusion Policy(50 步)、Consistency Policy(蒸馏 1 步,最强基线)与本法(单阶段 1 步),1×H100 数天。若本法成功率不及 Consistency Policy、或必须引入蒸馏阶段才追平,即判死;推理延迟同时报告以归因"一步"的收益来源。
-为何可能新:平均速度场未被迁移到动作生成;现有一步策略全部依赖蒸馏。这是待验证假设。
+One-Sentence Story: Transfer MeanFlow from image generation to robot action generation: model interval-average velocity with an instantaneous-velocity constraint, train in one stage, and generate a full action chunk in one inference step without distillation.
+Theme: Action Representation
+Form: new mechanism or new problem
+Summary: Diffusion and flow policies need 10-100 denoising steps, limiting control rate and deployment. Existing one-step routes based on consistency distillation require a teacher followed by distillation, creating two stages and often losing multimodal fidelity. MeanFlow showed that an average velocity field can support one-stage, one-step image generation. Low-dimensional but strongly multimodal action distributions are a natural transfer domain, with the instantaneous-velocity constraint intended to prevent mode collapse.
+Minimal Falsification Experiment: On 3 Robomimic tasks and OGBench, compare Diffusion Policy at 50 steps, Consistency Policy as the strongest distilled 1-step baseline, and the proposed one-stage 1-step method under the same visual backbone using 1×H100 for several days. Kill the idea if it underperforms Consistency Policy or needs a distillation stage to match it. Report inference latency to attribute gains to one-step generation.
+Why It May Be Novel: MeanFlow has not been shown in action generation, and existing one-step policies all appear to require distillation. This remains a hypothesis for independent verification.

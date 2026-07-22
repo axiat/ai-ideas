@@ -1,7 +1,7 @@
 ## I1
-一句话故事:为机器人通才策略建"记忆能力"专项基准——用隔离时间/空间/物体/程序性四类记忆的操作任务族,在统一骨干上横评记忆增强 VLA 变体,量化哪种记忆表征在哪类任务有效
-主题:评测与诊断
-形态:瓶颈定位实验
-简述:长时程与历史依赖操作(计数重复动作、操作被暂时遮挡的物体)要求策略有记忆,但现有 VLA 基准几乎全是 Markov 的——当前帧足以决定动作,记忆能力从未被单独度量。构建 16 个任务把四类记忆分别隔离成可测变量,在同一 VLA 骨干上实现 10+ 种记忆增强变体(frame-stacking、递归状态、显式记忆库等)统一横评,给出"任务类型 × 记忆表征"的有效性矩阵。
-最小否证实验:在 2-3 个记忆隔离任务上,对同一开源 VLA 骨干加 frame-stacking 长上下文与递归记忆两个变体,1×H100 数天;最强基线为 frame-stacking 长上下文(而非无历史基线)。若无记忆基线在记忆任务上不显著劣于任何记忆变体(记忆并非瓶颈,任务可从当前帧恢复),即判死。
-为何可能新:记忆增强 VLA 的方法论文各自评自选任务,无隔离记忆类型的标准化基准与统一横评。这是待验证假设。
+One-Sentence Story: Build a dedicated memory benchmark for generalist robot policies using task families that isolate temporal, spatial, object, and procedural memory, then compare memory-augmented VLA variants on one backbone.
+Theme: Evaluation and Diagnostics
+Form: bottleneck-localization experiment
+Summary: Long-horizon and history-dependent manipulation, including action counting and temporarily occluded objects, requires memory, but most VLA benchmarks are effectively Markovian because the current frame determines the action. Construct 16 tasks that isolate four memory types, implement 10+ memory variants on one VLA backbone, including frame stacking, recurrent state, and explicit memory banks, and produce a task-type × memory-representation effectiveness matrix.
+Minimal Falsification Experiment: On 2-3 isolated memory tasks, add long-context frame stacking and recurrent memory to the same open VLA backbone using 1×H100 for several days. The strongest baseline is long-context frame stacking rather than a history-free policy. Kill the idea if the no-memory baseline is not significantly worse than any memory variant, showing that memory is not the bottleneck or the current frame recovers the task state.
+Why It May Be Novel: Memory-augmented VLA papers evaluate on self-selected tasks; no standardized benchmark isolates memory types while comparing multiple memory representations under one backbone. This remains a hypothesis for independent verification.

@@ -18,6 +18,7 @@ EXPECTED = {
     "row_code_spans": "42985fa08be8aa8ff358d322a13120470bdb579d7468d9126b2cd84852edc2d1",
     "case_ids": "aed82be120ea6d26d1735050352867fafa4551e9681b8da3abce496915fae1c4",
     "assertions": "a85dfbcece8c4c223ab0dfca3eb6a2ef17f091d71b67cebccfc7e3348aaea3f0",
+    "calibration_evidence": "1da4ef109b01fd5d7c7984993004009c2a888b3dc38c593569bea437b35f9fd0",
 }
 THEMES = {
     "World Models - Architecture",
@@ -58,6 +59,10 @@ BACKEND_DEFAULTS = {
         "PANEL_CMD",
         "codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral",
     ),
+    "calib/run_all.sh": (
+        "PANEL_CMD",
+        "codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral",
+    ),
     "calib/run_e2e.sh": (
         "E2E_CMD",
         "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral",
@@ -70,9 +75,24 @@ FALLBACK_EXPANSION = re.compile(
     r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::?[-=])([^}\n]*)\}"
 )
 VARIABLE_REFERENCE = re.compile(r"\$(?:\{)?([A-Za-z_][A-Za-z0-9_]*)")
+CALIB_URL = re.compile(r"https?://[^\s\t|<>\[\]()`，。；;]+")
+CALIB_ARXIV_ID = re.compile(r"(?<!\d)\d{4}\.\d{5}(?!\d)")
+CALIB_DATE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?:-\d{2}(?:-\d{2})?)?(?!\d)")
+CALIB_NUMBER = re.compile(
+    r"(?<![A-Za-z0-9])(?:v\d+(?:\.\d+)*|\d+[x×]H\d+|\d+/\d+|"
+    r"\d+(?:\.\d+)?(?:[-~]\d+(?:\.\d+)?)?(?:%|[A-Za-z]+)?)(?![A-Za-z0-9])"
+)
+CALIB_VERDICT = re.compile(
+    r"(?<![A-Za-z0-9-])(?:strong-accept|accept-w-rev|reject|AwR|SA)(?![A-Za-z0-9-])"
+)
+CALIB_MODEL = re.compile(r"(?:Fable 5|Opus 4\.8)")
+CALIB_PAPER_TITLE = re.compile(r"^-\s+([^|\n]+?)\s*\|\s*https?://", re.M)
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+def stable_calibration_title(value):
+    return " ".join(HAN.sub("", value).split())
 
 def read_text(path):
     try:
@@ -183,7 +203,8 @@ def verify_runtime():
         "brainstorming_policy.md": ["## Divergence Lenses", "## Theme Vocabulary"],
         "hunt.sh": ["Papers Read", "Minimal Falsification Experiment", "Overlap"],
         "awr-side.sh": ["Revised Idea", "Strongest Counterexample", "Reviewer Feedback"],
-        "calib/run_panel.sh": ["suspected published counterpart"],
+        "calib/run_panel.sh": ["suspected published counterpart:"],
+        "calib/run_e2e.sh": ["Overlap:"],
     }
     for name, needles in required.items():
         text = (ROOT / name).read_text()
@@ -273,6 +294,31 @@ def verify_fixtures():
         raise AssertionError("calibration idea IDs changed")
     if digest("\n".join(assertions)) != EXPECTED["assertions"]:
         raise AssertionError("calibration assertions changed")
+    evidence_paths = [ROOT / "calib/README.md"]
+    evidence_paths.extend(sorted((ROOT / "calib/cases").glob("**/*")))
+    evidence_paths.extend(sorted((ROOT / "calib").glob("results-*.md")))
+    evidence = []
+    for path in evidence_paths:
+        if not path.is_file():
+            continue
+        text = path.read_text()
+        tokens = []
+        tokens.extend(
+            "url:" + match.group(0).rstrip(".,;:")
+            for match in CALIB_URL.finditer(text)
+        )
+        tokens.extend("arxiv:" + match.group(0) for match in CALIB_ARXIV_ID.finditer(text))
+        tokens.extend("date:" + match.group(0) for match in CALIB_DATE.finditer(text))
+        tokens.extend("number:" + match.group(0) for match in CALIB_NUMBER.finditer(text))
+        tokens.extend("verdict:" + match.group(0) for match in CALIB_VERDICT.finditer(text))
+        tokens.extend("model:" + match.group(0) for match in CALIB_MODEL.finditer(text))
+        tokens.extend(
+            "title:" + stable_calibration_title(match.group(1))
+            for match in CALIB_PAPER_TITLE.finditer(text)
+        )
+        evidence.append(f"{path.relative_to(ROOT)}:{'|'.join(sorted(tokens))}")
+    if digest("\n".join(evidence)) != EXPECTED["calibration_evidence"]:
+        raise AssertionError("calibration evidence tokens changed")
 
 def tracked_text_paths():
     raw = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT)

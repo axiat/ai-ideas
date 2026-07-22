@@ -1,12 +1,12 @@
 ## I1
-一句话故事:删掉 LLM 的 RL 后训练阶段默认必需的 AdamW——赌 RL 阶段的优化几何与 next-token 阶段根本不同,纯 SGD 即可匹配,顺带把优化器显存砍到接近零
-主题:效率与系统
-形态:删承重假设
-简述:RLVR 已成 LLM 训练的关键阶段,但优化器实践原样继承预训练/SFT——AdamW 的动量与二阶矩状态占 2× 参数量显存。赌注:RL 阶段对 per-parameter 自适应步长与动量的依赖远低于 next-token 阶段,内存开销近零的纯 SGD 足以匹配。若成立,RLVR 的优化器显存墙整体后退,同等硬件可训模型规模上一个档位。
-删哪条承重假设:大规模 transformer 训练必须用 Adam 族优化器(自适应步长+动量)——预训练/SFT/RLVR 全线默认,RLVR 阶段无人单独质疑过。
-为何现在能删:近期证据显示 RL 阶段与 next-token 阶段的优化动力学有本质差异(更新高度集中于小参数子集、有效损失地形更温和),而 Adam 两个组件(动量/自适应步长)在 RL 阶段的边际贡献从未被单独度量——组件级消融在此阶段是空白。
-forcing constraint:显存——AdamW 优化器状态占 2× 参数量,RLVR 还需同时驻留 actor/reference 等多份模型,优化器显存直接决定单机可训规模上限;删掉它等于免费抬高可训档位,并简化分布式状态切分。
-裂缝证据:https://arxiv.org/abs/1705.08292 —— 自适应梯度方法在多个任务上泛化不如调好的 SGD,"Adam 处处必需"从未在所有训练形态下成立
-裂缝证据:https://arxiv.org/abs/2306.09782 —— 65B 全参微调用 SGD 型融合更新即可完成,后训练阶段的损失地形对朴素优化器远比预训练宽容
-最小否证实验:Qwen2.5-1.5B 用 GRPO 在 GSM8K 训练子集做 RLVR,同步数同预算对比 AdamW(最强基线,含调参)与纯 SGD,1×H100 数天。若 SGD 的验证奖励系统性落后(最终差 >2 个点或训练不收敛),赌注即死——RL 阶段确实依赖自适应+动量。同时记录每步被有效更新的参数占比,把"RL 更新天然稀疏"作为机制归因信号与最近邻(预训练域 Adam 替代工作)区分开。
-为何可能新:RLVR 阶段的优化器选择未被单独研究;现有 Adam 替代与省显存工作(Lion/Adam-mini/GaLore)全部瞄准预训练或 SFT。这是待验证假设。
+One-Sentence Story: Remove AdamW from LLM RL post-training: wager that RL optimization geometry differs fundamentally from next-token training, so plain SGD can match it while reducing optimizer memory almost to zero.
+Theme: Efficiency and Systems
+Form: remove-load-bearing-assumption
+Summary: RLVR is now a central LLM training stage, but optimizer practice is inherited unchanged from pretraining and SFT. AdamW momentum and second-moment state consume 2× parameter memory. The wager is that RL depends much less on per-parameter adaptive rates and momentum than next-token training. If plain SGD matches AdamW, the RLVR optimizer-memory wall moves back by an entire model-size tier on the same hardware.
+Assumption to Remove: Large-scale transformer training requires an Adam-family optimizer with adaptive rates and momentum. Pretraining, SFT, and RLVR all inherit this default, while RLVR has not been isolated as a separate optimization regime.
+Why It Can Be Removed Now: Recent evidence suggests that RL updates concentrate in a small parameter subset and operate on a gentler effective loss landscape than next-token training. The marginal contribution of Adam's two components has not been measured separately in RL.
+Forcing Constraint: Memory. AdamW optimizer state costs 2× parameter size while RLVR also keeps actor, reference, and other model copies resident. Removing the state raises the single-machine model-size ceiling and simplifies distributed state partitioning.
+Crack Evidence: https://arxiv.org/abs/1705.08292 — Adaptive gradient methods generalize worse than tuned SGD on several tasks, so Adam has never been universally necessary across training regimes.
+Crack Evidence: https://arxiv.org/abs/2306.09782 — SGD-like fused updates support full-parameter fine-tuning of a 65B model, suggesting that post-training landscapes can tolerate simpler optimizers.
+Minimal Falsification Experiment: Train Qwen2.5-1.5B with GRPO on the GSM8K training subset, comparing a tuned AdamW strongest baseline against plain SGD at equal update budget using 1×H100 for several days. Kill the wager if SGD systematically trails by more than 2 validation-reward points or fails to converge. Record the fraction of parameters effectively updated per step to test the proposed sparse-update mechanism against nearby Adam-replacement work from pretraining.
+Why It May Be Novel: Optimizer choice has not been isolated in RLVR; existing Adam replacements and memory-saving methods such as Lion, Adam-mini, and GaLore target pretraining or SFT. This remains a hypothesis for independent verification.
