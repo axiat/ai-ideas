@@ -90,9 +90,9 @@ EXPECTED = {
     "stable_projection": "810adad8122a7761ba394e6a67cdfa12d8c4f869fc888a5c2a8e8cb61c3a29cb",
     "theme_projection": "5dd438abbc8fd9e71f42256fd453afa9a538d13201dd19ae59fdb4400cb6d435",
     "row_urls": "6015a625fa509040d974ba6bba4bf00dde25fca1763fc1ace1cdf57cded3f9c9",
-    "row_technical_tokens": "3292a960d68602b15b24040f8e71fd39e382abb10b4eba018ee75247c7658fdd",
+    "row_technical_tokens": "5dfe40626264373a4a7e695c9a2c6dae837cf03d79d4be4762ea3526d17f1e42",
     "row_code_spans": "4d9fe189ad926f8263062722340592a64fefb3e408cbb8a13d891f01532f4ebb",
-    "row_symbols": "39a1f8567478af090970d3b96ce010ba7b831c1ea5dc3deea275f0bc838f7198",
+    "row_symbols": "f7ddcafc43335b78f33e8115abb9a44bebdf19fdb33399867084e98ba57d2268",
     "case_ids": "aed82be120ea6d26d1735050352867fafa4551e9681b8da3abce496915fae1c4",
     "assertions": "a85dfbcece8c4c223ab0dfca3eb6a2ef17f091d71b67cebccfc7e3348aaea3f0",
     "calibration_evidence": "1da4ef109b01fd5d7c7984993004009c2a888b3dc38c593569bea437b35f9fd0",
@@ -313,6 +313,7 @@ def ordered_row_token_projection(
     pattern,
     group=0,
     normalize=None,
+    preprocess=None,
     strip_urls=False,
 ):
     normalize = normalize or (lambda token: token)
@@ -325,12 +326,42 @@ def ordered_row_token_projection(
                     lambda match: " " * len(match.group(0)),
                     value,
                 )
+            if preprocess:
+                value = preprocess(value)
             tokens = [
                 normalize(match.group(group))
                 for match in pattern.finditer(value)
             ]
             lines.append(f"{i}:{field_index}:{'|'.join(tokens)}")
     return "\n".join(lines)
+
+def normalize_ledger_technical_text(value):
+    def close_unit_gap(match):
+        unit = match.group(1)
+        if unit.lower() in {"rollout", "rollouts"}:
+            return "rollout"
+        if unit.lower() in {"seed", "seeds"}:
+            return "seed"
+        return unit
+
+    return re.sub(
+        rf"(?<=[{LEDGER_TECH_DIGITS}])\s+(ms|s|Hz|rollouts?|seeds?)\b",
+        close_unit_gap,
+        value,
+    )
+
+def normalize_ledger_technical_token(token):
+    token = re.sub(r"^[:;–—]+", "", token)
+    token = re.sub(r"[.,:;–—]+$", "", token)
+    if len(token) > 2 and token.startswith("/") and token.endswith("/"):
+        token = token[1:-1]
+    token = re.sub(
+        r"(?<=\d)(rollouts?|seeds?)$",
+        lambda match: "rollout" if match.group(1).startswith("rollout") else "seed",
+        token,
+    )
+    token = re.sub(r"^(\d{4}\.\d{5}):[A-Za-z].*$", r"\1", token)
+    return token
 
 def ledger_evidence(data):
     return {
@@ -342,6 +373,8 @@ def ledger_evidence(data):
         "row_technical_tokens": digest(ordered_row_token_projection(
             data,
             LEDGER_TECH_TOKEN,
+            normalize=normalize_ledger_technical_token,
+            preprocess=normalize_ledger_technical_text,
             strip_urls=True,
         )),
         "row_code_spans": digest(ordered_row_token_projection(
@@ -838,7 +871,7 @@ Expected before implementation: failure because the evidence interface does not 
 
 - [ ] **Step 2: Implement the ledger evidence scope**
 
-Add `ledger-evidence` as a scope that runs before theme and language checks. It must preserve the header and the 216 seven-field plus 315 eight-field shape. URL extraction must stop before ASCII or full-width prose delimiters. Technical-token extraction must preserve row, field, and token order while excluding URL contents from the numeric projection.
+Add `ledger-evidence` as a scope that runs before theme and language checks. It must preserve the header and the 216 seven-field plus 315 eight-field shape. URL extraction must stop before ASCII or full-width prose delimiters. Technical-token extraction must preserve row, field, and token order while excluding URL contents from the numeric projection. Leading or trailing prose punctuation and paired slash wrappers are normalized; internal identifier punctuation, one-sided slashes, units, and operators remain evidence-bearing.
 
 - [ ] **Step 3: Verify and commit the artifact gate**
 

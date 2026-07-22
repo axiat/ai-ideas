@@ -19,6 +19,11 @@ def changed(rows, baseline, key, label):
         raise AssertionError(f"ledger evidence missed {label}")
 
 
+def unchanged(rows, baseline, key, label):
+    if CONTRACT.ledger_evidence(rows)[key] != baseline[key]:
+        raise AssertionError(f"ledger evidence over-constrained {label}")
+
+
 def rejected(rows, label):
     try:
         CONTRACT.verify_ledger_evidence(rows)
@@ -122,6 +127,38 @@ def main():
         "row_technical_tokens",
         "technical-token mutation",
     )
+    unchanged(
+        replace_first(
+            rows,
+            CONTRACT.LEDGER_TECH_TOKEN,
+            lambda token: "—" + token + ":",
+            strip_urls=True,
+        ),
+        baseline,
+        "row_technical_tokens",
+        "technical-token edge punctuation",
+    )
+    numeric_unit = re.compile(r"(?<=\d)\s+(?:rollouts?|seeds?)\b")
+    unchanged(
+        replace_first(
+            rows,
+            numeric_unit,
+            lambda token: token[:-1] if token.endswith("s") else token + "s",
+        ),
+        baseline,
+        "row_technical_tokens",
+        "count-unit plurality",
+    )
+    changed(
+        replace_first(
+            rows,
+            numeric_unit,
+            lambda token: " seeds" if "rollout" in token else " rollouts",
+        ),
+        baseline,
+        "row_technical_tokens",
+        "count-unit semantics",
+    )
     changed(
         swap_first_technical_pair(rows),
         baseline,
@@ -138,6 +175,33 @@ def main():
     technical_identifier = CONTRACT.LEDGER_TECH_TOKEN.search("AC²-VLA")
     if not technical_identifier or technical_identifier.group(0) != "AC²-VLA":
         raise AssertionError("superscript technical identifier is not atomic")
+    normalized_tokens = {
+        "F1:": "F1",
+        "——F1": "F1",
+        ":2412.14355": "2412.14355",
+        "3x.": "3x",
+        "0.5": "0.5",
+        "/100-500Hz/": "100-500Hz",
+        "50rollout": "50rollout",
+        "50rollouts": "50rollout",
+        "4seed": "4seed",
+        "4seeds": "4seed",
+        "50×3seed": "50×3seed",
+        "2602.03203:oracle": "2602.03203",
+    }
+    for token, expected_token in normalized_tokens.items():
+        if CONTRACT.normalize_ledger_technical_token(token) != expected_token:
+            raise AssertionError(f"incorrect technical-token normalization: {token}")
+    normalized_text = {
+        "100-300 ms": "100-300ms",
+        "100-500 Hz": "100-500Hz",
+        "0.5-1 s": "0.5-1s",
+        "50 rollouts": "50rollout",
+        "4 seeds": "4seed",
+    }
+    for value, expected_value in normalized_text.items():
+        if CONTRACT.normalize_ledger_technical_text(value) != expected_value:
+            raise AssertionError(f"incorrect technical-text normalization: {value}")
 
     required_symbols = "①②③④−≡∈⇒∝⟂≫↑∧^+=|~"
     ledger_text = "\n".join(
