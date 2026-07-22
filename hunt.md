@@ -1,11 +1,11 @@
-# Idea Hunt — 主动触发入口
+# Idea Hunt — Active Entry Point
 
-`./hunt.sh` 驱动的多进程流水线。回路协议、阶段划分与 ledger schema 以 `PROGRAM.md` 为准;各角色 prompt 在 `roles/`;运行参数、结构门槛与守卫见 `hunt.sh` 头部注释与 `README.md`。全程中文。
+`./hunt.sh` runs a multi-process research pipeline. `PROGRAM.md` defines the loop protocol, stage boundaries, and ledger schema; role prompts live under `roles/`; the header comments in `hunt.sh` and `README.md` define runtime parameters, structural gates, and guards. All generated prose must be English.
 
-## 本入口特有项
+## Entry-Point Rules
 
-- 停机条件:当日全票 Strong Accept 累计达 `SA_TARGET`(默认 1)即停;`SA_TARGET=0` 不设上限一直攒;之前持续循环,不询问人。
-- 幂等:重入按 ledger 当日 SA 计数判断,已达标则确保发布后直接结束。
-- 前段空产出或结构门槛不达标:先按正常无达标区间短重试,连续 `EMPTY_MAX` 次才升级异常冷却。
-- 调研范围:不限时间窗,允许经典与跨领域来源。
-- 输出结构:1 关键文献 · 2 达标 idea(完整评审表 + 定向查重记录)· 3 被拒简表 · 4 元信息(尝试轮数、评审日期)。
+- Stop when today's unanimous Strong Accept count reaches `SA_TARGET` (default 1). `SA_TARGET=0` removes the upper bound and accumulates indefinitely. Before the target is reached, continue without asking a human.
+- Re-entry is idempotent: count today's Strong Accept rows in the ledger; if the target is already met, ensure publication and exit.
+- Empty early-stage output or a failed structural gate receives the normal short retry. Escalate to abnormal cooldown only after `EMPTY_MAX` consecutive failures.
+- Research has no time-window limit; classic and cross-domain sources are allowed.
+- Report structure: 1 Key Literature · 2 Accepted Ideas (complete review table and directed prior-work record) · 3 Rejected Ideas · 4 Metadata (round count and review date).
