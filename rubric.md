@@ -1,6 +1,6 @@
-# Idea Evaluator Rubric（由 idea-evaluator skill 整合，供每周 idea routine 使用）
+# Idea Evaluator Rubric
 
-<!-- 来源: ~/.claude/skills/idea-evaluator/，整合日期 2026-07-03 -->
+<!-- Integrated from ~/.claude/skills/idea-evaluator/ for the weekly idea routine on 2026-07-03. -->
 
 ---
 name: idea-evaluator
@@ -153,7 +153,7 @@ engineering skills, timeline), assess:
   experiments, writing, revision) fit within the idea's lifecycle?
 
 Anchor the assessment in the idea's stated minimal falsification
-experiment (最小否证实验: data × compute × expected signal, where a
+experiment (data × compute × expected signal, where a
 missing signal kills the idea). Judge whether that experiment is
 executable under the stated resource baseline and whether its signal
 can genuinely falsify the claim; narrative feasibility claims without
@@ -179,7 +179,7 @@ section below.
 Issue one of three verdicts:
 
 - **Strong Accept**: execute now. The bar is defined solely by the
-  clear-accept standard in `brainstorming_policy.md` 评审校准 (done
+  clear-accept standard in `brainstorming_policy.md` (done
   well, the idea likely reaches clear accept, ≈6,6,8 or above, at an
   A-tier venue); zero CRITICAL flaws, at most one MAJOR, capability
   match green, lifecycle fit. Dimension scores are diagnostic
@@ -1093,9 +1093,9 @@ Technology Cycle, Hamming's Rule) is identified. The purpose is to
 show what a disruptive reframing looks like in the wild and to
 calibrate paradigm-shift analysis against real precedents.
 
-Examples 2, 3, and 4 appear in
-`handbook/02_Idea_Generation/2.3_进阶_如何做颠覆式创新.md` as
-illustrations for the principle they anchor.
+Examples 2, 3, and 4 also appear in the
+[advanced disruptive-innovation handbook](handbook/02_Idea_Generation/2.3_%E8%BF%9B%E9%98%B6_%E5%A6%82%E4%BD%95%E5%81%9A%E9%A2%A0%E8%A6%86%E5%BC%8F%E5%88%9B%E6%96%B0.md)
+as illustrations for the principle they anchor.
 
 ## 2. Example 1: Transformer architecture
 

@@ -1,345 +1,339 @@
 # CHANGELOG
 
-## 2026-07-19 calib:具身域删公理正式阳性落位(pos-axiom-torque 3/3 SA)
+## 2026-07-19 Calibration: embodied-domain axiom-removal positive (`pos-axiom-torque`, 3/3 SA)
 
-- 新增 `calib/cases/pos-axiom-torque`:RSS 2026 Outstanding Systems Paper「NeuralActuator」(arXiv 2607.11734,post-cutoff)投稿前形态重建——删「actuator 学习必须扭矩真值监督」;9 近邻经 arXiv API 核验、时窗扫描 18+8 篇零命中、裂缝 2/2 实读相符、力感知轴占据者(解析 DOB,2507.06174)如实入档。面板 3/3 SA,按 `pos-axiom-*` 判读表=通道可用;票据核对见 `calib/results-2026-07-19.md`。
-- `calib/README.md`:cases 节补 `pos-axiom-torque`,`pos-axiom-*` 由「待选定」改为已落位;RSS 2026 官方金标页滞后(07-19 仍回 2025 内容,名单经 Instagram+arXiv 编号交叉验证)记录在案。
+- Added `calib/cases/pos-axiom-torque`, a pre-publication reconstruction of the RSS 2026 Outstanding Systems Paper NeuralActuator (arXiv 2607.11734, post-cutoff). The candidate removes the assumption that actuator learning requires ground-truth torque supervision. Nine neighbors were verified through the arXiv API; an 18+8-paper window scan found no direct hit; 2/2 crack-evidence items matched on full reading; and the force-aware axis occupant, analytical DOB 2507.06174, was recorded. The panel returned 3/3 SA, so the `pos-axiom-*` interpretation table marks the channel operational. Ballots are recorded in `calib/results-2026-07-19.md`.
+- Added `pos-axiom-torque` to `calib/README.md` and changed `pos-axiom-*` from unselected to established. The RSS 2026 official award page still returned 2025 content on 07-19; the result was cross-checked through Instagram and the arXiv identifier.
 
-## 2026-07-19 Harness:SA 净增量计分 + report 事实边界
+## 2026-07-19 Harness: incremental SA payoff and report evidence boundaries
 
-- `brainstorming_policy.md` / `rubric.md`:Strong Accept 只计相对最近 payoff occupant(真实零命中则为同 metric/setting 的 strongest current baseline)的新增且可归因 payoff;已发表或已落地收益不得重复记分。(协议改动,PR 留审)
-- `roles/research.md` / `roles/review.md`:查重须点名 payoff occupant 或有边界零命中;已发表异常须通过 exact arm、setting 与单变量 estimand 对齐,否则整条异常及派生数字不进入评分、flaws、verdict、Integrity gate 或 actions。(协议改动,PR 留审)
-- `roles/report.md` / `ideas/2026-07-17_hunt.md`:report 只允许 panel-wide 全票 verdict 句,裁判 1 评审与 priorwork 按 accepted id 连续逐字搬运,不跨席汇总 CRITICAL/MAJOR 或自行重算文献对照;07-17 报告顶部补 A2World `+1.2` / `+2.7` 勘误,冻结历史票据不回写。边界:单独从旧 archive 重跑 report 会原样搬出其 `1.6%` 旧句,须以已发布报告顶部勘误为准。
-- `ledger.tsv`:经用户明确授权,对 07-17 I3 历史行作一次性例外纠错:`strong-accept` 改为 `accept-w-rev`,reason 采用 byte-identical 冻结输入 fresh 三票中的原句,category 按现行聚合规则记 `design-fixable`;冻结 verdict/review 票据不改,`PROGRAM.md` 后续只追加规则不变。
-- 验证:以冻结 07-17 I3 archive 的 byte-identical 输入分别重跑,三张新票均为 Accept-w-Rev,错误异常派生值零命中;正式 calibration 为 4 pass + 1 probe、0 fail。两组验证均使用 sandboxed Codex 后端;默认 Claude 后端因 timeout 未形成有效终票,不混票。
+- `brainstorming_policy.md` and `rubric.md`: Strong Accept counts only new, attributable payoff over the nearest payoff occupant, or over the strongest current baseline for the same metric and setting when a bounded search finds no occupant. Published or already-realized gains cannot be counted again. Protocol change; pending PR review.
+- `roles/research.md` and `roles/review.md`: prior-work analysis must name the payoff occupant or document a bounded zero-hit result. A published anomaly enters scores, flaws, verdicts, the Integrity gate, or actions only when the exact arm, setting, and single-variable estimand align. Protocol change; pending PR review.
+- `roles/report.md` and `ideas/2026-07-17_hunt.md`: reports may state only the panel-wide unanimous verdict. Reviewer 1 text and prior work are copied contiguously for the accepted ID; the report does not merge CRITICAL or MAJOR findings across seats or recompute literature comparisons. The 07-17 report now carries the A2World correction, `+1.2` and `+2.7`, at the top. Frozen historical ballots were not rewritten. Re-running the report alone from the old archive still reproduces its frozen `1.6%` sentence; the published correction is authoritative.
+- `ledger.tsv`: with explicit authorization, the official 07-17 I3 ledger row was corrected once from `strong-accept` to `accept-w-rev`. Its reason is the sentence returned by three fresh ballots over byte-identical frozen input, and its category is `design-fixable` under the current aggregation rule. Frozen verdict and review artifacts remain unchanged; later `PROGRAM.md` rules remain append-only.
+- Validation reran the frozen 07-17 I3 archive independently. All three fresh ballots returned Accept-w-Rev and none repeated the invalid anomaly-derived value. The formal suite reported 4 pass + 1 probe and 0 fail. Both checks used sandboxed Codex. The default Claude backend timed out before producing valid final ballots, so its partial output was not mixed into the result.
 
-## 2026-07-15 awr-side 判定侧独立化:1 搜 1 判,治 agy 自判过宽放行
+## 2026-07-15 AwR independent prior-work seat
 
-agy 自判(研究席=判席同为 agy)过宽放行,根因是判席拿草稿自报的「## 检索记录」当 novelty 证据——等于让写草稿的 agy 给自己背书。对齐 hunt.sh「novelty 只由独立查重支持」,把判前的查重拆成独立一席:每轮 研究→查重→判 三席各只做一件小事(也正治 agy「一口气做搜+判」易鲁棒盖章的弱点)。
+Using agy for both research and judgment had allowed overly broad approvals because the judge treated the draft's self-reported retrieval section as novelty evidence. AwR now follows the hunt invariant that novelty depends on independent prior-work analysis: each round has separate research, prior-work, and judgment seats.
 
-- 新增 `roles/awr-priorwork.md`:查重席,只读草稿「## 修订版 idea」主张定检索词,独立检索最近邻出 priorwork(5–8 篇 + 可复现 API 查询串 + 最强反例 + 删承重假设裂缝核验),**严禁采信、复制草稿自报检索记录**;只报事实不打分。(协议新增,PR 留审)
-- `roles/awr-judge.md`:novelty 只认 priorwork.md、不认草稿自说;判席自己不再检索;SA 硬门 ①定向查重 / ③裂缝核验的证据源改为 priorwork.md,②最小否证实验仍核草稿。priorwork 缺失/不足即判「还不行」。(协议改动,PR 留审)
-- `awr-side.sh`:判前插一个查重门(与研究门对称);新 `SIDE_PRIORWORK_CMD`(不设回落 `SIDE_JUDGE_CMD`——查重是判的证据基,随判席信任等级走);新状态文件 `<key>.priorwork.md`,判前对当轮草稿现搜(priorwork 比 draft 新才复用,仅崩溃/判失败重试;换轮草稿被研究席重写故必重搜——判据永远对得上当前草稿);新机械门 `check_priorwork`(带 URL 近邻 ≥5、`- 查询串:` URL 行、`最强反例:` 行、AGY-DONE 末行),失败存 `.priorwork.badN` 计入拉黑(复用既有 `$key.*.bad*` glob);finalize 成品带「独立查重证据(判据)」节。
-- 荐配从「agy 研究 + claude 判」变为「agy 研究 + claude 查重&判」(priorwork 回落 judge_cmd);全 agy 自判 → agy 搜 + agy 判各自独立单任务。
-- 验证:`bash -n` OK;`check_priorwork` 单元 6/6(合格 / 近邻不足 / 缺查询串 / 缺最强反例 / 缺 AGY-DONE / 空);假 agent e2e 全绿——SA 路径时序 研究<查重<裁判、成品带独立查重证据;「还不行 × max_rounds=2」路径每轮各重搜一次(2 查重 / 2 判)、收尾未达标、反馈回灌 2 轮(既有 check_draft/check_judge 两路径同被覆盖,未回归)。未跑真 agy(留用户按需实测)。
+- Added `roles/awr-priorwork.md`. It reads only the claims under `## Revised Idea`, derives search terms, and produces factual prior work with 5-8 papers, a reproducible API query, `Strongest Counterexample:`, and `Crack Evidence Verification`. It cannot trust or copy retrieval claims supplied by the draft. Protocol addition; pending PR review.
+- `roles/awr-judge.md`: novelty depends only on `priorwork.md`; the judge no longer searches. Targeted retrieval and crack verification use that file, while the minimal falsification experiment remains a draft check. Missing or thin prior work forces `Decision: not-ready`. Protocol change; pending PR review.
+- `awr-side.sh`: inserted a prior-work gate before judgment. `SIDE_PRIORWORK_CMD` falls back to `SIDE_JUDGE_CMD`, keeping evidence and judgment at the same trust tier. `<key>.priorwork.md` is reusable only when newer than the draft, which covers crash and judgment retries but forces a new search after a rewritten draft. `check_priorwork` requires at least 5 linked neighbors, a URL query line, `Strongest Counterexample:`, and final `AGY-DONE`; failures become `.priorwork.badN` and count toward the existing `$key.*.bad*` circuit breaker. Final artifacts include independent prior-work evidence.
+- The recommended split changed from agy research plus Claude judgment to agy research plus Claude prior-work and judgment. An all-agy setup still uses separate search and judgment invocations.
+- Validation: `bash -n` passed; `check_priorwork` passed 6/6 cases covering valid output, too few neighbors, missing query, missing strongest counterexample, missing `AGY-DONE`, and empty output. Fake-agent end-to-end checks preserved research < prior-work < judgment ordering on the SA path. With `max_rounds=2` and repeated not-ready outcomes, the system ran 2 searches and 2 judgments, returned final not-ready status, and fed back both rounds without regressing `check_draft` or `check_judge`. No live agy run was performed.
 
-## 2026-07-14 litwatch 加前台常驻模式(LITWATCH_LOOP_SEC)
+## 2026-07-14 Literature Watch foreground loop (`LITWATCH_LOOP_SEC`)
 
-想把 litwatch 挂前台一直跑而非只跑一遍。
+- `litwatch.sh`: moved stages 1/2/3 into `one_pass()`. `LITWATCH_LOOP_SEC=0`, the default, performs one pass and exits; values `>0` sleep that many seconds between passes until Ctrl-C. OAI-PMH acquisition uses about 8 requests per pass with a 3s page interval. Recent-work metadata changes daily, so multi-hour intervals are sufficient. Ingest failure changed from `exit 1` to `return 1`, preserving the loop.
+- `README.md`: added `caffeinate -is env LITWATCH_LOOP_SEC=21600 ./litwatch.sh` for a 6h foreground refresh that prevents sleep.
+- Validation: `bash -n` and `py_compile` passed; `litwatch_test.sh` passed 15/15, including one-shot T7/T8 after the `one_pass()` refactor. A live loop completed 3 passes at a 2s interval and shut down cleanly.
 
-- `litwatch.sh`:stage-1/2/3 收进 `one_pass()`;`LITWATCH_LOOP_SEC=0`(默认)跑一遍就退,`>0` 则每遍 sleep 该秒数后重跑(Ctrl-C 停)。取数走 OAI-PMH 批量端点(非限流的 search API),一遍约 8 次请求、翻页间隔 3s;近作每天才更新,间隔建议 ≥ 数小时。ingest 失败由 `exit 1` 改 `return 1`(常驻下不整体退出)。
-- `README.md`:加 `caffeinate -is env LITWATCH_LOOP_SEC=21600 ./litwatch.sh`(每 6h 刷一遍 + 防休眠)。
-- 验证:`bash -n` + `py_compile` OK;`litwatch_test.sh` 15/15(one_pass 重构后一次性 e2e T7/T8 仍绿);常驻 2s 间隔真跑 3 遍、拆卸干净。
+## 2026-07-14 Literature Watch OAI-PMH acquisition
 
-## 2026-07-14 litwatch 取数改 arXiv OAI-PMH——相关性解决 + 真 agy 端到端验过
+Theme-specific queries against the arXiv search API produced severe 429 responses and timeouts from both Mac and xyh IPs. The only stable term-soup query sorted by date returned off-topic noise. OAI-PMH batch acquisition with local filtering replaced it as the default; the S2 path remains available.
 
-arXiv search API 对具体主题查询限流极狠(429/超时,Mac + xyh 两 IP 都验)、唯一稳定返回的 term-soup+date 排序给离题噪声,cache 零价值。改用 OAI-PMH 批量抓 + 本地过滤;S2 口子保留。
+- `lib/litwatch.py`: added `parse_oai`, `harvest_oai`, `load_themes`, `filter_tag`, and the `harvest` subcommand. It reads OAI-PMH from `oaipmh.arxiv.org/oai`; `export.arxiv.org/oai2` redirects there with 301. Records are fetched by set and date range with bounded `resumptionToken` pagination, filtered through the category allowlist and inline `|` keyword tags, and deduplicated keep-first. Only parsed OAI responses can create records.
+- `litwatch.sh`: defaulted `LITWATCH_SOURCES=oai`. Stage 1 runs one harvest for `oai` and per-query acquisition for `s2` or `arxiv`. Added `LITWATCH_OAI_DAYS`, `LITWATCH_OAI_SETS`, `LITWATCH_OAI_MAXPAGES`, and `LITWATCH_OAI_CATS`, with separate OAI and query theme defaults. `LITWATCH_S2_KEY` and `LITWATCH_SORT` remain supported.
+- Live validation on 2026-07-14 fetched 2600 `cs` records on Mac without OAI rate limiting and filtered them to 83 relevant papers with correct themes. A real agy pass over 24 papers produced 7 useful annotations, at most 5 per theme, all from staging, with 0 ingest drops. This established that agy worked on substantive input.
+- `py_compile`, `bash -n`, and `litwatch_test.sh` 15/15 passed. T14 covers `parse_oai`; T15 covers `filter_tag`; the suite also covers the trust boundary, zero-regression behavior, backoff, and deduplication.
 
-- `lib/litwatch.py`:新增 `parse_oai`/`harvest_oai`/`load_themes`/`filter_tag` 与 `harvest` 子命令。走 OAI-PMH(`oaipmh.arxiv.org/oai`,`export.arxiv.org/oai2` 会 301 到这)按 set + 日期段批量抓、跟 resumptionToken 翻页(封顶),本地按类别白名单 + 行内 |-关键词过滤打标、keep-first 去重。record 只来自 OAI 响应 parse,agy 无法新增。
-- `litwatch.sh`:默认 `LITWATCH_SOURCES=oai`;stage-1 按 source 分支(oai=一次 harvest;s2/arxiv=per-query 循环)。加 `LITWATCH_OAI_DAYS/SETS/MAXPAGES/CATS`,OAI 与 query 两套默认主题。S2 口子(`LITWATCH_S2_KEY` + `LITWATCH_SORT`)完整保留。
-- 真机(2026-07-14):Mac 直连 OAI 不限流,抓 2600 篇 cs → 过滤 83 篇相关近作、主题标注正确;对其中 24 篇跑真 agy → 7 条高质量标注(识别近邻风险、结合 research_context、≤5/主题、id 全实来自 staging、0 丢弃、沙箱/零回归成立)。**agy 有料输入下正常工作。**
-- 验证:`py_compile` + `bash -n` OK;`litwatch_test.sh` 15/15(新增 T14 parse_oai、T15 filter_tag;含信任边界/零回归/退避重试/去重)。
+## 2026-07-14 Literature Watch service foundation
 
-## 2026-07-14 litwatch:领域近作监视(免费 agy 额度落点,回路外常驻)
+`LITWATCH-DRAFT.md` established Literature Watch as a resident process outside the hunt loop. It uses spare agy capacity to prefetch recent domain papers into an optional cache used only as nearest-neighbor seeds. agy was deliberately excluded from the main loop because its failure must neither delay nor contaminate verdict formation. Two independent adversarial test reviews were completed.
 
-落 `LITWATCH-DRAFT.md`。免费 agy 额度不进 hunt 主回路(agy 太不可靠,进回路会拖慢/污染),改成独立常驻进程预取领域近作成本地缓存,供查重阶段当近邻种子。经两轮独立测试席对抗复验(见末条)。
+- Added `lib/litwatch.py` as the deterministic acquisition and admission core. `fetch` queries arXiv or Semantic Scholar APIs, `parse` handles local responses for offline tests, and `ingest` joins annotations only when their ID exactly exists in staging. Out-of-set IDs, non-string IDs, malformed rows, and duplicates are dropped to `drops.jsonl`. Empty or malformed input returns `[]` without a traceback. `_norm_arxiv_id` retains legacy category prefixes such as `cs/...`, which are required for reachable URLs.
+- Added `litwatch.sh` with acquisition, annotation, and admission stages. It is best-effort: annotation failure still lets the deterministic core produce the index. agy reads a staging copy and writes annotations under `tmp/litwatch/agy/`; `ingest` reads trusted `staging.jsonl` outside that directory, so forged records created inside the annotation directory cannot enter the index.
+- Added `roles/litwatch.md`. The annotator may write only under `tmp/litwatch/agy/`, may select only IDs present in staging, and may assess relevance only. It cannot judge novelty, overlap, or verdict.
+- `agy-worker.sh`: changed the fixed output location to `${AGY_OUT_HINT:-tmp/round/}`. Literature Watch reuses the directory lock and `AGY_LAUNCH_GAP_SEC` gate while directing output to its annotation directory. Behavior is byte-identical when `AGY_OUT_HINT` is unset.
+- `roles/research.md`: added the cache-consumption contract. Cached entries accelerate cold-start retrieval but never reduce the live API, full-reading, or verification requirements. Cache absence preserves uncached behavior. Protocol change; pending PR review.
+- `LITWATCH-DRAFT.md`: aligned acquisition with Python stdlib rather than a literal curl path and described the safety property as structural isolation plus independent live verification, not an absolute structural guarantee. Inferring themes from `ledger.tsv` death reasons remained outside this version.
+- Boundary: the path rule in the agy prompt is not an OS sandbox. A deliberately hostile same-user process could reach a parent path and modify `staging.jsonl`. `roles/research.md` therefore rechecks every cache ID live and retains every structure gate; a poisoned cache can waste one search but cannot establish an incorrect verdict.
+- Validation: `bash -n`, `py_compile`, and `litwatch_test.sh` 12/12 passed, including offline units, orchestration, one live arXiv smoke, and `OUT_HINT` placement. The first adversarial review found that type-invalid annotations crashed ingest, violating zero regression; T9/T10 locked the fix. The second found an injection path when staging shared the agy write directory; separation plus T12 locked the fix. The final review passed.
+- The initial live check on 2026-07-14 saw burst rate limits, empty responses, and timeouts from arXiv; `fetch` skipped them without traceback. S2 returned 429 without a key, so it remained disabled by default and gained `LITWATCH_S2_KEY`. A real agy dry run completed in about 46s without a login stall, read sandbox staging, emitted a clean empty annotation set under the uncertain-input rule, and left the index valid. At this point relevance was still unproven because the default loose `all:` OR query plus date sorting was noisy. The later OAI-PMH entry above closed that evidence gap.
 
-- 新增 `lib/litwatch.py`:确定性取数/准入核。`fetch` 打 arXiv / Semantic Scholar API,`parse` 解析本地响应(离线可测),`ingest` 把 agy 标注挂到已取 record——标注 id 必须逐字 ∈ staging,越界 / 非串 id / 坏行 / 重复一律丢弃记 `drops.jsonl`;record 只来自 API parse,agy 无法新增记录。parse 对空/畸形输入返回 `[]` 不 traceback;`_norm_arxiv_id` 保留老式类别前缀(`cs/…` 才 url 可达)。
-- 新增 `litwatch.sh`:三段编排(取数 → agy 标注 → 准入),best-effort,agy 任一步失败 index 仍由确定性核产出(agy 挂掉零回归)。信任边界:agy 关进 `tmp/litwatch/agy/` 沙箱(读 staging 只读拷贝、写自己的 annotations),`ingest` 读沙箱之外的可信 `staging.jsonl`——agy 在自己沙箱里写伪造论文进不了 index。
-- 新增 `roles/litwatch.md`:agy 标注 prompt(只读写 `tmp/litwatch/agy/`,只标相关性、id 必须逐字来自 staging;不判 novelty/overlap、不出 verdict)。
-- `agy-worker.sh`:产物落点从硬编码 `tmp/round/` 改 `${AGY_OUT_HINT:-tmp/round/}`,litwatch 用它复用冷却闸(mkdir 锁 + `AGY_LAUNCH_GAP_SEC`)且改落点到沙箱。不设时行为与原来逐字节一致。
-- `roles/research.md`:加一段近作缓存消费契约——缓存当近邻种子加速冷启动,但 live API 记录 / 实读 / 各项核验硬要求一条不减,缓存缺则行为不变。此层也是 agy 越界写投毒缓存的纵深复核兜底。(协议改动,PR 留审)
-- `LITWATCH-DRAFT.md`:§1/§2/§3 与实现对齐——取数用 python stdlib(非字面 curl);正确性写成「结构隔离 + 纵深复核」两层,不再声称绝对结构保证;agy 拟检索词标为 v1 未做的后续扩展。
-- 边界(诚实标注):agy-worker 路径钉死是 prompt 级、非强制 OS 沙箱,一个存心写它没被给过的父路径的 agy 在 FS 层仍能改 `staging.jsonl` 投毒;这条归纵深复核层(research 对每条缓存 id live 复核、结构门槛一条不减),投毒缓存产不出错误 verdict、只白费一次查重。
-- 验证:`bash -n` + `py_compile` OK;`litwatch_test.sh` 12/12 全绿(离线单元/编排 + 一条 live arXiv smoke),含信任边界(越界标注 / 篡改沙箱 staging)、零回归(agy 写类型垃圾或失败仍产 index)、去重、OUT_HINT 落点、parse/ingest。两轮独立测试席对抗复验:首轮揪出 ingest 遇类型垃圾标注崩溃(破零回归,已修 + T9/T10 锁),次轮揪出 staging 与 agy 写目录同置的注入向量(已结构隔离 + T12 锁),末轮 PASS。
-- 真机测试(2026-07-14,见 `LITWATCH-DRAFT.md` 末节):arXiv 取数可用但突发会被限流(空响应/超时,已确认 fetch 干净跳过不 traceback);S2 免 key 基本 429 → 默认关 s2、加 `LITWATCH_S2_KEY`;真机 agy dry-run 成立(~46s、无登录卡,读沙箱 staging、遵守「拿不准不标」、产干净空标注、零回归到 index)。取数相关性(决定 cache 价值)未证:默认 `all:` 松散 OR + date 排序离题,已把 `LITWATCH_SORT`(relevance 可选)与布尔主题做成可调,但 arXiv 今日对本 IP 限流,relevance/布尔的实际相关性待一次未限流的运行肉眼核。
+## 2026-07-12 Review aggregation hardening: B2 missing votes and B3 MAJOR cap
 
-## 2026-07-12 复验硬化:缺票/非词表票不再塌成永久禁(B2)+ 自报 ≥2 MAJOR 机械硬顶(B3)
+The P1 re-review confirmed two aggregation gaps in `hunt.sh`. B2 enforces the `roles/review.md` requirement that every ID has one valid row. B3 mechanically enforces the rule that at least 2 MAJOR findings cap a ballot at Accept-w-Rev. No protocol or role file changed.
 
-P1 复验 B2/B3 两项聚合硬化。均在 hunt.sh 评审聚合环,不改任何协议/role 文件——B2 落实 review.md 写侧「每个 id 必须有一行」、B3 落实 review.md 铁律「含 ≥2 MAJOR → 封顶 Accept-w-Rev」,原先这两条只写在 prompt 里、bash 编排器未机械兜底。
+- B2: the old `rank_of $(cut -f2)` mapped missing and out-of-vocabulary votes to rank 0, indistinguishable from a real `reject`, so `min=0` could enter `novelty-dead` and permanently suppress a candidate. Added `vote_valid`, requiring exact membership in `{strong-accept,accept-w-rev,reject}` for every ID and seat before ledger mutation. Any invalid vote sends the full round through `fail_and_wait` as a review failure and logs `I<n>@rev<r>[vote]`. Real reject ballots remain valid.
+- B3: the third `verdict.tsv` field, MAJOR count, had not affected aggregation. Added `major_cap`: rank 2 with a reported integer at least 2 becomes rank 1 before vote vectors, `sa_votes`, and the minimum are computed. The cap therefore propagates through every downstream path. Parsing takes the first integer; an unparseable MAJOR field falls back to the verdict instead of invalidating the round.
+- Boundary: B2 validates only the verdict token. B3 does not reject an unparseable MAJOR field, so an extreme `strong-accept` plus malformed MAJOR value can escape this cross-check, but it still requires unanimous SA and the `sa_gate` evidence checks. `awr-side.sh` uses separate aggregation.
+- Validation: `bash -n` passed. 36 extracted-function tests covered valid and invalid vote forms, `major_cap` cases `(2,3)->1`, `(2,0)->2`, `(1,3)->1`, `(0,3)->0`, embedded integer parsing, unparseable fallback, `rank_of`, and `classify_nonsa`. Twenty-one sandboxed integration checks covered unanimous SA publication, MAJOR=3 capping to AwR with votes `1,1,1`, MAJOR=0 preserving `2,2,1` and near-SA admission, unanimous reject, a missing reviewer-3 row causing a review failure with no `ledger.good` row, and uppercase `Reject` causing the same failure.
 
-- 【B2 缺票塌成永久禁】原聚合对每个 id 逐席 `rank_of $(cut -f2)`,缺票/词表外 token 一律 → rank 0,与真 `reject` 无从区分 → min=0 → `classify_nonsa` 归 novelty-dead → 永久禁复活。即裁判 rc=0 却漏写某 id 的票、或票拼错大小写(基础设施/格式故障),会把一个候选永久判死。修:新增 `vote_valid`(票须精确 ∈ {strong-accept,accept-w-rev,reject}),聚合前(动 ledger 之前)逐 id×逐席内容级校验,任一票无效即 `fail_and_wait` 按 review 失败**重跑整轮**(与既有 rev_rc 进程级守卫同款处理),日志点名 `I<n>@rev<r>[票内容]`。真 `reject` 仍照常入账,不误触发。
-- 【B3 MAJOR 列未用】verdict.tsv 第 3 列 `MAJOR数` 聚合时被完全忽略,裁判自评 `strong-accept` 却自报 ≥2 MAJOR 的自相矛盾被原样采信。修:新增 `major_cap`(rank=2 且自报整数 ≥2 → 硬顶 1),在 `rank_of` 后、票向量/sa_votes/min 之前施顶,使降级流经全部下游(不计 SA 票、min 随之下降、分类随之变)。MAJOR 字段解析宽松(取首个整数),无法解析则不顶、回落信任第 2 列——纵深防御的交叉核验,不因格式小疵废轮(缺票的强校验归 B2)。
-- 边界(诚实标注):B2 只强校验第 2 列 verdict 落词表,不强校验 MAJOR 列可解析(避免格式小疵放大成整轮重跑);B3 对不可解析 MAJOR 回落信任 verdict,故极端下"strong-accept + 乱写 MAJOR"仍可能漏顶——但须同时全票 SA 且过 sa_gate 硬门槛,交叉核验仍在。AwR 复活 sidecar(awr-side.sh)另有独立聚合,不在本次改动范围。
-- 验证:`bash -n` OK。单测(从 hunt.sh 抽真函数 source,非副本)36 项——`vote_valid` 词表内/外(含大小写错、拼写错、含空格、空票)、`major_cap` 真值表(2,3→1;2,0→2;1,3→1;0,3→0;"约2个"→顶;"abc"→不顶)、`rank_of`/`classify_nonsa` 回归。集成(隔离沙箱跑真 hunt.sh,RESUME_FRONT 跳前段只 stub 评审/报告)21 项——全票 SA 全链路发布回归;MAJOR=3 顶为 AwR + 日志 `MAJOR 复核` + 票记 1,1,1;MAJOR=0 的 2,2,1 不误顶、入 near-sa-queue;全票 reject 正常入账 + B2 不误触发;裁判3 漏票 → B2 废轮 + ledger.good 无该行(不塌成永久禁)+ stages.tsv review=1;裁判3 大写 Reject(非词表)→ B2 废轮。
+## 2026-07-12 Near-SA lifecycle and classification fixes: A1, A2, B1
 
-## 2026-07-12 复验修复:near-SA 队列生命周期(A1)+ design-fixable 收窄(A2)+ 分类注释纠错(B1)
+An eight-item P1 re-review confirmed that A1 and A2 interacted: a broad `design-fixable` classifier admitted AwR+low rows that were not eligible for evolution or recheck, while an append-only queue and a mandatory head-first rule let one ineligible row block the only evolution slot.
 
-P1 复验(8 项全确认)后修 Top 2 真 bug。A1/A2 耦合:A2 制造"AwR+low 但非进化/复查资格(如 feasibility 封顶)"的行被误入队,A1 队列无 dequeue + generate 被要求"先取队首不得越过" → 不合格队首毒死唯一进化/复查名额。
+- A1: added `prune_near_sa_queue` before each generation round. It removes terminal stories already present at least 2 times in `ledger.good`, then retains the newest `NEAR_SA_MAX` entries, default 30. Admission now requires `story_cnt<2`. `generate.md` selects the first still-eligible row and skips invalid rows instead of blocking on the queue head.
+- A2: `classify_nonsa` uses only raw minimum rank and overlap, while true evolution eligibility depends on free-text reasons. `design-fixable` is therefore documented as a coarse queue label. `generate.md` reads the ledger reason to distinguish evolution from evidence recheck and skips mismatches; pruning ages out residual ineligible rows.
+- B1: corrected the claim that every non-downgraded reject had a mechanically verified CRITICAL or direct hit. Mapping such rejects to `novelty-dead` was a fail-closed approximation based on rank 0, not proof of a CRITICAL finding. The corresponding `PROGRAM.md` category text was reserved for the later documentation PR.
+- Validation: `bash -n` passed. Tests covered removal at count >=2, retention below 2, newest-N capping, queue order, the end-to-end count gate, and archive-stop scenarios A/B/C.
 
-- 【A1 队列只写不消费】near-sa-queue 原为 append + story 去重,无 dequeue、不清理、跨运行无界增长,generate 卡死队首。修:(a) `prune_near_sa_queue` 每轮生成前跑——删 story 在 ledger.good 已出现 ≥2 次的终态行(已复查/进化/改到 SA 或再判死),再按 `NEAR_SA_MAX`(默认 30)截断防无界增长、顺带老化淘汰从未被选中的残留;(b) 入队加 `story_cnt<2` 门(同 story 在 ledger ≥2 次=复查已用尽,不再入);(c) generate.md 改"取队列**首个资格仍合法**的行,不合格就跳下一行、别卡死队首",不再裸队首。
-- 【A2 design-fixable 过宽】`classify_nonsa` 只按 (raw_min,overlap) 判 design-fixable、不看 reason,而进化资格要求 reason 属实验设计类且排除 novelty 封顶 → AwR+low 但因查重薄弱/feasibility 封顶的行被误标入队。reason 是自由文本、机器判不了类型,故不在 classify 硬判,而是:注释明确 design-fixable 是**粗标**(可能不合格),真资格由 generate 读 ledger reason 定(design-fixable→进化、evidence-incomplete→复查,不匹配就跳过),粗标只用于入队;prune 老化淘汰不合格残留。
-- 【B1 顺带】classify_nonsa 注释原称"reject 必因 CRITICAL、正是 direct-hit/CRITICAL 集"——过度声称。改为如实:非降级 reject 归 novelty-dead 是**失败关闭近似**(机器只据 rank_of 判 min=0,缺票/软拒/乱码都塌成 0),不声称已机检 CRITICAL。(PROGRAM.md 的对应 category 文案在后续文档 PR 一并改。)
-- 验证:`bash -n` OK;单测真 `prune_near_sa_queue`——终态行(count≥2)删、count<2 留、cap 保留最后 N;cap 顺序正确;e2e 入队 count-gate(预置 story 已在 ledger 1 次→本轮命中 count=2→不入队,其余入);#10 归档停机 A/B/C 无回归。
+## 2026-07-12 P1 #1: independent selector
 
-## 2026-07-12 P1 #1:独立 selector——生成只发散,排序交独立进程
+Implemented item #1 from `P1-PROGRAM-DRAFT.md` with authorization to change `PROGRAM.md` and policy. Generation previously diverged to 10 candidates and self-filtered to 4-6 in one context; selection now belongs to a separate process. This completed #4-schema, #6, and #1, after which `P1-PROGRAM-DRAFT.md` was removed as specified.
 
-落 `P1-PROGRAM-DRAFT.md` 的 #1(用户授权改 PROGRAM.md + policy)。原 generate 在同一 context 里"发散 10 再自筛 4-6",自筛混在生成里、违背角色分离;shortlist 排序只有 `keep_rank` 机械定。改成生成只发散、排序交独立进程。至此 P1-PROGRAM-DRAFT.md 三项(#4-schema/#6/#1)全部并入,按其说明删除该文件。
+- Added `roles/select.md`. It ranks the complete divergent set under an independent, cheap, non-killing context using proposition strength, clear-accept ceiling, minimal falsification quality, and executability, then writes `tmp/round/select.tsv`. Because selection precedes prior-work research, its novelty dimension measures falsifiable proposition strength rather than claiming that no one has published the idea.
+- `roles/generate.md`: changed 10 candidates followed by self-filtering into about 10 candidates with no self-filtering. Lens and axiom-removal quotas now refer to selection into the deep-research slots, and occupied-mechanism avoidance applies during divergence.
+- `hunt.sh`: inserted `select` between generation and prescreen using `FRONT_CMD`. A nonzero selector return code warns and continues. `select_rank_of` returns rank from `select.tsv` or 999 for missing or invalid data. The `keeps.tsv` schema gained selector rank. `select_shortlist` sorts by `keep_rank`, selector rank, low theme occupancy, then generation order. Missing selector output falls back to generation order.
+- `PROGRAM.md`: step 1 now diverges to about 10 candidates without self-filtering, step 1.4 performs independent ranking, and step 9 describes selector plus prescreen reduction. The canonical axiom-removal quota in `brainstorming_policy.md` and the README flow were aligned.
+- Validation: `bash -n` passed. With selector order I3,I1,I2 and `SHORT_MAX=2`, the shortlist was I3,I1 and logs recorded I2 overflow. Invocation order was generate -> select -> prescreen -> research and `stages.tsv` contained `select`. `STUB_NO_SELECT` fell back to I1,I2. Archive-stop scenarios A/B/C remained green.
 
-- 新增 `roles/select.md`:独立 context、便宜可错、只排不杀,按四准则(命题强度 / clear-accept 上限 / 最小否证实验质量 / 可执行性)给发散全集全序排名,写 `tmp/round/select.tsv`。排序在深查前跑、拿不到 priorwork,故"novelty"维只评命题强度(逼不逼得出可证伪判别),不是"已确认无人做过"。
-- `roles/generate.md`:"发散 10 再自筛 4-6" → "发散约 10 个全部写入,不自筛";透镜/删公理配额里"自筛后 4-6"改为"selector 排进深查名额";铁律"自筛避开已占机制"→"发散避开"。
-- `hunt.sh`:generate 与 prescreen 之间插 `select` 阶段(FRONT_CMD,rc≠0 只告警不停);`select_rank_of` 查 select.tsv 名次、缺失/非法回落 999;`keeps.tsv` 加 select名次列;`select_shortlist` 排序键 = keep_rank(硬配额)> select名次 > 低存量主题 > 生成序。selector 缺失不废轮(退化为生成序)。
-- `PROGRAM.md` §回路:step1 改"发散约 10(不自筛)"、新增 step1.4 排序、step9 "约 10 个经独立排序 + 预筛裁剪";canonical `brainstorming_policy.md:8` 删公理配额"自筛后 4-6"同步改。`README.md` 流程串补"独立排序"。
-- 验证:`bash -n` OK;stub——select.tsv order=I3,I1,I2 + SHORT_MAX=2 → shortlist=I3,I1(I2 溢出丢、日志带 select名次),调用序列 generate→select→prescreen→research、stages.tsv 有 select 行;STUB_NO_SELECT(无 select.tsv)→ 回落生成序 shortlist=I1,I2;#10 归档停机 A/B/C 无回归(select 每轮跑、SA 轮发布正常)。
+## 2026-07-12 P1 #6: evidence-bounded candidate revival
 
-## 2026-07-12 P1 #6:复活软化——只 direct-hit/CRITICAL 永久禁,evidence-incomplete 准复查
+Implemented item #6 from `P1-PROGRAM-DRAFT.md` with authorization to change the canonical revival policy in `brainstorming_policy.md`. The previous blanket ban on reviving reject rows also blocked candidates whose unanimous SA ballots had been downgraded only because evidence gates were incomplete.
 
-用户授权改 `brainstorming_policy.md`(#6 复活规则 canonical 在此),落 `P1-PROGRAM-DRAFT.md` 的 #6。原"reject 行一律不得复活"把"全票 SA 仅因硬门槛降级、票够只差证据"的候选也永久封,near-SA 转化率上不去。
+- `PROGRAM.md` invariant 6 and `brainstorming_policy.md`: `novelty-dead` candidates with a direct hit, `overlap=high`, or CRITICAL finding remain permanently barred. Only `evidence-incomplete` reject rows may receive one evidence re-review. The block records its source and revival condition; the same story can be retried once, then becomes permanently barred if still below threshold.
+- `roles/generate.md`: recheck eligibility now includes reject rows with `category=evidence-incomplete`. Evolution remains limited to `accept-w-rev`; reject revival uses the recheck path. Queue guidance maps `design-fixable` to evolution and `evidence-incomplete` to recheck.
+- `hunt.sh`: near-SA admission changed from `design-fixable` to `design-fixable || evidence-incomplete`, with `sa_votes>=1` for both.
+- Correction to the draft taxonomy: `design-fixable` and `ceiling-limited` are Accept-w-Rev categories, not revivable reject categories. A reject at minimum rank 0 can be only `novelty-dead` or `evidence-incomplete`; therefore `evidence-incomplete` is the only reject class opened for re-review.
+- Validation: `bash -n` passed. A stub with votes `2,2,2` and empty `review.md` was downgraded by `sa_gate` to `verdict=reject, category=evidence-incomplete` and entered the near-SA queue. Archive-stop scenarios A/B/C remained green.
 
-- `PROGRAM.md §不动项6` + canonical `brainstorming_policy.md:7` 同步:reject 复活资格按 category——**novelty-dead**(direct-hit / overlap=high / CRITICAL)永久禁;**evidence-incomplete** 准一次复查(补证),块首记「复活自」「复活条件」,同一 story 至多一次、补后仍不达标并入永久禁。
-- `roles/generate.md`:复查条从"仅 accept-w-rev"扩到"也含 category=evidence-incomplete 的 reject 行";进化条改为"只修 accept-w-rev,reject 复活见复查";near-sa-queue 读注标明 design-fixable→进化、evidence-incomplete→复查。
-- `hunt.sh`:near-sa-queue 入队条件 `design-fixable` → `design-fixable || evidence-incomplete`(两者都 sa_votes≥1);classify_nonsa 注释更新(reject 恒 novelty-dead 正是 direct-hit/CRITICAL 集,唯一可复活 reject 是 evidence-incomplete)。
-- **对草案的更正**:草案把 design-fixable/ceiling-limited 也列为"可复活 reject"不准确——它们是 accept-w-rev 的类别(走既有进化/复查);reject(min=0)只会是 novelty-dead 或 evidence-incomplete,故 #6 实际放开的唯一 reject 类是 evidence-incomplete。
-- 验证:`bash -n` OK;stub——全票 SA(2,2,2)+ 空 review.md → sa_gate 降级 → ledger `verdict=reject, cat=evidence-incomplete`,near-sa-queue 收该行(标 evidence-incomplete);#10 归档停机 A/B/C 无回归。
+## 2026-07-12 P1 #4 schema: persistent non-SA categories
 
-## 2026-07-12 P1 #4-schema:ledger 加 category 列(非 SA 四分类持久化)
+Implemented item #4-schema from `P1-PROGRAM-DRAFT.md` under temporary authorization to change `PROGRAM.md`. Non-SA categories had existed only in `tmp/nonsa-class.tsv`; ledger persistence made them available across runs and enabled item #6.
 
-用户临时授权改 PROGRAM.md,落 `P1-PROGRAM-DRAFT.md` 的 #4-schema。非 SA 四分类原只在 `tmp/nonsa-class.tsv` 观测、跨运行不持久;进 ledger 后可持久、可供 generate 复活判定(#6 的前置)。
+- `PROGRAM.md`: expanded the ledger from 7 to 8 columns. The final `category` field accepts `novelty-dead`, `evidence-incomplete`, `design-fixable`, `ceiling-limited`, or `-`. Legacy 7-column rows treat the missing value as unknown, matching the overlap migration rule.
+- `hunt.sh`: both ledger writers gained the eighth field. Aggregated SA rows write `-`; non-SA rows use `classify_nonsa`; prescreen direct hits write `novelty-dead`. Positional reads of theme, verdict, and overlap were unchanged.
+- `roles/generate.md`, `roles/meta.md`, and `trigger.md`: replaced references to the final overlap field with explicit column 7 for overlap and column 8 for category.
+- Not included in this change: #6 revival and #1 selector required policy changes beyond the temporary `PROGRAM.md` authorization. Their canonical locations remained `brainstorming_policy.md` lines 7 and 8 and were implemented in the later entries above.
+- Validation: `bash -n` passed. A near-SA stub wrote 8 fields with `design-fixable` in column 8. Archive-stop scenarios A/B/C remained green; the published SA row had 8 fields with `-` in column 8, and `publish.sh` and `settle.sh` completed normally.
 
-- `PROGRAM.md`:ledger schema 7 列 → 8 列,末列 `category`(novelty-dead / evidence-incomplete / design-fixable / ceiling-limited / `-`);§回路 step4 聚合记账补 category 列;旧 7 列行缺此列按"未知"处理(同 overlap 旧行规矩)。
-- `hunt.sh`:两处 ledger 写补第 8 列——聚合处 SA 行写 `-`、非 SA 走 `classify_nonsa`;预筛 kill(direct-hit)写 `novelty-dead`。所有 positional 读(theme=f3 主题存量、verdict=f5 SA 计数/META 统计、overlap=awk on priorwork)不受影响。
-- `generate.md`/`meta.md`/`trigger.md`:"行末 overlap 列"位置引用改为"overlap 第 7 列 / category 第 8 列"(否则新 schema 下"行末"会指到 category)。
-- **未做**:#6(复活软化)、#1(独立 selector)的规则 canonical 在 `brainstorming_policy.md`(#6 复活规则在第 7 行、#1 的"自筛后 4-6"在第 8 行),要改 policy(另一 human-only 文件),仅授权 PROGRAM.md 不够;见 `P1-PROGRAM-DRAFT.md`。
-- 验证:`bash -n` OK;stub——near-SA 轮 ledger 每行 8 字段且 col8=design-fixable;#10 归档停机 A/B/C 无回归(scenario C 发布的 SA 行 8 字段、col8=`-`,publish/settle 正常)。
+## 2026-07-12 P1 candidate-quality instrumentation
 
-## 2026-07-12 P1 候选质量:研究只报事实 + 检索不完整补查 + 非 SA 四分类 + near-SA 队列
+Implemented the agent-editable subset of the near-SA quality program: #2 research facts, #3 targeted retrieval retry, #4 observable classification, and #5 near-SA queue. #1 selector, #6 revival, and persistent #4 schema required human-owned policy or `PROGRAM.md` changes and remained in `P1-PROGRAM-DRAFT.md` at this point.
 
-P1「提高候选质量与 near-SA 转化」的 agent 可改子集(#2/#3/#4-观测/#5-队列)。#1(独立 selector)、#6(复活软化)、#4 落 ledger schema 要改 human-only 的 PROGRAM.md/schema,草案见 `P1-PROGRAM-DRAFT.md`,不在本次代码内。
+- #2: `roles/research.md` no longer judges whether the strongest-counterexample difference is enough for clear accept. It reports only the concrete difference; the independent reviewer decides the ceiling from prior work.
+- #3: mechanical retrieval failure previously sent the whole round through `empty_and_wait`. Added `RESEARCH_RETRY`, default 1, to rerun research for the same shortlist after `rm priorwork.md`, preventing old and new blocks from jointly satisfying gates. Exhaustion still invalidates the round. `roles/research.md` requires an honest incomplete marker instead of labeling unread neighbors low-overlap to satisfy the floor.
+- #4: added `classify_nonsa` over pre-downgrade minimum rank, hard-gate downgrade status, and overlap. Categories were `evidence-incomplete`, `novelty-dead`, `design-fixable`, and `ceiling-limited`, recorded in `tmp/nonsa-class.tsv` without changing the fixed ledger schema at this stage.
+- #5: candidates with `design-fixable` and at least one SA vote entered `tmp/near-sa-queue.tsv`, deduplicated by exact story with `grep -Fxq`. `generate.md` priority became near-SA queue, deathlist evolution candidate, then ledger scan. The single evolution block gained a `delta:` line describing the concrete change and why it addresses the prior ceiling. Existing Accept-w-Rev+low eligibility and the one-slot limit remained intact.
+- Validation: `bash -n hunt.sh` and three stub scenarios passed.
 
-- 【#2 research 只报事实】`roles/research.md`「最强反例」行原要 research 判"差异是否足以支撑 clear-accept",违背该角色自己的铁律「只陈述事实、不打分」→ 改成只报"具体差异在哪"这个事实,clear-accept 上限交裁判(裁判本就据 priorwork 的 overlap+差异独立判 ceiling,不依赖 research 代判)。
-- 【#3 检索不完整→定向补查,不进定级】原查重不达机械门槛(链接/API/块/裂缝核验不足)= `empty_and_wait` 整轮作废,连同同轮好候选一起丢、也把"没查完"当成了"低重叠"定论。改:`RESEARCH_RETRY`(默认 1)次对同一 shortlist 定向重跑 research(补查前 `rm priorwork.md` 防新旧块混算门槛),耗尽才整轮作废;research.md 加铁律"检索没做完如实标,别为凑门槛把没读透的近邻硬写成 low"。
-- 【#4 非 SA 四分类(观测,不动 schema)】新增 `classify_nonsa`(按 降级前最低票 / 是否硬门槛降级 / overlap):evidence-incomplete(全票 SA 被硬门槛降级=票够只差证据)、novelty-dead(overlap=high 头条被占)、design-fixable(accept-w-rev+low)、ceiling-limited(accept-w-rev 但被近邻封顶)。落 `tmp/nonsa-class.tsv`(持久观测),不进固定 ledger schema——进 schema 的版本见草案 #4。
-- 【#5 near-SA 队列 + lineage/delta】聚合处对 design-fixable 且有 SA 票的 near-SA 写 `tmp/near-sa-queue.tsv`(去重按 story `grep -Fxq`,防跨轮堆积);`generate.md` 父本优先级改 near-sa-queue ＞ deathlist 进化候选 ＞ ledger 自筛,唯一进化名额先取队首、不越过它盲目扩池,并要求进化块加「delta:<相对上版改了什么、为何突破上次封顶>」行。仍守 PROGRAM step6 的 accept-w-rev+low 父本资格与"至多 1 个"名额(队列只改优先级、不新开复活路径);"每个 near-SA 达终态"的完整簿记归 AwR 复活链路重建(另一 P1)+ #6。
-- 验证:`bash -n hunt.sh` OK;stub 回归三场景全绿(见下)。
+## 2026-07-12 Re-review fix 4: archive recovery, delta return code, and claim alignment
 
-## 2026-07-12 复验修复四:重启补归档语义纠错 + delta 入 rc + 声称/注释收敛
+The fourth re-review returned 6/10 PASS and exposed four remaining gaps. Source labels were `PARTIAL` for #10 and #1 and `FAIL` for #3 and #5.
 
-第四轮复验:6/10 PASS,4 项仍有缺口。
+- #10 partial, recovery semantics and swallowed delta failure: stopping text claimed that repairing `$RUNS_DIR` and restarting would backfill the original archive. In fact, restart created a new run ID and treated the orphan SA as already eligible for publication. Added `tmp/HALTED-ARCHIVE-FAIL` with run ID, SA count, and reason. Startup exits 2 while it exists, requiring the original run archive to be restored or the orphan SA row removed from `ledger.good` before the sentinel is cleared. A failed `ledger.delta.tsv` write now sets rc=1 instead of being swallowed by `|| true`; the delta is part of the audit artifact.
+- #3 fail, E2E naming: source lines 98-100 were already qualified, but script headers, `calib/README.md`, and output still claimed live retrieval. They now describe end-to-end retrieval-recall calibration whose validity depends on a network-enabled backend. The README states that mechanical assertions validate recall structure but do not prove network access. `run_e2e.sh` uses the same boundary.
+- #5 fail, score-count wording: bullets 720/723 still implied count-to-verdict rules. They now state that all dimensions <=4 are a thin-idea projection rather than a reject rule, and that no dimension at 7+ prevents clear accept by definition but does not independently choose between AwR and Reject.
+- #1 partial, agy archive reach: moving the archive cannot isolate an untrusted same-user agy process with `$HOME` access. `hunt.sh` and `$RUNS_DIR` comments now state that only agy can reach the location and that hard isolation requires another UID or a container. The `agy-worker.sh` prompt denies writes to `~/.ai-ideas-runs/`. Archive restoration is relied upon only for trusted adjudication rounds with SA; agy never occupies a verdict seat.
+- Validation: all shell files passed `bash -n`. Scenario A, broken archive plus SA, exited 2, wrote a complete sentinel, and emitted no report. Scenario B, sentinel present after directory repair, exited 2 before the loop with 0 aggregation logs and 0 new manifests. Scenario C, sentinel removed after deleting the orphan row and repairing storage, exited 0 and published with manifest, report, and `ledger.delta.tsv`.
 
-- 【#10 PARTIAL 恢复语义错 + delta 被吞】停机文案/注释谎称「修复 `$RUNS_DIR` 后重启会补归档并发布」,实则重启走孤儿 SA 路径(新 run_id、以已达标发布),原 run 的归档永不回填——等于重启就重开这个洞。**修法**:(a) 停机时落哨兵 `tmp/HALTED-ARCHIVE-FAIL`(记 run_id/sa_count/reason,放仓库内、不与常见停机因 `$RUNS_DIR` 不可写同命),启动即检测、有则 exit 2,逼人工二选一(补回该 run 归档,或从 `ledger.good` 删孤儿 SA 行重查)再删哨兵;(b) `ledger.delta.tsv` 写失败原被 `|| true` 吞、不进 rc,改为写失败即 rc=1(SA 轮据此停机)——增量是审计载体的一部分;(c) 文案改成如实描述恢复步骤。
-- 【#3 FAIL 标签仍称真检索】源码 98-100 已诚实免责,但脚本头注、`calib/README.md`、输出仍写「真实检索/E2E」→ 收敛为「端到端检索召回校准(效力以后端联网为前提)」,README 补「效力边界」段(机械断言只查召回结构、不自证联网),`run_e2e.sh` 头注同改,示例注释「真检索跑」→「联网后端跑」。
-- 【#5 FAIL 维度否决残留】720/723 两条 bullet 仍是「count ⇒ verdict」措辞 → all≤4 改「thin idea 的算术投影,不是 Reject 规则;Reject 由 value assessment 或 CRITICAL 定,绝不由计数」;no-dim-7 改「clear-accept bar 需一个 standout(约 8),无 7+ 者定义上够不到——是 bar 生效、非独立计数否决,只封 SA、不单独在 AwR/Reject 间定谳」。
-- 【#1 PARTIAL agy 可写归档】重定位关不掉同用户 untrusted 的 agy(可写 `$HOME`)——本性如此,非位置 bug。兜底收敛为诚实 best-effort:hunt.sh 头注/RUNS_DIR 注释如实说明「唯一够得到的是 agy、真隔离需独立 uid/容器」;`agy-worker.sh` prompt 禁写清单补入 `~/.ai-ideas-runs/`;归档的可还原性只在有 SA 的可信裁决轮被依赖(agy 永不担任 verdict 席)。
-- 验证:全脚本 `bash -n`;stub 三场景——A 归档坏+SA → exit 2、写哨兵(run_id/sa_count/reason 齐)、无报告;B 哨兵在(目录已修好)→ 启动即 exit 2、循环未跑(0 聚合日志、0 新 manifest);C 删哨兵+清孤儿行+修目录 → exit 0、发布,manifest+报告+`ledger.delta.tsv` 齐。
+## 2026-07-12 Re-review fix 3: halt SA publication on archive failure
 
-## 2026-07-12 复验修复三:归档失败对 SA 轮改停机(不再发布审计链断裂的 SA)
+The prior P2-5 change still warned and continued when archival copy failed. A probe made `$RUNS_DIR` unwritable mid-run; the archive disappeared while the hunt published SA with rc=0, silently breaking the P0 restoration guarantee.
 
-复验指出上一版 P2-5 仍不彻底:归档拷贝失败只告警不停机,探针令 `$RUNS_DIR` 中途不可写后 archive 完全缺失,hunt 仍发布 SA 且 rc=0——P0 可还原性承诺对一个已进 ledger+PR 的 SA 静默作废。
+- `archive_round` now returns failure when directory creation, manifest writing, or copying fails. For an SA round awaiting publication, adjudication archive failure exits 2 and blocks publication. At this revision, the expected recovery was to repair `$RUNS_DIR`, restart, backfill the archive, and publish; the next entry corrected that assumption with `tmp/HALTED-ARCHIVE-FAIL`.
+- Archive failure remains a warning for non-SA rounds and the post-publication refresh. Non-SA rounds have no published artifact; a published run already has the complete adjudication archive and can tolerate a missing report-log refresh.
+- Validation: a stub made the archive directory read-only during review with unanimous SA; hunt exited 2 without a report or publication. The writable control exited 0 with one manifest and one published report.
 
-- `archive_round` 改返回 rc(建目录/manifest/拷贝任一失败即 rc=1,不再一律吞错),按终态分级:
-  - **有 SA 将发布的轮**:裁决归档(verdict,发布前)失败 → 停机 exit 2,绝不发布审计链断裂的 SA;SA 行已在 ledger.good,修复 `$RUNS_DIR` 后重启补归档并发布。
-  - **无 SA 轮 / 发布后的 published 刷新**:失败只告警(前者无发布物;后者裁决归档已成、已带完整 adjudication,只缺 report 日志刷新)。
-- 验证:stub 探针(归档目录 review 阶段置只读 + 全票 SA)→ hunt exit 2、不生成报告、不发布;正常对照(归档可写 + SA)→ exit 0、1 manifest + 1 报告正常发布。
+## 2026-07-12 Archive placement, E2E scope, AwR gates, and rubric semantics
 
-## 2026-07-12 复验修复:归档移出 workspace、E2E 声称收敛、awr-judge 硬门内联、rubric 维度否决
+Re-review of the preceding changes found four incomplete items. Report freezing and the `run_all`, publication, and copy P2 checks passed.
 
-上一条修复的复验指出 4 项未做彻底(#2/report 冻结、run_all/publish/cp 三条 P2 复验通过):
+- #1 archive write domain: changed the default from repository `tmp/runs` to `$HOME/.ai-ideas-runs/<repo>`. Claude allowlists and Codex or grok repository sandboxes cannot write there; only the unsandboxed `hunt.sh` orchestrator creates archives. Startup logs the location. agy remained a known same-user exception. Existing grok and Claude denies for `tmp/runs` remain as fallback when `RUNS_DIR` is overridden into the repository.
+- #3 E2E evidence: link and API counts prove artifact shape only. An offline agent can hard-code those strings. Comments now describe E2E as a regression gate for thin, empty, or missing-placeholder output; live-retrieval validity requires a genuinely network-enabled research backend. The structure gate remains useful but does not prove retrieval occurred.
+- #4 AwR judgment: removing the unavailable `PROGRAM.md` reference had also removed its unique strongest-counterexample and reproducible-query requirements. `roles/awr-judge.md` now embeds the full evidence gates: 5-8 linked neighbors, `Strongest Counterexample:`, a reproducible API query URL, minimal falsification experiment, and at least 2 matching crack-evidence items for axiom removal.
+- #5 rubric: after 740-741 were corrected, lines 716 and 717-718 still contained score-only rejection language. It was reduced to diagnostic guidance. Verdicts follow fatal flaws, with CRITICAL -> Reject and at least 2 MAJOR -> cap at Accept-w-Rev, plus the policy clear-accept bar. All dimensions <=4 corroborate a value-based Reject but do not cause it. No dimension at 7+ caps SA and identifies the main axis without independently deciding the lower verdict. The autonomous hunt no longer contains an ask-the-user branch.
+- Validation: all shell files passed `bash -n`. A stub confirmed archives under `$HOME/.ai-ideas-runs/<repo>`, no repository `tmp/runs`, preserved freeze semantics, and a published archive containing adjudication input, report-stage logs, and a 3-row delta.
 
-- 【#1 归档仍在写域内】上版只加 grok/claude 的 tmp/runs deny,但 codex/grok 的 OS sandbox 写域=仓库工作树,tmp/runs 仍可写 → RUNS_DIR 默认移出仓库到 `$HOME/.ai-ideas-runs/<repo>`:claude allowlist(仅 ideas/tmp/)、codex/grok sandbox(仅仓库)都够不到,归档只由 hunt.sh(无沙箱编排器)写。启动 log 打印落点。残留仅 agy(可写 $HOME、前段不可信、不碰 verdict/ledger)。grok/claude 的 tmp/runs deny 保留作 RUNS_DIR 被覆盖回仓库内时的兜底。
-- 【#3 E2E 不能证明真检索】link/API 计数只证明产物结构完整,离线 agent 硬编码这些字符串(甚至明写「未检索」)仍过——纯文本无法证伪。**改法是收敛声称而非假装证明**:注释/头注明确 E2E 只作回归门(拦薄/空/漏占位),效力来自用真·联网后端跑 research 角色,判读须默认后端联网;删掉「验证真检索发生了」的过度措辞。检索结构门槛保留(仍拦薄产物)。
-- 【#4 awr-judge 丢了 PROGRAM.md 独有硬门】上版去掉 sandbox 外的 PROGRAM.md 引用,但连带丢了其独有的「最强反例」行 + ≥1 条可复现 API query 硬门,而 sandbox 仍无 PROGRAM.md → 把定级证据硬门(定向查重 5-8 篇+链接+最强反例行+API query URL、最小否证实验、删承重假设裂缝核验 ≥2 相符)直接内联进 awr-judge.md,自足、不依赖沙箱外文件。
-- 【#5 rubric 残留维度否决】740-741 已修,但 716「all ≤4 → Reject」仍是纯维度否决、717-718「no dim reaches 7 → ask the user」既是维度否决又假设有 user(自主 hunt 没有)→ 加总纲句把这组聚合降为诊断启发,verdict 锚定 fatal-flaws 逻辑(CRITICAL→Reject、≥2 MAJOR→封顶)+ policy clear-accept bar;all≤4 改「value assessment 落到 Reject,由计数佐证而非决定」,no-dim-7 改「封顶 SA、评审中点名主轴,但不单独定 verdict」,删掉 ask-the-user。
-- 验证:全脚本 bash -n;stub hunt 端到端确认归档落 `$HOME/.ai-ideas-runs/<repo>`(仓库内无 tmp/runs)、冻结语义在新位置仍正常(published 归档保留评审输入 + report 阶段进 stages/logs、delta 3 行)。
+## 2026-07-12 Code-review fixes: archive integrity, E2E structure, and calibration failure handling
 
-## 2026-07-12 code review 修复:归档冻结/审计边界、E2E 检索证据、run_all 假绿堵漏
+Code review of P0 (#20) and the gold-set correction (#22) confirmed 10 defects: 5 P1 and 5 P2. All were fixed.
 
-对 P0(#20)与 gold set 诚实化(#22)的 code review 确认 10 项缺陷,全部修复(P1×5、P2×5):
+- P1: repository `tmp/runs` was inside agent write scope and outside the guard. `grok-worker.sh` gained `deny_tree tmp/runs`; `.claude/settings.json` denied `Write/Edit(tmp/runs/**)`. Bash remained the archive writer. Codex workspace-write could not deny a subtree, matching the existing `tmp/ledger.good` boundary and documented limitation.
+- P1: `archive_round` reused a run ID after verdict and could replace frozen adjudication input with report-stage state. First archival now freezes ideas, prior work, and reviews. Later refreshes update only the manifest and add stages or logs.
+- P1: E2E had counted links without validating retrieval shape. Each block now requires at least `E2E_MIN_LINKS=5` non-API neighbor links and at least 1 structured API query URL, matching `hunt.sh priorwork_ok`; insufficient output is `retrieval-thin`. This checks structure, not live network access.
+- P1: `roles/awr-judge.md` referenced `PROGRAM.md`, which was absent from the AwR mirror. It now references only mirrored policy and rubric files.
+- P1: lines 214-218 had already removed score-only SA decisions, but `rubric.md` lines 740-741 still treated the absence of an 8+ dimension as mechanically inconsistent with SA. Those lines now point to the policy clear-accept standard; scores are diagnostic.
+- P2: the E2E mirror copied production settings containing `Write(//tmp/**)` and `Write(//private/tmp/**)`. It now writes restricted E2E settings that allow only `Edit/Write(tmp/**)` plus WebSearch and WebFetch.
+- P2: `run_all` skipped an explicitly requested case with no expect file, counted empty or comment-only expect files as pass, and returned 0 when all cases skipped. Added `config-error`; success requires `fail=0 && panel-fail=0 && config-error=0 && pass+probe>=1`.
+- P2: a panel failure could read stale `aggregate.tsv` ballots from the previous run when `run_panel` failed before cleanup. Panel-fail rows now record votes as `-`.
+- P2: `publish.sh` failure exited before the terminal archive refresh, leaving `exit_reason=verdict`. The failure path now calls `archive_round publish-failed` with report-stage evidence.
+- P2: `cp -R || true` silently ignored incomplete archive copies. Copy failures now produce a visible log warning. At this revision they did not halt the round; the later archive-failure entries above strengthened SA handling.
+- Validation: all shell files passed `bash -n`, and settings JSON parsed. Empty, comment-only, and missing expect cases produced `config-error` and nonzero exit; a normal case returned 0; panel-fail used votes `-`. Retrieval checks admitted 7 links plus 1 API and rejected 1 link plus 0 API as `retrieval-thin`. Restricted E2E settings completed an Opus run of `neg-meanflow-mp1`. A full 3-seat Opus 4.8 gold-set regression reported pass=4, probe=1, fail=0, panel-fail=0.
 
-- 【P1】按运行归档在 agent 写域内(tmp/runs 可被 file-tool 写、且在 guard 视野外,后续阶段可静默回改旧运行的 manifest/证据)→ grok-worker 加 `deny_tree tmp/runs`、`.claude/settings.json` 加 `deny Write/Edit(tmp/runs/**)`;归档由 bash 写、agent 禁改。codex workspace-write 无子树 deny,残留同 `tmp/ledger.good`,头注注明。
-- 【P1】report 阶段覆盖裁决快照:`archive_round` 在 verdict 后还会被 published/report-missing 复用同一 run_id,原实现 `rm -rf`+全量重拷 tmp/round,把 report 之后的状态写进归档 → 改冻结语义:首次全量拷入即冻结评审输入(ideas/priorwork/rev),二次只刷 manifest + 补 stages/logs,绝不重拷。
-- 【P1】E2E 跑道不验证真检索:grader 只算 link 数不校验,只发记忆里的占位 URL + `重叠判定:high` 即可过 expect → 加检索硬门槛(每块 ≥E2E_MIN_LINKS=5 条非 API 近邻 + ≥1 条结构化 API query URL,同 hunt.sh priorwork_ok 口径),不足判 retrieval-thin。
-- 【P1】awr-judge.md 引用 sandbox 里没有的 PROGRAM.md(#20 引入):awr-side run_agent 只拷 awr roles/rubric/policy 进沙箱 → 改成只引沙箱确有的 policy(SA 唯一定义)+ rubric(SA gate/定级证据)。
-- 【P1】rubric.md 残留机械否决:214-218 已改「维度分不单独决定 SA」,但 740-741 仍写「无 8+ 维的 SA 不自洽」,对全 7 维的 clear-accept 候选给出互相矛盾的强制规则 → 740-741 改指 policy clear-accept 标准,维度分只作诊断提示。
-- 【P2】E2E 镜像拷真仓 settings(含 `Write(//tmp/**)`、`Write(//private/tmp/**)`),research 席可把持久写留在镜像外 → 改写 E2E 专用受限 settings:只放行 `Edit/Write(tmp/**)` + WebSearch/WebFetch。
-- 【P2】run_all 假绿:显式请求但缺 expect 只 skip、空/纯注释 expect 零断言仍计 pass、全 skip 仍 exit 0 → 加 `config-error` 计数(缺 expect、零有效断言均计入),退出谓词要求 `fail=0 && panel-fail=0 && config-error=0 && pass+probe≥1`。
-- 【P2】run_all panel-fail 仍读 aggregate.tsv:run_panel 若在清场前早退(如 PANEL_CMD 非法),残留上轮票据被记进 panel-fail 行 = 谎报本次从未产生的票 → panel-fail 时 votes 置 `-`。
-- 【P2】publish.sh 失败在 archive_round 之前 exit,终态只留 exit_reason=verdict(缺 report 日志与真实失败)→ 失败分支补 `archive_round publish-failed`(冻结刷新,带 report 阶段)。
-- 【P2】归档 `cp -R || true` 静默吞错,磁盘满/不可写时审计快照静默残缺却继续发布 → 改响亮 `log` 告警(不 halt:tmp 拷失败不值废整轮,但绝不静默)。
-- 验证:全脚本 `bash -n` + settings.json JSON 校验过;run_all 三种坏 expect(空/纯注释/缺)端到端记 config-error 且退出非零、正常 case 仍 exit 0、panel-fail 行 votes=`-` 不带旧票;检索门槛对真产物(7 links+1 API)放行、对薄产物(1 link+0 API)拦为 retrieval-thin;E2E 受限 settings 端到端(Opus)复跑 neg-meanflow-mp1。gold set 单模型全量回归(3 席 Opus 4.8)pass=4/probe=1/fail=0/panel-fail=0。
+## 2026-07-12 Gold-set evidence correction
 
-## 2026-07-12 gold set 材料诚实化:两条被点名条款判对,真 bug 在旧材料谎报低重叠
+The first full calibration in `calib/results-2026-07-12.md` gave both formal positives 0 SA because novelty was capped and their prior work omitted web or industrial occupants. To separate insufficient evidence from overly strict policy, the three positive cases received omniscient prior-work reconstructions based on web and API checks at each submission date. The policy remained unchanged.
 
-首轮完整校准(见 `calib/results-2026-07-12.md`)两个正式阳性 0 SA,理由落在 novelty 封顶 + 查重缺 web/工业占位。为解耦「材料不达现行门槛」与「条款过严」,对三个阳性 case 的 priorwork 做诚实全知重建(实际 web+API 检索核实各 case 投稿时点真实文献格局),条款一字不动重跑:
+- `pos-axiom-adam`: adding explicit no-hit records for web and industrial occupants changed 1/3 to 3/3 SA. Every ballot named the four required conditions. The earlier 1/3 was caused by incomplete evidence, and the axiom-removal decision path was correct.
+- `pos-meanflow` became `neg-meanflow-mp1`: MP1, 2507.10543 from 2025-07 with code, occupied the headline 72 days before the ICLR submission. FlowPolicy, an AAAI 2025 oral, had already falsified the premise that one-step control must rely entirely on distillation. The published oral 2602.13810 survived through an IVC increment, an RL track mismatch, and omission of MP1, which does not make it an honest omniscient positive. `git mv` reclassified the case as a direct-hit negative, adding a 2025 occupant alongside the older 2022 `neg-replai` pattern. It returned 3/3 reject; E2E recalled 2507.10543 and recorded high overlap.
+- `pos-robomme`: MIKASA-Robo, 2502.10550, preceded it by 11 months and already occupied the four-class memory taxonomy and isolated task families. Honest overlap is medium; the old material incorrectly claimed low. The rerun remained 3/3 AwR for novelty ceiling, single-investigator construction feasibility, and no 8+ dimension. The expectation became `min_vote>=accept-w-rev`: a real oral should not be rejected, but medium overlap and build cost keep it below this repository's single-investigator phase-1 SA ground truth.
+- The two questioned verdict policies were behaving correctly. MeanFlow had reached AwR only because false low-overlap material elevated a negative. The diagnostic ceiling is conditional: it caps candidates with no 8+ dimension, while a low-overlap benchmark with high Broader can escape. `brainstorming_policy.md` and `roles/review.md` did not change.
+- Recorded evidence gap: no clean low-overlap benchmark positive directly tested the diagnostic-ceiling escape, and the method-positive slot became empty after MeanFlow moved to the negative set.
+- Fixed overlap parsing in `calib/run_e2e.sh` and `hunt.sh` by anchoring the English field as `^Overlap:` instead of using a first-substring match such as `grep -m1 'Overlap:'`. Other prose could mention that a query result was not an overlap decision; the old match captured that line and misread a real high value as low during the first `neg-meanflow-mp1` E2E run.
+- Model record: the first Fable 5 panel exhausted quota. RoboMME and MeanFlow reruns used Opus 4.8. Axiom completed under Fable 5 before exhaustion, making evidence the only variable. Unchanged `neg-replai` and `neg-axiom-cosplay` retained their initial 3/3 reject results and were not rerun.
 
-- pos-axiom-adam(删公理探针):补齐 web/工业占位「未检出」记录后 **1/3 → 3/3 SA**,四条件逐票点名——上轮 1/3 纯是材料不达门槛,删公理通道机制正确。
-- pos-meanflow → **neg-meanflow-mp1**:核实发现头条被 MP1(2507.10543,2025-07,带代码)在 ICLR 投稿前 72 天精确占据,「一步全靠蒸馏」前提早被 FlowPolicy(AAAI 2025 oral)证伪;真实 oral(2602.13810)靠 IVC 增量+RL 赛道错位+未引 MP1 存活,不构成诚实全知下值 SA 的阳性。`git mv` 降级为 direct-hit 阴性(2025 新占位,补 neg-replai 的 2022 老占位形态),3/3 reject,e2e 召回 2507.10543 记 high。
-- pos-robomme:核实发现 MIKASA-Robo(2502.10550,早 11 个月)已占四类记忆分类学+隔离任务族,诚实重叠 medium(旧材料谎报 low);重跑仍 3/3 AwR,但理由变为 novelty 封顶+单人建构 feasibility MAJOR+无 8+ 维叠加。expect 改 min_vote>=accept-w-rev(真 oral 不该被 reject;本仓单人 phase-1 SA 门槛下 medium 重叠+建构负担使 SA 非 ground truth)。
-- 结论:被点名两条 verdict 条款(机制迁移「适配非平凡」、诊断天花板)均判对——meanflow 的 AwR 是旧材料谎报低重叠把 negative 抬成 AwR;诊断天花板是条件式(无 8+ 维才封顶)非绝对禁令,low 重叠高 Broader 的 benchmark 会拿 8+ 逃逸。**条款不改**,brainstorming_policy.md / roles/review.md 未动。真缺陷在 gold set 材料。
-- 缺口(记入 results):无干净 low 重叠 benchmark 正对照正面验证诊断天花板逃逸出口;method 型正对照席位随 meanflow 降级而空缺。
-- bugfix:`calib/run_e2e.sh` 与 `hunt.sh` 的 overlap 解析改锚定行首 `^重叠判定`——查重块其它行会路过「重叠判定」字样(如 API 召回说明"不作重叠判定依据"),非锚定 `grep -m1 '重叠判定'` 抓错行、把真实 high 误读成 low(neg-meanflow e2e 首跑即中招)。
-- 模型注记:初次面板 Fable 5 用量触顶,robomme/meanflow 重跑于 Opus 4.8;axiom 触顶前在 Fable 5 跑完(与初次同模型,材料是唯一变量)。未改材料的 neg-replai/neg-axiom-cosplay 条款材料均未动,沿用初次 3/3 reject 不重跑。
+## 2026-07-12 P0: unified SA semantics, per-run archives, and machine-scored calibration
 
-## 2026-07-12 P0 落地:SA 口径单源 + run_id/按运行归档 + calib 机器判读与端到端跑道
+Implemented the five P0 items from the `DEVELOPMENT.md` success program.
 
-DEVELOPMENT.md「优化 autoresearch 成功率」P0 五项(统一判定与完整观测):
+- Unified SA semantics in policy. `rubric.md` Step 8 and Integrity gate #5 now point to the policy clear-accept definition rather than mechanically requiring two 8+ dimensions. `roles/review.md` removed the stricter oral-or-spotlight requirement because policy treated that outcome as preferable, not mandatory; this copy drift may have contributed to only 6 SA votes among 288 ballots. `roles/awr-judge.md`, README, and `trigger.md` now reference policy calibration plus `PROGRAM.md` evidence gates. Qinning manually synchronized the remote weekly routine on 2026-07-12.
+- Added per-run archival to `hunt.sh`. Each round gets a run ID from start time, PID, and round; candidate IDs are `<run_id>/I<n>`. Terminal states `fail:<stage>`, `empty:<stage>`, `verdict`, `report-missing`, and `published` archive all `tmp/round` artifacts, a manifest with source, backend, `policy_sha`, `git_head`, exit reason, and vote vector, plus ledger delta under `tmp/runs/<run_id>/`. Later events for the same run ID replace the prior terminal reason. `run_stage` tees output to `tmp/round/logs/<stage>.log`; `stages.tsv` records start, end, and rc, including parallel review seats. `metrics.tsv` gained run ID through a one-time header migration while legacy rows remain 12 columns. The ledger baseline uses `grep -c ''`; appending `|| echo 0` would emit two lines for an empty file because grep already prints 0 before returning rc=1.
+- Added a machine-scored calibration DSL. Each `cases/<case>/expect` uses `min_vote`, `sa_votes`, `reject_votes`, `all_votes`, and `probe`. `run_panel.sh` writes `aggregate.tsv`; `calib/run_all.sh` scores cases and appends `tmp/calib/summary.tsv`. Probes and panel infrastructure failures do not enter the denominator.
+- Added `calib/run_e2e.sh` as a network-enabled retrieval-recall track separate from frozen judgment calibration. It mirrors `roles/research.md` and asserts known occupants through `e2e.expect`, beginning with `neg-replai` and 2209.13583. Published positive cases cannot use live retrieval because they would match themselves. A later correction clarified that artifact structure alone does not prove network retrieval.
+- Moved fence-aware Markdown ID extraction into `lib/md_ids.sh`, shared by `run_panel` and `run_e2e`.
+- Validation used a scratch clone with a local bare origin and fake agents. Empty research archived `empty:research`; unanimous SA produced a report, published a branch to the bare origin, and archived `published` with a 3-row SA delta plus stages, logs, and manifest. `research rc=1` with `MAX_FAILS=1` exited 1 and archived `fail:research`. Front-resume entered review first and archived a verdict with `sa_count=0`. Header migration preserved legacy 12-column metrics rows. Calibration stubs scored 5 cases as 2 pass, 2 fail, 1 probe with accuracy 2/4 and exit codes 1/0. E2E pass, assertion-fail, and agent-fail paths cleaned mirrors. Fence tests rejected phantom IDs and returned rc=3 for an unclosed fence. All shell files passed `bash -n`. No live Claude, Codex, or grok panel ran in this change; the routine command remained `./calib/run_all.sh`.
 
-- SA 口径单源化(policy 评审校准节新增唯一定义声明):`rubric.md` Step 8 的「两维 8+」与 Integrity gate #5 的机械 SA 门槛改为指向 policy 的 clear-accept 标准(维度分是诊断证据,不是 SA 机械阈值);`roles/review.md` 撤销「且能冲 oral/spotlight」加严(policy 原文是「更佳」非必要条件——抄写漂移把 SA 门槛抬高了一档,可能是 288 票仅 6 SA 的成因之一);`roles/awr-judge.md` 与 README 的「rubric 的 SA 硬门槛(节)」错误指向改为 policy 评审校准 + PROGRAM.md 定级证据;`trigger.md` 同步撤销「冲不了 oral 不给 SA」(远端 weekly routine 已于 2026-07-12 由 Qinning 手动同步到该版)。
-- hunt.sh 按运行归档:每轮 run_id(启动时间+pid+轮次,candidate_id=`<run_id>/I<n>`);轮终点(fail:<stage>/empty:<stage>/verdict/report-missing/published)把 tmp/round 全量产物(ideas/priorwork/预筛/三席票据与完整评审/逐阶段日志)+ manifest(来源/backend/policy_sha+git_head/退出原因/票向量)+ ledger 增量行固化 `tmp/runs/<run_id>/`,同一 run_id 后到覆盖先到(exit_reason 按最新);ledger 只留摘要,任一结论可还原输入与判定过程。run_stage 输出另 tee 进 `tmp/round/logs/<stage>.log`,起止/rc 记 `stages.tsv`(review 段并行块单独记)。metrics.tsv 末列加 run_id,启动时一次性 header 迁移(旧行保持 12 列,按前 12 列位置解析不受影响)。ledger 增量行数基线取 `grep -c ''`,空文件时不可接 `|| echo 0`(grep 已输出 0 且 rc=1,双行)。
-- calib gold set 机器判读:`cases/<case>/expect` 断言 DSL(min_vote/sa_votes/reject_votes/all_votes;`probe` 只跑不打分),`run_panel.sh` 聚合另落机器可读 `aggregate.tsv`,新增 `calib/run_all.sh` 批跑打分、打印校准正确率(probe 与 panel-fail 不计分母——面板基础设施失败不得形成校准结论),逐 case 追加 `tmp/calib/summary.tsv`。
-- 端到端(真检索)校准跑道与冻结校准分开:新增 `calib/run_e2e.sh`,镜像跑 roles/research.md(检索放开,写界同面板),断言 priorwork 召回已知占位(`e2e.expect`:overlap/url_contains;首个 case neg-replai→2209.13583)。阳性无端到端跑法(已发表工作被真检索判成自占据),边界记入 calib/README。踩坑:子 shell cd 进镜像后日志重定向必须用绝对路径(run_panel 同款坑,已有注释)。
-- 围栏感知 id 提取抽单源 `lib/md_ids.sh`(run_panel 与 run_e2e 共用,防幻影 id/吞真标题两个方向)。
-- 验证:scratch 克隆(本地 bare origin)+ 假 agent 全链路——空产出→归档 empty:research;全票 SA→报告→发布(分支落 bare)→归档 published(delta=3 行 SA、stages/logs/manifest 齐);research rc=1 且 MAX_FAILS=1→exit 1 归档 fail:research;前段续跑轮首调即 review、verdict 归档 sa_count=0;metrics 老文件 header 迁移后旧行 12 列无损。calib:reject/SA stub 面板 5 case 判分(2 pass/2 fail/1 probe,正确率 2/4,退出码 1/0 正确);run_e2e pass/fail/agent-fail 三径与镜像清扫;md_ids 围栏样例无幻影、未闭合围栏 rc=3。全脚本 `bash -n` 过。真实裁判(claude/codex/grok)校准面板未在本次跑,按例行 `./calib/run_all.sh` 执行。
+## 2026-07-11 Resolver, sandbox, and panel input review fixes
 
-## 2026-07-11 review 修复:resolver 换行/空白路径、GROK_SANDBOX 封 fail-open、面板前置校验与 BOM
+A high-depth code review confirmed and fixed 10 defects.
 
-code review(high 档)确认 10 项缺陷,全部修复:
+- `lib/resolve_cmd.sh`: replaced `read -r`, which consumed only the first line of commands containing newlines and could silently drop sandbox or approval flags. The resolver now splits the first word on arbitrary whitespace while preserving the remainder. Absolute executable paths containing whitespace are rejected with exit 2 because downstream IFS splitting cannot invoke them safely and had produced repeated exit 127 failures.
+- `grok-worker.sh`: validates `GROK_SANDBOX` as `workspace` or `off`. grok 0.2.x only warned on unknown profiles and then ran without a sandbox. Custom profiles from `sandbox.toml` remain unsupported because reliable table detection requires a TOML parser and profile-name escaping; neither repository had such a file.
+- `calib/run_panel.sh`: validates a positive integer `REVIEWERS` and resolves `PANEL_CMD` before clearing prior output. `REVIEWERS=0` or nonnumeric input had produced an empty `seq`, then an unbound array at `wait` under Bash 3.2 and `set -u`, after destroying prior ballots.
+- Fence-aware ID extraction now uses `PIPESTATUS` to return visible `exit 3` for an unclosed CommonMark fence instead of silently hiding every later title.
+- Copied `verdict.tsv` files now strip UTF-8 BOM as well as CR, including a leading `\xef\xbb\xbfI1`. `LC_ALL=C` makes the operation byte-based.
+- The impossible missing-vote fallback after rc and `verdict_ok` checks now aborts as an internal inconsistency instead of pretending to convert a missing ballot to reject.
+- `awr-side.sh` resolver errors now name the effective source variable: `SIDE_CMD`, `SIDE_RESEARCH_CMD`, or `SIDE_JUDGE_CMD`.
+- Mirror isolation guidance moved to `lib/mirror_pre.sh`, eliminating drift between `run_judge` and `run_agent`; panel seats now receive the same home-directory write prohibitions. The distinct mirror copy and return functions remain separate because their inputs, throttling, and recovery semantics differ.
+- Validation passed 22 regressions covering resolver whitespace, empty and `../` traversal inputs, bare-name PATH behavior, whitespace repository paths, invalid reviewer counts and panel commands without destroying old output, unclosed and closed fences, BOM/CR normalization, all `GROK_SANDBOX` states, and all three AwR source labels. All shell files passed `bash -n`.
 
-- `lib/resolve_cmd.sh`:首词切分弃 `read -r`(here-string 只读到首个换行,含换行的 SIDE_CMD/PANEL_CMD 会静默丢掉换行后全部参数——沙箱/审批 flags 就此蒸发还不报错),改参数展开按任意空白切、rest 原样保留;解析出的绝对路径含空白即拒 exit 2(调起点按 IFS 拆词必拆碎它,含空格仓库路径原本过了启动校验、调起时全 127 空转,正是启动解析要防的形态)。
-- `grok-worker.sh`:GROK_SANDBOX 补校验——grok 0.2.x 对认不出的 profile 只打 warning 就**无沙箱跑完全程**(实测,fail-open),固定枚举 workspace/off,其它值 exit 2(与 GROK_DISABLE_WEB 同风格:安全开关不 fail-open)。有意不放行 sandbox.toml 自定义 profile:可靠判定「toml 真有该 table」需要 TOML parser + profile 名转义(grep 级检查会被注释里的同名串骗过,复核实测确认),为无人在用的形态不值;两处 sandbox.toml 均不存在。
-- `calib/run_panel.sh` 前置校验挪到 `rm -rf` 清场之前:裁判数须正整数(原 REVIEWERS=0/非数字时 seq 空转、空 pids 数组在 bash 3.2 + set -u 下 `wait` 崩 unbound variable,且上轮票据已被清掉);PANEL_CMD 解析失败同样不再先毁上轮票据再退。
-- `calib/run_panel.sh` id 提取:未闭合围栏(CommonMark 语义吞到文件尾)不再静默照办——其后真标题全进不了 id 清单、正确面板被误作废,现 `PIPESTATUS` 捕获 awk `exit 3` 响亮报错让人修 case。
-- `calib/run_panel.sh` verdict.tsv 拷回规范化补剥 UTF-8 BOM(带 BOM 合法票首 id 变 `\xef\xbb\xbfI1` 被判未知 id,与 CR 同类隐形字节假失败);`LC_ALL=C` 使 substr 按字节计(UTF-8 aware awk 把 BOM 当 1 字符会多剥)。
-- `calib/run_panel.sh` 聚合的「缺票(计 reject)」死分支(rc 校验+verdict_ok 后 v 不可能空)改内部不一致响亮中止——留着会让维护者误信缺票仍静默降 reject,恰是 verdict_ok 加固要消灭的伪装通道。
-- `awr-side.sh` resolve 报错前缀按值的实际来源命名(SIDE_CMD/SIDE_RESEARCH_CMD/SIDE_JUDGE_CMD,与 `:-` 回落同判据;原一律报 SIDE_CMD,SIDE_JUDGE_CMD 拼错会支使用户查错变量)。
-- 镜像隔离预提示抽单源 `lib/mirror_pre.sh`(run_judge 与 run_agent 各持同构文本已实际漂移:awr 侧禁写 `~/.gemini` 等家目录、面板侧没有;单源后面板席同样获得家目录禁写)。有意不合并两函数的 mktemp/拷入/拷回骨架:输入集、拷回策略、节流/熔断真不同,强抽会造出参数森林。
-- 验证:22 项回归全过(resolver 换行/tab/空串/`..`/裸名/PATH 回退/含空格仓库、REVIEWERS=0/非数字与 PANEL_CMD 拼错均 exit 2 且上轮票据无损、未闭合围栏响亮退、闭合围栏 id 无幻影、BOM+CR+trim 规范化及无 BOM 不误伤、GROK_SANDBOX 三态、awr-side 三席报错标签),全脚本 `bash -n` 过。
+## 2026-07-10 Resolver consolidation and panel snapshot fixes
 
-## 2026-07-10 review 修复:resolver 抽单源加固 + 面板输入冻结
+A high-depth review confirmed 3 correctness defects, 1 phantom-ID hazard, and 1 snapshot-semantics issue.
 
-code review(high 档)确认 3 个正确性缺陷、1 个幻影 id 隐患、1 个快照口径问题,全部修复:
+- Consolidated `SIDE_CMD` and `PANEL_CMD` resolution in `lib/resolve_cmd.sh`. Traversal rejection now covers any `..` path segment, including `./tmp/../../x`. A bare name shadows PATH only when an executable of that name exists at repository root; a stray non-executable file no longer breaks `SIDE_CMD='claude -p ...'`. Error prefixes are parameterized. `grok-worker.sh` also denies writes to `lib`.
+- `awr-side.sh`: agy throttle detection replaced `${cmd%% *}` with arbitrary-whitespace splitting, preventing tab-separated agy commands from bypassing the launch gate. Removed the obsolete `${nbad:-0}` fallback in favor of `$nbad` because the counter is unconditionally initialized; the old `ls|grep -c` pipeline no longer exists.
+- `run_panel.sh`: snapshots the live `$CASE` once into `$OUT`; ID extraction and every seat mirror read that snapshot. The previous implementation could give seats different inputs if a case changed during startup. ID parsing now ignores CommonMark fenced code blocks, tracking fence character and length, allowing at most 3 leading spaces, and requiring a closing fence of the same character with at least the opening length. A backtick in a backtick-fence info string prevents it from being treated as a fence. BSD awk compatibility avoids brace intervals. Calibration files remain under `calib/`.
+- Intentionally unchanged: `ideas.md` `## I<n>` headings remain the sole ID source, and the independent `[ -e ]` guarded-glob counters in `hunt.sh` and `awr-side.sh` remain separate.
+- Validation passed 15 resolver cases across traversal positions, absolute paths, executable shadowing, tab splitting, empty input, and missing executables. A two-seat fake panel preserved a snapshot and ignored fenced phantom IDs. All shell files passed `bash -n`.
 
-- resolver 抽单源 `lib/resolve_cmd.sh`(SIDE_CMD 与 PANEL_CMD 原各持逐字拷贝,修 resolver 必两边同步、必然漂移),同时修三处:`..` 封禁从「仅开头 `../`」改为任意路径段(`./tmp/../../x` 原可穿出真仓 pin,静默执行仓外脚本);裸名须真仓根同名文件可执行才遮蔽 PATH(原杂散非可执行同名文件会让 `SIDE_CMD='claude -p …'` 启动即死,常驻 sidecar 整体停摆);报错前缀参数化。grok-worker 写禁树加 `lib`。
-- awr-side run_agent 的 agy 闸门首词改 `read -r` 按任意空白切(原 `${cmd%% *}` 只认空格,tab 分隔的 agy 命令串绕过闸门,连发触发登录验证——正是闸门要防的);`${nbad:-0}` 死防护改 `$nbad`(计数前已无条件初始化,`:-0` 是旧 `ls|grep -c` 管道的遗留,留着误导维护)。
-- run_panel 输入冻结:活 `$CASE` 只在启动时读一次成 `$OUT` 快照,id 清单与各席镜像全取自快照(原各席镜像各自再读活 `$CASE`,面板启动中 case 被编辑会让各席输入不一致、审计快照不再是「裁判当时读到的」);id 提取跳过围栏代码块(idea 正文引用 `## I<n>` 样例会生成幻影 id,verdict_ok 向每张票索要不存在的行、面板必败)——按 CommonMark 记围栏字符+长度的状态机:```` ``` ````/`~~~` 都算、容 ≤3 前导空格、关栏须同字符且长度 ≥ 开栏(裸 `!fence` 翻转会被 `~~~`、缩进栏、四内嵌三穿透出幻影 id;错翻反向还会吞真标题,票里冒「未知 id」同样面板必败,复测确认);反引号开栏行 info 串含反引号按行内代码不认栏;不写 `{0,3}` 区间,BSD awk 对 brace 区间支持不稳。
-- 有意不改:id 来源收窄到 ideas.md `## I<n>` 单源(既定决策,注释已文档化);hunt.sh 与 awr-side 的 glob 计数惯用法保持各一份、仅统一 `[ -e ]` 守卫注释(两脚本独立,不值得为 5 行引依赖)。
-- 验证:resolver 回归 15 例(`..` 开头/嵌中/绝对路径内/纯段、裸名遮蔽×可执行性、tab 切词、空串、相对/绝对/缺失)全过;假裁判端到端(含围栏样例的 case,2 席)ids 无幻影、快照落位、聚合正常;全部脚本 `bash -n` 过。
+## 2026-07-10 First-class grok backend support
 
-## 2026-07-10 grok 一等公民接入(hunt / AwR / calib 全链路)
+- Added `grok-worker.sh`, a headless adapter that accepts exactly one prompt and invokes `grok ... -p`. Direct `grok -p ...` could consume flags as values, while a bare positional prompt blocked without a TTY. Extra arguments fail visibly. Defaults include `--always-approve`, `--sandbox workspace`, and `--no-subagents`. File-tool writes are denied for `ledger.tsv`, `tmp/ledger.good`, fixed policy files, orchestration scripts, and `roles/`, `calib/`, and `.claude/`, using relative, absolute, and `**/` patterns. `GROK_REPO` selects the root. `GROK_DISABLE_WEB` is enum-validated and fails closed. `GROK_MODEL`, `GROK_MAX_TURNS`, `GROK_SANDBOX`, and `GROK_BIN` remain configurable. `--disallowed-tools Agent` was excluded because grok 0.2.x crashed during session construction.
+- The write boundary is limited to file tools and statically recognizable shell writes. Indirect writes such as Python `open().write()` can bypass it. The workspace sandbox does not block network or processes, and inherited `~/.claude` or `~/.grok` hooks, plugins, and MCP state can have external effects. Full containment requires an OS sandbox outside this adapter.
+- `hunt.sh`: `AGENT_CMD`, `FRONT_CMD`, `BACK_CMD`, and `REV_CMD_N` may point to `./grok-worker.sh`; grok is a trusted seat alongside Claude and Codex.
+- `awr-side.sh`: research and judgment may use grok. Startup resolves custom `SIDE_CMD` once, pins repository-relative paths to absolute paths, checks absolute files for `-f` and `-x`, prefers an executable at repository root for bare names, then falls back to PATH. Invalid commands fail immediately instead of bypassing the no-file circuit breaker. `PANEL_CMD` uses the same resolver. Invocations receive `GROK_REPO=<mirror>`, and mirror guidance denies writes to `~/.gemini`, `~/.claude`, `~/.codex`, and `~/.grok`.
+- `calib/run_panel.sh`: each seat executes in a disposable mirror; Bash copies back only `verdict.tsv` and `review.md`. The mirror isolates CWD, while backend sandboxing provides the write boundary. grok seats receive `GROK_DISABLE_WEB=1`; Claude mirrors use calibration settings that permit only `tmp/**` writes and deny WebSearch/WebFetch. OS networking remains available, so prompt policy and leak markers cover shell-side search. Parallel cases use injective encodings `_→_u` and `.→_d`, preventing cleanup collisions such as `foo.bar` versus `foo_bar`. A content-snapshot guard was discarded after a destructive failure mode in which an agent deleted the snapshot and the guard treated every tracked file as an untracked addition through `rm -rf` cleanup.
+- Ballots are normalized by removing CR and trimming fields before validation and aggregation. With rc=0, every ID must appear exactly once, every verdict must be valid, and no unknown ID or duplicate may exist; headers and blank lines are tolerated. Invalid output fails the seat and panel. IDs come only from `ideas.md` `## I<n>` headings. Input snapshots remain in the result directory after mirrors are removed. Leak markers are aggregated once globally with `LC_ALL=C sort -u` instead of once per ID.
+- Validation covered file-tool denials with the `DENIED` marker, `GROK_REPO` root pinning, relative, absolute, and bare resolver outcomes, seven fake-ballot forms, and a real grok no-search direct-hit panel that returned reject.
 
-- 新增 `grok-worker.sh`:grok 无头适配层,只收单一 prompt 参数拼 `grok … -p`(直接 `grok -p …` 会被 flags 吃值,裸 positional 无 TTY 挂;多参报错,防命令串夹带 flags 被静默吞掉用错配置);`--always-approve` + `--sandbox workspace` + `--no-subagents`,对 ledger.tsv、`tmp/ledger.good`(hunt 唯一可信基线,tmp/ 可写且在守卫视野外)、固定层、编排脚本、roles|calib|.claude 等发 file-tool Edit|Write 写禁(相对+绝对+`**/`glob 三套,仅相对挡不住绝对路径写);`GROK_REPO` 指定工作根(默认脚本所在目录);`GROK_DISABLE_WEB` 枚举校验(禁搜是安全开关,不 fail-open,认不出的值 exit 2);可调 GROK_MODEL/GROK_MAX_TURNS/GROK_SANDBOX/GROK_BIN。不用 `--disallowed-tools Agent`(grok 0.2.x session 构建期崩溃)。写界边界诚实记入头注:仅达文件写域,deny 挡 file tools 与可静态识别的 shell 写但间接写(python `open().write()` 实测)绕得过;sandbox workspace 不禁网/不禁进程(terminal 实测可 git/gh/curl 联网),且继承用户级 `~/.claude`+`~/.grok` 的 hooks/plugins/MCP——这些外部副作用无机械闸,靠 prompt 铁律,真要封须再包 OS 沙箱(本脚本不做)。
-- hunt.sh:AGENT_CMD/FRONT_CMD/BACK_CMD/REV_CMD_N 均可指 `./grok-worker.sh`,grok 计入可信席位(与 claude/codex 同级)。
-- awr-side.sh:两席可换 grok;自定义 SIDE_CMD 启动时一次性解析并验证(相对路径钉成真仓绝对路径,绝对路径同验 `-f`+`-x`,裸名优先真仓根同名文件、回退 PATH;失败立即退出——若留到调起时才失败会绕过 nofile 熔断,坏命令下无限空转;PANEL_CMD 同构同验),调起注入 `GROK_REPO=<镜像>`;沙箱预提示明文禁写 `~/.gemini`/`~/.claude`/`~/.codex`/`~/.grok`。
-- calib/run_panel.sh 裁判改镜像执行:每席一次性镜像,bash 只拷回 `verdict.tsv`/`review.md`,真仓不作为裁判工作目录;镜像只隔 CWD,越界写由后端沙箱挡(无沙箱命令不得当 PANEL_CMD);禁搜机械层:grok 席自动注入 `GROK_DISABLE_WEB=1`(禁内建检索),claude 席镜像内写 calib 专用 settings(只许写 tmp/**,deny WebSearch/WebFetch——原样拷真仓 allowlist 会放行检索);OS 层不限网络,shell 侧禁搜靠 prompt 铁律+泄漏标记(聚合 `LC_ALL=C sort -u`,BSD sort 在 UTF-8 locale 下会把等长 CJK 标记吞成一条)。不同 case 面板可并行(镜像名按 case 名隔离清扫,`_→_u`/`.→_d` 单射编码防前缀 glob 误伤与 `foo.bar`/`foo_bar` 同名互扫)。曾试过的内容快照守卫被复现 fail-destructive(agent 删掉快照后,守卫把全部 tracked 文件当「快照外新增」逐个删),弃用。
-- 票据硬校验:verdict.tsv 拷回即规范化(剥 CR、trim 字段——校验与聚合读同一份规范文本,否则校验层容忍的尾随空白在聚合层把合法票降成缺票 reject);裁判 rc=0 时逐 id 校验——每 id 恰好一行、枚举合法、无未知 id/重复,容忍 header/空行;不合格按裁判失败计、面板作废(否则坏裁判在阴性对照里以缺票/错 id 伪装成正确全 reject);id 清单单源取 `ideas.md` 的 `## I<n>`(= 发进镜像、裁判唯一所见),不另立 ideas.tsv 为源(否则裁判按 md 投的票会因 id 集不符被 verdict_ok 全判失败、面板必败)。裁判输入(ideas.md/priorwork.md)留一份审计快照到结果目录,镜像随 `rm -rf` 即弃后仍可还原「裁判当时读到什么」。泄漏标记聚合后全局打印一次(放 per-id 循环内会对每个 id 重复整份、把 1 条读成 N 条)。
-- 验证:grok-worker 写界烟测(file-tool 写 ledger/roles 全 DENIED,`GROK_REPO` 钉根)、resolve 单测(相对/绝对/裸名 × 缺失/不可执行/合法)、假裁判七种产物形态、真 grok 禁搜端到端(direct-hit case 判 reject)。
+## 2026-07-07 Proposition-first generation and mirrored prior-work search
 
-## 2026-07-07 生成端转向命题式,查重端镜像命题占位
+Three hunt days produced 0 SA. About 50 of 120 adjudications shared one ceiling: the headline was an axis transfer or composition, placing novelty in an enumerable mechanism-by-domain grid where deep retrieval found an occupant. Eight of 11 divergence lenses were replace-an-axis patterns; with 3 blank cards, `pick_lens` selected them with probability 8/14, about 57%. Proposition-first ideas put novelty in a falsifiable claim about the world and were less likely to be occupied by one paper.
 
-hunt 循环 3 天 0 SA:120 行判定死因≈50 次落在同一封顶模式——头条是「换轴近迁移/组合」(把机制 M 搬到域 D、或 A+B 拼接),novelty 落在可枚举的配对里,强查重必然找到近邻占位。而发散透镜池 11 条里 8 条是「换 X 轴」模板(`pick_lens` 均匀抽,换轴抽中率 8/14≈57%),正把生成推向被封顶的形状。命题式(把 novelty 放进一句关于世界的断言:某解释被推翻、某假设可删、某问题被命名)不直接落 M×D 网格、较难被单篇占位——ledger 里最不封顶的几条恰是「解释公认现象」型。
+- `brainstorming_policy.md`: collapsed 8 axis-swap lenses into one cautious axis-change lens, reducing selection from 57% to 11%. High-weight starts now include explaining an accepted phenomenon, removing a load-bearing assumption, naming a real unnamed problem, and changing the evaluation target. Form #4 gained a diagnostic-probe ceiling: a purely diagnostic result is borderline unless paired with a corrective arm or a surprising finding. Classic cross-domain CS transfer is incremental by default.
+- `roles/generate.md`: every headline receives a pre-write test. If it reduces to mechanism-by-domain or A+B, it is expected to cap at AwR. Rephrasing counts only when it creates a distinct falsifiable signal in the minimal experiment. Added estimand alignment and a corrective-arm guard for diagnostic candidates.
+- `roles/research.md` and `roles/prescreen.md`: added searches for competing explanations, named estimands or problems, and limitations or ablations acknowledged by the target work. Examples included LAPA's acknowledged camera-motion content in latent action codes and LDA's acknowledged Euclidean action-head bottleneck. Prescreen performs only a cheap target check; systematic search remains in research.
+- `roles/review.md`: estimand mismatch and the pure-diagnostic ceiling became explicit review checks.
 
-- `brainstorming_policy.md` 透镜池 11→6:8 条换轴塌成 1 条「换一条轴(慎用)」,抽中率 57%→11%;命题式起手式(解释公认现象/删承重假设/命名新问题/换评测对象)提为高权重条目,新增「命名一个真实但没名字的问题/被测量」;引言点明命题式 vs 换轴式两类。form#4「瓶颈定位实验」补 probe 天花板约束(纯诊断上限 borderline,冲 SA 须绑可修复臂或惊人发现)——从易失的 deathlist 固化进 policy;经典 CS 迁移形态标注默认增量。
-- `roles/generate.md` 头条自测(落笔前每候选跑一遍):能写成 M×D/A+B 配对即近迁移、预期至多 AwR;改写成命题唯一算数的判据是逼出与最近邻不同的可证伪判别(落在最小否证实验信号上),句式改写不算——堵话术换壳;另加 estimand 对齐、诊断绑修复臂两条护栏。
-- `roles/research.md` / `roles/prescreen.md`:direct-hit/三类词是配对取向,抓不到命题占位。增专搜——竞争解释是否已发表(含反向结论/相邻学科)、estimand/问题是否已命名、被点名靶子 limitation/ablation 是否自认(LAPA 自认潜动作编码相机运动、LDA 自认欧氏动作头瓶颈即此类)。prescreen 只做便宜的靶子一瞥、系统检索留深查,保住 fail-open 便宜性。
-- `roles/review.md`:estimand 错位(判别信号≠命题声称的量)、纯诊断 probe 天花板从「通用严谨性隐式抓」升为点名检查项——生成端自评可话术化,真门仍在裁判。
+## 2026-07-07 Strict prescreen decision parsing
 
-## 2026-07-07 预筛判定行严格解析,堵宽松抽词误杀
+Code review found that `prescreen_dec` used `grep -oE 'kill|keep'`, so strings such as `not kill`, `kill? keep`, or `killed` could become kill. With one API record and one non-API link, that permanently wrote reject with `overlap=high`, violating the fail-open contract.
 
-codex 复审 fail-open 改动时指出:`prescreen_dec` 的 `grep -oE 'kill|keep'` 是子串抽词,`判定:not kill`/`判定:kill? keep`/`判定:killed` 都被抽成 kill,块内再有 API 记录+任一非 API 链接即按 reject+overlap=high 永久入账。存量问题(旧 `prescreen_ok` 同一解析),但 fail-open 契约已承诺「判定非法→keep」,解析器须兑现:
+- The first decision line must match the complete `Decision: kill|keep` form after allowed whitespace and colon variants. Any extra word makes it invalid and therefore fail-open keep. A malformed first line does not fall through to a later valid line.
+- `roles/prescreen.md` received the same exact-line contract; an appended token invalidates a kill.
+- A second review found that the first regex had reduced the full-width colon class to ASCII `[::]`. Full-width input therefore failed open safely but unnecessarily. The class was corrected to `[:：]`; ASCII, full-width, and extra-token cases passed. Templates and observed outputs used ASCII colons, so the remaining exposure had been theoretical.
 
-- 首条判定行整行严格匹配 `判定:kill|keep`(容忍空白与全/半角冒号)才算数,附加任何词视为非法→空→fail-open keep;含糊判定的代价方向从"可能永久误杀"变为"多花一次深查"。首行畸形不捡后面的严格行——畸形块直接 fail-open,比扫全块更保守。
-- `roles/prescreen.md` 同步:判定行不得附加任何词,附加词=kill 白判。
-- codex 二次复审补漏:落码时括号内全角冒号丢成 ASCII `[::]`,`判定：kill` 解析为空走 fail-open keep(方向安全,只多花深查);已改 `[:：]`,全/半角与附加词非法三组回归通过。当前纯理论敞口——模板与真实 prescreen 输出全是半角冒号。
+## 2026-07-07 Fail-open prescreen structure
 
-## 2026-07-07 预筛结构失败 fail-open,不再废轮
+The 07-07 review found that commit 9fa98c8 fixed backgrounded API work at the prompt layer, but structural failure in the orchestrator still discarded an entire round after generation and lens extraction. Prescreen is a cost optimization that may kill but cannot certify; failure should spend more on deep research rather than erase the round.
 
-采纳 codex 07-07 调研第 3 条。9fa98c8 只在 prompt 层修了挂后台导致 prescreen.md 不落盘的问题,orchestrator 层结构失败仍整轮作废——白扔已花的生成+透镜抽取。预筛定位"只杀不保"的纯省钱优化,不是正确性门槛,失败方向应是多花深查钱而非废轮:
+- Replaced `prescreen_ok` with `kill_evidence`. A kill requires at least 1 structured API search record and a non-API occupant link in the same block. Only validated kills enter `kills.tsv` and the ledger as reject with high overlap. Incomplete evidence downgrades to keep.
+- Missing, empty, absent, or invalid prescreen decisions fail open into the prioritized shortlist, where research, review, and SA gates remain authoritative. A nonzero invocation rc still uses `fail_and_wait` because a backend failure would likely repeat in the next stage using the same `FRONT_CMD`.
+- Each fail-open ID enters `hunt.log` and `metrics` with `outcome=failopen`. `roles/prescreen.md` now states that invalid kills are void and all such candidates remain keep.
 
-- 删 `prescreen_ok`(任一 id 不达标即废轮),换 `kill_evidence`:只校验 kill 佐证(块内 ≥1 条结构化 API 检索记录 + 非 API 占位链接),通过才进 kills.tsv 按 reject 入账;佐证不全降级 keep——kill 是永久入账(overlap=high),幻觉/缺失链接不得污染 ledger。
-- prescreen.md 缺失/为空、判定缺失/非法:fail-open 按 keep 进优先级 shortlist,由深查重+裁判+SA 硬门槛兜底。调起 rc≠0 仍走 fail_and_wait——后端系统性故障,fail-open 只会让下一阶段(同一 FRONT_CMD)接着失败。
-- fail-open 逐 id 记 hunt.log,并写 metrics(outcome=failopen),防预筛系统性坏掉被兜底掩盖。`roles/prescreen.md` 契约同步:「不达标整轮作废」→「无效 kill 白判、fail-open 全 keep」。
+## 2026-07-07 Prioritized prescreen shortlist and round metrics
 
-## 2026-07-07 预筛 shortlist 优先级选取 + 轮级机器可读指标
+- Replaced FIFO with `tmp/round/keeps.tsv` carrying rank, theme occupancy, and generation order. `select_shortlist` sorts rechecks or evolutions at rank 0, axiom-removal candidates at rank 1, and ordinary candidates at rank 2; ties use ascending ledger theme count and generation order. Overflow remains unrecorded. FIFO had discarded later scarce candidates 51 times in `hunt.log`, including an interrupted-round I6 recheck; the new order selected I6, I1, and I3, covering recheck, axiom removal, and a Human-Robot Interaction and Deployment theme with occupancy 2.
+- Added append-only `tmp/hunt.metrics.tsv`. Failure, empty, and verdict events record round, stage, lens, generated, killed, kept, short, dropped, `pw_links`, `pw_api`, and per-candidate votes as `id=r1,r2,r3->verdict`, where 2=SA, 1=AwR, 0=reject, and -=missing. A `2,2,2->reject` line exposes an SA-gate downgrade. This distinguished why 84/107 Accept-w-Rev cases were novelty-capped or retrieval-thin without reconstructing logs.
+- BSD awk, sort, and uniq use `strcoll`; under `en_US.UTF-8`, distinct CJK strings compared equal. Theme counts changed to byte-exact `grep -Fxc`. Existing `themes_ok` array keys were already byte-exact. CJK equality checks no longer use awk `==` or locale-default sort and uniq.
 
-采纳 codex 07-07 调研的两条建议(候选调度与可观测性;安全边界不动):
+## 2026-07-06 One-shot prescreen execution and bounded rate-limit retry
 
-- shortlist 弃 FIFO:预筛 keep 先写 `tmp/round/keeps.tsv`(rank、主题存量、生成序),`select_shortlist` 排序取前 `SHORT_MAX` 个——`keep_rank` 复查/进化(0)> 删承重假设块(1)> 普通(2),同 rank 按 ledger 同主题行数升序、再按生成序;溢出 keep 照旧丢弃不入账。FIFO 按生成顺序取,已把排位靠后的稀缺候选丢掉 51 次(hunt.log;含中断遗留一轮的复查候选 I6,该轮在新逻辑下选出 I6/I1/I3——复查、删公理、存量 2 的人机交互与部署)。
-- 轮级指标 append-only `tmp/hunt.metrics.tsv`:阶段异常(fail)/空产出作废(empty)/聚合定谳(verdict)各追加一行——round、stage、lens、gen/kill/keep/short 计数(由 tmp/round 文件即时派生,drop=keep-short)、pw_links/pw_api、verdicts 每 idea 票串 `id=r1,r2,r3->终判`(2=SA 1=aWr 0=rej -=缺票;全 2 却 ->reject 即 SA 硬门槛降级)。诊断 84/107 accept-w-rev 卡在 novelty 封顶还是查重薄弱,不再翻 hunt.log/ledger prose。
-- 踩坑:BSD awk/sort/uniq 字符串比较走 strcoll,en_US.UTF-8 下纯 CJK 串互判相等(`awk '$3=="效率与系统"'` 能命中「动作表征」行),主题存量计数改 `grep -Fxc` 字节比较。既有代码未踩坑(themes_ok 用 awk 数组下标,哈希字节精确);CJK 等值判断避开 awk `==` 与默认 locale 的 sort/uniq。
+Two empty prescreen rounds at 22:07/22:46 had the same cause: the agent backgrounded API retrieval and returned while waiting for a callback. `claude -p` exited with the response, so `prescreen.md` was never written, consuming 2 of 3 short retries.
 
-## 2026-07-06 预筛铁律:一次性调用禁挂后台 + 限流有界重试
+- `roles/prescreen.md`: one-shot invocations cannot background work or wait for callbacks. On an API rate limit, they switch APIs or run `sleep 10`, at most 2 attempts per idea. Continued failure records the issued query URL, returns keep, and writes `prescreen.md` before the response ends.
+- `.claude/settings.json`: allowed only `Bash(sleep 10)`, bounding the wait independently of `run_stage`.
 
-当晚两轮预筛空产出同因:代理把 API 检索挂后台、结束回复"等通知",而 `claude -p` 回复结束进程即退,`prescreen.md` 永不落盘(hunt.log 22:07/22:46,烧掉 3 次短重试中的 2 次)。
+## 2026-07-06 Divergence lenses, blank cards, and deployment theme
 
-- `roles/prescreen.md` 铁律新增首条:一次性调用,禁挂后台/等回调;遇 API 限流换另一家 API 或 `sleep 10` 重试,每 idea 合计至多 2 次,仍失败则记录已发出的 query URL、判 keep 不再等待(与「拿不准一律 keep」同向,机械门槛只查 URL 模式,此路合规);`prescreen.md` 必须在回复结束前落盘。
-- `.claude/settings.json` 放行精确命令 `Bash(sleep 10)`:单次等待在权限层钉死 10 秒,限流路径整体有界,不依赖 run_stage 加超时。
+A review of 2025-26 award-winning work, including CoRL 2025 UniFP and Fabrica, RSS 2025 FEAST, NeurIPS 2025 best papers, and ICRA 2026 finalists, found that all 8 lenses were component substitutions and missed unification, closed-loop learning, extreme scale, and mechanism explanation.
 
-## 2026-07-06 发散透镜扩池 + 空白牌 + 词表加「人机交互与部署」
+- `brainstorming_policy.md`: expanded 8 lenses to 11 by adding output representation, unify or split, and closed-loop experience. The failure-assumption lens became explanation of accepted phenomena, including failure, success, scaling curves, and emergence. Compute became a bidirectional scale-axis lens. Time scale gained memory and context length; evaluation targets gained confounders. Lenses remain starting points, not mechanical quality gates.
+- `hunt.sh` `pick_lens`: added 3 blank cards to `total+3`; a blank adds no prompt lens and is logged as free divergence.
+- Added Human-Robot Interaction and Deployment to the theme vocabulary for FEAST-like work. Its initial occupancy was 0, so anti-collapse rules prioritized it. `themes_ok` parses vocabulary dynamically.
 
-依据 2025-26 顶会获奖创新盘点(CoRL 2025 UniFP/Fabrica、RSS 2025 FEAST、NeurIPS 2025 best papers、ICRA 2026 finalists):原 8 条透镜全是「换元件」型动作,覆盖不到统一/闭环/极端规模/机制解释这几类获奖创新。
+## 2026-07-06 AwR multi-backend sidecar
 
-- `brainstorming_policy.md` 透镜池 8→11:新增「换输出表征」「统一或拆分」「闭环与经验」;「换失败假设」放宽为「解释公认现象」(失败/成功/scaling 曲线/涌现行为);「换算力约束」改双向「换规模轴」(砍量级或推高量级);「换时间尺度」补记忆与上下文长度;「换评测对象」补混杂变量。透镜定位明确为起手式非硬约束,贴合度不进机械校验。
-- 抽签池加 3 张空白牌:`hunt.sh` `pick_lens` 按 total+3 抽签,抽中空白牌不注入、log 标注,本轮自由发散。
-- 主题词表加「人机交互与部署」(FEAST 类工作原先无家可归);新主题存量 0,会被反坍缩规则优先覆盖,属预期。`themes_ok` 动态解析词表,无需改码。README 头注同步。
+- Renamed `agy-side.sh` to `awr-side.sh`. Research and judgment seats accept Claude or Codex. `SIDE_CMD` sets both seats; `SIDE_RESEARCH_CMD` and `SIDE_JUDGE_CMD` override them independently, matching `hunt.sh` `AGENT_CMD`. Claude examples used `--strict-mcp-config`; Codex examples used `--skip-git-repo-check --ephemeral` for mirrors without `.git`. At this historical point, an unset command still selected built-in agy. Mirrors and mechanical checks applied to all backends; only agy used the launch throttle.
+- Renamed `AGY_SIDE_*` variables to `SIDE_*`. `AGY_MODEL` and `AGY_PRINT_TIMEOUT` remained for built-in agy. Startup migrated `tmp/agy-side/` to `tmp/awr-side/` without losing queue state, and the lock became `tmp/awr-side.lock`.
 
-## 2026-07-06 AwR sidecar 多后端 + 改名 awr-side.sh
+## 2026-07-06 Automated Claude MCP isolation
 
-- `agy-side.sh` → `awr-side.sh`:研究员/裁判两席可接 claude/codex——`SIDE_CMD` 两席统一覆盖,`SIDE_RESEARCH_CMD`/`SIDE_JUDGE_CMD` 分席覆盖(与 hunt.sh `AGENT_CMD` 同约定,claude 席同样 `--strict-mcp-config`,codex 席示例加 `--skip-git-repo-check --ephemeral` 适配无 `.git` 镜像),不设时仍为内置 agy、行为不变。沙箱镜像对所有后端保留,并拷入 `.claude/` 供 claude 席 allowlist;启动闸门只罩 agy 席(专治连发触发登录验证),claude/codex 直起、不动共享戳;机械校验/`.badN`/熔断对所有后端一视同仁。
-- 环境变量 `AGY_SIDE_*` → `SIDE_*`(`AGY_MODEL`/`AGY_PRINT_TIMEOUT` 保留,仅内置 agy);状态目录 `tmp/agy-side/` → `tmp/awr-side/`,启动时自动整体迁移,队列状态无损续跑;实例锁改 `tmp/awr-side.lock`。README/roles 头注同步。
+- Changed historical defaults for `hunt.sh` `AGENT_CMD` and `calib/run_panel.sh` `PANEL_CMD` from `claude -p` to `claude -p --strict-mcp-config`. Child processes inherited no user MCP servers, reducing startup checks and keeping unrelated application credentials out of process arguments visible through `ps`.
+- Outside the repository, the lark server was removed from Claude user scope. Its mode-600 configuration was stored at `~/.claude/mcp-lark.json` and could be mounted explicitly with `claude --mcp-config ~/.claude/mcp-lark.json`. Codex had no corresponding registration.
 
-## 2026-07-06 自动化 claude 调起隔离 MCP(--strict-mcp-config)
+## 2026-07-06 Axiom-removal channel (merged, PR #13)
 
-- `hunt.sh` 的 `AGENT_CMD` 与 `calib/run_panel.sh` 的 `PANEL_CMD` 默认从 `claude -p` 改为 `claude -p --strict-mcp-config`:子进程零 MCP——不继承用户级注册的任何 server(lark、claude.ai 连接器等),省每个 agent 的 MCP 启动与健康检查开销,应用凭据不再进无关自动化的进程参数(`ps` 可见)。README/头注示例同步。
-- 配套的环境侧动作(不在仓库内):lark 已从 Claude user scope 移除,配置存 `~/.claude/mcp-lark.json`(600),需要写飞书文档时用 `claude --mcp-config ~/.claude/mcp-lark.json` 按需挂载;codex 侧本就未注册。
+The ledger contained 51 AwR, 18 reject, and 0 SA. The 07-05 calibration showed that genuine oral-level material could not receive SA under the old policy: generation produced within-paradigm probes and review capped them. The new path targets a common SA structure: remove one load-bearing assumption, identify an external forcing constraint, and define a cheap decisive falsification experiment.
 
-## 2026-07-06 删承重假设通道:第 5 形态 + 裂缝核验 + 窄 break-glass(已合并,PR #13)
+1. `brainstorming_policy.md`: added form 5, remove a load-bearing assumption, with the assumption, why it can now be removed, forcing constraint, at least 2 URL crack-evidence lines pending verification, and a minimal experiment that can kill the bet. At least 1 of 10 raw candidates must attempt the form; only quality determines whether it reaches the 4-6 selected candidates. An unsuccessful attempt records one candidate and blocker before the first idea block and does not enter the ledger.
+2. `roles/research.md`: crack evidence is verified by full reading with outcomes supports, partial, contradicts, or unreachable. Draft self-report is not novelty evidence; prior work remains the judge's source.
+3. `roles/review.md` and policy: an untested bet is not itself MAJOR when its experiment is cheap and decisive. SA becomes available only with low-overlap bounded zero hit, at least 2 supporting crack items, an explicit external forcing constraint, and a decisive experiment executable on `1 x H100`. Direct hits, CRITICAL findings, at least 2 MAJOR findings, thin retrieval, or a missing experiment still block SA.
+4. `hunt.sh`: added `AXIOM_MIN_CRACKS`, default 2, plus `is_axiom_idea`, `axiom_ok`, and `cracks_ok` at generation, research, resume, and SA-gate boundaries. SA also requires at least 2 supporting verification outcomes. Marker lines before the first `##` are ignored by block parsers. Fixture tests passed 17/17. `trigger.md`, `PROGRAM.md`, and README were aligned; the remote weekly routine was manually synchronized on 2026-07-06.
+5. Calibration in `calib/results-2026-07-06.md`: `neg-axiom-cosplay` used valid structure around false claims and real URLs, with all crack checks contradicting and Diffusion Policy occupying the headline; it returned 3/3 reject. `pos-axiom-adam`, a cross-domain pre-publication reconstruction of ICML 2026 oral 2602.07729, Do We Need Adam?, returned 3/3 SA, the first calibration minimum-vote SA. Every ballot named all four conditions and none rejected it for domain transfer. The earlier 07-05 v2 oral material had only 2/6 individual SA votes, consistent with evidence insufficiency. Selection of a formal embodied-domain positive remained open until RSS 2026, 7/13-17 in Sydney; the later `pos-axiom-torque` entry closed it.
 
-背景:ledger 51 AwR / 18 reject / 0 SA,且 07-05 校准证明真 oral 素材在旧条款下也拿不到 SA 票——生成端只产范式内 probe(天然 AwR 形态),评审端又把这一类封顶,两端严丝合缝。SA 级 idea 的共性(Transformer 原型):删一条范式承重假设 × 外部约束逼出 × 便宜决定性否证实验。据此开一条窄而硬的证明路径,全链路落地:
+## 2026-07-05 AwR revival sidecar (committed directly to main)
 
-1. **第 5 形态「删承重假设」**(`brainstorming_policy.md`):结构化字段——删哪条承重假设 / 为何现在能删 / forcing constraint / 裂缝证据(≥2 行带 URL,待核验自报)/ 最小否证实验加严为须能一击杀死赌注。发散要求加删公理配额:10 个原料候选中至少尝试 1 个,进不进自筛后的 4-6 个只看质量;未成写标记行(带一句话候选与卡点)不入 ledger,宁缺勿造。
-2. **裂缝核验走查重管线**(`roles/research.md`):裁判 novelty 只认 priorwork(`roles/review.md` 铁律),自报裂缝留在 ideas.md 制度性无效;查重进程对该形态逐条实读核验 URL(判定词:相符/部分/不符/不可达,只记事实不评说服力),在 priorwork 块写「裂缝证据核验」节。
-3. **第二条 break-glass**(`roles/review.md` + policy 评审校准):「赌注未经验证」本身不计 MAJOR(前提:否证实验便宜且决定性);**同时**满足四条件可 SA——头条零命中 overlap=low / 裂缝核验 ≥2 条相符 / forcing constraint 为明确外部压力 / 否证实验 1×H100 可执行可杀死。不豁免任何既有硬门(direct-hit、CRITICAL、≥2 MAJOR、查重薄弱、缺否证实验);五字段缺失或核验不符 → 视为话术合规按普通形态从严。
-4. **hunt.sh 机械化**:新增 `AXIOM_MIN_CRACKS`(默认 2)与 `is_axiom_idea`/`axiom_ok`/`cracks_ok` 三校验,接入生成后、查重后、resume、SA 硬门槛四个挂点(SA 另须核验「相符」≥2,防话术蹭全票);标记行放 ideas.md 首个 `##` 之前,按块解析的下游天然忽略。夹具单测 17/17。`trigger.md`(weekly 自律版)、`PROGRAM.md`、`README.md` 同步;trigger.md 有改动,远端 weekly routine 已于 2026-07-06 手动同步。
-5. **calib 双侧验证**(详见 `calib/results-2026-07-06.md`):`neg-axiom-cosplay`(话术阴性:五字段结构合规、真 URL 假主张、核验全不符、头条被 Diffusion Policy 基线表覆盖)3/3 reject,三票独立命中全部设计雷点;`pos-axiom-adam`(形态探针,ICML 2026 oral 2602.07729「Do We Need Adam?」投稿前形态,LLM 域越域注记)3/3 SA——校准史首个 min-vote SA,逐票点名四条件、无人给「未验证」记 MAJOR、无一票因越域拒绝。同一条款话术关、真货开,判别落在证据(核验相符与否)而非修辞;对照 07-05 v2 真 oral 仅 2/6 单票 SA,佐证当时"剩余封顶在材料内证据不足"的判读——五字段随材料交裁判后直接全票。具身域正式阳性待 RSS 2026(7/13-17 悉尼)奖项揭晓后选定,选取标准、oral 金标来源与判读表见 `calib/README.md`。
+- Added `agy-side.sh`, `roles/awr.md`, and `roles/awr-judge.md`. Outside the main loop, multi-round agy research revised Accept-w-Rev ledger ideas, while a judge applied rubric and returned SA-possible or not-ready. Defects fed the next round; default finalization followed 3 feedback rounds. Artifacts stayed under `tmp/agy-side/awr/` and did not change verdicts, ledger rows, or idea reports.
+- Each invocation received only a `tmp/agy-side/run.*` mirror, and Bash copied back the declared output because agy had not reliably honored prompt paths. Mechanical checks required `## Revised Idea`, at least 3 URL query records, a binary decision, and final `AGY-DONE`. Invalid output became `.badN`; 3 failures blacklisted the item. Targets were cleared before invocation to prevent stale `judge.md` reuse. The sidecar shared the `agy-worker.sh` launch timestamp, default 120s, to avoid login verification bursts.
+- README documented sidecar use and interpretation.
 
-## 2026-07-05 AwR 复活 sidecar(直接提交 main)
+## 2026-07-05 Daily SA target (merged, PR #8)
 
-- 新增 `agy-side.sh` + `roles/awr.md` + `roles/awr-judge.md`:主环之外用多轮 agy 把 ledger 中 accept-w-rev 的 idea 磨成可复审成品——研究员检索补缺口出修订稿,裁判按 rubric 判 `SA-可能/还不行`(失败关闭),缺陷回灌下轮继续改,默认 3 轮反馈用尽收尾。产物只落 `tmp/agy-side/awr/`,不碰 verdict/ledger/ideas,与 hunt.sh 并行安全。
-- agy 弱点全走机械对策:每次调起只见 `tmp/agy-side/run.*` 临时镜像、指定输出由 bash 拷回(agy 实测不守 prompt 写界);产物机械校验(「## 修订版 idea」节、≥3 条带 URL 检索记录、判定二选一、末行 `AGY-DONE` 防早停),不合格 `.badN` 重跑、3 次拉黑;调起前清目标输出防旧 `judge.md` 误复用;与 `agy-worker.sh` 共享启动闸门戳(默认 120s)防连发触发登录验证。
-- README 增 sidecar 用法与判读章节。
+- Added `SA_TARGET` to `hunt.sh`, default 1; 0 means unlimited. The stop condition became a daily cumulative target rather than at least 1 unanimous Strong Accept. A published round below target continues. Multiple same-day reports retain the `-2` and `-3` suffix rules from `roles/report.md`; `publish.sh` appends idempotently to the same daily branch and PR.
+- Re-entry checks the number of same-day hunt-source `strong-accept` rows in the `tmp/ledger.good` baseline. A report can already exist while the target remains unmet; startup republishes idempotently before continuing.
+- Report completion now requires an increase in report-file count, preventing an older report from satisfying a later round.
+- Aligned `hunt.md`, `PROGRAM.md` step 5, and README.
 
-## 2026-07-05 当日目标数 SA_TARGET(已合并,PR #8)
+## 2026-07-05 Prescreen, deep prior work, evolution eligibility, and panel calibration (merged, PR #9)
 
-- `hunt.sh` 新增 `SA_TARGET`(默认 1,行为同旧版;0=不设上限):停机条件从"当日 ≥1 全票 Strong Accept"改为"当日累计达目标数"。达标轮发布后未达目标则继续攒;同日多份报告按 `roles/report.md` 既有 `-2`/`-3` 后缀累加,`publish.sh` 幂等追加进同一当日分支与 PR,二者零改动。
-- 重入判定从"当日报告文件存在"改为"`tmp/ledger.good` 基线中当日 hunt 源 strong-accept 行数达标";已有报告但未达标(如上调 `SA_TARGET` 重启)时启动先幂等补发布再继续。
-- 报告写出判定从"当日报告存在"改为"报告文件数新增",防多报告日被旧报告蹭过。
-- 同步 `hunt.md` 停机条件、`PROGRAM.md` 回路第 5 步、`README.md`。
+The day produced 29 ideas and 0 SA: 21 AwR and 8 reject. All 8 rejects were F1 occupied-headline failures discovered only after expensive research or review. About seven in ten AwR reasons involved novelty ceilings or only 3 papers read, and all 3 evolution attempts selected novelty-capped parents. Retrieval depth and parent eligibility, not generation time, were the bottlenecks.
 
-## 2026-07-05 预筛 + 深查重 + 进化资格 + 裁判校准(已合并,PR #9)
+1. Added `roles/prescreen.md` between generation and deep research. It is cheap, may err, and can kill only a single-paper direct hit supported by an occupant link and at least 1 API query record. Valid kills enter the ledger immediately as reject with high overlap. Surviving candidates are cut to `SHORT_MAX`, default 3; overflow is not recorded, and an all-killed round uses the empty-output retry. Bash constructs shortlist and kill state. Theme validation reads the pre-prescreen `ideas.all.tsv`.
+2. `roles/research.md`: increased full reading from 3-5 to 5-8 papers, searched for direct hits first, and required `Strongest Counterexample:`. Raised `PRIOR_MIN_LINKS` from 3 to 5 and `MIN_READ` from 3 to 5.
+3. Expanded the ledger from 6 to 7 columns with overlap parsed as high, medium, or low from prior work. Prescreen kills record high.
+4. `roles/generate.md`, `brainstorming_policy.md`, and `PROGRAM.md` invariant 6: evolution requires `accept-w-rev`, low overlap, and a design-class reason. Retrieval-thin AwR rows use one exact-story recheck; another ceiling permanently retires the story. Evolution and recheck share one slot per round. Minimal experiments name the strongest baseline, sample size, and expected effect.
+5. `roles/meta.md`: deathlists gained fatal pattern, ceiling pattern, and evolution candidate sections. Trigger counts now include reject plus AwR. Reject rows remain in the ledger because deletion would starve distillation and duplicate prevention.
 
-背景:当日 29 个 idea 全无 SA(21 AwR + 8 reject)。死因分布:8 个 reject 全为 F1"已被占据"(查重/裁判事后才发现);约七成 AwR 死因涉 novelty(封顶或"实读仅 3 篇→novelty 未证实");3 次进化全选了 novelty 封顶的父本再次封顶。结论:瓶颈在查重深度与进化父本选择,不在生成时长。落地五项:
+The calibration harness in `calib/run_panel.sh` runs N independent no-search reviewers and aggregates by minimum vote. Search is disabled because published controls would otherwise retrieve themselves; suspected counterparts are leak markers, not verdict changes. Positives were `pos-robomme`, ICML 2026 oral 2603.04639, and `pos-meanflow`, ICLR 2026 oral, each with 8-paper low-overlap prior work verified through arXiv API. `neg-replai` is directly occupied by RepLAI 2209.13583 with high overlap.
 
-1. **预筛阶段**(`roles/prescreen.md` 新增,`hunt.sh` 生成与深查之间):便宜可错、只杀不保——只杀"单篇工作直接占据头条"的 direct hit,kill 必附占位链接与 ≥1 条 API 检索记录;被杀者由 orchestrator 立即按 reject 入账(overlap=high,防下轮重生成),存活取前 `SHORT_MAX`(3)个进深查,超额 keep 丢弃不入账,全灭走空产出短重试。shortlist/kill 台账由 bash 机械构建,agent 只给判定。主题门槛改查预筛前的发散全集(`ideas.all.tsv`)。
-2. **深查重**:`roles/research.md` 每 idea 实读 3-5 → **5-8 篇**、先 direct-hit 猎杀、新增必填「最强反例」行(单篇最近邻 + 差异是否够 clear-accept);机械门槛联动 `PRIOR_MIN_LINKS` 3→5、SA 硬门槛 `MIN_READ` 3→5——prompt 与机械地板同步,防 agent 只满足地板。
-3. **ledger 加 overlap 列**(6→7 列):聚合时从 priorwork「重叠判定」提取 high/medium/low 入账,进化父本资格由此机械可查;预筛杀的记 high。
-4. **进化/复查资格收紧**(`roles/generate.md`、`brainstorming_policy.md`、PROGRAM.md 不动项 6):进化只准选 verdict=accept-w-rev 且 overlap=low 且死因属实验设计类缺陷的行(novelty 封顶/已被占据的不修);查重薄弱型 AwR 走「复查」——原样重交补查重,同 story 至多一次,补完仍封顶永久放弃;两者共用每轮 1 个名额。另:最小否证实验必须点名最强基线、给样本量与预期效应(对着今天的高频 MAJOR 硬化)。
-5. **失败蒸馏扩容**(`roles/meta.md`):deathlist 三节化(致命模式/封顶模式/进化候选),触发计数从"仅 reject"改为 reject+AwR(今天主失败是 AwR,旧计数一直不触发,deathlist 从未产出过)。ledger 不再人工清理 reject 行——清了会饿死蒸馏与防重生成。
+The run in `calib/results-2026-07-05.md` returned 3/3 reject for the negative and 3/3 Accept-w-Rev for both positives, with 0 SA among 6 positive ballots. Review evaluated full lifecycle instead of the minimal experiment and treated cross-domain mechanism transfer as capped. Changing aggregation to 2/3 would not help. The hand-built positive prior-work files had also missed MIKASA-Robo and MP1.
 
-**裁判校准 harness**(`calib/`):`run_panel.sh` 对对照 case 跑 N 位禁搜裁判(独立目录、min-vote,与 hunt 评审同构;禁搜是因为对照多为已发表工作,联网会变成"被自己占据"的假阴性;裁判怀疑对应已发表论文时只做泄漏标记不改判)。对照组:pos-robomme(ICML 2026 oral,benchmark 型,arXiv 2603.04639)、pos-meanflow(ICLR 2026 oral,method 型)+ 理想 priorwork(8 篇实读、low、编号全经 arXiv API 核验);neg-replai(头条被 RepLAI 2209.13583 直接占据,如实 high)。判读:阳性若给足理想证据仍无人投 SA → 瓶颈在 verdict 逻辑/聚合规则;阴性若不全票 reject → 面板放水。
+### Calibration policy correction A+B
 
-当日跑完(结果详见 `calib/results-2026-07-05.md`):阴性 3/3 reject(面板没坏);两个阳性均 3/3 accept-w-rev、六票零 SA。零 SA 票的结构性来源是两条评审条款——生命周期可行性按 idea 全量 scope 而非最小否证实验评、"已知机制搬新域默认不到 SA";在此之下聚合规则改 2/3 也不会触发。另:两份手工理想 priorwork 各漏了一个真实近邻(MIKASA-Robo、MP1),被裁判凭训练数据点名——深查重是对的投资方向。
+- A: feasibility now evaluates the minimal falsification experiment plus a reasonable phase-1 first-paper scope. A larger vision exceeding single-investigator compute is not itself MAJOR. Updated `brainstorming_policy.md`, `roles/review.md`, and `rubric.md` Step 6.
+- B: mechanism transfer may receive SA only when prior work shows a target-domain zero hit, adaptation is nontrivial, and the first signal is clear-accept quality. Missing any condition retains the cap.
+- Aligned `PROGRAM.md` invariant 4 and `brainstorming_policy.md` at 5-8 papers. Backfilled 29 legacy ledger rows with unknown overlap in column 7; every later row has 7 fields.
+- Qinning manually synchronized the remote `Weekly Embodied Idea Scout` prompt from `trigger.md` on 2026-07-05.
 
-### 校准后条款修正(A+B,operator 拍板)
+## 2026-07-05 Interruption recovery (merged, PR #6)
 
-- **A 可行性收窄**:lifecycle/feasibility 的评估对象改为「最小否证实验 + 首篇论文的合理裁剪(phase-1 scope)」,不再按 idea 最大愿景评;愿景全量超出单人算力不单独计 MAJOR。改动:`brainstorming_policy.md`、`roles/review.md`、`rubric.md` Step 6。
-- **B 机制迁移破例**:同时满足目标域零命中(只认 priorwork)、适配机制非平凡、信号落地即够 clear accept 三条件的机制迁移可给 SA,逐条点名证据、缺一仍封顶。改动:同上两处 + review.md SA 门槛条款。
-- 一致性修正:`PROGRAM.md` 不动项 4 与 `brainstorming_policy.md` 定向查重的篇数同步为 5-8;`ledger.tsv` 29 行历史行一次性 backfill 第 7 列 overlap=未知(schema 迁移,此后行行 7 列)。
+- Added the atomic directory lock `tmp/hunt.lock` with PID recording. A second live instance exits; a stale lock is reclaimed.
+- Startup now runs idempotent `./publish.sh` before exiting when a same-day report exists, closing the report-written, publication-interrupted gap.
+- `publish.sh` can resume when there is no new local diff but the daily branch already exists after a prior commit and before push or PR creation; it completes push and PR creation instead of returning no changes.
+- With `RESUME_FRONT=1`, default, valid interrupted `tmp/round` front-stage artifacts can skip generation and research on the first round. Review ballots and blocks are always cleared and regenerated; verdicts are never resumed.
 
-远端 cloud routine "Weekly Embodied Idea Scout" 的 prompt 已于 2026-07-05 按新 `trigger.md` 手动同步。
+## 2026-07-05 Product research pipeline upgrades (merged, PR #5)
 
-## 2026-07-05 中断恢复(已合并,PR #6)
+Implemented five findings from Google Co-Scientist, AI Scientist v2, and Si et al. 2409.04109 on LLM ideation collapse and weak feasibility.
 
-- **实例锁**:`tmp/hunt.lock`(mkdir 原子抢锁 + pid 记录),同目录双开第二个实例直接退出;持锁进程已死则自清重抢。双开会互踩 `tmp/round`、ledger 基线与守卫,此前无防护。
-- **启动补发布**:当日报告已存在时,先跑幂等的 `./publish.sh` 再退。堵住"report 写完、publish 被中断"后重启直接 break、报告永久滞留本地的缺口。
-- **publish.sh 幂等化**:无新改动但当日分支已存在(上次在 commit 后、push/PR 前中断)时补推送、补 PR;此前该状态下直接报"无待发布改动"退出。
-- **前段续跑**:`RESUME_FRONT=1`(默认)时,中断遗留的 `tmp/round` 前段产物(ideas.tsv/ideas.md/priorwork.md)过机械门槛则首轮跳过生成/查重,省掉已花的调用费。评审票据/评审块残留一律清除、裁判重新调起——verdict 永不续用,防前段借崩溃伪造票据绕过独立评审。
+1. Added `roles/meta.md`. Every `META_EVERY` rounds, default 6, once reject count reaches `META_MIN_REJECTS`, default 5, the front process distills ledger failure reasons into `tmp/deathlist.md`. This fallible stage does not block the hunt.
+2. Added one evolution slot per round for a targeted revision of an Accept-w-Rev ledger row. It receives full new prior-work and review processing and inherits no ballot. Reject rows were not revivable at this stage.
+3. Expanded `ledger.tsv` from 5 to 6 columns with `theme`; `tmp/round/ideas.tsv` gained theme in column 3. At least `THEME_MIN_LOW`, default 2, candidates must use one of the three least-populated themes. `hunt.sh` injects a randomly selected divergence lens.
+4. Every idea gained a minimal falsification experiment with data, compute, and expected signal. Review feasibility depends on that experiment; missing or infeasible experiments count as MAJOR and cap at Accept-w-Rev. `hunt.sh sa_gate_ok`, `trigger.md`, `roles/generate.md`, `roles/review.md`, `rubric.md` Step 6, and `brainstorming_policy.md` were aligned.
+5. Each `roles/research.md` block requires at least 1 reproducible arXiv or Semantic Scholar API query URL. `hunt.sh priorwork_ok` enforces `PRIOR_MIN_API`, default 1 and disabled by 0. APIs provide recall; full reading determines overlap.
 
-## 2026-07-05 竞品调研落地(已合并,PR #5)
+README and `trigger.md` stages 1-4 were aligned with the five changes.
 
-参照 Google Co-Scientist(meta-review / evolution)、AI Scientist v2(结构化检索的教训)与 Si et al. 2409.04109(LLM ideation 模式坍缩、feasibility 偏弱)落地五项:
+### Same-day review corrections
 
-1. **死因蒸馏**:新增 `roles/meta.md`;`hunt.sh` 每 `META_EVERY`(6)轮、ledger 拒行 ≥ `META_MIN_REJECTS`(5)时由前段进程把拒因归纳成 `tmp/deathlist.md`,生成阶段必读规避;可错阶段,失败不阻塞。
-2. **进化通道**:每轮可含至多 1 个对 ledger accept-w-rev 行的定向修复版,按全新 idea 走完整查重与评审,不继承旧票;reject 行不得复活。改动:`PROGRAM.md` 不动项 6、`brainstorming_policy.md`、`roles/generate.md`。
-3. **跨轮反坍缩**:`ledger.tsv` schema 5 列 → 6 列(新增 `theme`,取 policy 主题词表);`tmp/round/ideas.tsv` 加第 3 列主题;生成要求本轮 ≥2 个 idea 落在存量最少的三个主题;`hunt.sh` 每轮从 policy「发散透镜」小节随机抽一条注入生成 prompt(随机性在 bash 层)。
-4. **feasibility 锚点**:每个 idea 必须附「最小否证实验」(数据 × 算力 × 预期信号);裁判 feasibility 只认它,缺失或不可执行按 MAJOR 计、封顶 accept-w-rev;SA 硬门槛(`hunt.sh sa_gate_ok` 与 trigger.md 自检)加该字段机械校验。改动:`roles/generate.md`、`roles/review.md`、`rubric.md` Step 6、`brainstorming_policy.md`。
-5. **结构化查重通道**:`roles/research.md` 要求每个 idea 块 ≥1 条 arXiv/Semantic Scholar API 检索记录(实际 query URL,可复现);`hunt.sh priorwork_ok` 机械校验(`PRIOR_MIN_API`,默认 1,0 关闭)。API 只管召回,判定仍靠实读。
-
-其余同步:`README.md`(角色列表、默认参数、SA 硬门槛)、`trigger.md`(阶段 1-4 对齐上述规则)。
-
-### 同日 review 修正
-
-- `hunt.sh priorwork_ok`:近邻链接只计「- 」bullet 且排除 API URL——修复"2 条近邻 + 1 条 API query 恰好凑满 `PRIOR_MIN_LINKS=3`"的充数漏洞;API 记录仍单独计数。
-- `hunt.sh` 新增 `themes_ok` 主题门槛(生成阶段机械校验):theme 必须属 policy 主题词表,且本轮 ≥ `THEME_MIN_LOW`(2,0 关闭)个 idea 落在存量最少三个主题(阈值取第三低存量,并列计入;冷启动全零全员达标);不达标视同空产出重跑。此前 theme 纯靠生成端自标,可乱贴标签污染反坍缩统计。
-- `hunt.sh sa_gate_ok`:最小否证实验从"字段存在"加严为"冒号后内容 ≥30 字节",拦空字段/占位;语义真伪仍归裁判。
-- `hunt.md` 砍掉流程复述(已与 PROGRAM.md 分裂:仍写"三个独立进程"、查重只提 3 条链接),只保留入口特有项,协议指向 `PROGRAM.md`。
-
-远端 cloud routine "Weekly Embodied Idea Scout" 的 prompt 已于 2026-07-05 按新 `trigger.md` 手动同步。
+- `hunt.sh priorwork_ok` counts only neighbor bullets and excludes API URLs, preventing 2 neighbors plus 1 API query from satisfying `PRIOR_MIN_LINKS=3`.
+- Added `themes_ok`: themes must belong to policy vocabulary and at least `THEME_MIN_LOW`, default 2 and disabled by 0, candidates must use themes at or below the third-lowest ledger count. Cold start admits all tied zero-count themes.
+- `hunt.sh sa_gate_ok` now requires at least 30 bytes after the minimal-falsification label, blocking empty and placeholder fields while leaving semantic review to the panel.
+- Reduced `hunt.md` to entry-specific behavior and linked protocol semantics to `PROGRAM.md`, eliminating stale statements about three processes and 3-link prior work.
+- Qinning manually synchronized the remote `Weekly Embodied Idea Scout` prompt from `trigger.md` on 2026-07-05.

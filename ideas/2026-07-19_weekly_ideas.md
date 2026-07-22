@@ -1,115 +1,121 @@
 # Weekly Embodied Idea Scout — 2026-07-19
 
-> **本周无达标 idea(0 Strong Accept)。** 如实报告:一轮完整回路——发散 10 → 自筛 5 → 预筛杀 2 → 深查重 3 → 三遍打分取最低,默认 Reject。最接近的是 2 个 accept-w-rev(附录 B1/B2),均因 novelty 天花板未达 clear-accept。**宁可无达标,不可放水凑数。**
+> **No idea qualified this week (0 Strong Accept).** One complete round generated 10 candidates, self-screened 5, killed 2 at prescreening, and sent 3 to deep prior-work review and three-verdict scoring under a Reject-by-default policy. The closest results were 2 accept-w-rev ideas, B1 and B2, both capped below clear-accept by novelty. The threshold was kept intact.
 
-评审日期:2026-07-19 ｜ 来源:weekly ｜ 尝试轮数:1（发散 10 → funnel）｜ 打分:每个存活 idea 独立三遍、取最低票,默认 Reject ｜ 单 agent 近似 hunt 反串通(默认 Reject、对抗查重、三遍取最低、SA 硬门槛自检)。
-
----
-
-## 1. 本周文献综述(过去 7–14 天为主,相邻近月为辅)
-
-### WorldModel(世界模型)
-
-近两周三条主线清晰:**「还需不需要逐帧生成视频」之争**、**「世界模型当策略评委」竞赛**、以及 **model-based RL/规划走向 diffusion/consistency**。
-
-- **GigaWorld-1**（[2607.02642](https://arxiv.org/abs/2607.02642)）——把世界模型系统性地当**策略评委**,提出 WMBench(真机遥操+执行);断言评委质量由**长时程、动作忠实的 rollout 一致性**主导,视觉逼真度是错的目标。
-- **Structured 4D Latent Predictive Model**（[2607.01166](https://arxiv.org/abs/2607.01166)）——在结构化 4D(3D-over-time)潜空间做视频预测规划,预测未来经目标条件逆动力学转动作;假设显式 3D 几何对多视角一致性必要。
-- **TACO — Tactile World Model as Self-Corrector**（[2607.02840](https://arxiv.org/abs/2607.02840)）——Recognize-Imagine-Label 环,用**触觉感知** WM 把真机失败变合成纠正数据(无人工监督);假设纯视觉 WM 会生成「视觉合理但接触不一致」的轨迹。
-- **What Makes Video WM Latents Action-Relevant: Prediction over Reconstruction**（[2606.07687](https://arxiv.org/abs/2606.07687)）——诊断:是**时序预测**而非像素重建保真让 latent 变 action-relevant,高重建模型可在动作上失败。
-- **How Should World Models Be Evaluated for Embodied Decision-Making?**（[2606.15032](https://arxiv.org/abs/2606.15032)）——L0–L7 评测阶梯,从视觉合理度升到策略优化效用(含 exploitability、不确定度校准);断言决策效用而非感知质量应居证据顶端。
-- **LaWAM**（[2606.15768](https://arxiv.org/abs/2606.15768)）——在冻结视觉基座潜空间预测紧凑潜子目标而非重建未来帧,~24× 快于像素空间。
-- **ImageWAM — Do World Action Models Really Need Video Generation, or Just Image Editing?**（[2606.19531](https://arxiv.org/abs/2606.19531)）——用预训练**图像编辑**模型替代视频生成 WM,只建目标帧变换。
-- **WoW-World-Eval**（[2601.04137](https://arxiv.org/abs/2601.04137)）/ **WorldArena**（[2602.08971](https://arxiv.org/abs/2602.08971)）——具身 WM 评测基准;报告视频基座在长时程规划(~17%)与真机执行(~0%)崩溃,揭示显著的 perception-functionality gap。
-- model-based RL/规划:**MBDPO**（[2605.26282](https://arxiv.org/abs/2605.26282)，轨迹扩散统一 search 与 value）、**Interactive World Simulator**（[2603.08546](https://arxiv.org/abs/2603.08546)，consistency model 稳定交互)。
-- 自适应算力 WM(预筛阶段浮现,与本周删公理候选相关):**Looped World Models**（[2606.18208](https://arxiv.org/abs/2606.18208)）、**DLWM**（[2606.15160](https://arxiv.org/abs/2606.15160)）、**SANTS**（[2605.27947](https://arxiv.org/abs/2605.27947)）、**One-Token-Per-Frame**（[2605.07931](https://arxiv.org/abs/2605.07931)）。
-
-### VLA(视觉-语言-动作)
-
-三处饱和:**推理效率(缓存/快慢异步)**、**flow/diffusion VLA 的 RL 后训练**、**双系统快慢架构**。
-
-- **VLA-Corrector**（[2607.01804](https://arxiv.org/abs/2607.01804)）——监控开环执行中 latent 视觉特征漂移,触发自适应重规划/缩短 horizon;假设 latent 偏移是廉价可靠的早警信号。
-- **ActionCache**（[2607.06370](https://arxiv.org/abs/2607.06370)）——免训练复用过去去噪中间态热启动,报告最高 11.75×/34.43× 提速;依赖动作的时间冗余前提。
-- **VLA for UAV & Bimanual: A Review**（[2607.06706](https://arxiv.org/abs/2607.06706)）——183 篇综述,断言双手操作与空中控制有「基础算法并行」、动作表征跨本体可迁移(survey 级断言,未受控验证)。
-- **FlowDAgger**（[2607.08877](https://arxiv.org/abs/2607.08877)）——把人纠正经逆时积分映回噪声 latent 适配冻结 flow/diffusion 策略;假设专家动作可干净反演且 latent DAgger 保预训练分布。
-- **Z-1**（[2606.31846](https://arxiv.org/abs/2606.31846)）/ **π_RL**（[2510.25889](https://arxiv.org/abs/2510.25889)）——flow VLA 的高效/在线 RL(task-wise GRPO；Flow-Noise/Flow-SDE 解 log-likelihood 可解性)。
-- **RobustVLA**（[2511.01331](https://arxiv.org/abs/2511.01331)）——RL 后训练加 Jacobian/平滑正则提部署鲁棒;把鲁棒等同局部 Lipschitz 敏感度。
-- **ActionCodec**（[2602.15397](https://arxiv.org/abs/2602.15397)）——用信息论准则(最大时间重叠、最小词表冗余、token 独立)设计 tokenizer,断言重建保真是错的目标,只报 IL 结果、无 RL。
-- **FASTer**（[2512.04952](https://arxiv.org/abs/2512.04952)）、**DuoCore-FS**（[2512.20188](https://arxiv.org/abs/2512.20188)，异步快慢)、**DUST**（[2510.27607](https://arxiv.org/abs/2510.27607)，双流扩散 WM-VLA)、**Discrete Diffusion VLA**（[2508.20072](https://arxiv.org/abs/2508.20072)）、**Don't Blind Your VLA**（[2510.25616](https://arxiv.org/abs/2510.25616)，动作 SFT 侵蚀预训练视觉表征)。
-
-## 2. 趋势与 gap 分析
-
-**趋势:**
-1. **「视频生成是否必要」成为世界模型最热的一等争论。** ImageWAM(图像编辑)、LaWAM(潜子目标)、Prediction-over-Reconstruction、Structured-4D 各自删掉一块(时序/重建/几何)并**互相矛盾地**声称自己那块承重——这是「删承重假设」体裁最肥的矿脉,但也意味着任一单点删除都已被某篇占据。
-2. **世界模型即评委**成建制:GigaWorld/WorldArena/WoW-World-Eval/L0–L7 都在把「视觉逼真≠决策效用」形式化,竞相定义闭环/排序指标。
-3. **VLA-RL 后训练**密集围绕 flow 策略 log-likelihood 不可解这单一障碍(MDP 离散化 / ODE→SDE + GRPO);**推理效率**密集围绕动作时间冗余(缓存/快慢异步)。
-
-**Gap(本周探过但均未能转成 clear-accept 命题):**
-- 评委的**不确定度校准 / exploitability** 被 L0–L7 命名却几乎无人实测(→ 候选 #2 命中此 gap,但被 StressDream 的共享前提与 MSE→mode-collapse 的「预期性」封顶)。
-- **tokenizer 信息结构 × RL 可微调性**几乎无人连接,只连到 IL 成功率(→ 候选 #1 命中此 gap,但 ActionCodec 占轴、Subwords-as-Skills 反向近邻使差异不足 clear-accept)。
-- WM 自纠正合成数据的**盲区继承**(→ 候选 #8,但机制=MOPO/model-collapse 教科书结论,已被 Uncertainty-Aware RWM 在真机实证占据)。
-- 三条最新 gap 的共同点:**building blocks 全部新鲜且真实,但相邻工作已近到让差异读作「可预期推论」**——这是本周 0-SA 的直接原因,与近月 ledger 高度饱和一致。
-
-## 3. 达标 idea（Strong Accept)
-
-**本周无达标 idea。** 无任一候选通过 SA 硬门槛(三遍全票 strong-accept + novelty 经独立对抗查重为 low + 实读 ≥5 + 最小否证实验 + 完整 rubric + 差异足以支撑 clear-accept)。三个进入深查的存活候选(#1/#2/#8)在**独立对抗查重**中均被判定「head 未逐字发表、但存在共享承重前提的近邻工作,差异不足 clear-accept」,即 novelty 封顶;在**三遍默认-Reject 打分**下无一能拿到三票 strong-accept。
+Review date: 2026-07-19 | Source: weekly | Rounds: 1 (generate 10 → funnel) | Scoring: three independent verdicts per surviving idea, with the lowest verdict controlling and Reject as the default | Anti-collusion approximation: stage-separated generation, adversarial prior-work search, three verdicts, and an explicit SA hard-gate audit.
 
 ---
 
-## 4. 附录:borderline（accept-w-rev,仅供一览,不计入达标)
+## 1. Literature review
 
-### B1 — 世界模型即评委的排序误差主因是「方差盲」而非乐观偏差（世界模型-训练目标）
+The scan emphasized the latest 7–14 days and used adjacent recent work for context.
 
-**一句话:** 学习式 WM 当策略评委时,因 mean-seeking(MSE/众数)训练目标,对**同均值、不同结局方差**的两策略给出近乎相同的 mean rollout,故系统性**低估低方差(鲁棒)策略**;命名 evaluator **variance-discrimination**,方差保持(随机/集成 rollout)WM 应恢复方差排序。
+### World models
 
-**最小否证实验:** 在 sim(RoboCasa/LIBERO)构造成对策略——同真机成功率均值、不同结局方差(如同一 checkpoint 加不同温度/噪声)。用生成式 WM 评委(GigaWorld 式,少 rollout 锐化)排序 vs 多 rollout 真值 risk-adjusted 排序,测 variance-discrimination 一致性。信号:锐化单-rollout WM 无法区分同均值配对(排序 ~随机)、方差保持 WM 追平 risk 排序即证成;方差保持仍不涨则命题死。单人 1×H100 可执行(sim 真值廉价)。
+Three lines dominated the period: whether frame-by-frame video generation remains necessary, competition among world models used as policy evaluators, and the move from model-based RL and planning toward diffusion and consistency models.
 
-**三遍 verdict:** accept-w-rev / accept-w-rev / accept-w-rev → **最低 = accept-w-rev**。
+- **GigaWorld-1** ([2607.02642](https://arxiv.org/abs/2607.02642)) systematically uses a world model as a **policy evaluator** and introduces WMBench with real-robot teleoperation and execution. It argues that evaluator quality is dominated by long-horizon, action-faithful rollout consistency rather than visual realism.
+- **Structured 4D Latent Predictive Model** ([2607.01166](https://arxiv.org/abs/2607.01166)) plans through video prediction in a structured 4D, or 3D-over-time, latent space and converts predicted futures into actions with goal-conditioned inverse dynamics. It assumes explicit 3D geometry is necessary for multi-view consistency.
+- **TACO — Tactile World Model as Self-Corrector** ([2607.02840](https://arxiv.org/abs/2607.02840)) uses a Recognize-Imagine-Label loop and a **tactile-aware** world model to turn real-robot failures into synthetic correction data without human supervision. Its premise is that a visual-only world model produces trajectories that look plausible but violate contact physics.
+- **What Makes Video WM Latents Action-Relevant: Prediction over Reconstruction** ([2606.07687](https://arxiv.org/abs/2606.07687)) attributes action relevance to **temporal prediction**, not pixel-reconstruction fidelity, and shows that high-reconstruction models can fail on actions.
+- **How Should World Models Be Evaluated for Embodied Decision-Making?** ([2606.15032](https://arxiv.org/abs/2606.15032)) defines an L0–L7 evaluation ladder from visual plausibility to policy-optimization utility, including exploitability and uncertainty calibration. Decision utility sits above perceptual quality.
+- **LaWAM** ([2606.15768](https://arxiv.org/abs/2606.15768)) predicts compact latent subgoals in a frozen visual backbone instead of reconstructing future frames and runs ~24× faster than pixel-space prediction.
+- **ImageWAM — Do World Action Models Really Need Video Generation, or Just Image Editing?** ([2606.19531](https://arxiv.org/abs/2606.19531)) replaces a video-generation world model with a pretrained **image-editing** model that predicts only the goal-frame transformation.
+- **WoW-World-Eval** ([2601.04137](https://arxiv.org/abs/2601.04137)) and **WorldArena** ([2602.08971](https://arxiv.org/abs/2602.08971)) evaluate embodied world models. They report collapse in long-horizon planning at about 17% and real-robot execution at about 0%, exposing a large perception-functionality gap.
+- Model-based RL and planning: **MBDPO** ([2605.26282](https://arxiv.org/abs/2605.26282)) unifies search and value with trajectory diffusion; **Interactive World Simulator** ([2603.08546](https://arxiv.org/abs/2603.08546)) stabilizes interaction with a consistency model.
+- Adaptive-compute world models encountered during prescreening: **Looped World Models** ([2606.18208](https://arxiv.org/abs/2606.18208)), **DLWM** ([2606.15160](https://arxiv.org/abs/2606.15160)), **SANTS** ([2605.27947](https://arxiv.org/abs/2605.27947)), and **One-Token-Per-Frame** ([2605.07931](https://arxiv.org/abs/2605.07931)). These directly intersected the week's assumption-removal candidate.
 
-**定向查重记录(实读 ≥5):**
-- 最近邻 **StressDream**（[2606.00267](https://arxiv.org/abs/2606.00267)）:steer WM 初噪找「high-impact 却合理」的尾部未来;**共享**「mean/nominal rollout 漏尾部,除非采极多样本」这条承重前提,但目标是 risk surfacing + 策略改进,**不拥有** ranking estimand、不 claim 系统性低估低方差策略、不做 det-vs-stochastic 排序恢复实验。**最强反例。**
-- **WorldGym / Evaluating Robot Policies in a WM**（[2506.00613](https://arxiv.org/abs/2506.00613)）:确立**乐观偏差**(低估 in-dist、高估 OOD 动作、幻觉 OOD 成功)——**已排除的头条**,非本命题。
-- **GigaWorld-1**（[2607.02642](https://arxiv.org/abs/2607.02642)):consistency=单轨视觉保真,非跨样本方差;无 variance-discrimination 分析。
-- **WorldEval**（[2505.19017](https://arxiv.org/abs/2505.19017)）、**dWorldEval**（2604.22152）、**Scalable Policy Eval with Video WM**（2511.11520):报 Pearson/rank 相关,不分解 bias vs variance。
-- 邻域(risk-sensitive OPE):Universal OPE(Chandak NeurIPS'21)、CVaR-OPE(2312.00342)——按 risk 排序的**解**已存在,但未作为 learned-WM-evaluator 的**失败诊断**命名。
-- API:`abs:"world model" AND abs:"policy evaluation" AND abs:variance`→1(无关 TD-Flows);`all:"world model" AND all:"policy selection" AND all:risk`→**0**。
-- **重叠判定:low–medium**(head/估计量独立查重零命中,上界被 StressDream 共享前提抬离纯 low)。
+### Vision-language-action models
 
-**为何止步 AwR:** 头条与估计量未被占,但 (a) StressDream 共享承重前提,(b) 「mean-seeking→方差盲」是 MSE→mode-collapse 的**预期推论**、惊喜低,(c) 独立查重明判「非 automatic clear accept」——需 bias-vs-variance 排序误差分解 + 排除 StressDream steering 已解 ranking,才可能达 clear-accept。三遍默认-Reject 下难拿全票 SA;绑方差保持修复臂故过 reject 门,封顶 borderline。
+The saturated areas were inference efficiency through caching and asynchronous fast/slow paths, RL post-training for flow or diffusion VLAs, and dual-system architectures.
 
-### B2 — tokenizer 的 IL-最优信息结构未必是 RL 后训练最优（动作表征）
+- **VLA-Corrector** ([2607.01804](https://arxiv.org/abs/2607.01804)) monitors latent visual-feature drift during open-loop execution and triggers replanning or horizon reduction. It assumes latent shift is a cheap and reliable early-warning signal.
+- **ActionCache** ([2607.06370](https://arxiv.org/abs/2607.06370)) reuses intermediate states from earlier denoising trajectories for training-free warm starts and reports up to 11.75×/34.43× speedup, relying on temporal redundancy in actions.
+- **VLA for UAV & Bimanual: A Review** ([2607.06706](https://arxiv.org/abs/2607.06706)) surveys 183 papers and argues that bimanual manipulation and aerial control have parallel algorithmic foundations and transferable action representations. This is a survey-level claim without a controlled test.
+- **FlowDAgger** ([2607.08877](https://arxiv.org/abs/2607.08877)) maps human corrections back into noise latents through reverse-time integration for frozen flow or diffusion policies. It assumes clean inversion of expert actions and preservation of the pretrained distribution under latent DAgger.
+- **Z-1** ([2606.31846](https://arxiv.org/abs/2606.31846)) and **π_RL** ([2510.25889](https://arxiv.org/abs/2510.25889)) study efficient or online RL for flow VLAs through task-wise GRPO and Flow-Noise/Flow-SDE formulations with tractable log likelihoods.
+- **RobustVLA** ([2511.01331](https://arxiv.org/abs/2511.01331)) adds Jacobian and smoothness regularization during RL post-training and identifies robustness with local Lipschitz sensitivity.
+- **ActionCodec** ([2602.15397](https://arxiv.org/abs/2602.15397)) designs tokenizers using information-theoretic criteria—maximum temporal overlap, minimum vocabulary redundancy, and token independence—argues that reconstruction fidelity is the wrong objective, and reports IL results without RL.
+- Additional systems: **FASTer** ([2512.04952](https://arxiv.org/abs/2512.04952)); **DuoCore-FS** ([2512.20188](https://arxiv.org/abs/2512.20188)), an asynchronous fast/slow system; **DUST** ([2510.27607](https://arxiv.org/abs/2510.27607)), a dual-stream diffusion world-model VLA; **Discrete Diffusion VLA** ([2508.20072](https://arxiv.org/abs/2508.20072)); and **Don't Blind Your VLA** ([2510.25616](https://arxiv.org/abs/2510.25616)), which studies erosion of pretrained visual representations during action SFT.
 
-**一句话:** 让动作 tokenizer 在**模仿学习**上最优的信息论性质(低词表冗余、高时间重叠,ActionCodec)**未必**、甚至可能**有害于** RL 后训练可微调性——低冗余尖峰 token 分布给 RL(GRPO / flow-noise-MDP / π_RL 式)退化或平坦梯度;命名解耦估计量 **tokenizer RL-fine-tunability**,命题:RL 提升与 IL-最优冗余度**反相关**。
+## 2. Trends and gaps
 
-**最小否证实验:** 同 VLA + RoboCasa,tokenizer 冗余度从低(ActionCodec 式)到高扫,各跑 GRPO **和** flow-noise-MDP 两种 RL 后训练,测 RL lift vs IL lift。信号:RL lift 与 IL-最优冗余度反相关(≥5pt 分离)且跨两种 RL 制度一致即证成;无反相关或仅单制度出现(可归混杂)则命题死。单人 1×H100 可执行(小 VLA + sim RL)。
+**Trends:**
 
-**三遍 verdict:** accept-w-rev / accept-w-rev / accept-w-rev → **最低 = accept-w-rev**。
+1. **Whether video generation is necessary became a first-order world-model debate.** ImageWAM removes video generation through image editing; LaWAM removes future-frame reconstruction through latent subgoals; Prediction over Reconstruction changes the training target; Structured 4D retains explicit geometry. These papers make incompatible claims about which component carries the result, leaving little unoccupied space for a single-component deletion.
+2. **World models are becoming policy evaluators.** GigaWorld, WorldArena, WoW-World-Eval, and the L0–L7 framework formalize the gap between visual realism and decision utility and compete over closed-loop or ranking metrics.
+3. **VLA RL post-training and inference efficiency have converged on narrow bottlenecks.** Flow-policy work centers on intractable log likelihoods and addresses them with MDP discretization or ODE-to-SDE conversion plus GRPO. Efficiency work centers on temporal action redundancy through caching and asynchronous fast/slow execution.
 
-**定向查重记录(实读 ≥5):**
-- **ActionCodec**（[2602.15397](https://arxiv.org/abs/2602.15397)）:定义 IL-最优信息轴,**只报 IL、零 RL**——是前提不是竞争者,但**占据了「好 tokenizer 的信息论性质」这一框架**。
-- 最强反例(反向近邻)**Subwords as Skills**（[2309.04459](https://arxiv.org/abs/2309.04459)，NeurIPS'24):BPE 式动作 tokenization 的粗粒度/压缩/时间重叠**帮助**稀疏奖励 RL 探索——与本 idea「压缩伤 RL」**方向相反**,是必须正面迎战的已发表反证。
-- **Sparse but Critical**（[2603.22446](https://arxiv.org/abs/2603.22446)）:RL 微调只改稀疏少数 token 分布——支持「尖峰↔RL」机制,但测 RL **诱导的**偏移,不连接预存 tokenizer 峰度与 RL 可微调性。
-- **RL Token**（[2604.23073](https://arxiv.org/abs/2604.23073)）、**ExToken**(IROS'26)、**π_RL**（[2510.25889](https://arxiv.org/abs/2510.25889)）:VLA-RL 后训练把 tokenizer 当固定量优化 RL 过程,**无一**把 tokenizer 信息结构当自变量测 RL lift。
-- LLM-RL 机制邻域:Ignore-the-KL-Penalty（[2502.06533](https://arxiv.org/abs/2502.06533)）、High-Entropy-Minority-Tokens——低熵/尖峰 token 位约束 RL 探索(文本域,支持机制)。
-- API:`all:"action tokenizer" AND all:reinforcement AND all:fine-tuning`→**1**(无关);`all:"action tokenizer" AND all:reinforcement`→21(全固定 tokenizer);`all:"vocabulary size" AND all:reinforcement AND all:exploration`→**0**。
-- **重叠判定:low–medium**(具体命题=IL-最优⇄RL-敌对反相关 + 命名估计量,直接查重零命中;上界被 ActionCodec 占轴 + Subwords-as-Skills 反向近邻抬离纯 low)。
+**Gaps probed without reaching clear-accept:**
 
-**为何止步 AwR:** head 未占,但 (a) ActionCodec 已占「tokenizer 信息论性质」框架,(b) **Subwords-as-Skills 给出反方向已发表证据**(压缩/时间重叠助 RL),使「压缩伤 RL」的单调命题被削弱、需干净因果隔离(排除 codebook 覆盖/动作误差校准混杂)且跨 ≥2 RL 制度才成立,(c) 独立查重明判「非 automatic clear accept,可被读作 ActionCodec + 关键 token RL 文献的可预期推论」。三遍默认-Reject 难拿全票;绑双-RL-制度否证实验故过 reject 门,封顶 borderline。
+- The L0–L7 framework names evaluator **uncertainty calibration and exploitability**, but empirical tests remain sparse. Candidate #2 targeted this gap; StressDream shared its load-bearing premise, and the MSE-to-mode-collapse mechanism was too expected for clear-accept.
+- **Tokenizer information structure × RL fine-tunability** is almost absent; prior work links the structure only to IL success. Candidate #1 targeted this gap, but ActionCodec occupied the axis and Subwords as Skills supplied a close result in the opposite direction.
+- **Blind-spot inheritance in self-correcting world-model data** motivated candidate #8, but its mechanism reduces to standard MOPO/model-collapse reasoning and was already demonstrated on real robots by Uncertainty-Aware RWM.
+- The common failure mode was a real, recent building block with a neighboring result close enough to make the proposed difference read as an expected implication. That saturation produced the 0-SA outcome.
 
-## 5. 被拒 idea 简表
+## 3. Qualifying ideas (Strong Accept)
 
-| id | 一句话 | 拒因 | overlap |
+**No idea qualified this week.** Every candidate failed at least one SA hard gate: unanimous strong-accept verdicts, independently adversarial low-overlap evidence, ≥5 papers read, a minimal falsification experiment, a complete rubric, and a difference sufficient for clear-accept. All three deeply reviewed candidates, #1/#2/#8, had unpublished literal headlines but neighboring work that shared a load-bearing premise. The novelty ceiling prevented unanimous strong-accept verdicts under Reject-by-default scoring.
+
+---
+
+## 4. Borderline results: accept-w-rev, excluded from the qualifying count
+
+### B1 — Variance blindness, rather than optimism, drives ranking error when a world model evaluates policies (world-model training objective)
+
+**Claim:** A learned world model trained with a mean-seeking objective such as MSE or mode fitting gives nearly identical mean rollouts to policies with equal mean outcomes but different outcome variance. It therefore systematically **undervalues low-variance, robust policies**. Define evaluator **variance-discrimination** and recover variance ranking with a variance-preserving stochastic or ensemble world model.
+
+**Minimal falsification experiment:** In simulation with RoboCasa/LIBERO, construct paired policies with equal true success-rate means but different outcome variance, such as one checkpoint evaluated under different temperatures or noise. Compare ranking by a generative world-model evaluator in the GigaWorld style with few sharpened rollouts against a many-rollout, risk-adjusted ground truth. The claim is supported if a sharpened single-rollout evaluator is near-random on equal-mean pairs while a variance-preserving evaluator recovers the risk ranking. No improvement from variance preservation falsifies the claim. Simulation makes the ground truth inexpensive, and the study fits a single researcher with 1×H100.
+
+**Three verdicts:** accept-w-rev / accept-w-rev / accept-w-rev → **minimum = accept-w-rev**.
+
+**Targeted prior-work record, ≥5 papers read:**
+
+- Nearest neighbor, **StressDream** ([2606.00267](https://arxiv.org/abs/2606.00267)), steers the world model's initial noise toward plausible high-impact tail futures. It shares the load-bearing premise that mean or nominal rollouts miss tails unless sampled extensively. It targets risk surfacing and policy improvement, not the ranking estimand; it does not claim systematic undervaluation of low-variance policies or test deterministic-versus-stochastic ranking recovery. **Strongest counterexample.**
+- **WorldGym / Evaluating Robot Policies in a WM** ([2506.00613](https://arxiv.org/abs/2506.00613)) establishes **optimism bias** by underestimating in-distribution actions, overestimating OOD actions, and hallucinating OOD success. That excluded headline is distinct from variance blindness.
+- **GigaWorld-1** ([2607.02642](https://arxiv.org/abs/2607.02642)) defines consistency as single-trajectory visual fidelity, not cross-sample variance, and does not analyze variance-discrimination.
+- **WorldEval** ([2505.19017](https://arxiv.org/abs/2505.19017)), **dWorldEval** (2604.22152), and **Scalable Policy Eval with Video WM** (2511.11520) report Pearson or rank correlation without decomposing bias and variance.
+- Adjacent risk-sensitive OPE work includes Universal OPE from Chandak at NeurIPS'21 and CVaR-OPE (2312.00342). Risk-aware ranking solutions exist, but variance blindness has not been named as a failure diagnosis for a learned world-model evaluator.
+- API results: `abs:"world model" AND abs:"policy evaluation" AND abs:variance`→1, an unrelated TD-Flows result; `all:"world model" AND all:"policy selection" AND all:risk`→**0**.
+- **Overlap: low–medium.** Independent search found no direct hit on the headline or estimand, but StressDream's shared premise raises the upper bound above pure low overlap.
+
+**Why it stopped at AwR:** The headline and estimand were unoccupied, but StressDream shared the load-bearing premise; mean-seeking-to-variance-blindness is an expected implication of MSE-to-mode-collapse and therefore carries limited surprise; and independent search explicitly judged the result below automatic clear-accept. It would require a bias-versus-variance decomposition of ranking error and evidence that StressDream-style steering does not already solve ranking. The variance-preserving repair arm cleared Reject, but novelty capped all three verdicts at borderline.
+
+### B2 — An IL-optimal tokenizer information structure may be poor for RL post-training (action representation)
+
+**Claim:** The information-theoretic properties that optimize an action tokenizer for **imitation learning**—low vocabulary redundancy and high temporal overlap in ActionCodec—may impair RL fine-tunability. Low-redundancy, peaked token distributions can produce degenerate or flat gradients under GRPO, a flow-noise MDP, or a π_RL-style update. Define the decoupled estimand **tokenizer RL-fine-tunability** and test whether RL lift is **anti-correlated** with IL-optimal redundancy.
+
+**Minimal falsification experiment:** With one VLA and RoboCasa, sweep tokenizer redundancy from the low-redundancy ActionCodec-style structure to a high-redundancy structure. For each tokenizer, run both GRPO **and** flow-noise-MDP RL post-training and compare RL lift with IL lift. Support requires an anti-correlation between RL lift and IL-optimal redundancy with ≥5pt separation that holds across both RL regimes. No anti-correlation, or a signal confined to one regime, falsifies the claim as confounded. A small VLA plus simulated RL fits a single researcher with 1×H100.
+
+**Three verdicts:** accept-w-rev / accept-w-rev / accept-w-rev → **minimum = accept-w-rev**.
+
+**Targeted prior-work record, ≥5 papers read:**
+
+- **ActionCodec** ([2602.15397](https://arxiv.org/abs/2602.15397)) defines the IL-optimal information axes and reports **IL only, with no RL**. It supplies the premise rather than the conclusion, but occupies the framework for tokenizer information quality.
+- Strongest counterexample in the opposite direction, **Subwords as Skills** ([2309.04459](https://arxiv.org/abs/2309.04459), NeurIPS'24), shows that coarse-grained BPE action tokenization, compression, and temporal overlap **help** sparse-reward RL exploration. This published directional contradiction must be resolved by the experiment.
+- **Sparse but Critical** ([2603.22446](https://arxiv.org/abs/2603.22446)) finds that RL fine-tuning changes only a sparse subset of token distributions. It supports a peaked-token mechanism but measures RL-induced change rather than connecting an existing tokenizer's peakedness with fine-tunability.
+- **RL Token** ([2604.23073](https://arxiv.org/abs/2604.23073)), **ExToken** (IROS'26), and **π_RL** ([2510.25889](https://arxiv.org/abs/2510.25889)) hold the tokenizer fixed while optimizing RL and do not treat tokenizer information structure as an independent variable for RL lift.
+- Adjacent LLM-RL mechanisms include Ignore-the-KL-Penalty ([2502.06533](https://arxiv.org/abs/2502.06533)) and High-Entropy-Minority-Tokens. Low-entropy, peaked token positions constrain RL exploration in text models and support the mechanism indirectly.
+- API results: `all:"action tokenizer" AND all:reinforcement AND all:fine-tuning`→**1**, unrelated; `all:"action tokenizer" AND all:reinforcement`→21, all with fixed tokenizers; `all:"vocabulary size" AND all:reinforcement AND all:exploration`→**0**.
+- **Overlap: low–medium.** Independent search found no direct hit for the IL-optimal-to-RL-adverse anti-correlation or the named estimand. ActionCodec occupies the information axis, and Subwords as Skills supplies a close result in the opposite direction, raising the upper bound above pure low overlap.
+
+**Why it stopped at AwR:** ActionCodec already occupied the tokenizer-information framework, and Subwords as Skills supplied published evidence that compression and temporal overlap help RL, weakening the proposed monotonic direction. The experiment must isolate codebook coverage and action-error calibration and reproduce the result across ≥2 RL regimes. Independent prior-work review judged the claim readable as an expected implication of ActionCodec plus critical-token RL work rather than an automatic clear-accept result. The dual-regime falsification experiment cleared Reject, but novelty capped all three verdicts at borderline.
+
+## 5. Rejected ideas
+
+| id | Claim | Rejection reason | overlap |
 |---|---|---|---|
-| #3 | 删掉「操作 WM 对 rollout 内所有未来时刻等预算建模」,只在决策分叉点高保真(**删承重假设形态,五字段齐**) | **预筛直接占位**:Looped World Models(2606.18208)/DLWM(2606.15160)/SANTS(2605.27947)/One-Token-Per-Frame(2605.07931)已把「按状态复杂度/决策相关性非均匀分配 WM 算力」做遍 | high |
-| #6 | VLA 组合 OOD 失败是 binding 而非 Jacobian 敏感度,失败率随组合新颖度而非扰动幅度 | **预筛直接占位**:Robust Skills Brittle Grounding(2602.24143)已诊断 held-out object-region 配对 44%→0% 的 binding 失败,+LiLo-VLA(2602.21531)/ACT-VLA(2607.00351) | high |
-| #8 | WM 自纠正合成数据继承 WM 盲区(correction echo chamber),增益随 WM 局部置信下降而衰减 | 对抗深查:机制=MOPO(2005.13239)/model-collapse 教科书结论,Uncertainty-Aware RWM(2504.16680)已在真机用置信度加权 WM 合成数据(目标域非零命中),机制迁移被 dominated,唯一未发表的真-vs-合成配对对照 thin | medium |
+| #3 | Remove the assumption that a manipulation world model must allocate equal modeling budget to every future point in a rollout; preserve high fidelity only at decision branches. | **Direct prescreen occupancy:** Looped World Models (2606.18208), DLWM (2606.15160), SANTS (2605.27947), and One-Token-Per-Frame (2605.07931) already allocate world-model compute non-uniformly according to state complexity or decision relevance. | high |
+| #6 | Compositional OOD failure in a VLA is caused by binding rather than Jacobian sensitivity, so failure tracks compositional novelty instead of perturbation magnitude. | **Direct prescreen occupancy:** Robust Skills Brittle Grounding (2602.24143) already diagnoses a 44%→0% binding failure on held-out object-region pairs, with LiLo-VLA (2602.21531) and ACT-VLA (2607.00351) occupying adjacent space. | high |
+| #8 | Self-correcting synthetic data inherits the world model's blind spots, creating a correction echo chamber whose gains decay with local world-model confidence. | Adversarial deep review reduced the mechanism to standard MOPO (2005.13239) or model-collapse reasoning. Uncertainty-Aware RWM (2504.16680) already uses confidence-weighted world-model synthetic data on real robots. The mechanism transfer is dominated, leaving only a thin unpublished paired real-versus-synthetic control. | medium |
 
-**自筛淘汰(未进 funnel,未获评审,不入 ledger):** #4 latent-DAgger 改意图纠正扭曲预训练分布(HITL 饱和)、#5 ActionCache 精度损失集中接触相(接触相饱和)、#7 UAV↔bimanual 可迁移性由 control-bandwidth 决定(借 survey、弱)、#9 action-relevance 承重件=单步接触事件编码(与 2606.07687 太近)、#10 DuoCore-FS staleness 在子目标边界坍缩(子目标边界饱和)。
+**Self-screened candidates, not reviewed and not entered in the ledger:** #4, latent-DAgger intent correction distorts the pretrained distribution, in a saturated HITL area; #5, ActionCache loses precision mainly during contact, in a saturated contact-phase area; #7, UAV-to-bimanual transfer is determined by control bandwidth, based on a weak survey extrapolation; #9, the load-bearing component of action relevance is single-step contact-event encoding, too close to 2606.07687; #10, DuoCore-FS staleness collapses at subgoal boundaries, in a saturated subgoal-boundary area.
 
-## 6. 元信息
+## 6. Run record
 
-- **尝试轮数:1**(发散 10 → 自筛 5 → 预筛杀 2(#3/#6,overlap=high)→ 深查 3(#1/#2/#8)→ 三遍打分取最低)。
-- **删公理配额:成 #3**(五字段齐:删哪条=WM 逐帧等预算生成;为何现在能删=WoW/WorldArena 揭示长时程非均匀崩溃;forcing=evaluator 长时程推理算力;裂缝证据 2 条=WoW-World-Eval 长时程~17%/WorldArena perception-functionality gap;否证=决策分叉点高保真 vs 均匀预算测 ranking agreement)——配额以「成」计,预筛被自适应算力 WM 群占位 → reject,非放水。
-- **低存量主题反坍缩:达标。** 进 funnel 的 5 个候选中 #1(动作表征,36)、#2(世界模型-训练目标,36)、#3(世界模型-架构,35)三个落在 ≤第三低存量(36,并列计入)主题,≥2。
-- **每个 SA 的三遍 verdict:** 无 SA。
-- **最接近达标的 2 个:** B1(evaluator 方差盲,overlap low–medium,差 novelty 一档——StressDream 共享前提 + MSE-mode-collapse 预期性)、B2(tokenizer IL⇄RL 反相关,overlap low–medium,差在 Subwords-as-Skills 反向证据使单调命题需更强隔离)。
-- **纪律:** 单 agent 近似 hunt 反串通——默认 Reject、生成/查重/打分分阶段(查重由独立 subagent 对抗式完成,prompt 明令「证明已被做过」)、三遍取最低、novelty 只认独立查重证据、SA 硬门槛自检。
+- **Rounds: 1** (generate 10 → self-screen 5 → prescreen kills 2, #3/#6 with overlap=high → deep review 3, #1/#2/#8 → three verdicts with the minimum controlling).
+- **Assumption-removal quota: fulfilled by #3.** The five fields were: remove equal-budget frame-by-frame world-model generation; newly actionable because WoW/WorldArena reveal non-uniform long-horizon collapse; forcing function from evaluator long-horizon inference compute; 2 crack-evidence items from WoW-World-Eval at ~17% long-horizon performance and the WorldArena perception-functionality gap; falsification by comparing decision-branch fidelity with a uniform budget on ranking agreement. Adaptive-compute world-model work occupied the claim at prescreening, so the result was reject.
+- **Low-inventory coverage: passed.** Among the 5 candidates entering the funnel, #1 in action representation with inventory 36, #2 in world-model training objectives with inventory 36, and #3 in world-model architecture with inventory 35 all fell at or below the third-lowest inventory level, 36 with ties included; the ≥2 requirement was met.
+- **Three-verdict results for every SA:** no SA.
+- **Closest 2 results:** B1, evaluator variance blindness with low–medium overlap, missed by one novelty level because StressDream shared the premise and the MSE-mode-collapse implication was expected; B2, the tokenizer IL-to-RL anti-correlation with low–medium overlap, required stronger isolation because Subwords as Skills supplied evidence in the opposite direction.
+- **Review discipline:** single-agent anti-collusion approximation with Reject as the default; stage-separated generation, prior-work search, and scoring; adversarial prior-work instructions to prove occupancy; the minimum of three verdicts; novelty accepted only from independent search evidence; and explicit SA hard-gate checks.
