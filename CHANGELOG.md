@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-07-20 calib:method 型正对照两例(RSS 2026 奖论文诚实定价均止 AwR)
+
+- 新增 `calib/cases/pos-muninn`(Muninn,2605.09999)与 `calib/cases/pos-lowutd`(FlashSAC,2604.04539),均 RSS 2026 奖论文投稿前形态、纯新机制型。两例头条零占据但 payoff 轴已占(Muninn 加速被 BAC/SAG、FlashSAC payoff 被 FastTD3/FastSAC),按净增量规则封顶 AwR;各 3/3 AwR、过 expect(min_vote≥AwR)。
+- 发现:SA 目前只经删公理通道达成;method 型 SA 正对照仍空缺,两次用真奖论文尝试均落 AwR(idea 形态 novelty 坐在已占轴上)。判读与对照见 `calib/results-2026-07-20.md`。
+- setup 修正:pos-lowutd 首轮命名 `pos-flashsac` 被裁判用作论文身份推测(命名铁律:case 名不得含原型论文名);查重补入 CrossQ(1902.05605)——低 UTD 机制先占者,首轮漏检。改名+补查重后重跑落 3/3 AwR。
+- `calib/README.md`:cases 节补两例,method 型 SA 席位空缺说明更新。
+
 ## 2026-07-19 calib:具身域删公理正式阳性落位(pos-axiom-torque 3/3 SA)
 
 - 新增 `calib/cases/pos-axiom-torque`:RSS 2026 Outstanding Systems Paper「NeuralActuator」(arXiv 2607.11734,post-cutoff)投稿前形态重建——删「actuator 学习必须扭矩真值监督」;9 近邻经 arXiv API 核验、时窗扫描 18+8 篇零命中、裂缝 2/2 实读相符、力感知轴占据者(解析 DOB,2507.06174)如实入档。面板 3/3 SA,按 `pos-axiom-*` 判读表=通道可用;票据核对见 `calib/results-2026-07-19.md`。
