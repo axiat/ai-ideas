@@ -4,7 +4,7 @@
 
 **Goal:** Deliver a coherent English-language `ai-ideas` product with English runtime artifact contracts, a generated hero image, a fully rewritten ledger and history, safe backend defaults, and evidence-backed independent review.
 
-**Architecture:** Preserve the existing shell-orchestrated pipeline and file layout. Migrate every producer and parser through one English artifact glossary, preserve stable ledger and calibration facts with hash-based tests, and separate the concise product entry from detailed operational documentation.
+**Architecture:** Preserve the existing shell-orchestrated pipeline and file layout. Align every producer and parser through one English artifact glossary, preserve stable ledger and calibration facts with hash-based tests, and separate the concise product entry from detailed operational documentation.
 
 **Tech Stack:** Bash 3.2-compatible shell, Python 3 standard library, Markdown, TSV, Git worktrees, GitHub Actions YAML, and a generated PNG asset.
 
@@ -14,8 +14,8 @@
 - Preserve all 531 ledger data rows, including the 111 rows copied from the dirty `main` checkout.
 - Preserve the ledger field-count distribution: 216 seven-field rows and 315 eight-field rows.
 - Preserve dates, sources, verdicts, overlap semantics and row positions, categories, URLs, identifiers, model names, commands, counts, thresholds, and table values. Map the 29 legacy unknown-overlap labels one-to-one to `unknown`.
-- Keep these machine tokens byte-stable after migration: `strong-accept`, `accept-w-rev`, `reject`, `low`, `medium`, `high`, `unknown`, `novelty-dead`, `evidence-incomplete`, `design-fixable`, `ceiling-limited`, `hunt`, and `weekly`.
-- Use English in every tracked human-readable file and in `s1_report_20260720.md`; ignored `tmp/` state is outside the repository rewrite.
+- Keep these machine tokens byte-stable throughout the product rollout: `strong-accept`, `accept-w-rev`, `reject`, `low`, `medium`, `high`, `unknown`, `novelty-dead`, `evidence-incomplete`, `design-fixable`, `ceiling-limited`, `hunt`, and `weekly`.
+- Use English in every tracked human-readable file and in `s1_report_20260720.md`; ignored `tmp/` state is outside the product-content boundary.
 - Codex is the default trusted backend. Claude is explicit opt-in only and must never appear in a shell fallback value.
 - Do not invent a license, claim topic independence, implement roadmap features, push, open a pull request, or merge.
 - Keep prose minimal, bounded, and dense as defined by `/Users/qinningxu/AI_SHARED_MEMORY.md`.
@@ -117,12 +117,20 @@ RUNTIME_FILES = [
     "lib/resolve_cmd.sh", "PROGRAM.md", "hunt.md", "trigger.md",
     "research_context.md", "brainstorming_policy.md", "rubric.md",
     "calib/run_panel.sh", "calib/run_all.sh", "calib/run_e2e.sh",
-    ".githooks/pre-push", ".github/workflows/auto-merge-claude.yml",
+    ".githooks/pre-push", ".github/workflows/auto-merge-routine.yml",
 ]
 BACKEND_DEFAULTS = {
     "hunt.sh": (
         "AGENT_CMD",
         "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write",
+    ),
+    "awr-side.sh": (
+        "SIDE_CMD",
+        "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral",
+    ),
+    "litwatch.sh": (
+        "LITWATCH_CMD",
+        "codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral",
     ),
     "calib/run_panel.sh": (
         "PANEL_CMD",
@@ -386,7 +394,7 @@ git add tests/verify_product_contract.py
 git commit -m "test: lock product content invariants"
 ```
 
-### Task 2: Migrate the Core Hunt Runtime and Prompts
+### Task 2: Align the Core Hunt Runtime and Prompts
 
 **Files:**
 - Modify: `hunt.sh`
@@ -426,7 +434,7 @@ Run: `bash tests/runtime_abi_smoke.sh`
 
 Expected: FAIL because the current parsers still require legacy labels.
 
-- [ ] **Step 2: Rewrite the core policy, entry prompts, and roles in English**
+- [ ] **Step 2: Apply the product content contract to core policy and prompts**
 
 Preserve every gate, default value, stage boundary, file path, and output token. Replace producer templates and parser literals with the exact Target Artifact Glossary in the same commit. Replace explicit requirements for non-English output with English output requirements.
 
@@ -450,14 +458,14 @@ bash tests/runtime_abi_smoke.sh
 
 Expected: all commands succeed.
 
-- [ ] **Step 5: Commit the core migration**
+- [ ] **Step 5: Commit the core runtime contract**
 
 ```bash
 git add hunt.sh PROGRAM.md hunt.md trigger.md brainstorming_policy.md research_context.md roles tests/fake_agent.sh tests/runtime_abi_smoke.sh
 git commit -m "feat: align hunt runtime contracts"
 ```
 
-### Task 3: Migrate AwR, Litwatch, Wrappers, and Automation
+### Task 3: Align Supporting Workflows and Automation
 
 **Files:**
 - Modify: `awr-side.sh`
@@ -476,15 +484,34 @@ git commit -m "feat: align hunt runtime contracts"
 - Modify: `publish.sh`
 - Modify: `settle.sh`
 - Modify: `.githooks/pre-push`
-- Modify: `.github/workflows/auto-merge-claude.yml`
+- Rename: `.github/workflows/auto-merge-claude.yml` to `.github/workflows/auto-merge-routine.yml`
+- Modify: `tests/fake_agent.sh`
+- Modify: `tests/runtime_abi_smoke.sh`
+- Modify: `tests/verify_product_contract.py`
 
 **Interfaces:**
 - Consumes: English ledger content and the Target Artifact Glossary.
-- Produces: English AwR, litwatch, wrapper, publishing, and automation behavior.
+- Produces: consistent AwR, litwatch, wrapper, publishing, and automation behavior.
 
 - [ ] **Step 1: Extend the fake-agent smoke test to AwR**
 
-Add an AwR case that copies one `accept-w-rev` row into an isolated temporary ledger, runs `SIDE_POLL_SEC=0`, `SIDE_MAX_ROUNDS=1`, and explicit fake research/prior-work/judge commands, then asserts a final artifact with:
+Add two AwR cases that copy one `accept-w-rev` row into an isolated temporary ledger. Both cases must set every backend command to the fake agent and disable all polling, launch-gap, and cooldown delays:
+
+```bash
+SIDE_CMD=tests/fake_agent.sh
+SIDE_RESEARCH_CMD=tests/fake_agent.sh
+SIDE_PRIORWORK_CMD=tests/fake_agent.sh
+SIDE_JUDGE_CMD=tests/fake_agent.sh
+SIDE_POLL_SEC=0
+SIDE_MAX_ROUNDS=1
+SIDE_MAX_BAD=1
+SIDE_GAP_SEC=0
+SIDE_GAP_MIN_SEC=0
+SIDE_GAP_MAX_SEC=0
+SIDE_COOLDOWN_SEC=0
+```
+
+Clear `tmp/ledger.good` and the AwR scratch directory before each case. The ready case asserts a final artifact with:
 
 ```text
 ## Revised Idea
@@ -494,11 +521,20 @@ Status: ready
 AGY-DONE
 ```
 
+The not-ready case must exercise `- Defect:`, `## Reviewer Feedback`, `Round: 1`, `Decision: not-ready`, and `Status: not-ready`. In both cases, `AGY-DONE` remains the last nonempty line.
+
 Expected before implementation: FAIL on legacy parser labels.
 
-- [ ] **Step 2: Rewrite all listed sources and prompts in English**
+- [ ] **Step 2: Apply the supporting workflow contract**
 
-Use the exact AwR labels from the glossary. Preserve path restrictions, mirror boundaries, retry counts, bad-artifact handling, launch throttling, polling, and stable `AGY-DONE` sentinel behavior.
+Use the exact AwR labels from the glossary. Preserve path restrictions, mirror boundaries, retry counts, bad-artifact handling, launch throttling, polling, and stable `AGY-DONE` sentinel behavior. Use these exact trusted defaults:
+
+```bash
+SIDE_CMD=${SIDE_CMD:-codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral}
+LITWATCH_CMD=${LITWATCH_CMD:-codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral}
+```
+
+An explicit `SIDE_CMD=agy` must continue to select the existing mirror-local agy adapter. `litwatch.sh` must keep `LITWATCH_AGY_CMD` as a compatibility override when `LITWATCH_CMD` is not explicitly set. Provider-specific `agy-worker.sh` and `grok-worker.sh` remain explicit adapters and never become fallbacks.
 
 - [ ] **Step 3: Run syntax and deterministic tests**
 
@@ -509,16 +545,16 @@ python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("lib/litwatch.py").read_
 bash tests/runtime_abi_smoke.sh
 ```
 
-Expected: shell and Python checks pass; litwatch reports 14 passed, 0 failed, with the live network smoke allowed to skip; both fake-agent cases pass.
+Expected: shell and Python checks pass; litwatch reports 14 passed, 0 failed, with the live network smoke allowed to skip; the hunt smoke and both AwR fake-agent cases pass.
 
-- [ ] **Step 4: Commit the supporting runtime migration**
+- [ ] **Step 4: Commit the supporting workflow contract**
 
 ```bash
-git add awr-side.sh agy-worker.sh grok-worker.sh litwatch.sh litwatch_test.sh lib roles/awr.md roles/awr-priorwork.md roles/awr-judge.md roles/litwatch.md publish.sh settle.sh .githooks/pre-push .github/workflows/auto-merge-claude.yml tests/runtime_abi_smoke.sh
+git add awr-side.sh agy-worker.sh grok-worker.sh litwatch.sh litwatch_test.sh lib roles/awr.md roles/awr-priorwork.md roles/awr-judge.md roles/litwatch.md publish.sh settle.sh .githooks/pre-push .github/workflows/auto-merge-routine.yml tests/fake_agent.sh tests/runtime_abi_smoke.sh tests/verify_product_contract.py
 git commit -m "feat: align supporting workflow contracts"
 ```
 
-### Task 4: Migrate Calibration Sources, Fixtures, and Results
+### Task 4: Establish the Calibration Product Suite
 
 **Files:**
 - Modify: `calib/README.md`
@@ -533,13 +569,13 @@ git commit -m "feat: align supporting workflow contracts"
 
 **Interfaces:**
 - Consumes: English review and prior-work contracts.
-- Produces: English gold cases with unchanged IDs and assertion DSL.
+- Produces: product-ready gold cases with unchanged IDs and assertion DSL.
 
-- [ ] **Step 1: Rewrite calibration scripts and fixtures atomically**
+- [ ] **Step 1: Align calibration scripts and fixtures atomically**
 
 Use `suspected published counterpart` for the leak marker and `Overlap:` for end-to-end parsing. Preserve every `I<n>` heading, URL, paper identifier, score, vote, and non-comment assertion line.
 
-- [ ] **Step 2: Replace automatic Claude defaults**
+- [ ] **Step 2: Set trusted backend defaults**
 
 Use this frozen-panel fallback:
 
@@ -563,14 +599,14 @@ python3 tests/verify_product_contract.py runtime
 
 Expected: both Python scopes print `ok` and shell syntax passes. Do not run a live model panel during this task.
 
-- [ ] **Step 4: Commit calibration migration**
+- [ ] **Step 4: Commit the calibration suite**
 
 ```bash
 git add calib
 git commit -m "docs: refresh calibration suite"
 ```
 
-### Task 5: Rewrite Historical Documents and Reports
+### Task 5: Curate Historical Documents and Reports
 
 **Files:**
 - Modify: `AWR-REBUILD-DRAFT.md`
@@ -585,17 +621,17 @@ git commit -m "docs: refresh calibration suite"
 
 **Interfaces:**
 - Consumes: the existing facts, caveats, tables, links, and frozen-versus-corrected distinctions.
-- Produces: fluent standalone English historical records.
+- Produces: fluent standalone historical records.
 
-- [ ] **Step 1: Rewrite the design, development, and changelog records**
+- [ ] **Step 1: Curate the design, development, and changelog records**
 
 Preserve chronology, exact commands, commit references, identifiers, measured values, known limitations, and completed-versus-open status. Remove no historical claim and add no new roadmap item.
 
-- [ ] **Step 2: Rewrite idea reports and the S1 report**
+- [ ] **Step 2: Curate idea reports and the S1 report**
 
 Preserve report IDs, verdicts, vote counts, paper links, correction notes, experimental tables, preregistered outcomes, and the separation between supported, falsified, and boundary claims.
 
-- [ ] **Step 3: Run the document English gate**
+- [ ] **Step 3: Run the document content gate**
 
 ```bash
 ! rg -n --pcre2 '\p{Script=Han}' AWR-REBUILD-DRAFT.md LITWATCH-DRAFT.md DEVELOPMENT.md CHANGELOG.md rubric.md ideas s1_report_20260720.md
@@ -614,7 +650,7 @@ git commit -m "docs: curate project history"
 ### Task 6: Build the Product Documentation Surface
 
 **Files:**
-- Rewrite: `README.md`
+- Modify: `README.md`
 - Create: `docs/getting-started.md`
 - Create: `docs/architecture.md`
 - Create: `docs/backends.md`
@@ -625,7 +661,7 @@ git commit -m "docs: curate project history"
 - Consumes: current commands, paths, backend defaults, runtime boundaries, and the design spec.
 - Produces: a concise product entry and focused operator documentation.
 
-- [ ] **Step 1: Rewrite README as the product entry**
+- [ ] **Step 1: Build README as the product entry**
 
 Use the information order in the design spec. Include the exact hero reference `![ai-ideas pipeline](assets/ai-ideas-hero.png)`, a minimal Codex quick start, one compact artifact example, backend opt-in examples, current limitations, and links to the focused documents.
 
@@ -703,7 +739,7 @@ git commit -m "data: curate ledger archive part one"
 
 **Interfaces:**
 - Consumes: the middle 177 historical data rows and the committed first tranche.
-- Produces: English rows with the same schema and facts.
+- Produces: curated product ledger rows with the same schema and facts.
 
 - [ ] **Step 1: Curate columns 3, 4, and 6 for rows 179-355**
 
@@ -820,7 +856,7 @@ Reviewer A checks product usability, README hierarchy, onboarding, navigation, a
 
 Reviewer B checks every changed prose artifact for fluency, consistency, dense engineer-facing style, duplication, invented content, addressee language, meta framing, and compliance with `/Users/qinningxu/AI_SHARED_MEMORY.md`.
 
-Reviewer C checks runtime producer/parser alignment, backend defaults, ledger and fixture invariants, tests, and whether any translated label changes behavior.
+Reviewer C checks runtime producer/parser alignment, backend defaults, ledger and fixture invariants, tests, and whether any field-label alignment changes behavior.
 
 Each reviewer returns findings ordered by severity with exact paths and lines. None may edit files or invoke Claude.
 

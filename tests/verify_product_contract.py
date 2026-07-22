@@ -39,12 +39,20 @@ RUNTIME_FILES = [
     "lib/resolve_cmd.sh", "PROGRAM.md", "hunt.md", "trigger.md",
     "research_context.md", "brainstorming_policy.md", "rubric.md",
     "calib/run_panel.sh", "calib/run_all.sh", "calib/run_e2e.sh",
-    ".githooks/pre-push", ".github/workflows/auto-merge-claude.yml",
+    ".githooks/pre-push", ".github/workflows/auto-merge-routine.yml",
 ]
 BACKEND_DEFAULTS = {
     "hunt.sh": (
         "AGENT_CMD",
         "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write",
+    ),
+    "awr-side.sh": (
+        "SIDE_CMD",
+        "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral",
+    ),
+    "litwatch.sh": (
+        "LITWATCH_CMD",
+        "codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral",
     ),
     "calib/run_panel.sh": (
         "PANEL_CMD",
