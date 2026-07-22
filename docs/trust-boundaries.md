@@ -28,7 +28,7 @@ Bash, not a backend, owns minimum-vote aggregation, mechanical gates, ledger mut
 
 `publish.sh` stages only `ideas/` and `ledger.tsv`, commits on `hunt/<date>` or `weekly/<date>`, pushes to `origin`, and creates or repairs a pull request. It requires repository write access and authenticated `gh`; it is not a local-only operation. Publication failure can leave a daily branch, commit, push, or pull request partially completed for the next idempotent run to repair.
 
-The local pre-push hook blocks direct pushes to `main` unless `ALLOW_MAIN_PUSH=1` is set. A local hook is bypassable and does not replace remote policy.
+After `core.hooksPath=.githooks` is configured, the local pre-push hook blocks direct pushes to `main` unless `ALLOW_MAIN_PUSH=1` is set. A local hook is bypassable and does not replace remote policy.
 
 ## CI
 

@@ -82,8 +82,8 @@ If a report exists but publication stopped between commit, push, and pull-reques
 `tmp/HALTED-ARCHIVE-FAIL` marks a Strong Accept recorded without a complete decision archive. Resolve the decision before removing the sentinel:
 
 1. Read the sentinel and `hunt.log` to recover the `run_id` and affected count.
-2. Either restore the complete archive at `RUNS_DIR/<run_id>` or remove the unarchived Strong Accept rows from `tmp/ledger.good` so they cannot be published.
-3. Verify `tmp/ledger.good`, `ledger.tsv`, and the archive agree with the selected resolution.
+2. Either restore the complete archive at `RUNS_DIR/<run_id>` or remove the unarchived Strong Accept rows from both `ledger.tsv` and `tmp/ledger.good`.
+3. Verify `ledger.tsv`, `tmp/ledger.good`, and the archive encode the same resolved decision state.
 4. Remove `tmp/HALTED-ARCHIVE-FAIL` and restart.
 
 Deleting the sentinel alone permits a decision without its audit trail and is not a valid recovery.
