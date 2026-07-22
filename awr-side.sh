@@ -47,8 +47,7 @@
 #       相对路径 SIDE_CMD(如 ./grok-worker.sh)启动时解析为真仓库绝对路径(失败即退出);
 #       调起注入 GROK_REPO=<镜像> 钉 grok 工作根。
 #
-# 可调: AGY_MODEL(默认 'Gemini 3.5 Flash (High)';只认 `agy models` 的完整展示名,连字符形式会被
-#              静默忽略、回落服务端默认 Flash (Medium)——详见 agy-worker.sh 头注释)
+# 可调: AGY_MODEL(默认 'gemini-3.6-flash-high';使用 `agy models` 打印的完整 model ID)
 #       AGY_PRINT_TIMEOUT(默认 10m,均仅内置 agy)
 #       SIDE_GAP_SEC(默认 120,0 关闭;agy 启动闸门,仅内置 agy)
 #       SIDE_GAP_MIN_SEC/SIDE_GAP_MAX_SEC(默认 60/600,随机节流区间,禁背靠背,全后端;MAX=0 关闭)
@@ -57,7 +56,7 @@
 #       SIDE_COOLDOWN_SEC(默认 3600,熔断后的冷却秒数;0=熔断直接退出)
 set -u
 repo="$(cd "$(dirname "$0")" && pwd)"
-model=${AGY_MODEL:-Gemini 3.5 Flash (High)}
+model=${AGY_MODEL:-gemini-3.6-flash-high}
 ptimeout=${AGY_PRINT_TIMEOUT:-10m}
 side_cmd=${SIDE_CMD:-}                       # 空=内置 agy
 research_cmd=${SIDE_RESEARCH_CMD:-$side_cmd}

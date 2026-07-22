@@ -12,17 +12,14 @@
 # 用法(在 hunt.sh 里):
 #   FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
 # 可调:
-#   AGY_MODEL          默认 'Gemini 3.5 Flash (High)'。只认 `agy models` 打印的完整展示名;连字符形式
-#                      (如 gemini-3.5-flash-high)会被静默忽略、回落服务端默认 Gemini 3.5 Flash (Medium)
-#                      ——2026-07-07 查 CLI 日志证实历史 352 次解析全部回落,此前旧默认从未生效,实跑 Medium
-#                      (顺带作废早先 flash-low/high 对比结论:两边实为同一 Medium)。是否生效看
+#   AGY_MODEL          默认 'gemini-3.6-flash-high'。使用 `agy models` 打印的完整 model ID。是否生效看
 #                      ~/.gemini/antigravity-cli/log/ 的 "Propagating selected model override" 行,勿信模型自报。
 #   AGY_PRINT_TIMEOUT  默认 8m
 #   AGY_LAUNCH_GAP_SEC 默认 60:与上一次 agy 启动的最小间隔秒数(戳文件 tmp/agy.last-launch)。
 #                      快速重复调起会触发登录验证;顺序阶段与多 agy 裁判席都被此闸门错峰。0 关闭。
 set -u
 repo="$(cd "$(dirname "$0")" && pwd)"
-model=${AGY_MODEL:-Gemini 3.5 Flash (High)}
+model=${AGY_MODEL:-gemini-3.6-flash-high}
 ptimeout=${AGY_PRINT_TIMEOUT:-8m}
 gap=${AGY_LAUNCH_GAP_SEC:-60}
 prompt=${1:?用法: agy-worker.sh <prompt>}
