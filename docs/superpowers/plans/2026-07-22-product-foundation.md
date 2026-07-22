@@ -566,16 +566,40 @@ git commit -m "feat: align supporting workflow contracts"
 - Modify: `calib/results-2026-07-12.md`
 - Modify: `calib/results-2026-07-19.md`
 - Modify: every `ideas.md`, `priorwork.md`, `expect`, and `e2e.expect` under `calib/cases/`
+- Create: `tests/calibration_abi_smoke.sh`
+- Modify: `tests/verify_product_contract.py`
 
 **Interfaces:**
 - Consumes: English review and prior-work contracts.
 - Produces: product-ready gold cases with unchanged IDs and assertion DSL.
 
-- [ ] **Step 1: Align calibration scripts and fixtures atomically**
+- [ ] **Step 1: Add the offline calibration contract tests**
 
-Use `suspected published counterpart` for the leak marker and `Overlap:` for end-to-end parsing. Preserve every `I<n>` heading, URL, paper identifier, score, vote, and non-comment assertion line.
+Extend the fixture verifier to preserve all case IDs, non-comment assertions, URLs, paper identifiers, numeric tokens, and other stable evidence tokens. Add `tests/calibration_abi_smoke.sh` with an isolated fake backend that covers:
 
-- [ ] **Step 2: Set trusted backend defaults**
+- a valid four-column verdict and min-vote aggregation;
+- rejection of malformed verdict rows;
+- `run_all.sh` assertion grading and recorded `PANEL_CMD`;
+- exact `Overlap:` enum parsing;
+- rejection of commentary-only overlap words;
+- one-time aggregation of the `suspected published counterpart:` marker.
+
+Expected before implementation: the exact `Overlap:` case and trusted-default assertions fail on the current calibration sources.
+
+- [ ] **Step 2: Align calibration scripts and fixtures atomically**
+
+Use `suspected published counterpart:` for the leak marker and the Target Artifact Glossary for fixture content. `run_e2e.sh` must accept only `high`, `medium`, or `low` immediately after the anchored `Overlap:` label; an enum mentioned later in commentary is not a verdict. Preserve every `I<n>` heading, URL, paper identifier, score, vote, numeric token, and non-comment assertion line.
+
+Keep the frozen panel ABI exact:
+
+```text
+verdict.tsv: id<TAB>strong-accept|accept-w-rev|reject<TAB>MAJOR-count<TAB>reason
+aggregate.tsv: id<TAB>comma-separated-votes<TAB>min-vote
+```
+
+Every verdict row must have exactly four columns, a numeric MAJOR count, and a nonempty reason. An `accept-w-rev` or `strong-accept` vote must have the corresponding `## I<n>` review block. Reject-only output may omit `review.md`.
+
+- [ ] **Step 3: Set trusted backend defaults**
 
 Use this frozen-panel fallback:
 
@@ -589,21 +613,25 @@ Use this retrieval fallback:
 E2E_CMD=${E2E_CMD:-codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral}
 ```
 
-- [ ] **Step 3: Run fixture and runtime verification**
+`run_all.sh` must pass through and record the same `PANEL_CMD`; it may not carry a separate provider fallback. Update the `calib/README.md` example that points to the nonexistent `pos-meanflow` case.
+
+- [ ] **Step 4: Run fixture and runtime verification**
 
 ```bash
 bash -n calib/run_panel.sh calib/run_all.sh calib/run_e2e.sh
 python3 tests/verify_product_contract.py fixtures
 python3 tests/verify_product_contract.py runtime
+bash tests/calibration_abi_smoke.sh
+! rg -n --pcre2 '\p{Script=Han}' calib
 ```
 
-Expected: both Python scopes print `ok` and shell syntax passes. Do not run a live model panel during this task.
+Expected: both Python scopes print `ok`; shell syntax, offline calibration smoke, and the product-content gate pass. Do not run a live model panel or live retrieval during this task.
 
-- [ ] **Step 4: Commit the calibration suite**
+- [ ] **Step 5: Commit the calibration suite**
 
 ```bash
-git add calib
-git commit -m "docs: refresh calibration suite"
+git add calib tests/calibration_abi_smoke.sh tests/verify_product_contract.py
+git commit -m "feat: establish calibration suite"
 ```
 
 ### Task 5: Curate Historical Documents and Reports
