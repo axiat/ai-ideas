@@ -40,6 +40,159 @@ printf '%s\n' \
   "printf '%s\\n' 'publication-no-op' >> tmp/publication.noop" > "$REPO/publish.sh"
 chmod 755 "$REPO/publish.sh"
 
+prepare_awr_case() {
+  awk -F'\t' '
+    NR == 1 { print; next }
+    !found && $2 == "hunt" && $5 == "accept-w-rev" {
+      print
+      found = 1
+      exit
+    }
+    END { if (!found) exit 1 }
+  ' "$BEFORE_LEDGER" > "$REPO/ledger.tsv"
+  rm -f "$REPO/tmp/ledger.good"
+  rm -rf "$REPO/tmp/awr-side" "$REPO/tmp/awr-side.lock"
+}
+
+run_awr_case() {
+  local status=$1 mode=${2:-awr-$1} candidate final="" task last
+  prepare_awr_case
+  (
+    cd "$REPO"
+    SIDE_CMD=tests/fake_agent.sh \
+    SIDE_RESEARCH_CMD=tests/fake_agent.sh \
+    SIDE_PRIORWORK_CMD=tests/fake_agent.sh \
+    SIDE_JUDGE_CMD=tests/fake_agent.sh \
+    SIDE_POLL_SEC=0 \
+    SIDE_MAX_ROUNDS=1 \
+    SIDE_MAX_BAD=1 \
+    SIDE_GAP_SEC=0 \
+    SIDE_GAP_MIN_SEC=0 \
+    SIDE_GAP_MAX_SEC=0 \
+    SIDE_COOLDOWN_SEC=0 \
+    FAKE_AGENT_MODE="$mode" \
+    bash ./awr-side.sh
+  )
+
+  for candidate in "$REPO/tmp/awr-side/awr/"*.md; do
+    [ -e "$candidate" ] || continue
+    case "$candidate" in
+      *.task.md|*.draft.md|*.priorwork.md|*.judge.md) continue ;;
+    esac
+    [ -z "$final" ] || {
+      printf 'multiple AwR final artifacts: %s and %s\n' "$final" "$candidate" >&2
+      return 1
+    }
+    final=$candidate
+  done
+  [ -n "$final" ] && [ -s "$final" ]
+  grep -qxF '## Revised Idea' "$final"
+  grep -q '^Strongest Counterexample:' "$final"
+  grep -qxF "Decision: $([ "$status" = ready ] && printf 'SA-possible' || printf 'not-ready')" "$final"
+  grep -qxF "Status: $status" "$final"
+  grep -q '^Outcome: ' "$final"
+  last=$(grep -v '^[[:space:]]*$' "$final" | tail -1)
+  [ "$last" = 'AGY-DONE' ]
+
+  if [ "$status" = not-ready ]; then
+    task=${final%.md}.task.md
+    grep -qxF -- '- Defect: Add a latency control that separates gating overhead from skipped world-model inference.' "$final"
+    grep -qxF '## Reviewer Feedback' "$task"
+    grep -qxF 'Round: 1' "$task"
+  fi
+  printf 'ok: AwR %s ABI smoke\n' "$status"
+}
+
+run_awr_reject_case() {
+  local mode=$1 phase=$2 candidate
+  prepare_awr_case
+  if (
+    cd "$REPO"
+    SIDE_CMD=tests/fake_agent.sh \
+    SIDE_RESEARCH_CMD=tests/fake_agent.sh \
+    SIDE_PRIORWORK_CMD=tests/fake_agent.sh \
+    SIDE_JUDGE_CMD=tests/fake_agent.sh \
+    SIDE_POLL_SEC=0 \
+    SIDE_MAX_ROUNDS=1 \
+    SIDE_MAX_BAD=1 \
+    SIDE_GAP_SEC=0 \
+    SIDE_GAP_MIN_SEC=0 \
+    SIDE_GAP_MAX_SEC=0 \
+    SIDE_COOLDOWN_SEC=0 \
+    FAKE_AGENT_MODE="$mode" \
+    bash ./awr-side.sh
+  ); then
+    printf 'AwR unexpectedly accepted invalid %s output (%s)\n' "$phase" "$mode" >&2
+    return 1
+  fi
+
+  for candidate in "$REPO/tmp/awr-side/awr/"*.md; do
+    [ -e "$candidate" ] || continue
+    case "$candidate" in
+      *.task.md|*.draft.md|*.priorwork.md|*.judge.md) continue ;;
+    esac
+    printf 'AwR created a terminal artifact from invalid %s output: %s\n' "$phase" "$candidate" >&2
+    return 1
+  done
+  printf 'ok: AwR rejects %s ABI violation\n' "$phase"
+}
+
+run_awr_agy_case() {
+  local stub="$SANDBOX_ROOT/bin/agy" log="$SANDBOX_ROOT/agy.args" candidate final=""
+  mkdir -p "$SANDBOX_ROOT/bin"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -eu' \
+    ': "${AGY_STUB_LOG:?}" "${FAKE_AGENT_BIN:?}"' \
+    'prompt=' \
+    'while [ "$#" -gt 0 ]; do' \
+    '  printf "%s\\n" "$1" >> "$AGY_STUB_LOG"' \
+    '  if [ "$1" = "-p" ]; then' \
+    '    shift' \
+    '    [ "$#" -gt 0 ]' \
+    '    prompt=$1' \
+    '  fi' \
+    '  shift' \
+    'done' \
+    '[ -n "$prompt" ]' \
+    'exec "$FAKE_AGENT_BIN" "$prompt"' > "$stub"
+  chmod 755 "$stub"
+
+  prepare_awr_case
+  (
+    cd "$REPO"
+    PATH="$SANDBOX_ROOT/bin:$PATH" \
+    AGY_STUB_LOG="$log" \
+    FAKE_AGENT_BIN="$REPO/tests/fake_agent.sh" \
+    SIDE_CMD=agy \
+    SIDE_POLL_SEC=0 \
+    SIDE_MAX_ROUNDS=1 \
+    SIDE_MAX_BAD=1 \
+    SIDE_GAP_SEC=0 \
+    SIDE_GAP_MIN_SEC=0 \
+    SIDE_GAP_MAX_SEC=0 \
+    SIDE_COOLDOWN_SEC=0 \
+    FAKE_AGENT_MODE=awr-ready \
+    bash ./awr-side.sh
+  )
+
+  for candidate in "$REPO/tmp/awr-side/awr/"*.md; do
+    [ -e "$candidate" ] || continue
+    case "$candidate" in
+      *.task.md|*.draft.md|*.priorwork.md|*.judge.md) continue ;;
+    esac
+    [ -z "$final" ] || return 1
+    final=$candidate
+  done
+  [ -n "$final" ]
+  grep -qxF 'Status: ready' "$final"
+  [ "$(grep -cxF -- '--model' "$log")" -eq 3 ]
+  [ "$(grep -cxF -- '--add-dir' "$log")" -eq 3 ]
+  [ "$(grep -cxF -- '--print-timeout' "$log")" -eq 3 ]
+  [ "$(grep -cxF -- '-p' "$log")" -eq 3 ]
+  printf 'ok: explicit SIDE_CMD=agy built-in ABI smoke\n'
+}
+
 cp "$REPO/ledger.tsv" "$BEFORE_LEDGER"
 BEFORE_LINES=$(wc -l < "$BEFORE_LEDGER" | tr -d ' ')
 TODAY=$(date +%F)
@@ -189,7 +342,10 @@ if [ "$MODE" = "overlap-commentary" ]; then
 fi
 if [ "$MODE" = "missing-occupant" ]; then
   grep -qxF 'Decision: kill' "$REPO/tmp/round/prescreen.md"
-  ! grep -q '^Occupant:' "$REPO/tmp/round/prescreen.md"
+  if grep -q '^Occupant:' "$REPO/tmp/round/prescreen.md"; then
+    printf 'invalid missing-occupant fixture unexpectedly contained Occupant evidence\n' >&2
+    exit 1
+  fi
   [ ! -s "$REPO/tmp/round/kills.tsv" ]
   awk -F'\t' '$3=="failopen" && $4=="prescreen"{ok++} END{exit !(ok>=1)}' "$REPO/tmp/hunt.metrics.tsv"
 fi
@@ -291,4 +447,13 @@ awk '$0 == "## Metadata" { copy=1; next } copy { print }' "$REPO/$REPORT_REL" > 
 cmp -s "$METADATA_SOURCE" "$METADATA_REPORT"
 
 grep -q '^publication-no-op$' "$REPO/tmp/publication.noop"
+if [ "$MODE" = default ]; then
+  run_awr_case ready
+  run_awr_case ready awr-no-crack
+  run_awr_case not-ready
+  run_awr_reject_case awr-invalid-verification prior-work
+  run_awr_reject_case awr-mixed-verification prior-work-mixed-token
+  run_awr_reject_case awr-mixed-decision judge
+  run_awr_agy_case
+fi
 printf 'ok: runtime ABI smoke (%s)\n' "$MODE"
