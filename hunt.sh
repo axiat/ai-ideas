@@ -454,12 +454,12 @@ prescreen_dec() {
     | grep -oE 'kill|keep'
 }
 
-# A kill requires one structured API query and one non-API direct-hit URL.
+# A kill requires one structured API query and one anchored Occupant URL.
 kill_evidence() {   # $1=id -> direct-hit URL; nonzero means insufficient evidence
   local block url
   block=$(awk -v id="$1" '$1=="##"&&$2==id{f=1;next} $1=="##"&&$2~/^I[0-9]+$/{if(f)exit} f' "$RD/prescreen.md" 2>/dev/null)
   printf '%s\n' "$block" | grep -qE '^- Query:[[:space:]]*https?://(export\.arxiv\.org/api/query|api\.semanticscholar\.org)' || return 1
-  url=$(printf '%s\n' "$block" | grep -oE 'https?://[^ )|,;>]+' \
+  url=$(printf '%s\n' "$block" | grep -m1 '^Occupant:' | grep -oE 'https?://[^ )|,;>]+' \
         | grep -vE 'export\.arxiv\.org/api/query|api\.semanticscholar\.org' | head -1)
   [ -n "$url" ] || return 1
   printf '%s\n' "$url"
@@ -840,7 +840,7 @@ while :; do
     [ -z "$theme" ] && theme="Unlabeled"
     # Read the independently researched overlap from the candidate block.
     overlap=$(awk -v id="$id" '$1=="##"&&$2==id{f=1;next} $1=="##"&&$2~/^I[0-9]+$/{if(f)exit} f' "$RD/priorwork.md" 2>/dev/null \
-              | grep -m1 '^Overlap:' | grep -oE 'high|medium|low' | head -1)
+              | sed -E -n 's/^Overlap:[[:space:]]*(high|medium|low)([[:space:]].*)?$/\1/p' | head -1)
     [ -z "$overlap" ] && overlap="unknown"
     # Strong Accept rows use '-', and non-SA rows use the four-way classifier.
     if [ "$min" -eq 2 ]; then cat="-"; else cat=$(classify_nonsa "$raw_min" "$downgraded" "$overlap"); fi
