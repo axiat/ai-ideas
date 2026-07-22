@@ -11,11 +11,10 @@ HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 EXPECTED = {
     "stable_projection": "810adad8122a7761ba394e6a67cdfa12d8c4f869fc888a5c2a8e8cb61c3a29cb",
     "theme_projection": "5dd438abbc8fd9e71f42256fd453afa9a538d13201dd19ae59fdb4400cb6d435",
-    "urls": "6c26006c40788e96d0d5e91662867644f7720287b787d4d43f5257fc85bea23a",
-    "numbers": "1f8236a7f082296dc1e754189e7a921ff625fb51e61fe6e8dc77f53ba6741e1a",
-    "row_urls": "6894b19bbc53362874f64c17dec1d593e9d54dabac4c7b0242036d7df10ba707",
-    "row_numbers": "6d026efe735888bd0a83639537f7630975133b9a30599fc6d5b68c7445849e35",
-    "row_code_spans": "42985fa08be8aa8ff358d322a13120470bdb579d7468d9126b2cd84852edc2d1",
+    "row_urls": "6015a625fa509040d974ba6bba4bf00dde25fca1763fc1ace1cdf57cded3f9c9",
+    "row_technical_tokens": "3292a960d68602b15b24040f8e71fd39e382abb10b4eba018ee75247c7658fdd",
+    "row_code_spans": "4d9fe189ad926f8263062722340592a64fefb3e408cbb8a13d891f01532f4ebb",
+    "row_symbols": "39a1f8567478af090970d3b96ce010ba7b831c1ea5dc3deea275f0bc838f7198",
     "case_ids": "aed82be120ea6d26d1735050352867fafa4551e9681b8da3abce496915fae1c4",
     "assertions": "a85dfbcece8c4c223ab0dfca3eb6a2ef17f091d71b67cebccfc7e3348aaea3f0",
     "calibration_evidence": "1da4ef109b01fd5d7c7984993004009c2a888b3dc38c593569bea437b35f9fd0",
@@ -75,6 +74,21 @@ FALLBACK_EXPANSION = re.compile(
     r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::?[-=])([^}\n]*)\}"
 )
 VARIABLE_REFERENCE = re.compile(r"\$(?:\{)?([A-Za-z_][A-Za-z0-9_]*)")
+LEDGER_HEADER = ["date", "source", "theme", "idea", "verdict", "reason", "overlap"]
+LEDGER_URL = re.compile(r"https?://[^\s\t()<>\[\]`，。；（）]+")
+LEDGER_TECH_DIGITS = r"0-9⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉"
+LEDGER_TECH_CHARS = rf"A-Za-z{LEDGER_TECH_DIGITS}_.%+:/×x~<>=\-–—"
+LEDGER_TECH_TOKEN = re.compile(
+    rf"(?<![{LEDGER_TECH_CHARS}])"
+    rf"(?=[{LEDGER_TECH_CHARS}]*[{LEDGER_TECH_DIGITS}])"
+    rf"[{LEDGER_TECH_CHARS}]+"
+    rf"(?![{LEDGER_TECH_CHARS}])"
+)
+LEDGER_CODE_SPAN = re.compile(r"`([^`\n]+)`")
+LEDGER_SYMBOL = re.compile(
+    r"[≥≤<>≠≈±→↔⇒⇔↑×−≡∈∉∃∀∞∝∼∩∪⊂⊃⊆⊇⊥⟂∥∧∨∇∂√∑∏≫①-⑳+=|~^]"
+    r"|[Α-Ωα-ω]+"
+)
 CALIB_URL = re.compile(r"https?://[^\s\t|<>\[\]()`，。；;]+")
 CALIB_ARXIV_ID = re.compile(r"(?<!\d)\d{4}\.\d{5}(?!\d)")
 CALIB_DATE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?:-\d{2}(?:-\d{2})?)?(?!\d)")
@@ -216,27 +230,76 @@ def ledger_rows():
     with (ROOT / "ledger.tsv").open(newline="") as handle:
         return list(csv.reader(handle, delimiter="\t"))
 
-def row_token_projection(data, pattern, group=0, normalize=None):
+def ordered_row_token_projection(
+    data,
+    pattern,
+    group=0,
+    normalize=None,
+    strip_urls=False,
+):
     normalize = normalize or (lambda token: token)
     lines = []
     for i, row in enumerate(data, 1):
-        tokens = sorted(
-            normalize(match.group(group))
-            for field in (row[3], row[5])
-            for match in pattern.finditer(field)
-        )
-        lines.append(f"{i}:{'|'.join(tokens)}")
+        for field_index in (3, 5):
+            value = row[field_index]
+            if strip_urls:
+                value = LEDGER_URL.sub(
+                    lambda match: " " * len(match.group(0)),
+                    value,
+                )
+            tokens = [
+                normalize(match.group(group))
+                for match in pattern.finditer(value)
+            ]
+            lines.append(f"{i}:{field_index}:{'|'.join(tokens)}")
     return "\n".join(lines)
 
-def verify_ledger():
-    rows = ledger_rows()
-    data = rows[1:]
+def ledger_evidence(data):
+    return {
+        "row_urls": digest(ordered_row_token_projection(
+            data,
+            LEDGER_URL,
+            normalize=lambda token: token.rstrip(".,;:"),
+        )),
+        "row_technical_tokens": digest(ordered_row_token_projection(
+            data,
+            LEDGER_TECH_TOKEN,
+            strip_urls=True,
+        )),
+        "row_code_spans": digest(ordered_row_token_projection(
+            data,
+            LEDGER_CODE_SPAN,
+            group=1,
+        )),
+        "row_symbols": digest(ordered_row_token_projection(
+            data,
+            LEDGER_SYMBOL,
+            strip_urls=True,
+        )),
+    }
+
+def verify_ledger_evidence(data=None, header=None):
+    if data is None:
+        rows = ledger_rows()
+        header = rows[0]
+        data = rows[1:]
+    if header is not None and header != LEDGER_HEADER:
+        raise AssertionError(f"ledger header changed: {header}")
     if len(data) != 531:
         raise AssertionError(f"ledger row count changed: {len(data)}")
     nf7 = sum(len(row) == 7 for row in data)
     nf8 = sum(len(row) == 8 for row in data)
     if (nf7, nf8) != (216, 315):
         raise AssertionError(f"ledger shape changed: nf7={nf7}, nf8={nf8}")
+    actual = ledger_evidence(data)
+    for key, value in actual.items():
+        if value != EXPECTED[key]:
+            raise AssertionError(f"ledger {key} changed")
+
+def verify_ledger():
+    rows = ledger_rows()
+    data = rows[1:]
+    verify_ledger_evidence(data, rows[0])
     overlap_values = sorted({row[6] for row in data})
     if overlap_values != ["high", "low", "medium", "unknown"]:
         raise AssertionError(f"unmigrated or unknown overlap values: {overlap_values}")
@@ -249,24 +312,6 @@ def verify_ledger():
     unknown = sorted({row[2] for row in data} - THEMES)
     if unknown:
         raise AssertionError(f"unmigrated or unknown themes: {unknown}")
-    url_re = re.compile(r"https?://[^\s\t)>\]]+")
-    urls = sorted(token.rstrip(".,;:") for row in data for field in (row[3], row[5]) for token in url_re.findall(field))
-    if digest("\n".join(urls)) != EXPECTED["urls"]:
-        raise AssertionError("ledger URL set changed")
-    number_re = re.compile(r"(?<![A-Za-z])(?:\d+(?:\.\d+)?%?|\d+[x×]\d+)(?![A-Za-z])")
-    numbers = sorted(token for row in data for field in (row[3], row[5]) for token in number_re.findall(field))
-    if digest("\n".join(numbers)) != EXPECTED["numbers"]:
-        raise AssertionError("ledger numeric token set changed")
-    row_urls = row_token_projection(data, url_re, normalize=lambda token: token.rstrip(".,;:"))
-    if digest(row_urls) != EXPECTED["row_urls"]:
-        raise AssertionError("ledger row-bound URL tokens changed")
-    row_numbers = row_token_projection(data, number_re)
-    if digest(row_numbers) != EXPECTED["row_numbers"]:
-        raise AssertionError("ledger row-bound numeric tokens changed")
-    code_span_re = re.compile(r"`([^`\n]+)`")
-    row_code_spans = row_token_projection(data, code_span_re, group=1)
-    if digest(row_code_spans) != EXPECTED["row_code_spans"]:
-        raise AssertionError("ledger row-bound code spans changed")
     theme_projection = "\n".join(row[2] for row in data)
     if digest(theme_projection) != EXPECTED["theme_projection"]:
         raise AssertionError("ledger theme sequence changed")
@@ -337,6 +382,7 @@ def verify_all():
 SCOPES = {
     "runtime": verify_runtime,
     "fixtures": verify_fixtures,
+    "ledger-evidence": verify_ledger_evidence,
     "ledger": verify_ledger,
     "all": verify_all,
 }
