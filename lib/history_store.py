@@ -252,6 +252,7 @@ CREATE TABLE IF NOT EXISTS search_projection_outbox(
   record_id TEXT NOT NULL REFERENCES candidates(candidate_id),
   projection_kind TEXT NOT NULL,
   content_version TEXT NOT NULL,
+  canonical_revision INTEGER NOT NULL CHECK(canonical_revision >= 0),
   source_sequence INTEGER NOT NULL,
   state TEXT NOT NULL CHECK(state IN ('pending','processing','done')),
   generation INTEGER NOT NULL CHECK(generation >= 0),
@@ -445,6 +446,19 @@ def init_schema(conn):
         "INSERT OR IGNORE INTO schema_meta(key, value) "
         "VALUES('history_index_generation_sequence', '0')"
     )
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_meta(key, value) "
+        "VALUES('history_search_content_revision', '0')"
+    )
+    outbox_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(search_projection_outbox)")
+    }
+    if "canonical_revision" not in outbox_columns:
+        conn.execute(
+            "ALTER TABLE search_projection_outbox "
+            "ADD COLUMN canonical_revision INTEGER NOT NULL DEFAULT 0"
+        )
     generation_values = []
     for key in (
         "history_index_generation",
@@ -1076,45 +1090,108 @@ def render_tsv(conn):
     return _render_tsv_in_transaction(conn)
 
 
-def _queue_search_projection(conn, candidate):
+def _next_search_content_revision(conn):
+    revision = int(_meta(conn, "history_search_content_revision", "0")) + 1
+    _set_meta(conn, "history_search_content_revision", revision)
+    return revision
+
+
+def _insert_search_projection(
+    conn, candidate_id, content_version, source_sequence, canonical_revision
+):
     conn.execute(
         """
         INSERT INTO search_projection_outbox(
-          record_id, projection_kind, content_version, source_sequence,
-          state, generation, claim_token, lease_until
-        ) VALUES(?, 'candidate', 'candidate-v1', ?, 'pending', 0, NULL, NULL)
+          record_id, projection_kind, content_version, canonical_revision,
+          source_sequence, state, generation, claim_token, lease_until
+        ) VALUES(?, 'candidate', ?, ?, ?, 'pending', 0, NULL, NULL)
         ON CONFLICT(record_id, projection_kind, content_version)
-        DO UPDATE SET source_sequence = excluded.source_sequence,
+        DO UPDATE SET canonical_revision = excluded.canonical_revision,
+                      source_sequence = excluded.source_sequence,
                       state = 'pending', generation = generation + 1,
                       claim_token = NULL, lease_until = NULL
         """,
-        (candidate["candidate_id"], candidate["row_number"]),
+        (
+            candidate_id,
+            content_version,
+            canonical_revision,
+            source_sequence,
+        ),
     )
+
+
+def queue_search_projections(conn, candidate_ids, content_version):
+    """Advance canonical search content once and atomically queue its records."""
+    candidate_ids = tuple(dict.fromkeys(candidate_ids))
+    if not candidate_ids:
+        raise ValueError("projection candidates are required")
+    if not isinstance(content_version, str) or not content_version:
+        raise ValueError("projection content version is required")
+    started = not conn.in_transaction
+    if started:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        rows = {
+            row["candidate_id"]: row["source_sequence"]
+            for row in conn.execute(
+                "SELECT candidate_id, source_sequence FROM candidates "
+                "WHERE candidate_id IN (%s)"
+                % ",".join("?" for _ in candidate_ids),
+                candidate_ids,
+            )
+        }
+        if set(rows) != set(candidate_ids):
+            raise ValueError("candidate is missing")
+        revision = _next_search_content_revision(conn)
+        for candidate_id in candidate_ids:
+            _insert_search_projection(
+                conn,
+                candidate_id,
+                content_version,
+                rows[candidate_id],
+                revision,
+            )
+        if started:
+            conn.execute("COMMIT")
+        return revision
+    except Exception:
+        if started and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 
 def queue_search_projection(conn, candidate_id, content_version):
-    """Queue one canonical candidate for a rebuildable search projection."""
-    row = conn.execute(
-        "SELECT source_sequence FROM candidates WHERE candidate_id = ?",
-        (candidate_id,),
-    ).fetchone()
-    if row is None:
-        raise ValueError("candidate is missing")
-    if not isinstance(content_version, str) or not content_version:
-        raise ValueError("projection content version is required")
-    conn.execute(
-        """
-        INSERT INTO search_projection_outbox(
-          record_id, projection_kind, content_version, source_sequence,
-          state, generation, claim_token, lease_until
-        ) VALUES(?, 'candidate', ?, ?, 'pending', 0, NULL, NULL)
-        ON CONFLICT(record_id, projection_kind, content_version)
-        DO UPDATE SET source_sequence = excluded.source_sequence,
-                      state = 'pending', generation = generation + 1,
-                      claim_token = NULL, lease_until = NULL
-        """,
-        (candidate_id, content_version, row[0]),
-    )
+    """Advance canonical search content and queue one affected candidate."""
+    return queue_search_projections(conn, (candidate_id,), content_version)
+
+
+def requeue_search_projection(conn, candidate_id, content_version):
+    """Queue a projection repair without changing canonical search content."""
+    started = not conn.in_transaction
+    if started:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT source_sequence FROM candidates WHERE candidate_id = ?",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("candidate is missing")
+        revision = int(_meta(conn, "history_search_content_revision", "0"))
+        _insert_search_projection(
+            conn, candidate_id, content_version, row[0], revision
+        )
+        if started:
+            conn.execute("COMMIT")
+        return revision
+    except Exception:
+        if started and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+def _queue_search_projection(conn, candidate):
+    queue_search_projection(conn, candidate["candidate_id"], "candidate-v1")
 
 
 def _enqueue_ledger_projection(conn):
@@ -1898,6 +1975,21 @@ def add_lineage_edge(
             child_candidate_id,
             relation_type,
             evidence_artifact_id,
+        )
+        edge_version = "lineage-edge-v1:" + _sha(
+            _json_bytes(
+                {
+                    "parent_candidate_id": parent_candidate_id,
+                    "child_candidate_id": child_candidate_id,
+                    "relation_type": relation_type,
+                    "evidence_artifact_id": evidence_artifact_id,
+                }
+            )
+        )
+        queue_search_projections(
+            conn,
+            (parent_candidate_id, child_candidate_id),
+            edge_version,
         )
         conn.execute("COMMIT")
     except Exception:

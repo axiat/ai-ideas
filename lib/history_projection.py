@@ -32,7 +32,7 @@ VECTOR_DIMENSIONS = 256
 VECTOR_MODEL = "hash-ngram-v1"
 VECTOR_REVISION = "1"
 PREPROCESSING_VERSION = "search-text-v1"
-PROJECTION_SCHEMA_VERSION = "history-projection-v3"
+PROJECTION_SCHEMA_VERSION = "history-projection-v4"
 FTS_TOKENIZER = "unicode61"
 
 
@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS search_vectors(
   candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id),
   facet TEXT NOT NULL,
   content_hash TEXT NOT NULL,
+  content TEXT NOT NULL,
+  source_artifact_id TEXT,
   vector BLOB NOT NULL,
   model TEXT NOT NULL,
   revision TEXT NOT NULL,
@@ -63,6 +65,7 @@ CREATE TABLE IF NOT EXISTS search_vectors(
 CREATE TABLE IF NOT EXISTS search_index_generations(
   generation INTEGER PRIMARY KEY,
   source_watermark INTEGER NOT NULL,
+  canonical_revision INTEGER NOT NULL DEFAULT 0,
   manifest_sha256 TEXT NOT NULL,
   manifest_json TEXT NOT NULL DEFAULT '',
   policy_sha256 TEXT NOT NULL DEFAULT '',
@@ -130,6 +133,7 @@ def _init(conn):
     conn.executescript(SCHEMA)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(search_index_generations)")}
     for name, definition in (
+        ("canonical_revision", "INTEGER NOT NULL DEFAULT 0"),
         ("manifest_json", "TEXT NOT NULL DEFAULT ''"),
         ("policy_sha256", "TEXT NOT NULL DEFAULT ''"),
         ("projection_schema_version", "TEXT NOT NULL DEFAULT ''"),
@@ -142,6 +146,18 @@ def _init(conn):
     ):
         if name not in columns:
             conn.execute("ALTER TABLE search_index_generations ADD COLUMN %s %s" % (name, definition))
+    vector_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(search_vectors)")
+    }
+    if "content" not in vector_columns:
+        conn.execute(
+            "ALTER TABLE search_vectors "
+            "ADD COLUMN content TEXT NOT NULL DEFAULT ''"
+        )
+    if "source_artifact_id" not in vector_columns:
+        conn.execute(
+            "ALTER TABLE search_vectors ADD COLUMN source_artifact_id TEXT"
+        )
     fts_columns = {row[1] for row in conn.execute("PRAGMA table_info(search_fts)")}
     if fts_columns and fts_columns != {"candidate_id", "facet", "content"}:
         conn.execute("DROP TABLE search_fts")
@@ -153,6 +169,10 @@ def _init(conn):
     )
     conn.execute(
         "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('history_index_generation_sequence', '0')"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_meta(key, value) "
+        "VALUES('history_search_content_revision', '0')"
     )
 
 
@@ -337,7 +357,12 @@ def _write_candidate(conn, candidate_id):
         return 0
     _ensure_facets(conn, candidate_id)
     facets = conn.execute(
-        "SELECT facet, text, content_hash FROM candidate_facets WHERE candidate_id = ? ORDER BY facet",
+        """
+        SELECT facet, text, content_hash, source_artifact_id
+        FROM candidate_facets
+        WHERE candidate_id = ?
+        ORDER BY facet
+        """,
         (candidate_id,),
     ).fetchall()
     embedded = 0
@@ -354,24 +379,49 @@ def _write_candidate(conn, candidate_id):
         if not row["text"]:
             continue
         prior = conn.execute(
-            "SELECT content_hash FROM search_vectors WHERE candidate_id = ? AND facet = ?",
+            """
+            SELECT content_hash, content, source_artifact_id
+            FROM search_vectors
+            WHERE candidate_id = ? AND facet = ?
+            """,
             (candidate_id, row["facet"]),
         ).fetchone()
-        if prior is not None and prior[0] == row["content_hash"]:
+        if (
+            prior is not None
+            and prior["content_hash"] == row["content_hash"]
+            and prior["content"] == row["text"]
+            and prior["source_artifact_id"] == row["source_artifact_id"]
+        ):
             continue
         vector, norm = embed(row["text"])
         conn.execute(
             """
-            INSERT INTO search_vectors(candidate_id, facet, content_hash, vector, model,
-              revision, preprocessing_version, dimensions, metric, l2_norm)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'cosine', ?)
+            INSERT INTO search_vectors(
+              candidate_id, facet, content_hash, content, source_artifact_id,
+              vector, model, revision, preprocessing_version, dimensions,
+              metric, l2_norm
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cosine', ?)
             ON CONFLICT(candidate_id, facet) DO UPDATE SET content_hash = excluded.content_hash,
+              content = excluded.content,
+              source_artifact_id = excluded.source_artifact_id,
               vector = excluded.vector, model = excluded.model, revision = excluded.revision,
               preprocessing_version = excluded.preprocessing_version, dimensions = excluded.dimensions,
               metric = excluded.metric, l2_norm = excluded.l2_norm
             """,
-            (candidate_id, row["facet"], row["content_hash"], _blob(vector), VECTOR_MODEL,
-             VECTOR_REVISION, PREPROCESSING_VERSION, VECTOR_DIMENSIONS, norm),
+            (
+                candidate_id,
+                row["facet"],
+                row["content_hash"],
+                row["text"],
+                row["source_artifact_id"],
+                _blob(vector),
+                VECTOR_MODEL,
+                VECTOR_REVISION,
+                PREPROCESSING_VERSION,
+                VECTOR_DIMENSIONS,
+                norm,
+            ),
         )
         embedded += 1
     content = _candidate_content(conn, candidate_id)
@@ -408,18 +458,29 @@ def _policy_sha256(policy):
     return hashlib.sha256(_canonical_bytes(policy)).hexdigest()
 
 
-def _projection_manifest(conn, policy, source_watermark):
+def _projection_manifest(
+    conn, policy, source_watermark, canonical_revision=None
+):
+    if canonical_revision is None:
+        canonical_revision = int(
+            conn.execute(
+                "SELECT value FROM schema_meta "
+                "WHERE key = 'history_search_content_revision'"
+            ).fetchone()[0]
+        )
     entries = [dict(row) for row in conn.execute(
         "SELECT candidate_id, active, content_hash FROM search_index_entries ORDER BY candidate_id"
     )]
     vectors = []
     for row in conn.execute(
-        """SELECT candidate_id, facet, content_hash, vector, model, revision,
+        """SELECT candidate_id, facet, content_hash, content,
+                  source_artifact_id, vector, model, revision,
                   preprocessing_version, dimensions, metric, l2_norm
            FROM search_vectors ORDER BY candidate_id, facet"""
     ):
         value = dict(row)
         value["vector_sha256"] = hashlib.sha256(bytes(value.pop("vector"))).hexdigest()
+        value["content_sha256"] = _content_hash(value.pop("content"))
         vectors.append(value)
     fts = [
         {"candidate_id": row[0], "facet": row[1], "content_sha256": _content_hash(row[2])}
@@ -427,9 +488,22 @@ def _projection_manifest(conn, policy, source_watermark):
             "SELECT candidate_id, facet, content FROM search_fts ORDER BY candidate_id, facet"
         )
     ]
+    lineage_edges = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT parent_candidate_id, child_candidate_id, relation_type,
+                   evidence_artifact_id
+            FROM lineage_edges
+            ORDER BY parent_candidate_id, child_candidate_id, relation_type,
+                     evidence_artifact_id
+            """
+        )
+    ]
     return {
         "schema_version": PROJECTION_SCHEMA_VERSION,
         "source_watermark": source_watermark,
+        "canonical_revision": canonical_revision,
         "policy_sha256": _policy_sha256(policy),
         "fts_tokenizer": FTS_TOKENIZER,
         "vector": {
@@ -442,6 +516,7 @@ def _projection_manifest(conn, policy, source_watermark):
         "entries": entries,
         "vectors": vectors,
         "fts": fts,
+        "lineage_edges": lineage_edges,
     }
 
 
@@ -460,10 +535,22 @@ def validate_published_generation(conn, policy):
         manifest = json.loads(generation["manifest_json"])
     except (TypeError, ValueError):
         return {"valid": False, "code": "invalid_manifest"}
-    expected = _projection_manifest(conn, policy, generation["source_watermark"])
+    current_revision = int(
+        conn.execute(
+            "SELECT value FROM schema_meta "
+            "WHERE key = 'history_search_content_revision'"
+        ).fetchone()[0]
+    )
+    expected = _projection_manifest(
+        conn,
+        policy,
+        generation["source_watermark"],
+        generation["canonical_revision"],
+    )
     expected_bytes = _canonical_bytes(expected)
     compatible = (
-        generation["policy_sha256"] == _policy_sha256(policy)
+        generation["canonical_revision"] == current_revision
+        and generation["policy_sha256"] == _policy_sha256(policy)
         and generation["projection_schema_version"] == PROJECTION_SCHEMA_VERSION
         and generation["fts_tokenizer"] == FTS_TOKENIZER
         and generation["vector_model"] == VECTOR_MODEL
@@ -483,7 +570,9 @@ def validate_published_generation(conn, policy):
 
 def _requeue_all(conn, content_version):
     for candidate_id, in conn.execute("SELECT candidate_id FROM candidates ORDER BY source_sequence"):
-        _queue(conn, candidate_id, content_version)
+        history_store.requeue_search_projection(
+            conn, candidate_id, content_version
+        )
 
 
 def rebuild(conn, policy):
@@ -512,15 +601,25 @@ def rebuild(conn, policy):
         if changed:
             generation = generation_sequence + 1
             watermark = conn.execute("SELECT COALESCE(MAX(source_sequence), 0) FROM candidates").fetchone()[0]
-            manifest = _projection_manifest(conn, policy, watermark)
+            canonical_revision = int(
+                conn.execute(
+                    "SELECT value FROM schema_meta "
+                    "WHERE key = 'history_search_content_revision'"
+                ).fetchone()[0]
+            )
+            manifest = _projection_manifest(
+                conn, policy, watermark, canonical_revision
+            )
             manifest_bytes = _canonical_bytes(manifest)
             conn.execute(
                 """INSERT INTO search_index_generations(
-                   generation, source_watermark, manifest_sha256, manifest_json, policy_sha256,
+                   generation, source_watermark, canonical_revision,
+                   manifest_sha256, manifest_json, policy_sha256,
                    projection_schema_version, fts_tokenizer, vector_model, vector_revision,
                    preprocessing_version, dimensions, metric, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                (generation, watermark, hashlib.sha256(manifest_bytes).hexdigest(),
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (generation, watermark, canonical_revision,
+                 hashlib.sha256(manifest_bytes).hexdigest(),
                  manifest_bytes.decode("utf-8").rstrip("\n"), _policy_sha256(policy),
                  PROJECTION_SCHEMA_VERSION, FTS_TOKENIZER, VECTOR_MODEL, VECTOR_REVISION,
                  PREPROCESSING_VERSION, VECTOR_DIMENSIONS, "cosine"),

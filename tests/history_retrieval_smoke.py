@@ -114,7 +114,7 @@ class HistoryRetrievalSmoke(unittest.TestCase):
                     self.assertEqual(pack["retrieval_status"], "partial")
                     self.assertEqual(pack["channels"][channel]["status"], "failed")
 
-    def test_unpublished_canonical_change_fails_all_required_channels_closed(self):
+    def test_unpublished_canonical_change_is_partial_until_projection_publish(self):
         history_store.append_rows(
             self.conn,
             [row("unpublished history candidate")],
@@ -123,7 +123,7 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         pack = retrieval.build_pack(
             self.conn, self.query, "duplicate_search", self.policy
         )
-        self.assertEqual(pack["retrieval_status"], "backend_failed")
+        self.assertEqual(pack["retrieval_status"], "partial")
         for channel in ("exact", "fts", "dense", "lineage"):
             self.assertEqual(pack["channels"][channel]["status"], "failed")
         for channel in pack["channels"].values():

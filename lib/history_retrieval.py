@@ -71,11 +71,50 @@ class ReceiptReplayError(RetrievalError):
 _VERIFICATION_TOKEN = object()
 
 
-class VerifiedReceipt(dict):
-    def __init__(self, value, token):
+class VerifiedReceipt(tuple):
+    """Immutable host capability returned only after durable receipt replay."""
+
+    __slots__ = ()
+    _FIELDS = (
+        "valid",
+        "verified",
+        "receipt_id",
+        "status",
+        "pack_publication_id",
+    )
+
+    def __new__(cls, value, token):
         if token is not _VERIFICATION_TOKEN:
             raise TypeError("verified receipts are host-constructed")
-        super().__init__(value)
+        if not isinstance(value, dict) or set(value) != set(cls._FIELDS):
+            raise TypeError("verified receipt fields are invalid")
+        return tuple.__new__(cls, tuple(value[field] for field in cls._FIELDS))
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            try:
+                key = self._FIELDS.index(key)
+            except ValueError as exc:
+                raise KeyError(key) from exc
+        return tuple.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def keys(self):
+        return self._FIELDS
+
+    def items(self):
+        return tuple((field, self[field]) for field in self._FIELDS)
+
+    def values(self):
+        return tuple(tuple.__getitem__(self, index) for index in range(len(self)))
+
+    def sealed_decision(self):
+        return tuple(tuple.__getitem__(self, index) for index in range(len(self)))
 
 
 def canonical_bytes(value):
@@ -373,11 +412,10 @@ def _dense_channel(conn, query, intent, depth):
             continue
         for hit in conn.execute(
             """
-            SELECT v.candidate_id, v.vector, f.text, f.source_artifact_id
+            SELECT v.candidate_id, v.vector, v.content,
+                   v.source_artifact_id
             FROM search_vectors v
             JOIN search_index_entries e ON e.candidate_id = v.candidate_id
-            JOIN candidate_facets f
-              ON f.candidate_id = v.candidate_id AND f.facet = v.facet
             WHERE e.active = 1 AND v.facet = ?
             """,
             (facet,),
@@ -394,7 +432,7 @@ def _dense_channel(conn, query, intent, depth):
                         facet,
                         score,
                         0,
-                        hit["text"],
+                        hit["content"],
                         hit["source_artifact_id"],
                     ),
                     _score=score,
@@ -484,13 +522,18 @@ def _lineage_channel(conn, seed_results, depth, query_story):
                 if candidate_id not in selected:
                     continue
                 row, role = selected[candidate_id]
+                material_delta = _bounded_material_delta(
+                    edge["parent_story"], edge["child_story"]
+                )
+                # material_delta is the bounded extractive span for typed
+                # edges; avoid duplicating it in the generic evidence field.
                 evidence = _evidence(
                     row,
                     "lineage",
                     "lineage",
                     1.0,
                     len(results) + 1,
-                    edge["parent_story"] + " -> " + edge["child_story"],
+                    "",
                     edge["evidence_artifact_id"],
                 )
                 evidence.update(
@@ -498,9 +541,14 @@ def _lineage_channel(conn, seed_results, depth, query_story):
                         "relation_type": edge["relation_type"],
                         "edge_evidence_artifact_id": edge["evidence_artifact_id"],
                         "version_role": role,
-                        "material_delta": _bounded_material_delta(
-                            edge["parent_story"], edge["child_story"]
+                        "parent_candidate_id": edge["parent_candidate_id"],
+                        "child_candidate_id": edge["child_candidate_id"],
+                        "edge_direction": (
+                            "parent"
+                            if candidate_id == edge["parent_candidate_id"]
+                            else "child"
                         ),
+                        "material_delta": material_delta,
                     }
                 )
                 results.append(evidence)
@@ -783,7 +831,65 @@ def _bounded_channels(channels, lineages):
     return result
 
 
-def _cap_matches(lineages, limit):
+def _evolution_unit(lineage):
+    lineage_matches = [
+        match
+        for match in lineage["matches"]
+        if match.get("channel") == "lineage"
+    ]
+    if not lineage_matches:
+        facet_priority = {
+            "mechanism": 0,
+            "claimed_delta": 1,
+            "problem_estimand": 2,
+        }
+        return sorted(
+            lineage["matches"],
+            key=lambda item: (
+                facet_priority.get(item.get("facet"), 3),
+                item["rank"],
+                item["channel"],
+                item["candidate_id"],
+            ),
+        )[:1]
+    selected = []
+    identities = set()
+    for role in ("highest_match", "current"):
+        match = next(
+            (
+                item
+                for item in lineage_matches
+                if role in item.get("version_role", "").split("+")
+            ),
+            None,
+        )
+        if match is None:
+            raise RetrievalError(
+                "evolution lineage lacks a complete highest/current unit"
+            )
+        identity = (
+            match["candidate_id"],
+            match.get("evidence_id"),
+            match.get("version_role"),
+        )
+        if identity not in identities:
+            selected.append(match)
+            identities.add(identity)
+    return selected
+
+
+def _cap_matches(lineages, limit, intent="duplicate_search"):
+    if intent == "evolution_search":
+        result = [
+            dict(lineage, matches=_evolution_unit(lineage))
+            for lineage in lineages
+            if lineage["matches"]
+        ]
+        if sum(len(lineage["matches"]) for lineage in result) > limit:
+            raise RetrievalError(
+                "complete lineage evidence units exceed match bound"
+            )
+        return result
     result = [
         dict(lineage, matches=[])
         for lineage in lineages
@@ -881,17 +987,33 @@ def _validate_generation_snapshot(conn, policy):
     ).fetchone()
     if generation is None:
         return {"valid": False, "code": "no_published_generation"}
+    current_revision = int(
+        conn.execute(
+            "SELECT value FROM schema_meta "
+            "WHERE key = 'history_search_content_revision'"
+        ).fetchone()[0]
+    )
+    if generation["canonical_revision"] < current_revision:
+        return {
+            "valid": False,
+            "code": "projection_revision_pending",
+            "generation": generation["generation"],
+        }
     try:
         manifest = json.loads(generation["manifest_json"])
     except (TypeError, ValueError):
         return {"valid": False, "code": "invalid_manifest"}
     expected = history_projection._projection_manifest(
-        conn, policy, generation["source_watermark"]
+        conn,
+        policy,
+        generation["source_watermark"],
+        generation["canonical_revision"],
     )
     expected_bytes = history_projection._canonical_bytes(expected)
     projection = policy["projection"]
     valid = (
-        generation["policy_sha256"] == history_projection._policy_sha256(policy)
+        generation["canonical_revision"] == current_revision
+        and generation["policy_sha256"] == history_projection._policy_sha256(policy)
         and generation["projection_schema_version"] == projection["schema_version"]
         and generation["fts_tokenizer"] == projection["fts_tokenizer"]
         and generation["vector_model"] == projection["vector_model"]
@@ -932,11 +1054,16 @@ def _build_pack_snapshot(
         "SELECT * FROM search_index_generations ORDER BY generation DESC LIMIT 1"
     ).fetchone()
     if not validation["valid"] or generation is None:
+        status = (
+            "partial"
+            if validation["code"] == "projection_revision_pending"
+            else "backend_failed"
+        )
         return _empty_pack(
             query,
             intent,
             policy,
-            "backend_failed",
+            status,
             generation,
             expansion_request is not None,
         )
@@ -1053,9 +1180,21 @@ def _build_pack_snapshot(
                 )
             )
     retained_count = int(policy["final_lineage_count"])
-    retained = _cap_matches(
-        ranked[:retained_count], int(policy["max_matches"])
-    )
+    try:
+        retained = _cap_matches(
+            ranked[:retained_count],
+            int(policy["max_matches"]),
+            intent=intent,
+        )
+    except RetrievalError:
+        return _empty_pack(
+            query,
+            intent,
+            policy,
+            "budget_exceeded",
+            generation,
+            expansion_request is not None,
+        )
     retained_candidates = {
         match["candidate_id"]
         for lineage in retained
@@ -1194,9 +1333,10 @@ def _build_pack_snapshot(
     return _seal_pack(pack)
 
 
-def _comparator_preflight(pack, policy):
+def comparator_invocation_bytes(pack, policy):
+    """Return the canonical serialized invocation consumed by the comparator."""
     pack_bytes = canonical_bytes(pack)
-    invocation = history_budget.serialize_stage_invocation(
+    return history_budget.serialize_stage_invocation(
         stage="history-compare",
         adapter_version=policy["adapter_version"],
         fixed_instructions=COMPARATOR_INSTRUCTIONS,
@@ -1207,6 +1347,11 @@ def _comparator_preflight(pack, policy):
         tool_schemas=[COMPARATOR_OUTPUT_SCHEMA],
         messages=[{"role": "user", "content": "Compare the candidate."}],
     )
+
+
+def _comparator_preflight(pack, policy):
+    pack_bytes = canonical_bytes(pack)
+    invocation = comparator_invocation_bytes(pack, policy)
     return history_budget.preflight_stage_invocation(
         invocation,
         policy,
@@ -1351,7 +1496,14 @@ def _validate_trace_evidence(conn, channel, item):
     }
     expected_fields = (
         base_fields
-        | {"relation_type", "edge_evidence_artifact_id", "version_role"}
+        | {
+            "relation_type",
+            "edge_evidence_artifact_id",
+            "version_role",
+            "parent_candidate_id",
+            "child_candidate_id",
+            "edge_direction",
+        }
         if channel == "lineage"
         else base_fields
     )
@@ -1417,6 +1569,9 @@ def _validate_trace_evidence(conn, channel, item):
     if (
         item["source_artifact_id"] != item["edge_evidence_artifact_id"]
         or not item["version_role"]
+        or item["edge_direction"] not in {"parent", "child"}
+        or item["candidate_id"]
+        != item[item["edge_direction"] + "_candidate_id"]
     ):
         raise ComparisonValidationError("published typed-edge identity mismatch")
     edges = conn.execute(
@@ -1428,22 +1583,20 @@ def _validate_trace_evidence(conn, channel, item):
         JOIN candidates child
           ON child.candidate_id = edge.child_candidate_id
         WHERE edge.evidence_artifact_id = ? AND edge.relation_type = ?
-          AND (edge.parent_candidate_id = ? OR edge.child_candidate_id = ?)
+          AND edge.parent_candidate_id = ?
+          AND edge.child_candidate_id = ?
         """,
         (
             item["edge_evidence_artifact_id"],
             item["relation_type"],
-            item["candidate_id"],
-            item["candidate_id"],
+            item["parent_candidate_id"],
+            item["child_candidate_id"],
         ),
     ).fetchall()
     if not any(
         item["material_delta"]
         == _bounded_material_delta(edge["parent_story"], edge["child_story"])
-        and item["evidence_span"]
-        == " ".join(
-            (edge["parent_story"] + " -> " + edge["child_story"]).split()
-        )[:EVIDENCE_SPAN_LIMIT]
+        and item["evidence_span"] == ""
         for edge in edges
     ):
         raise ComparisonValidationError("published typed-edge delta mismatch")
@@ -1505,17 +1658,11 @@ def _validate_published_rank_trace(conn, publication, pack, policy):
             or lineage["rrf_score"] != expected["rrf_score"]
         ):
             raise ComparisonValidationError("published fused lineage score mismatch")
-        expected_matches = list(expected["matches"])
-        if pack["intent"] == "evolution_search":
-            expected_matches.sort(
-                key=lambda item: (
-                    0 if item["channel"] == "lineage" else 1,
-                    0 if item.get("version_role") == "highest_match" else 1,
-                    item["channel"],
-                    item["rank"],
-                    item["candidate_id"],
-                )
-            )
+        expected_matches = (
+            _evolution_unit(expected)
+            if pack["intent"] == "evolution_search"
+            else list(expected["matches"])
+        )
         actual_keys = [
             (item["channel"], item["facet"], item["candidate_id"], item["evidence_id"])
             for item in lineage["matches"]
@@ -1703,6 +1850,9 @@ def _validate_pack(conn, pack, policy, require_complete=False):
         "relation_type",
         "edge_evidence_artifact_id",
         "version_role",
+        "parent_candidate_id",
+        "child_candidate_id",
+        "edge_direction",
     }
     for lineage in pack.get("lineages", []):
         if not isinstance(lineage, dict) or set(lineage) != lineage_fields:
@@ -1776,6 +1926,15 @@ def _validate_pack(conn, pack, policy, require_complete=False):
         (item["candidate_id"], item["facet"])
         for item in manifest.get("vectors", [])
     }
+    manifest_edges = {
+        (
+            item["parent_candidate_id"],
+            item["child_candidate_id"],
+            item["relation_type"],
+            item["evidence_artifact_id"],
+        )
+        for item in manifest.get("lineage_edges", [])
+    }
     for match in matches:
         if match.get("candidate_id") not in manifest_candidates:
             raise ComparisonValidationError("evidence is outside generation")
@@ -1811,17 +1970,28 @@ def _validate_pack(conn, pack, policy, require_complete=False):
         ):
             raise ComparisonValidationError("dense evidence is outside generation")
         if match.get("channel") == "lineage":
+            edge_identity = (
+                match["parent_candidate_id"],
+                match["child_candidate_id"],
+                match["relation_type"],
+                match["edge_evidence_artifact_id"],
+            )
+            if edge_identity not in manifest_edges:
+                raise ComparisonValidationError(
+                    "typed lineage evidence is outside generation"
+                )
             edge = conn.execute(
                 """
                 SELECT 1 FROM lineage_edges
                 WHERE evidence_artifact_id = ? AND relation_type = ?
-                  AND (parent_candidate_id = ? OR child_candidate_id = ?)
+                  AND parent_candidate_id = ?
+                  AND child_candidate_id = ?
                 """,
                 (
                     match.get("edge_evidence_artifact_id"),
                     match.get("relation_type"),
-                    match["candidate_id"],
-                    match["candidate_id"],
+                    match["parent_candidate_id"],
+                    match["child_candidate_id"],
                 ),
             ).fetchone()
             if edge is None:
@@ -2179,11 +2349,15 @@ def replay_receipt(conn, pack, receipt, policy):
 
 
 def permits_permanent_conclusion(receipt):
+    if type(receipt) is not VerifiedReceipt:
+        return False
+    valid, verified, receipt_id, status, publication_id = (
+        receipt.sealed_decision()
+    )
     return (
-        isinstance(receipt, VerifiedReceipt)
-        and receipt.get("verified") is True
-        and receipt.get("valid") is True
-        and isinstance(receipt.get("receipt_id"), str)
-        and isinstance(receipt.get("pack_publication_id"), str)
-        and receipt.get("status") in PERMANENT_STATUSES
+        verified is True
+        and valid is True
+        and isinstance(receipt_id, str)
+        and isinstance(publication_id, str)
+        and status in PERMANENT_STATUSES
     )
