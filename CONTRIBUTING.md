@@ -13,6 +13,7 @@ Backend work must retain explicit provider selection. No default, fallback, hook
 Run focused gates while editing:
 
 ```bash
+python3 tests/history_store_smoke.py
 python3 tests/verify_product_contract.py runtime
 python3 tests/verify_product_contract.py fixtures
 bash tests/runtime_abi_smoke.sh
@@ -24,6 +25,12 @@ The smoke tests use fake backends and do not require an external model. Run the 
 ```bash
 python3 tests/verify_product_contract.py all
 git diff --check
+```
+
+Recover both ledger projections from the canonical database before an offline run:
+
+```bash
+python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 reconcile-ledger
 ```
 
 Shell changes also require `bash -n` on every touched script. Litwatch behavior is covered by `bash litwatch_test.sh`; its live-network probe may report an intentional skip when network access is unavailable.

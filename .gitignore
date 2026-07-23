@@ -1,4 +1,5 @@
 hunt.log
 tmp/
+.ai-ideas/
 __pycache__/
 *.pyc
