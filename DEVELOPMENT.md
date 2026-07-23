@@ -14,7 +14,7 @@ IDs follow the original plan; `6` remains unassigned.
 | 0 | Harness engineering | Move deterministic control into `.sh` where practical; improve Claude and Codex adapters | P0 | None |
 | 1 | Research quality | Improve success rate for autoresearch proposals with concrete solutions | P0 | Decision and observability foundations from 0 |
 | 2 | Architecture | Decouple the harness from research topics and generated content | P1 | 0 |
-| 3 | Storage | Evaluate and migrate `ledger.tsv` to a lightweight database | P1 | Data boundaries from 2 |
+| 3 | Storage and retrieval | Migrate `ledger.tsv` to SQLite and add bounded historical-idea retrieval | P1 | Data boundaries from 2 |
 | 4 | Execution | Support safe concurrency | P2 | 2 and 3 |
 | 5 | Documentation and structure | Build a user-oriented `README.md` and decide whether to restructure the repository | P1 | Boundary design from 2 |
 | 7 | Delivery | Containerize the system | P2 | 2 and 5 |
@@ -118,16 +118,20 @@ Acceptance: the same stage can switch between Claude and Codex through configura
 
 Acceptance: adding or switching a research topic requires no harness changes; topic-prompt changes do not affect scheduling or storage tests.
 
-### 3. Evaluate and migrate `ledger.tsv` to a lightweight database
+### 3. Migrate `ledger.tsv` to SQLite and add bounded historical-idea retrieval
 
-Evaluate SQLite first. Preserve TSV import/export and do not delete the existing ledger directly.
+Use SQLite as the canonical structured history while preserving TSV import/export and the existing ledger during migration. [`docs/superpowers/specs/2026-07-23-bounded-history-retrieval-design.md`](docs/superpowers/specs/2026-07-23-bounded-history-retrieval-design.md) is canonical for model-context isolation, search projections, retrieval packs, failure semantics, and evaluation.
 
 - [ ] Define the minimal schema for ideas, runs, candidates, reviews, artifacts, invocations, and revision lineage. [`AWR-REBUILD-DRAFT.md` §5](AWR-REBUILD-DRAFT.md#5-automatic-re-entry-bridge-storage-milestone-3) is canonical for lineage identity, re-entry, historical import, transactions, and materialization.
-- [ ] Compare SQLite with continued TSV use across queries, concurrent writes, migration, and maintenance, then record the storage decision.
-- [ ] If migration proceeds, provide one-time import, dual-read validation, and stable TSV export before switching the primary write path.
+- [ ] Provide one-time import, dual-read validation, and stable TSV export before switching the primary write path.
 - [ ] Make writes transactional and support unique constraints, idempotent resume, and schema versions.
+- [ ] Add canonical typed lineage edges and a search-projection outbox without changing the AWR materialization outbox's file-effect responsibility.
+- [ ] Build versioned exact, FTS5, and per-facet embedding projections from the search-projection outbox; use exhaustive dense retrieval until measured scale requires an approximate index.
+- [ ] Atomically update `PROGRAM.md`, `roles/generate.md`, `roles/meta.md`, `hunt.sh`, and stage mirrors to remove full-history access and expose only schema-validated briefs and retrieval packs with hard result and token limits.
+- [ ] Propagate retrieval completeness and backend failures explicitly so incomplete retrieval cannot create a permanent verdict or novelty claim.
+- [ ] Calibrate duplicate, lineage, evidence, abstention, latency, and token behavior against temporal, manually adjudicated benchmarks before enabling retrieval-dependent decisions.
 
-Acceptance: historical runs, complete votes, and revision chains are queryable; repeated execution creates no duplicate records; existing TSV workflows remain exportable.
+Acceptance: historical runs, complete votes, and revision chains are queryable; repeated execution creates no duplicate records; existing TSV workflows remain exportable; agent-stage context remains bounded as history grows; every historical comparison is reproducible from a complete retrieval receipt.
 
 ### 4. Support safe concurrency
 
