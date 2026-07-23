@@ -1358,6 +1358,39 @@ class HistoryStoreSmoke(unittest.TestCase):
         self.assertEqual(targets["ledger.tsv"].read_bytes(), ledger.read_bytes())
         self.assertEqual(targets["tmp/ledger.good"].read_bytes(), ledger.read_bytes())
 
+    def test_append_after_unterminated_header_only_import_inserts_one_separator(self):
+        header = HEADER.rstrip(b"\n")
+        ledger = self.root / "unterminated-header-only.tsv"
+        ledger.write_bytes(header)
+        plan = history_store.build_import_plan({"ledger": ledger}, self.state_root)
+        receipt = history_store.commit_import_plan(self.conn, plan)
+        self.assertEqual(receipt["data_rows"], 0)
+        self.assertEqual(history_store.render_tsv(self.conn), header)
+
+        appended = row("first appended proposition")
+        history_store.append_rows(
+            self.conn, [appended], {"run_id": "header-first-row"}
+        )
+        expected = header + b"\n" + appended + b"\n"
+        self.assertEqual(history_store.render_tsv(self.conn), expected)
+        self.assertEqual(
+            history_store._render_projection_prefix(self.conn, 0), header
+        )
+
+        retry = history_store.commit_import_plan(self.conn, plan)
+        self.assertTrue(retry["idempotent"])
+        self.assertTrue(history_store.validate_store(self.conn)["ok"])
+
+        ledger_good = self.root / "tmp" / "unterminated-header.good"
+        history_store.materialize_ledger_projection(
+            self.conn,
+            {"ledger.tsv": ledger, "tmp/ledger.good": ledger_good},
+            self.state_root,
+        )
+        self.assertEqual(ledger.read_bytes(), expected)
+        self.assertEqual(ledger_good.read_bytes(), expected)
+        self.assertTrue(history_store.validate_store(self.conn)["ok"])
+
     def test_origin_stable_id_requires_exact_positive_integer_ordinal(self):
         for invalid in (True, False, 1.5, "1", 0, -1):
             with self.subTest(invalid=invalid):

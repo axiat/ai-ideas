@@ -848,7 +848,7 @@ def _store_state_root(conn):
 
 def _render_projection_rows(header, rows):
     chunks = [header]
-    previous_terminator = None
+    previous_terminator = b"\n" if header.endswith(b"\n") else b""
     for row_value in rows:
         if previous_terminator == b"":
             chunks.append(b"\n")
