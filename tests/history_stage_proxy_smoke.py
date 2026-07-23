@@ -457,6 +457,62 @@ class FakeUpstream:
         self.thread.join(timeout=2)
 
 
+class DeadlineUpstreamHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *_args):
+        return
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.server.started.set()
+        if self.server.mode == "stall":
+            self.server.release.wait(timeout=5)
+            return
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                self.wfile.write(b"x")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                break
+            time.sleep(0.03)
+
+
+class DeadlineUpstream:
+    def __init__(self, mode):
+        self.server = LoopbackServer(
+            ("127.0.0.1", 0),
+            DeadlineUpstreamHandler,
+        )
+        self.server.mode = mode
+        self.server.started = threading.Event()
+        self.server.release = threading.Event()
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            daemon=True,
+        )
+
+    @property
+    def port(self):
+        return self.server.server_address[1]
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_args):
+        self.server.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+
 class HistoryStageProxySmoke(unittest.TestCase):
     def setUp(self):
         self.prompt = '{"schema_version":1,"stage":"meta"}\n'
@@ -651,6 +707,114 @@ class HistoryStageProxySmoke(unittest.TestCase):
                 canonical(model_output())
             ).hexdigest(),
         )
+
+    def test_upstream_exchange_has_one_absolute_deadline(self):
+        for mode in ("stall", "trickle"):
+            with self.subTest(mode=mode):
+                with DeadlineUpstream(mode) as upstream:
+                    exchange = history_stage_proxy.CanonicalExchange(
+                        prompt=self.prompt,
+                        canonical_request=self.canonical_request,
+                        upstream_port=upstream.port,
+                        output_validator=lambda raw: (
+                            history_stage_adapter.parse_model_output(
+                                "meta",
+                                raw,
+                            )
+                        ),
+                        max_output_tokens=2048,
+                        exchange_timeout_seconds=0.15,
+                    )
+                    started = time.monotonic()
+                    with self.assertRaises(
+                        history_stage_proxy.ProxyError
+                    ):
+                        exchange.exchange(self.client_request())
+                    self.assertLess(time.monotonic() - started, 0.8)
+
+    def test_proxy_exit_cancels_an_active_upstream_exchange(self):
+        with DeadlineUpstream("stall") as upstream:
+            proxy = history_stage_proxy.CanonicalProxyServer(
+                prompt=self.prompt,
+                canonical_request=self.canonical_request,
+                upstream_port=upstream.port,
+                output_validator=lambda raw: (
+                    history_stage_adapter.parse_model_output("meta", raw)
+                ),
+                max_output_tokens=2048,
+                exchange_timeout_seconds=10,
+                shutdown_timeout_seconds=0.5,
+            )
+            proxy.__enter__()
+            finished = threading.Event()
+
+            def invoke():
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1",
+                    proxy.port,
+                    timeout=2,
+                )
+                try:
+                    connection.request(
+                        "POST",
+                        "/v1/responses",
+                        body=self.client_request(),
+                        headers={"Content-Type": "application/json"},
+                    )
+                    response = connection.getresponse()
+                    response.read()
+                except (OSError, http.client.HTTPException):
+                    pass
+                finally:
+                    connection.close()
+                    finished.set()
+
+            client = threading.Thread(target=invoke, daemon=True)
+            client.start()
+            self.assertTrue(upstream.server.started.wait(timeout=1))
+            started = time.monotonic()
+            proxy.__exit__()
+            self.assertLess(time.monotonic() - started, 1.0)
+            self.assertTrue(finished.wait(timeout=1))
+
+    def test_adapter_installs_closed_resource_limits_before_exec(self):
+        script = (
+            "import json,resource;"
+            "from lib import history_stage_adapter as a;"
+            "a._install_resource_limits();"
+            "print(json.dumps({name:list(resource.getrlimit("
+            "getattr(resource,name))) for name in a.RESOURCE_LIMITS "
+            "if hasattr(resource,name)},sort_keys=True))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        observed = json.loads(result.stdout)
+        for name, configured in (
+            history_stage_adapter.RESOURCE_LIMITS.items()
+        ):
+            if name not in observed:
+                continue
+            soft, hard = observed[name]
+            self.assertGreaterEqual(soft, 0)
+            self.assertGreaterEqual(hard, 0)
+            self.assertLessEqual(soft, configured)
+            self.assertLessEqual(hard, configured)
+        self.assertEqual(observed["RLIMIT_CORE"], [0, 0])
+        for required in (
+            "RLIMIT_CPU",
+            "RLIMIT_AS",
+            "RLIMIT_FSIZE",
+            "RLIMIT_NOFILE",
+            "RLIMIT_NPROC",
+        ):
+            if hasattr(__import__("resource"), required):
+                self.assertIn(required, observed)
 
     def test_lifecycle_rejects_sequence_order_and_framing_drift(self):
         request = json.loads(self.canonical_request)

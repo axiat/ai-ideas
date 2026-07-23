@@ -68,7 +68,7 @@ fork_status = None
 if mode == "fork-probe":
     try:
         child = os.fork()
-    except PermissionError:
+    except OSError:
         fork_status = "fork-probe: denied before child creation"
     else:
         if child == 0:
@@ -98,7 +98,7 @@ if outside_write and mode == "detached-child":
 elif outside_write and mode == "rapid-double-fork":
     try:
         first_child = os.fork()
-    except PermissionError:
+    except OSError:
         fork_status = "rapid-double-fork: denied before child creation"
     else:
         fork_status = "rapid-double-fork: unexpectedly allowed"

@@ -5,8 +5,43 @@ import hashlib
 import json
 import os
 import pathlib
+import resource
 import stat
 import sys
+
+
+RESOURCE_LIMITS = {
+    "RLIMIT_CPU": 30,
+    "RLIMIT_AS": (
+        1024 * 1024 * 1024 * 1024
+        if sys.platform == "darwin"
+        else 4 * 1024 * 1024 * 1024
+    ),
+    "RLIMIT_RSS": (
+        1024 * 1024 * 1024 * 1024
+        if sys.platform == "darwin"
+        else 2 * 1024 * 1024 * 1024
+    ),
+    "RLIMIT_FSIZE": 16 * 1024 * 1024,
+    "RLIMIT_NOFILE": 256,
+    "RLIMIT_NPROC": 32,
+    "RLIMIT_CORE": 0,
+}
+
+
+def _install_resource_limits():
+    """Install one closed resource ceiling inherited by the backend."""
+    for name, ceiling in RESOURCE_LIMITS.items():
+        if not hasattr(resource, name):
+            continue
+        identity = getattr(resource, name)
+        _, current_hard = resource.getrlimit(identity)
+        limit = (
+            ceiling
+            if current_hard == resource.RLIM_INFINITY
+            else min(ceiling, current_hard)
+        )
+        resource.setrlimit(identity, (limit, limit))
 
 
 _MODEL_ARTIFACTS = {
@@ -287,6 +322,10 @@ def main(argv=None):
         or any(character in seat_id for character in "\r\n\x00")
     ):
         return 64
+    try:
+        _install_resource_limits()
+    except (OSError, ValueError):
+        return 75
     try:
         command = json.loads(command_json)
     except (TypeError, ValueError):

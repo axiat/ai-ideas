@@ -8,11 +8,14 @@ import json
 import socket
 import socketserver
 import threading
+import time
 
 
 CLIENT_REQUEST_MAX_BYTES = 1024 * 1024
 SSE_MAX_BYTES = 256 * 1024
 MODEL_OUTPUT_MAX_BYTES = 128 * 1024
+UPSTREAM_EXCHANGE_TIMEOUT_SECONDS = 25
+PROXY_SHUTDOWN_TIMEOUT_SECONDS = 1
 CANONICAL_REQUEST_VERSION = "history-canonical-request-v1"
 
 
@@ -495,6 +498,7 @@ class CanonicalExchange:
         account_id=None,
         output_validator,
         max_output_tokens,
+        exchange_timeout_seconds=UPSTREAM_EXCHANGE_TIMEOUT_SECONDS,
     ):
         if (
             not isinstance(prompt, str)
@@ -503,6 +507,9 @@ class CanonicalExchange:
             or not callable(output_validator)
             or type(max_output_tokens) is not int
             or max_output_tokens < 1
+            or not isinstance(exchange_timeout_seconds, (int, float))
+            or isinstance(exchange_timeout_seconds, bool)
+            or not 0 < exchange_timeout_seconds <= 60
         ):
             raise ProxyError("canonical exchange configuration is invalid")
         self.prompt = prompt
@@ -546,9 +553,15 @@ class CanonicalExchange:
         )
         self.output_validator = output_validator
         self.max_output_tokens = max_output_tokens
+        self.exchange_timeout_seconds = float(
+            exchange_timeout_seconds
+        )
         self.request_count = 0
         self.receipt = None
         self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._cancelled = threading.Event()
+        self._active_connection = None
 
     def validate_client_request(self, raw):
         if (
@@ -573,7 +586,41 @@ class CanonicalExchange:
             raise ProxyError("Codex prompt does not match preflight")
         return value
 
-    def _read_upstream(self):
+    def _set_active_connection(self, connection):
+        with self._state_lock:
+            if self._cancelled.is_set():
+                raise ProxyError("canonical exchange was cancelled")
+            self._active_connection = connection
+
+    def _clear_active_connection(self, connection):
+        with self._state_lock:
+            if self._active_connection is connection:
+                self._active_connection = None
+
+    def cancel(self):
+        self._cancelled.set()
+        with self._state_lock:
+            connection = self._active_connection
+        if connection is None:
+            return
+        candidate = getattr(connection, "sock", None)
+        if candidate is not None:
+            try:
+                candidate.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        try:
+            connection.close()
+        except OSError:
+            pass
+
+    def _remaining(self, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or self._cancelled.is_set():
+            raise ProxyError("upstream exchange deadline exceeded")
+        return remaining
+
+    def _read_upstream_blocking(self, deadline):
         endpoint = self.upstream_endpoint
         connection_type = (
             http.client.HTTPSConnection
@@ -583,8 +630,10 @@ class CanonicalExchange:
         connection = connection_type(
             endpoint["host"],
             endpoint["port"],
-            timeout=5,
+            timeout=self._remaining(deadline),
         )
+        self._set_active_connection(connection)
+        response = None
         try:
             headers = {"Content-Type": "application/json"}
             if self.authorization is not None:
@@ -599,6 +648,8 @@ class CanonicalExchange:
                 body=self.canonical_request,
                 headers=headers,
             )
+            if connection.sock is not None:
+                connection.sock.settimeout(self._remaining(deadline))
             response = connection.getresponse()
             if response.status == 401:
                 raise AuthRefreshRequired(
@@ -612,8 +663,13 @@ class CanonicalExchange:
                 raise ProxyError("loopback upstream response is invalid")
             chunks = []
             total = 0
+            read = getattr(response, "read1", response.read)
             while True:
-                chunk = response.read(
+                if connection.sock is not None:
+                    connection.sock.settimeout(
+                        self._remaining(deadline)
+                    )
+                chunk = read(
                     min(65536, SSE_MAX_BYTES + 1 - total)
                 )
                 if not chunk:
@@ -626,7 +682,38 @@ class CanonicalExchange:
         except (OSError, http.client.HTTPException) as exc:
             raise ProxyError("loopback upstream is unavailable") from exc
         finally:
+            self._clear_active_connection(connection)
+            if response is not None:
+                response.close()
             connection.close()
+
+    def _read_upstream(self):
+        deadline = (
+            time.monotonic() + self.exchange_timeout_seconds
+        )
+        result = {}
+
+        def worker():
+            try:
+                result["raw"] = self._read_upstream_blocking(
+                    deadline
+                )
+            except BaseException as exc:
+                result["error"] = exc
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(timeout=self.exchange_timeout_seconds)
+        if thread.is_alive():
+            self.cancel()
+            thread.join(timeout=0.2)
+            raise ProxyError("upstream exchange deadline exceeded")
+        error = result.get("error")
+        if error is not None:
+            if isinstance(error, ProxyError):
+                raise error
+            raise ProxyError("loopback upstream is unavailable") from error
+        return result["raw"]
 
     def _validate_response(self, raw):
         events = _parse_sse(raw)
@@ -1085,6 +1172,39 @@ class CanonicalExchange:
 class _LoopbackServer(socketserver.TCPServer):
     allow_reuse_address = True
 
+    def __init__(self, *args, **kwargs):
+        self._client_lock = threading.Lock()
+        self._active_client = None
+        super().__init__(*args, **kwargs)
+
+    def get_request(self):
+        request, address = super().get_request()
+        with self._client_lock:
+            self._active_client = request
+        return request, address
+
+    def shutdown_request(self, request):
+        try:
+            super().shutdown_request(request)
+        finally:
+            with self._client_lock:
+                if self._active_client is request:
+                    self._active_client = None
+
+    def cancel_active_request(self):
+        with self._client_lock:
+            request = self._active_client
+        if request is None:
+            return
+        try:
+            request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            request.close()
+        except OSError:
+            pass
+
 
 class _ProxyHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -1113,18 +1233,27 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
             payload = _canonical_bytes(
                 {"error": {"type": exc.failure_code}}
             )
-            self.send_response(
-                401
-                if isinstance(exc, AuthRefreshRequired)
-                else 400
-            )
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(payload)
             self.server.last_error = str(exc)
             self.server.failure_code = exc.failure_code
+            try:
+                self.send_response(
+                    401
+                    if isinstance(exc, AuthRefreshRequired)
+                    else 400
+                )
+                self.send_header(
+                    "Content-Type",
+                    "application/json",
+                )
+                self.send_header(
+                    "Content-Length",
+                    str(len(payload)),
+                )
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(payload)
+            except OSError:
+                pass
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -1139,6 +1268,17 @@ class CanonicalProxyServer:
     """Context-managed loopback server for one canonical exchange."""
 
     def __init__(self, **exchange_arguments):
+        shutdown_timeout = exchange_arguments.pop(
+            "shutdown_timeout_seconds",
+            PROXY_SHUTDOWN_TIMEOUT_SECONDS,
+        )
+        if (
+            not isinstance(shutdown_timeout, (int, float))
+            or isinstance(shutdown_timeout, bool)
+            or not 0 < shutdown_timeout <= 5
+        ):
+            raise ProxyError("proxy shutdown timeout is invalid")
+        self.shutdown_timeout_seconds = float(shutdown_timeout)
         self.exchange = CanonicalExchange(**exchange_arguments)
         self.server = _LoopbackServer(("127.0.0.1", 0), _ProxyHandler)
         self.server.exchange = self.exchange
@@ -1148,6 +1288,7 @@ class CanonicalProxyServer:
             target=self.server.serve_forever,
             daemon=True,
         )
+        self._closed = False
 
     @property
     def port(self):
@@ -1184,6 +1325,23 @@ class CanonicalProxyServer:
         return dict(self.exchange.receipt)
 
     def __exit__(self, *_args):
-        self.server.shutdown()
+        if self._closed:
+            return
+        self._closed = True
+        deadline = (
+            time.monotonic() + self.shutdown_timeout_seconds
+        )
+        self.exchange.cancel()
+        self.server.cancel_active_request()
+        shutdown = threading.Thread(
+            target=self.server.shutdown,
+            daemon=True,
+        )
+        shutdown.start()
+        shutdown.join(
+            timeout=max(0, deadline - time.monotonic())
+        )
         self.server.server_close()
-        self.thread.join(timeout=2)
+        self.thread.join(
+            timeout=max(0, deadline - time.monotonic())
+        )

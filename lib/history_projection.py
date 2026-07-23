@@ -533,8 +533,7 @@ def _latest_generation(conn):
     ).fetchone()
 
 
-def validate_published_generation(conn, policy):
-    _init(conn)
+def _validate_published_generation_snapshot(conn, policy):
     generation = _latest_generation(conn)
     if generation is None:
         return {"valid": False, "code": "no_published_generation"}
@@ -573,6 +572,11 @@ def validate_published_generation(conn, policy):
         "generation": generation["generation"],
         "manifest": expected if valid else manifest,
     }
+
+
+def validate_published_generation(conn, policy):
+    _init(conn)
+    return _validate_published_generation_snapshot(conn, policy)
 
 
 def _requeue_all(conn, content_version):
@@ -668,7 +672,7 @@ def rebuild(conn, policy):
 
 def recover(conn, policy):
     _init(conn)
-    validation = validate_published_generation(conn, policy)
+    validation = _validate_published_generation_snapshot(conn, policy)
     pending = conn.execute(
         "SELECT count(*) FROM search_projection_outbox WHERE state = 'pending'"
     ).fetchone()[0]
@@ -843,12 +847,15 @@ def generation_brief_bytes(brief):
     return _canonical_bytes(brief)
 
 
-def build_generation_brief(conn, policy, research_context=None):
-    _init(conn)
+def _build_generation_brief_snapshot(
+    conn,
+    policy,
+    research_context=None,
+):
     pending = conn.execute(
         "SELECT count(*) FROM search_projection_outbox WHERE state != 'done'"
     ).fetchone()[0]
-    validation = validate_published_generation(conn, policy)
+    validation = _validate_published_generation_snapshot(conn, policy)
     current_watermark = conn.execute(
         "SELECT COALESCE(MAX(source_sequence), 0) FROM candidates"
     ).fetchone()[0]
@@ -894,3 +901,12 @@ def build_generation_brief(conn, policy, research_context=None):
     if len(generation_brief_bytes(brief)) > int(policy["max_retrieval_tokens"]):
         raise ValueError("generation brief exceeds retrieval token budget")
     return brief
+
+
+def build_generation_brief(conn, policy, research_context=None):
+    _init(conn)
+    return _build_generation_brief_snapshot(
+        conn,
+        policy,
+        research_context,
+    )

@@ -62,20 +62,32 @@ python3 lib/history_stage.py run \
   --command '["/absolute/path/to/codex","-m","gpt-5.3-codex-spark","-c","model_reasoning_effort=xhigh"]'
 ```
 
+The `xhigh` command is the registered target configuration, not an online
+availability check. It runs only when the local platform, Codex `0.145.0`
+binary hash, model, reasoning setting, adapter, canonicalizer, response
+schemas, policy bounds, owner-only authentication file, and Darwin
+`sandbox-exec` profile match the audited capability. Any drift fails before
+backend launch. Linux fixture containment requires `bwrap`; Codex fails closed
+there until a loopback-only network namespace is registered.
+
 The command is a closed JSON argv array. The host captures and hashes the
 registered role, policy, mounted inputs, executable, fixed argv, and canonical
-prompt before launch. A registered Codex capability replaces the CLI harness
-with the exact preflighted request, disables tools, and exposes only one
-declared loopback port to the contained client. The host broker reads the
-canonical Codex authentication file without modifying it; an expired session
-fails with `auth_refresh_required` and requires a normal operator login before
-retry. Darwin Codex execution requires `sandbox-exec`. Linux fixture
-containment requires `bwrap`; Codex fails closed there until a loopback-only
-network namespace is registered. Absence or activation failure is fatal. A
-preflight receipt is durable before launch, copied artifacts are untrusted
-without the completion receipt, and the completion receipt is published only
-after every declared output passes no-follow, type, size, schema, and
-prompt-attestation checks.
+prompt before launch. The adapter applies fixed CPU, address-space, file-size,
+descriptor, process, and core-dump limits before backend `exec`. The pinned
+proxy disables tools, exposes one declared loopback port, enforces one absolute
+upstream deadline, and cancels active sockets on shutdown. The host broker
+reads the canonical Codex authentication file without modifying it; an expired
+session fails with `auth_refresh_required` and requires a normal operator login
+before retry. A preflight receipt is durable before launch, copied artifacts
+are untrusted without the completion receipt, and the completion receipt is
+published only after every declared output passes no-follow, type, size,
+schema, and prompt-attestation checks.
+
+The legacy `hunt.sh` protocol continues to use `roles/generate.md`,
+`roles/meta.md`, and `roles/review.md` until the orchestrator cutover lands.
+Contained staging uses `roles/bounded-generate.md`,
+`roles/bounded-meta.md`, and `roles/bounded-review.md`; changing the legacy
+role paths without the matching `hunt.sh` ABI is invalid.
 
 Only `complete_match` and `complete_no_match` receipts permit a permanent
 internal-history conclusion. Receipt replay is bound to the policy, projection

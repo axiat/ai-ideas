@@ -834,12 +834,12 @@ git commit -m "feat: add bounded hybrid history retrieval"
 
 **Files:**
 - Create: `lib/history_stage.py`
+- Create: `roles/bounded-generate.md`
+- Create: `roles/bounded-meta.md`
+- Create: `roles/bounded-review.md`
 - Create: `roles/history-compare.md`
 - Create: `tests/history_mirror_smoke.sh`
 - Create: `tests/malicious_history_agent.sh`
-- Modify: `roles/generate.md`
-- Modify: `roles/meta.md`
-- Modify: `roles/review.md`
 - Modify: `tests/fake_agent.sh`
 - Modify: `CONTRIBUTING.md`
 
@@ -881,13 +881,16 @@ Before process launch, serialize the fixed wrapper, role, every mounted input, p
 
 - [ ] **Step 4: Update roles and fake backend**
 
-`roles/generate.md` reads `generation_brief.json`, policy, and optional bounded research context. Remove all ledger, deathlist, queue, and direct-scan instructions.
+`roles/bounded-generate.md` reads `generation_brief.json`, policy, and optional bounded research context. It contains no ledger, deathlist, queue, or direct-scan instructions.
 
-`roles/meta.md` becomes an isolated optional distillation role that reads only a bounded batch artifact; routine failure counts come from SQLite.
+`roles/bounded-meta.md` is an isolated optional distillation role that reads only a bounded batch artifact; routine failure counts come from SQLite.
 
 `roles/history-compare.md` reads only the candidate and one validated pack, emits JSON with relation, referenced IDs/facets/evidence, material differences, confidence, and optional bounded expansion request, and performs no repository search.
 
-`roles/review.md` receives only the frozen candidate, external prior-work artifact, rubric and policy, and an optional receipt-derived bounded history summary. It must not search repository history or read any other reviewer output. Each reviewer invocation receives a fresh mirror and independent process context.
+`roles/bounded-review.md` receives only the frozen candidate, external prior-work artifact, rubric and policy, and an optional receipt-derived bounded history summary. It must not search repository history or read any other reviewer output. Each reviewer invocation receives a fresh mirror and independent process context.
+
+The legacy `roles/generate.md`, `roles/meta.md`, and `roles/review.md` remain
+unchanged until Task 5 replaces their callers and artifact ABI atomically.
 
 Extend `tests/fake_agent.sh` to produce a valid comparator response.
 
@@ -908,7 +911,7 @@ Expected: all PASS; malicious absolute reads fail under real OS containment.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add CONTRIBUTING.md lib/history_stage.py roles/generate.md roles/history-compare.md roles/meta.md roles/review.md tests/fake_agent.sh tests/history_mirror_smoke.sh tests/malicious_history_agent.sh
+git add CONTRIBUTING.md lib/history_stage.py roles/bounded-generate.md roles/bounded-meta.md roles/bounded-review.md roles/history-compare.md tests/fake_agent.sh tests/history_mirror_smoke.sh tests/malicious_history_agent.sh
 git commit -m "feat: contain history-aware agent stages"
 ```
 

@@ -8,6 +8,7 @@ import os
 import pathlib
 import platform
 import re
+import secrets
 import selectors
 import shutil
 import signal
@@ -19,11 +20,13 @@ import time
 
 try:
     from lib import history_budget
+    from lib import history_projection
     from lib import history_retrieval
     from lib import history_stage_adapter
     from lib import history_stage_proxy
 except ImportError:
     import history_budget
+    import history_projection
     import history_retrieval
     import history_stage_adapter
     import history_stage_proxy
@@ -31,6 +34,7 @@ except ImportError:
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 POLICY_SOURCE = "history/retrieval-policy-v1.json"
+GENERATION_POLICY_SOURCE = "brainstorming_policy.md"
 ADAPTER_SOURCE = "lib/history_stage_adapter.py"
 CANONICALIZER_SOURCE = "lib/history_stage_proxy.py"
 CODEX_CAPABILITY_SOURCE = "history/codex-adapter-capabilities-v2.json"
@@ -107,7 +111,7 @@ _OUTPUT_PROFILES = {
 
 _STAGE_PROFILES = {
     "generate": {
-        "role": "roles/generate.md",
+        "role": "roles/bounded-generate.md",
         "required_inputs": {
             "generation_brief.json",
             "generation_policy.md",
@@ -122,7 +126,7 @@ _STAGE_PROFILES = {
         "message": "Compare the candidate.",
     },
     "review": {
-        "role": "roles/review.md",
+        "role": "roles/bounded-review.md",
         "required_inputs": {
             "candidate.json",
             "prior_work.md",
@@ -132,7 +136,7 @@ _STAGE_PROFILES = {
         "message": "Review the bounded candidate.",
     },
     "meta": {
-        "role": "roles/meta.md",
+        "role": "roles/bounded-meta.md",
         "required_inputs": {"failure_batch.json"},
         "optional_inputs": set(),
         "message": "Distill the bounded failure batch.",
@@ -775,33 +779,75 @@ def _validate_inputs(manifest, profile):
 def _destination_parent(root, relative):
     relative = _normal_relative(relative)
     parts = pathlib.PurePosixPath(relative).parts
-    current = root["path"]
-    for component in parts[:-1]:
-        current = current / component
-        try:
-            value = current.lstat()
-        except OSError as exc:
-            raise StageError("destination parent is unavailable") from exc
-        if not stat.S_ISDIR(value.st_mode):
-            raise StageError("destination parent is not a directory")
-    parent_stat = current.lstat()
-    target = current / parts[-1]
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    parent_fd = None
     try:
-        existing = target.lstat()
-    except FileNotFoundError:
-        existing = None
+        parent_fd = os.open(root["path"], flags)
+        root_stat = os.fstat(parent_fd)
+        if (
+            root_stat.st_dev,
+            root_stat.st_ino,
+        ) != root["identity"]:
+            raise StageError("destination root identity changed")
+        current_path = root["path"]
+        for component in parts[:-1]:
+            next_fd = os.open(component, flags, dir_fd=parent_fd)
+            next_stat = os.fstat(next_fd)
+            if not stat.S_ISDIR(next_stat.st_mode):
+                os.close(next_fd)
+                raise StageError(
+                    "destination parent is not a directory"
+                )
+            os.close(parent_fd)
+            parent_fd = next_fd
+            current_path = current_path / component
+        parent_stat = os.fstat(parent_fd)
+        target_name = parts[-1]
+        try:
+            existing = os.stat(
+                target_name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and (
+            not stat.S_ISREG(existing.st_mode)
+            or existing.st_nlink != 1
+        ):
+            raise StageError(
+                "destination is not a replaceable regular file"
+            )
+        return {
+            "relative": relative,
+            "target_name": target_name,
+            "target_existed": existing is not None,
+            "parent_path": current_path,
+            "parent_fd": parent_fd,
+            "parent_identity": (
+                parent_stat.st_dev,
+                parent_stat.st_ino,
+            ),
+        }
     except OSError as exc:
-        raise StageError("destination cannot be inspected") from exc
-    if existing is not None and (
-        not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1
-    ):
-        raise StageError("destination is not a replaceable regular file")
-    return {
-        "relative": relative,
-        "target": target,
-        "parent": current,
-        "parent_identity": (parent_stat.st_dev, parent_stat.st_ino),
-    }
+        if parent_fd is not None:
+            os.close(parent_fd)
+        raise StageError("destination cannot be opened safely") from exc
+    except Exception:
+        if parent_fd is not None:
+            os.close(parent_fd)
+        raise
+
+
+def _close_destination_guard(guard):
+    descriptor = guard.get("parent_fd", -1)
+    if descriptor >= 0:
+        os.close(descriptor)
+        guard["parent_fd"] = -1
 
 
 def _validate_outputs(manifest, stage):
@@ -813,58 +859,66 @@ def _validate_outputs(manifest, stage):
     seen_mirrors = set()
     seen_destinations = set()
     seen_kinds = set()
-    result = []
-    for entry in entries:
-        if (
-            not isinstance(entry, dict)
-            or set(entry)
-            != {
-                "mirror_path",
-                "destination",
-                "artifact_kind",
-                "max_bytes",
-                "required",
-            }
-        ):
-            raise StageError("output entry schema mismatch")
-        mirror = _normal_relative(entry["mirror_path"])
-        destination = _normal_relative(entry["destination"])
-        kind = entry["artifact_kind"]
-        if (
-            kind not in expected
-            or expected[kind] != (mirror, entry["max_bytes"])
-            or entry["required"] is not True
-            or mirror in seen_mirrors
-            or destination in seen_destinations
-            or kind in seen_kinds
-        ):
-            raise StageError("output authority mismatch")
-        seen_mirrors.add(mirror)
-        seen_destinations.add(destination)
-        seen_kinds.add(kind)
-        result.append(
-            dict(
-                entry,
-                destination_guard=_destination_parent(root, destination),
-            )
+    guards = []
+    try:
+        result = []
+        for entry in entries:
+            if (
+                not isinstance(entry, dict)
+                or set(entry)
+                != {
+                    "mirror_path",
+                    "destination",
+                    "artifact_kind",
+                    "max_bytes",
+                    "required",
+                }
+            ):
+                raise StageError("output entry schema mismatch")
+            mirror = _normal_relative(entry["mirror_path"])
+            destination = _normal_relative(entry["destination"])
+            kind = entry["artifact_kind"]
+            if (
+                kind not in expected
+                or expected[kind] != (mirror, entry["max_bytes"])
+                or entry["required"] is not True
+                or mirror in seen_mirrors
+                or destination in seen_destinations
+                or kind in seen_kinds
+            ):
+                raise StageError("output authority mismatch")
+            seen_mirrors.add(mirror)
+            seen_destinations.add(destination)
+            seen_kinds.add(kind)
+            guard = _destination_parent(root, destination)
+            guards.append(guard)
+            result.append(dict(entry, destination_guard=guard))
+        if seen_kinds != set(expected):
+            raise StageError("required output kind is missing")
+        preflight = _destination_parent(
+            root, manifest.get("preflight_receipt_destination")
         )
-    if seen_kinds != set(expected):
-        raise StageError("required output kind is missing")
-    preflight = _destination_parent(
-        root, manifest.get("preflight_receipt_destination")
-    )
-    completion = _destination_parent(
-        root, manifest.get("completion_receipt_destination")
-    )
-    receipt_paths = {preflight["relative"], completion["relative"]}
-    if (
-        len(receipt_paths) != 2
-        or receipt_paths.intersection(seen_destinations)
-        or preflight["target"].exists()
-        or completion["target"].exists()
-    ):
-        raise StageError("receipt destination collision")
-    return root, result, preflight, completion
+        guards.append(preflight)
+        completion = _destination_parent(
+            root, manifest.get("completion_receipt_destination")
+        )
+        guards.append(completion)
+        receipt_paths = {
+            preflight["relative"],
+            completion["relative"],
+        }
+        if (
+            len(receipt_paths) != 2
+            or receipt_paths.intersection(seen_destinations)
+            or preflight["target_existed"]
+            or completion["target_existed"]
+        ):
+            raise StageError("receipt destination collision")
+        return root, result, preflight, completion
+    except Exception:
+        for guard in guards:
+            _close_destination_guard(guard)
+        raise
 
 
 def _parse_stage_inputs(stage, captured):
@@ -880,8 +934,34 @@ def _parse_stage_inputs(stage, captured):
             parsed[name] = _load_json_bytes(captured[name]["raw"], name)
     if stage == "generate":
         brief = parsed["generation_brief.json"]
-        if not isinstance(brief, dict):
-            raise StageError("generation brief must be an object")
+        if (
+            not isinstance(brief, dict)
+            or set(brief)
+            != {
+                "schema_version",
+                "retrieval_policy_version",
+                "source_watermark",
+                "index_generation",
+                "theme_counts",
+                "failure_code_counts",
+                "parent",
+                "research_context",
+                "estimated_tokens",
+            }
+            or brief.get("schema_version") != 1
+        ):
+            raise StageError("generation brief schema mismatch")
+        registered_policy = _capture_regular_path(
+            ROOT / GENERATION_POLICY_SOURCE,
+            _INPUT_CAPS["generation_policy.md"],
+        )
+        if (
+            captured["generation_policy.md"]["raw"]
+            != registered_policy["raw"]
+        ):
+            raise StageError(
+                "generation policy is not the registered version"
+            )
         if (
             "research_context.md" in captured
             and brief.get("research_context") not in (None, "", [])
@@ -907,9 +987,25 @@ def _parse_stage_inputs(stage, captured):
         summary = parsed.get("history_summary.json")
         if summary is not None and (
             not isinstance(summary, dict)
+            or set(summary)
+            != {
+                "schema_version",
+                "receipt_id",
+                "status",
+                "candidate",
+                "candidate_sha256",
+                "relations",
+                "provenance",
+            }
             or summary.get("schema_version") != 1
             or not isinstance(summary.get("receipt_id"), str)
             or not _valid_sha256(summary["receipt_id"])
+            or summary.get("status")
+            not in history_retrieval.PERMANENT_STATUSES
+            or not isinstance(summary.get("candidate"), dict)
+            or not _valid_sha256(summary.get("candidate_sha256"))
+            or not isinstance(summary.get("relations"), list)
+            or not isinstance(summary.get("provenance"), dict)
         ):
             raise StageError("history summary is not receipt-bound")
     elif stage == "meta":
@@ -965,10 +1061,58 @@ def _parse_stage_inputs(stage, captured):
     return parsed
 
 
+def _history_summary_from_receipt(
+    candidate_raw,
+    candidate,
+    pack,
+    receipt,
+):
+    provenance_fields = (
+        "intent",
+        "pack_publication_id",
+        "pack_sha256",
+        "retrieval_policy_version",
+        "policy_sha256",
+        "source_watermark",
+        "index_generation",
+        "generation_manifest_sha256",
+        "rank_trace_sha256",
+        "comparator_invocation_sha256",
+        "comparator_preflight_sha256",
+        "comparator_version",
+        "comparison_sha256",
+    )
+    if (
+        candidate != pack.get("query")
+        or receipt.get("status")
+        not in history_retrieval.PERMANENT_STATUSES
+        or any(field not in receipt for field in provenance_fields)
+    ):
+        raise StageError("history receipt does not bind the review candidate")
+    return {
+        "schema_version": 1,
+        "receipt_id": receipt["receipt_id"],
+        "status": receipt["status"],
+        "candidate": candidate,
+        "candidate_sha256": _sha256(candidate_raw),
+        "relations": receipt["relations"],
+        "provenance": {
+            field: receipt[field] for field in provenance_fields
+        },
+    }
+
+
 def _validate_history_authority(stage, reference, parsed_inputs, policy):
-    if stage != "history-compare":
+    summary = parsed_inputs.get("history_summary.json")
+    needs_store = (
+        stage in {"generate", "history-compare"}
+        or (stage == "review" and summary is not None)
+    )
+    if not needs_store:
         if reference is not None:
-            raise StageError("history store is not allowed for this stage")
+            raise StageError(
+                "history store is not allowed for this stage"
+            )
         return None
     if (
         not isinstance(reference, dict)
@@ -996,6 +1140,7 @@ def _validate_history_authority(stage, reference, parsed_inputs, policy):
         or before.st_size > 4 * 1024 * 1024 * 1024
     ):
         raise StageError("history store is not a bounded regular file")
+    connection = None
     try:
         connection = sqlite3.connect(
             database.resolve(strict=True).as_uri() + "?mode=ro",
@@ -1006,23 +1151,87 @@ def _validate_history_authority(stage, reference, parsed_inputs, policy):
         connection.execute("PRAGMA query_only = ON")
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("BEGIN")
-        history_retrieval._validate_pack(
-            connection,
-            parsed_inputs["retrieval_pack.json"],
-            policy,
-            require_complete=True,
-        )
+        pack = None
+        if stage == "generate":
+            expected = (
+                history_projection._build_generation_brief_snapshot(
+                    connection,
+                    policy,
+                )
+            )
+            if parsed_inputs["generation_brief.json"] != expected:
+                raise StageError(
+                    "generation brief is not the current host projection"
+                )
+        elif stage == "history-compare":
+            pack = parsed_inputs["retrieval_pack.json"]
+            history_retrieval._validate_pack(
+                connection,
+                pack,
+                policy,
+                require_complete=True,
+            )
+        else:
+            receipt_row = connection.execute(
+                "SELECT receipt_json FROM history_receipts "
+                "WHERE receipt_id = ?",
+                (summary["receipt_id"],),
+            ).fetchone()
+            if receipt_row is None:
+                raise StageError(
+                    "history summary receipt is not durably recorded"
+                )
+            try:
+                receipt = json.loads(receipt_row["receipt_json"])
+            except (TypeError, ValueError) as exc:
+                raise StageError(
+                    "history summary receipt is corrupt"
+                ) from exc
+            publication = connection.execute(
+                "SELECT pack_bytes FROM history_pack_publications "
+                "WHERE publication_id = ?",
+                (receipt.get("pack_publication_id"),),
+            ).fetchone()
+            if publication is None:
+                raise StageError(
+                    "history summary pack is not durably recorded"
+                )
+            try:
+                pack_raw = bytes(publication["pack_bytes"])
+                pack = _load_json_bytes(
+                    pack_raw,
+                    "history summary pack",
+                )
+            except (TypeError, ValueError) as exc:
+                raise StageError(
+                    "history summary pack is corrupt"
+                ) from exc
+            history_retrieval.replay_receipt(
+                connection,
+                pack,
+                receipt,
+                policy,
+            )
+            expected = _history_summary_from_receipt(
+                _canonical_bytes(parsed_inputs["candidate.json"]),
+                parsed_inputs["candidate.json"],
+                pack,
+                receipt,
+            )
+            if summary != expected:
+                raise StageError(
+                    "history summary differs from the durable receipt"
+                )
         connection.execute("ROLLBACK")
     except (
         OSError,
         sqlite3.Error,
+        history_projection.ProjectionError,
         history_retrieval.RetrievalError,
     ) as exc:
-        raise StageError(
-            "retrieval pack is not a complete host publication"
-        ) from exc
+        raise StageError("history authority validation failed") from exc
     finally:
-        if "connection" in locals():
+        if connection is not None:
             connection.close()
     try:
         after = database.lstat()
@@ -1043,12 +1252,14 @@ def _validate_history_authority(stage, reference, parsed_inputs, policy):
         "reference": dict(reference),
         "root": root,
         "identity": identity,
-        "pack_publication_id": parsed_inputs[
-            "retrieval_pack.json"
-        ]["pack_publication_id"],
-        "pack_sha256": parsed_inputs[
-            "retrieval_pack.json"
-        ]["pack_sha256"],
+        "pack_publication_id": (
+            None
+            if pack is None
+            else pack["pack_publication_id"]
+        ),
+        "pack_sha256": (
+            None if pack is None else pack["pack_sha256"]
+        ),
     }
 
 
@@ -1938,6 +2149,7 @@ def build_linux_launch(
         "--die-with-parent",
         "--new-session",
         "--unshare-all",
+        "--unshare-pid",
         "--proc",
         "/proc",
         "--dev",
@@ -1986,27 +2198,62 @@ def _minimal_environment(mirror, registered, backend_type=None):
 
 
 def _atomic_publish(guard, raw, mode=0o644):
-    current = guard["parent"].lstat()
+    parent_fd = guard["parent_fd"]
+    if parent_fd < 0:
+        raise StageError("destination guard is closed")
+    current = os.fstat(parent_fd)
     if (
         current.st_dev,
         current.st_ino,
     ) != guard["parent_identity"]:
         raise StageError("destination parent identity changed")
-    target = guard["target"]
     try:
-        existing = target.lstat()
+        path_current = guard["parent_path"].lstat()
+    except OSError as exc:
+        raise StageError(
+            "destination parent path is unavailable"
+        ) from exc
+    if (
+        path_current.st_dev,
+        path_current.st_ino,
+    ) != guard["parent_identity"]:
+        raise StageError("destination parent path changed")
+    target = guard["target_name"]
+    try:
+        existing = os.stat(
+            target,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
     except FileNotFoundError:
         existing = None
     if existing is not None and (
         not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1
     ):
         raise StageError("destination changed to a non-regular file")
-    fd, temporary = tempfile.mkstemp(
-        prefix=".history-stage-",
-        dir=guard["parent"],
-    )
-    temporary_path = pathlib.Path(temporary)
+    temporary = None
+    fd = -1
     try:
+        for _ in range(128):
+            candidate = ".history-stage-" + secrets.token_hex(16)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                fd = os.open(
+                    candidate,
+                    flags,
+                    mode,
+                    dir_fd=parent_fd,
+                )
+            except FileExistsError:
+                continue
+            temporary = candidate
+            break
+        if temporary is None:
+            raise StageError(
+                "destination temporary name space is exhausted"
+            )
         os.fchmod(fd, mode)
         view = memoryview(raw)
         while view:
@@ -2015,19 +2262,33 @@ def _atomic_publish(guard, raw, mode=0o644):
         os.fsync(fd)
         os.close(fd)
         fd = -1
-        os.replace(temporary_path, target)
-        directory_fd = os.open(guard["parent"], os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        os.rename(
+            temporary,
+            target,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        temporary = None
+        published = os.stat(
+            target,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(published.st_mode)
+            or published.st_nlink != 1
+            or published.st_size != len(raw)
+        ):
+            raise StageError("published destination is invalid")
+        os.fsync(parent_fd)
     finally:
         if fd >= 0:
             os.close(fd)
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
+        if temporary is not None:
+            try:
+                os.unlink(temporary, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
 
 
 def _rehash_mirror_inputs(mirror, captured_inputs):
@@ -2191,7 +2452,21 @@ def _kill_contained_group(process):
         pass
 
 
-def _run_contained(launch, mirror, environment):
+def _run_contained(
+    launch,
+    mirror,
+    environment,
+    *,
+    backend_entry_fd=None,
+):
+    if backend_entry_fd is not None:
+        try:
+            os.write(backend_entry_fd, b"backend-entry\n")
+            os.fsync(backend_entry_fd)
+        except OSError as exc:
+            raise StageError(
+                "backend entry could not be recorded"
+            ) from exc
     try:
         process = subprocess.Popen(
             launch,
@@ -2677,10 +2952,32 @@ def _materialize_codex_result(
     return exchange_receipt
 
 
-def run_stage(stage, manifest_path, command_argv):
+def run_stage(
+    stage,
+    manifest_path,
+    command_argv,
+    *,
+    backend_entry_fd=None,
+):
     """Run one stage and return the host-owned completion receipt."""
     mirror = None
     proxy = None
+    destination_guards = []
+    if backend_entry_fd is not None:
+        if type(backend_entry_fd) is not int or backend_entry_fd < 0:
+            raise StageError("backend entry descriptor is invalid")
+        try:
+            entry_stat = os.fstat(backend_entry_fd)
+        except OSError as exc:
+            raise StageError(
+                "backend entry descriptor is invalid"
+            ) from exc
+        if (
+            not stat.S_ISREG(entry_stat.st_mode)
+            or entry_stat.st_nlink != 1
+            or entry_stat.st_size != 0
+        ):
+            raise StageError("backend entry descriptor is unsafe")
     manifest_path = pathlib.Path(manifest_path)
     try:
         manifest = load_manifest(manifest_path, stage)
@@ -2705,6 +3002,14 @@ def run_stage(stage, manifest_path, command_argv):
             preflight_destination,
             completion_destination,
         ) = _validate_outputs(manifest, stage)
+        destination_guards = [
+            *[
+                output["destination_guard"]
+                for output in outputs
+            ],
+            preflight_destination,
+            completion_destination,
+        ]
         serialized, _, parsed_inputs = build_stage_invocation(
             profile,
             manifest,
@@ -2982,7 +3287,12 @@ def run_stage(stage, manifest_path, command_argv):
             backend["type"],
         )
         try:
-            _run_contained(launch, mirror, environment)
+            _run_contained(
+                launch,
+                mirror,
+                environment,
+                backend_entry_fd=backend_entry_fd,
+            )
         except StageError as exc:
             failure_code = (
                 None
@@ -3048,6 +3358,8 @@ def run_stage(stage, manifest_path, command_argv):
             proxy.__exit__(None, None, None)
         if mirror is not None:
             _remove_mirror(mirror)
+        for guard in destination_guards:
+            _close_destination_guard(guard)
 
 
 def _main(argv=None):

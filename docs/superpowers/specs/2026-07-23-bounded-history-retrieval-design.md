@@ -107,6 +107,14 @@ per-stage response schemas, model, reasoning effort, and policy bounds.
 Per-run receipts bind prompt-specific request hashes. Unknown or drifted
 capabilities fail before backend launch.
 
+The registered capability is an offline audit record, not proof that a model
+or authenticated provider session is currently available. The adapter applies
+fixed CPU, address-space, file-size, descriptor, process, and core-dump limits
+before backend `exec`. The proxy enforces one absolute exchange deadline and
+cancels its active upstream and client sockets before bounded shutdown.
+Artifact and receipt publication retains no-follow destination-directory file
+descriptors and uses only directory-relative create and rename operations.
+
 ### Generation input
 
 `generate` receives only:
@@ -271,6 +279,11 @@ A complete result requires:
 No-op rebuilds create zero new embeddings. Appending or changing `N` facet values creates exactly `N` new embeddings. Deletions remove stale searchable entries. An incremental build must return the same exhaustive top results as a clean full rebuild for the same versions and source watermark.
 
 ## Protocol Cutover
+
+Contained staging roles use `roles/bounded-generate.md`,
+`roles/bounded-meta.md`, and `roles/bounded-review.md` while the legacy
+orchestrator remains authoritative. `hunt.sh` does not reference these staging
+roles. The cutover replaces the legacy role ABI and its callers in one change.
 
 The existing runtime protocol remains authoritative until one compatibility change switches the history path. The cutover changes these surfaces together:
 

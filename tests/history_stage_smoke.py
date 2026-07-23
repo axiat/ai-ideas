@@ -32,10 +32,10 @@ CANONICALIZER_PATH = ROOT / "lib" / "history_stage_proxy.py"
 BACKEND_PATH = ROOT / "tests" / "malicious_history_agent.py"
 FAKE_AGENT_PATH = ROOT / "tests" / "fake_agent.sh"
 ROLE_PATHS = {
-    "generate": "roles/generate.md",
+    "generate": "roles/bounded-generate.md",
     "history-compare": "roles/history-compare.md",
-    "review": "roles/review.md",
-    "meta": "roles/meta.md",
+    "review": "roles/bounded-review.md",
+    "meta": "roles/bounded-meta.md",
 }
 INPUT_CAPS = {
     "generation_brief.json": 65536,
@@ -142,12 +142,14 @@ class StageFixture:
         self.destinations = self.temp / "destinations"
         self.inputs.mkdir()
         self.destinations.mkdir()
+        self.backend_entry_log = self.temp / "host-backend-entry.log"
         self.sibling = self.temp / "sibling-review.md"
         self.sibling.write_text("other reviewer output\n", encoding="utf-8")
         self.outside_write = self.temp / "outside-write.txt"
         self.attack_mode = attack_mode
         self.retrieval_complete = retrieval_complete
         self.history_store_reference = None
+        self.history_database = None
         self.policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
         self.role_relative = ROLE_PATHS[stage]
         self.role_bytes = (ROOT / self.role_relative).read_bytes()
@@ -158,41 +160,60 @@ class StageFixture:
         self.manifest_path = self.temp / "manifest.json"
         self.write_manifest()
 
+    def _ensure_history_authority(self):
+        if self.history_database is not None:
+            return self.history_database
+        authority = self.temp / "history-authority"
+        authority.mkdir()
+        (authority / "ledger.instance-id").write_text(
+            "stage-fixture\n",
+            encoding="utf-8",
+        )
+        ledger = authority / "ledger.tsv"
+        ledger.write_text(
+            "date\tsource\ttheme\tidea\tverdict\treason\t"
+            "overlap\tcategory\n"
+            "2026-07-24\thunt\tWorld Models\tBounded candidate.\t"
+            "accept-w-rev\tmissing strong baseline\tlow\t"
+            "design-fixable\n",
+            encoding="utf-8",
+        )
+        database = authority / "history.sqlite3"
+        connection = history_store.connect(database)
+        try:
+            history_store.init_schema(connection)
+            history_store.import_tsv_epoch(connection, ledger)
+            history_projection.rebuild(connection, self.policy)
+        finally:
+            connection.close()
+        self.history_store_reference = {
+            "root": str(authority),
+            "source": "history.sqlite3",
+        }
+        self.history_database = database
+        return database
+
     def _stage_inputs(self):
         if self.stage == "generate":
-            return {
-                "generation_brief.json": canonical(
-                    {
-                        "schema_version": 1,
-                        "theme_counts": {},
-                        "failure_counts": {},
-                        "research_context": None,
-                    }
-                ),
-                "generation_policy.md": b"# Generation policy v1\n",
-            }
-        if self.stage == "history-compare":
-            authority = self.temp / "history-authority"
-            authority.mkdir()
-            (authority / "ledger.instance-id").write_text(
-                "stage-fixture\n",
-                encoding="utf-8",
-            )
-            ledger = authority / "ledger.tsv"
-            ledger.write_text(
-                "date\tsource\ttheme\tidea\tverdict\treason\t"
-                "overlap\tcategory\n"
-                "2026-07-24\thunt\tWorld Models\tBounded candidate.\t"
-                "accept-w-rev\tmissing strong baseline\tlow\t"
-                "design-fixable\n",
-                encoding="utf-8",
-            )
-            database = authority / "history.sqlite3"
+            database = self._ensure_history_authority()
             connection = history_store.connect(database)
             try:
-                history_store.init_schema(connection)
-                history_store.import_tsv_epoch(connection, ledger)
-                history_projection.rebuild(connection, self.policy)
+                brief = history_projection.build_generation_brief(
+                    connection,
+                    self.policy,
+                )
+            finally:
+                connection.close()
+            return {
+                "generation_brief.json": canonical(brief),
+                "generation_policy.md": (
+                    ROOT / "brainstorming_policy.md"
+                ).read_bytes(),
+            }
+        if self.stage == "history-compare":
+            database = self._ensure_history_authority()
+            connection = history_store.connect(database)
+            try:
                 candidate = connection.execute(
                     "SELECT * FROM candidates "
                     "ORDER BY source_sequence LIMIT 1"
@@ -220,10 +241,6 @@ class StageFixture:
                 )
             finally:
                 connection.close()
-            self.history_store_reference = {
-                "root": str(authority),
-                "source": "history.sqlite3",
-            }
             return {"retrieval_pack.json": canonical(pack)}
         if self.stage == "review":
             return {
@@ -376,12 +393,37 @@ class StageFixture:
         self.manifest["invocation"] = self._invocation()
         self.write_manifest()
 
-    def run(self):
-        return history_stage.run_stage(
-            self.stage,
-            self.manifest_path,
-            [str(BACKEND_PATH)],
-        )
+    def replace_input(self, name, raw):
+        (self.inputs / name).write_bytes(raw)
+        self.input_bytes[name] = raw
+        for item in self.manifest["inputs"]:
+            if item["mirror_path"] == name:
+                item["sha256"] = sha256(raw)
+                break
+        else:
+            raise AssertionError(name)
+        self.manifest["invocation"] = self._invocation()
+        self.write_manifest()
+
+    def run(self, backend_entry_fd=None):
+        owned_descriptor = None
+        if backend_entry_fd is None:
+            owned_descriptor = os.open(
+                self.backend_entry_log,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                0o600,
+            )
+            backend_entry_fd = owned_descriptor
+        try:
+            return history_stage.run_stage(
+                self.stage,
+                self.manifest_path,
+                [str(BACKEND_PATH)],
+                backend_entry_fd=backend_entry_fd,
+            )
+        finally:
+            if owned_descriptor is not None:
+                os.close(owned_descriptor)
 
 
 class HistoryStageSmoke(unittest.TestCase):
@@ -455,6 +497,253 @@ class HistoryStageSmoke(unittest.TestCase):
         ):
             with self.assertRaises(history_stage.StageError):
                 history_stage.parse_command_json(invalid)
+
+    def test_bounded_roles_are_namespaced_until_hunt_cutover(self):
+        hunt = (ROOT / "hunt.sh").read_text(encoding="utf-8")
+        self.assertIn("Read roles/generate.md and follow it", hunt)
+        self.assertIn("Read roles/meta.md and follow it", hunt)
+        self.assertIn("Read roles/review.md and follow it", hunt)
+        for stage, bounded in ROLE_PATHS.items():
+            if stage == "history-compare":
+                continue
+            self.assertNotEqual(
+                bounded,
+                f"roles/{'generate' if stage == 'generate' else stage}.md",
+            )
+            self.assertTrue((ROOT / bounded).is_file())
+        legacy_generate = (ROOT / "roles/generate.md").read_text(
+            encoding="utf-8"
+        )
+        legacy_meta = (ROOT / "roles/meta.md").read_text(encoding="utf-8")
+        legacy_review = (ROOT / "roles/review.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("tmp/round/ideas.tsv", legacy_generate)
+        self.assertIn("tmp/deathlist.md", legacy_meta)
+        self.assertIn("D/verdict.tsv", legacy_review)
+        self.assertNotIn("final JSON object", legacy_generate)
+        self.assertNotIn("final JSON object", legacy_meta)
+        self.assertNotIn("final JSON object", legacy_review)
+
+    def _backend_entry_log(self, fixture, action):
+        path = fixture.temp / "host-backend-entry.log"
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        try:
+            action(descriptor)
+        finally:
+            os.close(descriptor)
+        return path.read_bytes()
+
+    def test_generation_requires_canonical_policy_and_current_db_brief(self):
+        valid = StageFixture(self, "generate")
+        valid.run()
+
+        cases = []
+        changed_policy = StageFixture(self, "generate")
+        changed_policy.replace_input(
+            "generation_policy.md",
+            changed_policy.input_bytes["generation_policy.md"]
+            + b"\nUnregistered instruction.\n",
+        )
+        cases.append(("mutated-policy", changed_policy))
+
+        free_form = StageFixture(self, "generate")
+        free_form.replace_input(
+            "generation_brief.json",
+            canonical({"schema_version": 1, "free_form": "scan everything"}),
+        )
+        cases.append(("free-form-brief", free_form))
+
+        smuggled = StageFixture(self, "generate")
+        brief = json.loads(smuggled.input_bytes["generation_brief.json"])
+        brief["ledger_rows"] = [
+            {
+                "idea": "raw historical idea",
+                "reason": "unbounded historical evidence",
+            }
+        ]
+        smuggled.replace_input("generation_brief.json", canonical(brief))
+        cases.append(("raw-ledger-smuggling", smuggled))
+
+        stale = StageFixture(self, "generate")
+        brief = json.loads(stale.input_bytes["generation_brief.json"])
+        brief["theme_counts"]["World Models"] += 1
+        stale.replace_input("generation_brief.json", canonical(brief))
+        cases.append(("mutated-count", stale))
+
+        unbounded = StageFixture(self, "generate")
+        brief = json.loads(unbounded.input_bytes["generation_brief.json"])
+        brief["padding"] = "x" * 32000
+        unbounded.replace_input("generation_brief.json", canonical(brief))
+        cases.append(("unbounded-brief", unbounded))
+
+        for label, fixture in cases:
+            with self.subTest(label=label):
+                def reject(descriptor):
+                    with self.assertRaises(history_stage.StageError):
+                        fixture.run(backend_entry_fd=descriptor)
+
+                self.assertEqual(
+                    self._backend_entry_log(fixture, reject),
+                    b"",
+                )
+                self.assertFalse(
+                    (fixture.destinations / "preflight.json").exists()
+                )
+
+    def _review_fixture_with_durable_summary(self):
+        comparison = StageFixture(self, "history-compare")
+        pack = json.loads(
+            comparison.input_bytes["retrieval_pack.json"]
+        )
+        relations = []
+        for lineage in pack["lineages"]:
+            match = lineage["matches"][0]
+            relations.append(
+                {
+                    "relation": "distinct",
+                    "candidate_id": match["candidate_id"],
+                    "lineage_id": match["lineage_id"],
+                    "facet": match["facet"],
+                    "evidence_id": match["evidence_id"],
+                    "material_difference": "The bounded evidence differs.",
+                    "confidence": 0.8,
+                }
+            )
+        response = {
+            "status": "complete_no_match",
+            "comparator_version": history_retrieval.COMPARATOR_VERSION,
+            "relations": relations,
+            "expansion_request": None,
+        }
+        connection = history_store.connect(comparison.history_database)
+        try:
+            receipt = history_retrieval.finalize_comparison(
+                connection,
+                pack,
+                response,
+                comparison.policy,
+            )
+        finally:
+            connection.close()
+        review = StageFixture(self, "review")
+        candidate_raw = canonical(pack["query"])
+        provenance_fields = (
+            "intent",
+            "pack_publication_id",
+            "pack_sha256",
+            "retrieval_policy_version",
+            "policy_sha256",
+            "source_watermark",
+            "index_generation",
+            "generation_manifest_sha256",
+            "rank_trace_sha256",
+            "comparator_invocation_sha256",
+            "comparator_preflight_sha256",
+            "comparator_version",
+            "comparison_sha256",
+        )
+        summary = {
+            "schema_version": 1,
+            "receipt_id": receipt["receipt_id"],
+            "status": receipt["status"],
+            "candidate": pack["query"],
+            "candidate_sha256": sha256(candidate_raw),
+            "relations": receipt["relations"],
+            "provenance": {
+                field: receipt[field] for field in provenance_fields
+            },
+        }
+        review.input_bytes = {
+            "candidate.json": candidate_raw,
+            "prior_work.md": review.input_bytes["prior_work.md"],
+            "review_contract.md": review.input_bytes[
+                "review_contract.md"
+            ],
+            "history_summary.json": canonical(summary),
+        }
+        for name, raw in review.input_bytes.items():
+            (review.inputs / name).write_bytes(raw)
+        review.history_store_reference = dict(
+            comparison.history_store_reference
+        )
+        review.manifest = review._manifest()
+        review.write_manifest()
+        return review, summary
+
+    def test_review_summary_replays_exact_durable_receipt_before_launch(self):
+        valid, _ = self._review_fixture_with_durable_summary()
+        valid.run()
+        mutations = {
+            "forged-receipt": lambda value: value.update(
+                {"receipt_id": "f" * 64}
+            ),
+            "status-drift": lambda value: value.update(
+                {"status": "complete_match"}
+            ),
+            "candidate-drift": lambda value: value["candidate"].update(
+                {"story": "Forged candidate story."}
+            ),
+            "candidate-hash-drift": lambda value: value.update(
+                {"candidate_sha256": "e" * 64}
+            ),
+            "evidence-drift": lambda value: value["relations"][0].update(
+                {"evidence_id": "forged-evidence"}
+            ),
+            "provenance-drift": lambda value: value["provenance"].update(
+                {"pack_sha256": "d" * 64}
+            ),
+            "open-schema": lambda value: value.update(
+                {"unregistered": True}
+            ),
+        }
+        for label, mutate in mutations.items():
+            fixture, summary = self._review_fixture_with_durable_summary()
+            mutate(summary)
+            fixture.replace_input(
+                "history_summary.json",
+                canonical(summary),
+            )
+            with self.subTest(label=label):
+                def reject(descriptor):
+                    with self.assertRaises(history_stage.StageError):
+                        fixture.run(backend_entry_fd=descriptor)
+
+                self.assertEqual(
+                    self._backend_entry_log(fixture, reject),
+                    b"",
+                )
+                self.assertFalse(
+                    (fixture.destinations / "preflight.json").exists()
+                )
+
+        candidate_fixture, _ = (
+            self._review_fixture_with_durable_summary()
+        )
+        candidate = json.loads(
+            candidate_fixture.input_bytes["candidate.json"]
+        )
+        candidate["story"] = "Candidate bytes outside the receipt."
+        candidate_fixture.replace_input(
+            "candidate.json",
+            canonical(candidate),
+        )
+
+        def reject_candidate(descriptor):
+            with self.assertRaises(history_stage.StageError):
+                candidate_fixture.run(backend_entry_fd=descriptor)
+
+        self.assertEqual(
+            self._backend_entry_log(
+                candidate_fixture,
+                reject_candidate,
+            ),
+            b"",
+        )
 
     def test_codex_command_grammar_allows_reasoning_without_tool_widening(self):
         prefix = [
@@ -714,6 +1003,10 @@ class HistoryStageSmoke(unittest.TestCase):
             with self.subTest(mutation=mutate.__name__):
                 with self.assertRaises(history_stage.StageError):
                     fixture.run()
+                self.assertEqual(
+                    fixture.backend_entry_log.read_bytes(),
+                    b"",
+                )
                 self.assertFalse(
                     (fixture.destinations / "preflight.json").exists()
                 )
@@ -737,6 +1030,10 @@ class HistoryStageSmoke(unittest.TestCase):
             with self.subTest(kind=kind):
                 with self.assertRaises(history_stage.StageError):
                     fixture.run()
+                self.assertEqual(
+                    fixture.backend_entry_log.read_bytes(),
+                    b"",
+                )
                 self.assertFalse(
                     (fixture.destinations / "preflight.json").exists()
                 )
@@ -785,6 +1082,10 @@ class HistoryStageSmoke(unittest.TestCase):
             with self.subTest(index=index):
                 with self.assertRaises(history_stage.StageError):
                     fixture.run()
+                self.assertEqual(
+                    fixture.backend_entry_log.read_bytes(),
+                    b"",
+                )
                 self.assertFalse(
                     (fixture.destinations / "preflight.json").exists()
                 )
@@ -795,6 +1096,7 @@ class HistoryStageSmoke(unittest.TestCase):
         source.write_bytes(source.read_bytes() + b" ")
         with self.assertRaises(history_stage.StageError):
             fixture.run()
+        self.assertEqual(fixture.backend_entry_log.read_bytes(), b"")
         self.assertFalse((fixture.destinations / "preflight.json").exists())
         self.assertFalse((fixture.destinations / "completion.json").exists())
 
@@ -895,6 +1197,10 @@ class HistoryStageSmoke(unittest.TestCase):
                     with self.assertRaises(history_stage.StageError):
                         fixture.run()
                 self.assertFalse(launched)
+                self.assertEqual(
+                    fixture.backend_entry_log.read_bytes(),
+                    b"",
+                )
                 self.assertFalse(
                     (fixture.destinations / "preflight.json").exists()
                 )
@@ -928,6 +1234,7 @@ class HistoryStageSmoke(unittest.TestCase):
                 with self.assertRaises(history_stage.StageError):
                     fixture.run()
         self.assertFalse(launched)
+        self.assertEqual(fixture.backend_entry_log.read_bytes(), b"")
         self.assertTrue((fixture.destinations / "preflight.json").exists())
         self.assertFalse((fixture.destinations / "completion.json").exists())
 
@@ -955,6 +1262,7 @@ class HistoryStageSmoke(unittest.TestCase):
                 with self.assertRaises(history_stage.StageError):
                     fixture.run()
         self.assertFalse(launched)
+        self.assertEqual(fixture.backend_entry_log.read_bytes(), b"")
         self.assertFalse((fixture.destinations / "preflight.json").exists())
         self.assertFalse((fixture.destinations / "completion.json").exists())
 
@@ -984,6 +1292,10 @@ class HistoryStageSmoke(unittest.TestCase):
                 preflight["serialized_sha256"],
             )
             self.assertEqual(completion["stage"], stage_name)
+            self.assertEqual(
+                fixture.backend_entry_log.read_bytes(),
+                b"backend-entry\n",
+            )
             self.assertFalse(fixture.outside_write.exists())
             self.assertFalse(pathlib.Path(completion["mirror_path"]).exists())
 
@@ -1228,6 +1540,69 @@ class HistoryStageSmoke(unittest.TestCase):
             self.assertFalse((fixture.destinations / destination).exists())
         self.assertFalse((fixture.destinations / "completion.json").exists())
 
+    def test_copyback_never_follows_parent_swap_for_receipts_or_artifacts(self):
+        for publication_index in (1, 2, 5):
+            fixture = StageFixture(self, "generate")
+            displaced = fixture.temp / "displaced-destinations"
+            outside = fixture.temp / "outside-destinations"
+            outside.mkdir()
+            original_mkstemp = history_stage.tempfile.mkstemp
+            original_open = history_stage.os.open
+            publications = 0
+            swapped = False
+
+            def swap_parent():
+                nonlocal publications, swapped
+                publications += 1
+                if publications != publication_index:
+                    return
+                fixture.destinations.rename(displaced)
+                fixture.destinations.symlink_to(
+                    outside,
+                    target_is_directory=True,
+                )
+                swapped = True
+
+            def racing_mkstemp(*args, **kwargs):
+                if kwargs.get("prefix") == ".history-stage-":
+                    swap_parent()
+                return original_mkstemp(*args, **kwargs)
+
+            def racing_open(path, flags, mode=0o777, *, dir_fd=None):
+                if (
+                    dir_fd is not None
+                    and isinstance(path, str)
+                    and path.startswith(".history-stage-")
+                    and flags & os.O_EXCL
+                ):
+                    swap_parent()
+                if dir_fd is None:
+                    return original_open(path, flags, mode)
+                return original_open(
+                    path,
+                    flags,
+                    mode,
+                    dir_fd=dir_fd,
+                )
+
+            with self.subTest(publication_index=publication_index):
+                with mock.patch.object(
+                    history_stage.tempfile,
+                    "mkstemp",
+                    side_effect=racing_mkstemp,
+                ):
+                    with mock.patch.object(
+                        history_stage.os,
+                        "open",
+                        side_effect=racing_open,
+                    ):
+                        try:
+                            fixture.run()
+                        except history_stage.StageError:
+                            pass
+                self.assertTrue(swapped)
+                self.assertEqual(list(outside.iterdir()), [])
+
     def test_generation_output_requires_closed_ids_and_candidate_schema(self):
         StageFixture(self, "generate").run()
         for mode in (
@@ -1460,6 +1835,7 @@ class HistoryStageSmoke(unittest.TestCase):
         rendered = "\0".join(argv)
         self.assertIn("--die-with-parent", argv)
         self.assertIn("--ro-bind", argv)
+        self.assertIn("--unshare-pid", argv)
         self.assertIn(str(mirror / "input"), argv)
         self.assertIn(str(mirror / "output"), argv)
         self.assertEqual(argv.count(str(mirror / "input")), 2)
