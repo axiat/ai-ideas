@@ -88,7 +88,7 @@ class RoundTwoFixture(unittest.TestCase):
                 "lineage_id": match["lineage_id"],
                 "facet": match["facet"],
                 "evidence_id": match["evidence_id"],
-                "material_difference": "",
+                "material_difference": "no material difference",
                 "confidence": 1.0,
             }],
             "expansion_request": None,
@@ -350,6 +350,33 @@ class ClassificationCoverageTests(RoundTwoFixture):
             retrieval._validate_response(
                 pack, self._response("complete_match", incoherent)
             )
+
+    def test_expansion_lineage_ids_are_unique_strings_within_bound(self):
+        lineage_id = self.pack["lineages"][0]["lineage_id"]
+        response = copy.deepcopy(self.match_response)
+        response["status"] = "uncertain"
+        response["relations"][0]["relation"] = "uncertain"
+        response["relations"][0][
+            "material_difference"
+        ] = "bounded difference"
+        invalid_requests = (
+            {"lineage_ids": [lineage_id, lineage_id]},
+            {"lineage_ids": [lineage_id, 1]},
+            {"lineage_ids": [[]]},
+            {
+                "lineage_ids": [
+                    lineage_id
+                    for _ in range(self.policy["per_channel_depth"] + 1)
+                ]
+            },
+        )
+        for request in invalid_requests:
+            response["expansion_request"] = request
+            with self.subTest(request=request):
+                with self.assertRaises(
+                    retrieval.ComparisonValidationError
+                ):
+                    retrieval._validate_response(self.pack, response)
 
 
 class ProjectionSnapshotTests(RoundTwoFixture):
@@ -1016,6 +1043,100 @@ class LineageUnitTests(RoundTwoFixture):
 
 
 class PublicationAuditTests(RoundTwoFixture):
+    def test_comparator_output_schema_is_closed_and_pack_bound(self):
+        schema = retrieval.comparator_output_schema(
+            self.pack, self.policy
+        )
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(
+            set(schema["required"]),
+            {
+                "status",
+                "comparator_version",
+                "relations",
+                "expansion_request",
+            },
+        )
+        properties = schema["properties"]
+        self.assertEqual(
+            properties["status"]["enum"],
+            sorted(retrieval.COMPARATOR_STATUSES),
+        )
+        self.assertEqual(
+            properties["comparator_version"]["const"],
+            retrieval.COMPARATOR_VERSION,
+        )
+        relations = properties["relations"]
+        self.assertEqual(
+            relations["minItems"], len(self.pack["lineages"])
+        )
+        self.assertEqual(
+            relations["maxItems"], len(self.pack["lineages"])
+        )
+        relation = relations["items"]
+        self.assertFalse(relation["additionalProperties"])
+        self.assertEqual(
+            set(relation["required"]),
+            {
+                "relation",
+                "candidate_id",
+                "lineage_id",
+                "facet",
+                "evidence_id",
+                "material_difference",
+                "confidence",
+            },
+        )
+        self.assertEqual(
+            set(relation["properties"]["relation"]["enum"]),
+            {
+                "same_core_idea",
+                "same_lineage_revision",
+                "related_component",
+                "distinct",
+                "uncertain",
+            },
+        )
+        for field in (
+            "candidate_id",
+            "lineage_id",
+            "facet",
+            "evidence_id",
+        ):
+            descriptor = relation["properties"][field]
+            self.assertEqual(descriptor["type"], "string")
+            self.assertEqual(descriptor["minLength"], 1)
+            self.assertGreater(descriptor["maxLength"], 0)
+        confidence = relation["properties"]["confidence"]
+        self.assertEqual(confidence["minimum"], 0)
+        self.assertEqual(confidence["maximum"], 1)
+        material = relation["properties"]["material_difference"]
+        self.assertEqual(material["minLength"], 1)
+        self.assertGreater(material["maxLength"], 0)
+        expansion = properties["expansion_request"]["anyOf"]
+        self.assertEqual(expansion[0], {"type": "null"})
+        expansion_object = expansion[1]
+        self.assertFalse(expansion_object["additionalProperties"])
+        lineage_ids = expansion_object["properties"]["lineage_ids"]
+        self.assertEqual(lineage_ids["minItems"], 1)
+        self.assertTrue(lineage_ids["uniqueItems"])
+        self.assertEqual(
+            lineage_ids["maxItems"],
+            min(
+                len(self.pack["lineages"]),
+                self.policy["per_channel_depth"],
+            ),
+        )
+        invocation = json.loads(
+            retrieval.comparator_invocation_bytes(
+                self.pack,
+                self.policy,
+                role_bytes=COMPARATOR_ROLE_BYTES,
+                role_identity=COMPARATOR_ROLE_IDENTITY,
+            )
+        )
+        self.assertEqual(invocation["tool_schemas"], [schema])
+
     def test_canonical_invocation_binds_explicit_role_bytes_and_identity(self):
         invocation_bytes = retrieval.comparator_invocation_bytes(
             self.pack,
@@ -1137,7 +1258,7 @@ class PublicationAuditTests(RoundTwoFixture):
                 (self.pack["pack_publication_id"],),
             )
         with self.assertRaisesRegex(
-            retrieval.RetrievalError, "publication identity collision"
+            retrieval.RetrievalError, "preflight invocation hash mismatch"
         ):
             retrieval._publish_pack(
                 self.conn,
@@ -1146,6 +1267,73 @@ class PublicationAuditTests(RoundTwoFixture):
                 json.loads(preflight_bytes),
                 json.loads(trace_bytes),
                 invocation_bytes + b" ",
+            )
+
+    def test_oversized_role_republishes_truthful_matching_failure_pack(self):
+        role_bytes = (
+            "Comparator role with valid UTF-8.\n" + "é" * 30000
+        ).encode("utf-8")
+        pack = build_pack(
+            self.conn,
+            dict(self.query, candidate_id="oversized-role-query"),
+            "duplicate_search",
+            self.policy,
+            comparator_role_bytes=role_bytes,
+            comparator_role_identity="tests/oversized-role.md",
+        )
+        self.assertEqual(pack["retrieval_status"], "budget_exceeded")
+        self.assertFalse(pack["lineages"])
+        self.assertFalse(pack["rank_contributions"])
+        publication = self.conn.execute(
+            """
+            SELECT * FROM history_pack_publications
+            WHERE publication_id = ?
+            """,
+            (pack["pack_publication_id"],),
+        ).fetchone()
+        trace = json.loads(publication["rank_trace_json"])
+        self.assertEqual(
+            pack["omitted_lineage_count"],
+            len(trace["fusion"]["lineage_order"]),
+        )
+        for channel, evidence in trace["channels"].items():
+            self.assertEqual(
+                pack["channels"][channel]["result_count"],
+                len(evidence),
+            )
+        invocation_bytes = publication[
+            "comparator_invocation_json"
+        ].encode("utf-8")
+        preflight = json.loads(publication["comparator_preflight_json"])
+        invocation_sha256 = hashlib.sha256(invocation_bytes).hexdigest()
+        self.assertEqual(
+            publication["comparator_invocation_sha256"],
+            invocation_sha256,
+        )
+        self.assertEqual(
+            preflight["serialized_sha256"], invocation_sha256
+        )
+        self.assertFalse(preflight["fits"])
+        invocation = json.loads(invocation_bytes)
+        self.assertEqual(invocation["retrieval_payload"], pack)
+        self.assertEqual(
+            invocation["mounted_inputs"][0]["text"],
+            retrieval.canonical_bytes(pack).decode("utf-8"),
+        )
+        bad_preflight = dict(
+            preflight, serialized_sha256="0" * 64
+        )
+        with self.assertRaisesRegex(
+            retrieval.RetrievalError,
+            "preflight invocation hash mismatch",
+        ):
+            retrieval._publish_pack(
+                self.conn,
+                pack,
+                self.policy,
+                bad_preflight,
+                trace,
+                invocation_bytes,
             )
 
 

@@ -84,7 +84,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
                 "lineage_id": match["lineage_id"],
                 "facet": match["facet"],
                 "evidence_id": match["evidence_id"],
-                "material_difference": "",
+                "material_difference": "no material difference",
                 "confidence": 1.0,
             }],
             "expansion_request": None,

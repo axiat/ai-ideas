@@ -35,22 +35,38 @@ COMPARATOR_STATUSES = {
     "uncertain",
     "conflicting_evidence",
 }
+INTENT_RELATIONS = {
+    "duplicate_search": {
+        "same_core_idea",
+        "same_lineage_revision",
+        "related_component",
+        "distinct",
+        "uncertain",
+    },
+    "evolution_search": {
+        "same_core_idea",
+        "same_lineage_revision",
+        "related_component",
+        "distinct",
+        "uncertain",
+    },
+    "failure_pattern_search": {
+        "same_failure_mechanism",
+        "related_failure_pattern",
+        "distinct",
+        "uncertain",
+    },
+}
 PERMANENT_STATUSES = {"complete_match", "complete_no_match"}
 COMPARATOR_VERSION = "history-comparator-v1"
+COMPARATOR_ID_LIMIT = 4096
+COMPARATOR_FACET_LIMIT = 256
 EVIDENCE_SPAN_LIMIT = 48
 QUERY_TEXT_LIMIT = 4096
 QUERY_BYTES_LIMIT = 16384
 QUERY_FIELDS = {
     "candidate_id", "story", "theme", "verdict", "reason", "category", "facets"
 }
-COMPARATOR_OUTPUT_SCHEMA = {
-    "type": "object",
-    "required": [
-        "status", "comparator_version", "relations", "expansion_request"
-    ],
-}
-
-
 class RetrievalError(RuntimeError):
     pass
 
@@ -1438,6 +1454,131 @@ def _validated_comparator_role(role_bytes, role_identity):
     return role_text
 
 
+def _schema_string(max_length, values=None):
+    descriptor = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": max_length,
+    }
+    if values is not None:
+        descriptor["enum"] = sorted(set(values))
+    return descriptor
+
+
+def comparator_output_schema(pack, policy):
+    """Return the canonical closed comparator output schema for a pack."""
+    intent = pack.get("intent")
+    if intent not in INTENT_RELATIONS:
+        raise RetrievalError("unsupported comparator schema intent")
+    lineages = pack.get("lineages")
+    if not isinstance(lineages, list):
+        raise RetrievalError("comparator schema lineages are invalid")
+    matches = [
+        match
+        for lineage in lineages
+        for match in lineage.get("matches", [])
+    ]
+    lineage_ids = [
+        lineage.get("lineage_id")
+        for lineage in lineages
+    ]
+    expansion_limit = min(
+        len(lineage_ids),
+        int(policy["per_channel_depth"]),
+        int(policy["max_matches"]),
+    )
+    relation_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "relation",
+            "candidate_id",
+            "lineage_id",
+            "facet",
+            "evidence_id",
+            "material_difference",
+            "confidence",
+        ],
+        "properties": {
+            "relation": {
+                "type": "string",
+                "enum": sorted(INTENT_RELATIONS[intent]),
+            },
+            "candidate_id": _schema_string(
+                COMPARATOR_ID_LIMIT,
+                [match.get("candidate_id") for match in matches],
+            ),
+            "lineage_id": _schema_string(
+                COMPARATOR_ID_LIMIT, lineage_ids
+            ),
+            "facet": _schema_string(
+                COMPARATOR_FACET_LIMIT,
+                [match.get("facet") for match in matches],
+            ),
+            "evidence_id": _schema_string(
+                COMPARATOR_ID_LIMIT,
+                [match.get("evidence_id") for match in matches],
+            ),
+            "material_difference": _schema_string(QUERY_TEXT_LIMIT),
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+            },
+        },
+    }
+    expansion_schema = {"type": "null"}
+    if expansion_limit:
+        expansion_schema = {
+            "anyOf": [
+                {"type": "null"},
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["lineage_ids"],
+                    "properties": {
+                        "lineage_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": expansion_limit,
+                            "uniqueItems": True,
+                            "items": _schema_string(
+                                COMPARATOR_ID_LIMIT, lineage_ids
+                            ),
+                        }
+                    },
+                },
+            ]
+        }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "status",
+            "comparator_version",
+            "relations",
+            "expansion_request",
+        ],
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": sorted(COMPARATOR_STATUSES),
+            },
+            "comparator_version": {
+                "type": "string",
+                "const": COMPARATOR_VERSION,
+            },
+            "relations": {
+                "type": "array",
+                "minItems": len(lineages),
+                "maxItems": len(lineages),
+                "items": relation_schema,
+            },
+            "expansion_request": expansion_schema,
+        },
+    }
+
+
 def comparator_invocation_bytes(
     pack, policy, *, role_bytes, role_identity
 ):
@@ -1456,7 +1597,7 @@ def comparator_invocation_bytes(
             "role_identity": role_identity,
             "role_sha256": _sha(role_bytes),
         }],
-        tool_schemas=[COMPARATOR_OUTPUT_SCHEMA],
+        tool_schemas=[comparator_output_schema(pack, policy)],
         messages=[{"role": "user", "content": "Compare the candidate."}],
     )
 
@@ -1477,11 +1618,56 @@ def _comparator_preflight(
         expected_mounted_inputs={"retrieval_pack.json": pack_bytes},
     )
 
+
+def _exact_comparator_preflight(
+    pack, policy, invocation_bytes
+):
+    """Return the receipt for the exact invocation, including overflow receipts."""
+    try:
+        return history_budget.preflight_stage_invocation(
+            invocation_bytes,
+            policy,
+            expected_mounted_inputs={
+                "retrieval_pack.json": canonical_bytes(pack),
+            },
+        )
+    except history_budget.PreflightError as exc:
+        return exc.receipt
+
+
+def _overflow_audit_pack(pack, rank_trace):
+    channels = {}
+    trace_channels = rank_trace.get("channels", {})
+    for name, summary in pack["channels"].items():
+        channel = {
+            key: value
+            for key, value in summary.items()
+            if key not in {"result_count", "retained_result_count"}
+        }
+        channel["results"] = list(trace_channels.get(name, []))
+        channels[name] = channel
+    fusion = rank_trace.get("fusion", {})
+    result = dict(
+        pack,
+        retrieval_status="budget_exceeded",
+        channels=_bounded_channels(channels, []),
+        lineages=[],
+        rank_contributions=[],
+        omitted_lineage_count=len(fusion.get("lineage_order", [])),
+    )
+    return _seal_pack(result)
+
+
 def _publish_pack(
     conn, pack, policy, preflight, rank_trace, invocation_bytes
 ):
     if pack["index_generation"] < 1:
         return
+    if (
+        not isinstance(preflight, dict)
+        or preflight.get("serialized_sha256") != _sha(invocation_bytes)
+    ):
+        raise RetrievalError("preflight invocation hash mismatch")
     encoded = canonical_bytes(pack)
     if not rank_trace:
         rank_trace = {
@@ -1582,41 +1768,29 @@ def build_pack(
         )
         if started:
             conn.execute("COMMIT")
-        if result["retrieval_status"] == "complete":
-            try:
-                preflight = _comparator_preflight(
-                    result,
-                    policy,
-                    role_bytes=comparator_role_bytes,
-                    role_identity=comparator_role_identity,
-                )
-            except history_budget.PreflightError as exc:
-                result = dict(
-                    result,
-                    retrieval_status="budget_exceeded",
-                    lineages=[],
-                    rank_contributions=[],
-                    channels=_bounded_channels(
-                        {
-                            key: value
-                            for key, value in result["channels"].items()
-                        },
-                        [],
-                    ),
-                )
-                result = _seal_pack(result)
-                preflight = exc.receipt
-        else:
-            preflight = {
-                "fits": False,
-                "code": result["retrieval_status"],
-            }
         invocation_bytes = comparator_invocation_bytes(
             result,
             policy,
             role_bytes=comparator_role_bytes,
             role_identity=comparator_role_identity,
         )
+        preflight = _exact_comparator_preflight(
+            result, policy, invocation_bytes
+        )
+        if (
+            result["retrieval_status"] == "complete"
+            and preflight.get("fits") is not True
+        ):
+            result = _overflow_audit_pack(result, rank_trace)
+            invocation_bytes = comparator_invocation_bytes(
+                result,
+                policy,
+                role_bytes=comparator_role_bytes,
+                role_identity=comparator_role_identity,
+            )
+            preflight = _exact_comparator_preflight(
+                result, policy, invocation_bytes
+            )
         _publish_pack(
             conn,
             result,
@@ -2246,6 +2420,14 @@ def _evidence_index(pack):
     return result
 
 
+def _bounded_text(value, maximum):
+    return (
+        isinstance(value, str)
+        and 0 < len(value)
+        and len(value.encode("utf-8")) <= maximum
+    )
+
+
 def _validate_relations(pack, relations):
     if not isinstance(relations, list):
         raise ComparisonValidationError("relations must be a list")
@@ -2259,35 +2441,27 @@ def _validate_relations(pack, relations):
         "material_difference",
         "confidence",
     }
-    semantic_relations = {
-        "duplicate_search": {
-            "same_core_idea",
-            "same_lineage_revision",
-            "related_component",
-            "distinct",
-            "uncertain",
-        },
-        "evolution_search": {
-            "same_core_idea",
-            "same_lineage_revision",
-            "related_component",
-            "distinct",
-            "uncertain",
-        },
-        "failure_pattern_search": {
-            "same_failure_mechanism",
-            "related_failure_pattern",
-            "distinct",
-            "uncertain",
-        },
-    }
-    allowed = semantic_relations.get(pack.get("intent"), set())
+    allowed = INTENT_RELATIONS.get(pack.get("intent"), set())
     classified_lineages = []
     for relation in relations:
         if not isinstance(relation, dict) or set(relation) != required:
             raise ComparisonValidationError("relation schema mismatch")
-        if relation["relation"] not in RELATIONS or relation["relation"] not in allowed:
+        if (
+            not isinstance(relation["relation"], str)
+            or relation["relation"] not in RELATIONS
+            or relation["relation"] not in allowed
+        ):
             raise ComparisonValidationError("unsupported relation")
+        for field, maximum in (
+            ("candidate_id", COMPARATOR_ID_LIMIT),
+            ("lineage_id", COMPARATOR_ID_LIMIT),
+            ("facet", COMPARATOR_FACET_LIMIT),
+            ("evidence_id", COMPARATOR_ID_LIMIT),
+        ):
+            if not _bounded_text(relation[field], maximum):
+                raise ComparisonValidationError(
+                    "relation identifier is invalid"
+                )
         if (
             relation["candidate_id"],
             relation["lineage_id"],
@@ -2300,7 +2474,9 @@ def _validate_relations(pack, relations):
             raise ComparisonValidationError("confidence must be numeric")
         if not 0.0 <= float(confidence) <= 1.0:
             raise ComparisonValidationError("confidence is outside [0,1]")
-        if not isinstance(relation["material_difference"], str):
+        if not _bounded_text(
+            relation["material_difference"], QUERY_TEXT_LIMIT
+        ):
             raise ComparisonValidationError("material difference must be text")
         classified_lineages.append(relation["lineage_id"])
     retained_lineages = [
@@ -2359,8 +2535,26 @@ def _validate_response(pack, response):
             or not request["lineage_ids"]
         ):
             raise ComparisonValidationError("invalid expansion request")
+        lineage_ids = request["lineage_ids"]
         pack_lineages = {item["lineage_id"] for item in pack["lineages"]}
-        if not set(request["lineage_ids"]).issubset(pack_lineages):
+        expansion_limit = min(
+            len(pack_lineages),
+            int(pack.get("configured_depth", len(pack_lineages))),
+            int(
+                pack.get("hard_limits", {}).get(
+                    "max_matches", len(pack_lineages)
+                )
+            ),
+        )
+        if (
+            len(lineage_ids) > expansion_limit
+            or any(
+                not _bounded_text(item, COMPARATOR_ID_LIMIT)
+                for item in lineage_ids
+            )
+            or len(lineage_ids) != len(set(lineage_ids))
+            or not set(lineage_ids).issubset(pack_lineages)
+        ):
             raise ComparisonValidationError("expansion request is outside pack")
 
 
