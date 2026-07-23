@@ -203,6 +203,22 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
         self.assertIn(("dense", "problem_estimand"), pairs)
         self.assertIn(("dense", "claimed_delta"), pairs)
 
+    def test_rrf_counts_one_rank_per_channel_facet_candidate(self):
+        match = copy.deepcopy(self.pack["lineages"][0]["matches"][0])
+        first = dict(match, channel="fts", facet="problem_estimand", rank=1)
+        repeated = dict(first, rank=2, evidence_id="later-evidence")
+        ranked, contributions = retrieval._fuse(
+            {"fts": [repeated, first]}, self.policy
+        )
+        self.assertEqual(len(contributions), 1)
+        self.assertEqual(len(contributions[0]["ranks"]), 1)
+        self.assertEqual(contributions[0]["ranks"][0]["rank"], 1)
+        self.assertAlmostEqual(
+            ranked[0]["rrf_score"],
+            1.0 / (self.policy["rrf_k"] + 1),
+            places=12,
+        )
+
     def test_full_rank_trace_is_host_owned_while_pack_trace_is_bounded(self):
         publication = self.conn.execute(
             """
@@ -431,6 +447,41 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
                 expansion_request=dict(request, round=2),
             )
 
+    def test_expansion_replays_prior_receipt_before_use(self):
+        lineage_id = self.pack["lineages"][0]["lineage_id"]
+        uncertain = copy.deepcopy(self.response)
+        uncertain["status"] = "uncertain"
+        uncertain["relations"][0]["relation"] = "uncertain"
+        uncertain["expansion_request"] = {"lineage_ids": [lineage_id]}
+        receipt = retrieval.finalize_comparison(
+            self.conn, self.pack, uncertain, self.policy
+        )
+        corrupted = dict(receipt, comparison_sha256="0" * 64)
+        self.conn.execute(
+            """
+            UPDATE history_receipts
+            SET receipt_json = ?
+            WHERE receipt_id = ?
+            """,
+            (
+                retrieval.canonical_bytes(corrupted).decode("utf-8").rstrip("\n"),
+                receipt["receipt_id"],
+            ),
+        )
+        with self.assertRaises(retrieval.RetrievalError):
+            retrieval.build_pack(
+                self.conn,
+                self.query,
+                "duplicate_search",
+                self.policy,
+                expansion_request={
+                    "lineage_ids": [lineage_id],
+                    "round": 1,
+                    "prior_pack_publication_id": self.pack["pack_publication_id"],
+                    "comparison_receipt_id": receipt["receipt_id"],
+                },
+            )
+
     def test_lineage_results_bind_typed_edge_current_best_and_delta(self):
         appended = history_store.append_rows(
             self.conn,
@@ -534,6 +585,30 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
             self.conn, self.pack, receipt, self.policy
         )
         self.assertTrue(verified["verified"])
+
+    def test_generation_sequence_recovers_existing_identity_on_upgrade(self):
+        first_generation = self.pack["index_generation"]
+        self.conn.execute(
+            "DELETE FROM schema_meta WHERE key = 'history_index_generation_sequence'"
+        )
+        history_store.init_schema(self.conn)
+        sequence = int(
+            self.conn.execute(
+                """
+                SELECT value
+                FROM schema_meta
+                WHERE key = 'history_index_generation_sequence'
+                """
+            ).fetchone()[0]
+        )
+        self.assertGreaterEqual(sequence, first_generation)
+        history_store.append_rows(
+            self.conn,
+            [row("upgrade sequence must not reuse a generation")],
+            {"run_id": "generation-sequence-upgrade"},
+        )
+        rebuilt = projection.rebuild(self.conn, self.policy)
+        self.assertGreater(rebuilt["index_generation"], first_generation)
 
     def test_receipt_table_rejects_invalid_intent_and_status(self):
         with self.assertRaises(sqlite3.IntegrityError):

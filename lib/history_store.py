@@ -409,6 +409,57 @@ def init_schema(conn):
         "INSERT OR IGNORE INTO schema_meta(key, value) "
         "VALUES('history_index_generation_sequence', '0')"
     )
+    generation_values = [
+        int(
+            conn.execute(
+                """
+                SELECT value
+                FROM schema_meta
+                WHERE key = ?
+                """,
+                (key,),
+            ).fetchone()[0]
+        )
+        for key in (
+            "history_index_generation",
+            "history_index_generation_sequence",
+        )
+        if conn.execute(
+            "SELECT 1 FROM schema_meta WHERE key = ?", (key,)
+        ).fetchone()
+        is not None
+    ]
+    generation_values.append(
+        int(
+            conn.execute(
+                "SELECT COALESCE(MAX(generation), 0) "
+                "FROM history_generation_provenance"
+            ).fetchone()[0]
+        )
+    )
+    if conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'search_index_generations'
+        """
+    ).fetchone():
+        generation_values.append(
+            int(
+                conn.execute(
+                    "SELECT COALESCE(MAX(generation), 0) "
+                    "FROM search_index_generations"
+                ).fetchone()[0]
+            )
+        )
+    conn.execute(
+        """
+        UPDATE schema_meta
+        SET value = ?
+        WHERE key = 'history_index_generation_sequence'
+        """,
+        (str(max(generation_values)),),
+    )
 
 
 def canonical_story_v1(text):

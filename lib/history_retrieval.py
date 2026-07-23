@@ -588,7 +588,27 @@ def _fuse(channel_results, policy):
     evidence = {}
     contributions = []
     for channel in ("exact", "fts", "dense", "lineage", "expansion"):
+        unique = {}
         for item in channel_results.get(channel, []):
+            key = (item["facet"], item["candidate_id"])
+            prior = unique.get(key)
+            if prior is None or (
+                item["rank"],
+                item.get("evidence_id", ""),
+            ) < (
+                prior["rank"],
+                prior.get("evidence_id", ""),
+            ):
+                unique[key] = item
+        for item in sorted(
+            unique.values(),
+            key=lambda value: (
+                value["facet"],
+                value["rank"],
+                value["candidate_id"],
+                value.get("evidence_id", ""),
+            ),
+        ):
             candidate_id = item["candidate_id"]
             contribution = 1.0 / (
                 int(policy["rrf_k"]) + item["rank"]
@@ -748,6 +768,10 @@ def _validate_expansion_request(conn, request, query, intent, policy):
         receipt = json.loads(receipt_row[0])
     except (TypeError, ValueError, UnicodeDecodeError) as exc:
         raise RetrievalError("expansion provenance is corrupt") from exc
+    try:
+        verified = replay_receipt(conn, prior_pack, receipt, policy)
+    except ReceiptReplayError as exc:
+        raise RetrievalError("expansion receipt replay failed") from exc
     lineage_ids = request["lineage_ids"]
     allowed = {item["lineage_id"] for item in prior_pack["lineages"]}
     if (
@@ -755,12 +779,15 @@ def _validate_expansion_request(conn, request, query, intent, policy):
         or not lineage_ids
         or any(not isinstance(item, str) for item in lineage_ids)
         or not set(lineage_ids).issubset(allowed)
+        or verified.get("verified") is not True
+        or receipt.get("receipt_id") != request["comparison_receipt_id"]
         or receipt.get("status") != "uncertain"
         or receipt.get("pack_publication_id")
         != request["prior_pack_publication_id"]
         or receipt.get("expansion_request") != {"lineage_ids": lineage_ids}
         or prior_pack.get("query") != query
         or prior_pack.get("intent") != intent
+        or round_number != prior_pack.get("expansion_round", -1) + 1
     ):
         raise RetrievalError("expansion is not bound to a validated outcome")
     return dict(request)
