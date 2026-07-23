@@ -1,180 +1,180 @@
-# 开发规划
+# Development Roadmap
 
-状态：持续维护
-更新：2026-07-12
+Status: maintained
+Historical snapshot: 2026-07-12
 
-目标：将 `ai-ideas` 建成可校准、可审计、与研究主题解耦的研究 Harness，并逐步补齐并发、可移植部署和产品入口。
+Goal: make `ai-ideas` a calibratable, auditable embodied-AI research-idea discovery harness, then add safe concurrency, portable deployment, and stable product entry points.
 
-编号沿用原计划；`6` 保留未分配。
+IDs follow the original plan; `6` remains unassigned.
 
-## 计划总览
+## Roadmap
 
-| ID | 分类 | 计划 | 优先级 | 主要依赖 |
+| ID | Area | Initiative | Priority | Primary dependency |
 |---|---|---|---|---|
-| 0 | Harness 工程 | 尽可能将确定性逻辑固化为 `.sh`，减少自然语言控制；优化 Claude / Codex 适配代码 | P0 | 无 |
-| 1 | 研究质量 | 优化 autoresearch 成功率（w/ sol） | P0 | 0 的判定与观测基础 |
-| 2 | 架构 | 解耦 Harness 与研究主题、生成内容 | P1 | 0 |
-| 3 | 存储 | 评估并迁移 `ledger.tsv` 至轻量数据库 | P1 | 2 的数据边界 |
-| 4 | 执行 | 允许安全并发 | P2 | 2、3 |
-| 5 | 文档与结构 | 重写用户友好的 `README.md`，并决定是否重构仓库结构 | P1 | 2 的边界设计 |
-| 7 | 交付 | 容器化 | P2 | 2、5 |
-| 8 | 产品 | 产品化 | P3 | 0–7 的稳定接口 |
+| 0 | Harness engineering | Move deterministic control into `.sh` where practical; improve Claude and Codex adapters | P0 | None |
+| 1 | Research quality | Improve success rate for autoresearch proposals with concrete solutions | P0 | Decision and observability foundations from 0 |
+| 2 | Architecture | Decouple the harness from research topics and generated content | P1 | 0 |
+| 3 | Storage | Evaluate and migrate `ledger.tsv` to a lightweight database | P1 | Data boundaries from 2 |
+| 4 | Execution | Support safe concurrency | P2 | 2 and 3 |
+| 5 | Documentation and structure | Build a user-oriented `README.md` and decide whether to restructure the repository | P1 | Boundary design from 2 |
+| 7 | Delivery | Containerize the system | P2 | 2 and 5 |
+| 8 | Product | Productize the workflow | P3 | Stable interfaces from 0–7 |
 
-## A. 研究质量
+## A. Research Quality
 
-### 1. 优化 autoresearch 成功率（w/ sol）
+### 1. Improve success rate for autoresearch proposals with concrete solutions
 
-#### 当前基线
+#### Historical baseline
 
-- `ledger.tsv`：209 个 idea，155 AwR，54 Reject，0 SA。
-- `tmp/hunt.metrics.tsv`：96 个候选完成三席评审，288 张票中仅 6 张 SA；3 个候选得到 `2×SA + 1×AwR`，无全票 SA。
-- 59 次有指标记录的尝试中，32 次到达 verdict，27 次停在 empty/fail。
-- `tmp/sa-potential-ideas.md` 是动态候选池；其中的 `SA-可能` 未获正式主环确认，不计作 SA。
-- `calib/results-2026-07-12.md`（口径统一 + gold set 材料诚实化）：诚实全知重建三个阳性 priorwork 后——删公理探针 1/3→3/3 SA（材料补齐即恢复）；pos-meanflow 暴露为高重叠 direct-hit（被 MP1 占位），降级为阴性 neg-meanflow-mp1；pos-robomme 暴露为 medium 重叠 borderline（分类学被 MIKASA-Robo 占）。结论：被点名两条 verdict 条款均判对，真缺陷在旧 gold set 谎报低重叠；条款不改。gold set 现 5 case 全绿。
+- `ledger.tsv`: 209 ideas, 155 AwR, 54 Reject, and 0 SA.
+- `tmp/hunt.metrics.tsv`: 96 candidates completed three-reviewer evaluation. Of 288 votes, only 6 were SA; 3 candidates received `2×SA + 1×AwR`, and none received unanimous SA.
+- Of 59 measured attempts, 32 reached a verdict and 27 stopped at empty/fail.
+- `tmp/sa-potential-ideas.md` is a dynamic candidate pool. Its `SA-possible` entries lack formal main-loop confirmation and do not count as SA.
+- `calib/results-2026-07-12.md` (aligned criteria and honest gold-set evidence): after reconstructing complete prior work for three positive cases, the load-bearing-assumption probe recovered from 1/3 to 3/3 SA once its evidence was complete; pos-meanflow was exposed as a high-overlap direct hit occupied by MP1 and was reclassified as the negative case neg-meanflow-mp1; pos-robomme was exposed as a medium-overlap borderline case whose taxonomy was occupied by MIKASA-Robo. Both named verdict clauses were correct. The defect was the old gold set's false low-overlap claim, so the clauses remained unchanged. All 5 current gold-set cases pass.
 
-#### 优化指标
+#### Optimization metrics
 
-| 指标 | 定义 |
+| Metric | Definition |
 |---|---|
-| 校准正确率 | gold positive / negative 能否被稳定区分 |
-| 候选质量率 | 正式候选中至少获得 1 张 SA 票的比例 |
-| near-SA 转化率 | `2,2,1` 或 `1,2,2` 修订后转为全票 SA 的比例 |
-| 最终 SA 命中率 | 正式候选中全票 SA 的比例 |
-| 运行完成率 | 尝试中到达 verdict 的比例 |
+| Calibration accuracy | Whether gold positive and negative cases are separated consistently |
+| Candidate quality rate | Share of formal candidates receiving at least 1 SA vote |
+| Near-SA conversion rate | Share of `2,2,1` or `1,2,2` candidates that become unanimous SA after revision |
+| Final SA hit rate | Share of formal candidates receiving unanimous SA |
+| Run completion rate | Share of attempts that reach a verdict |
 
-运行完成率与 SA 命中率分别统计；机制可用不等于研究质量已经提高。
+Run completion rate and SA hit rate remain separate metrics. A functioning mechanism does not imply improved research quality.
 
-#### P0：统一判定与完整观测
+#### P0: Align decisions and complete observability
 
-- [x] 以 `brainstorming_policy.md` 的 clear-accept 标准为唯一 SA 定义，消除 `rubric.md`、各 role prompt 与 sidecar 的冲突口径。（2026-07-12：rubric Step 8 与 Integrity gate #5 改为指向 policy；review.md 撤销「且能冲 oral/spotlight」加严；awr-judge/trigger/README 错误指向修正）
-- [x] 建立具身领域 gold set，覆盖普通 method、benchmark/new problem、删承重假设和 direct-hit 阴性。（五 case + `expect` 机器判读 + `calib/run_all.sh` 批跑打分；具身删公理正式阳性待 2026 秋会议揭晓，现以跨域探针 pos-axiom-adam 代位）
-- [x] 分开验证冻结 `ideas + priorwork` 的 verdict 校准，以及允许真实检索的端到端校准。（冻结=`calib/run_all.sh`，端到端=`calib/run_e2e.sh` 检索召回侧；阳性对照无端到端跑法——已发表工作会被真检索判成自占据）
-- [x] 为每次运行生成稳定 `run_id` / `candidate_id`，记录来源、backend、policy 版本、阶段时间和退出原因。（run_id=启动时间+pid+轮次，candidate_id=`<run_id>/I<n>`；manifest + `stages.tsv`）
-- [x] 按运行保存 `ideas`、`priorwork`、三席票向量、完整理由、聚合结果和检索故障；ledger 只保留摘要。（轮终点归档 `tmp/runs/<run_id>/`：tmp/round 全量 + manifest + ledger 增量 + 逐阶段日志）
+- [x] Use the clear-accept standard in `brainstorming_policy.md` as the sole SA definition, removing conflicts among `rubric.md`, role prompts, and the sidecar. (2026-07-12: rubric Step 8 and Integrity gate #5 now point to the policy; the stricter "and can contend for oral/spotlight" clause was removed from review.md; incorrect references in awr-judge/trigger/README were corrected.)
+- [x] Establish an embodied-domain gold set covering an ordinary method, a benchmark/new problem, removal of a load-bearing assumption, and a direct-hit negative. (Five cases, machine-readable `expect` fields, and batch scoring through `calib/run_all.sh`; a formal embodied load-bearing-assumption positive awaits the 2026 fall conference outcome, with the cross-domain pos-axiom-adam probe as its current substitute.)
+- [x] Separate verdict calibration over frozen `ideas + priorwork` from end-to-end calibration with live retrieval. (Frozen: `calib/run_all.sh`; end-to-end: retrieval recall through `calib/run_e2e.sh`. Positive controls have no end-to-end run because live retrieval would correctly classify published work as self-occupying.)
+- [x] Generate stable `run_id` and `candidate_id` values for every run, recording source, backend, policy version, stage timing, and exit reason. (`run_id` = start time + pid + round; `candidate_id` = `<run_id>/I<n>`; manifest + `stages.tsv`.)
+- [x] Preserve per-run `ideas`, `priorwork`, three-reviewer vote vectors, complete reasons, aggregate result, and retrieval failures; keep only summaries in the ledger. (End-of-round archive at `tmp/runs/<run_id>/`: complete `tmp/round`, manifest, ledger delta, and per-stage logs.)
 
-验收：已知 A 类阳性可复现地全票通过，direct-hit 阴性保持全票 Reject；任一 ledger 结论可还原输入与判定过程。
+Acceptance: known class-A positives reproducibly receive unanimous approval, direct-hit negatives remain unanimous Reject, and every ledger conclusion can be reconstructed from its inputs and decision process.
 
-#### P1：提高候选质量与 near-SA 转化
+#### P1: Improve candidate quality and near-SA conversion
 
-- [x] 生成负责发散；独立 selector 按命题强度、clear-accept 上限、最小否证实验和可执行性排序（投前无 novelty 证据，novelty 归查重/裁判）。
-- [x] `roles/research.md` 只报告 prior-work 覆盖事实，不提前裁决 clear-accept 上限。
-- [x] 区分 `direct-hit`、`medium-overlap` 与检索不完整；检索不完整先补查，不进入正式定级。
-- [x] 将非 SA 分为 `novelty-dead`、`evidence-incomplete`、`design-fixable`、`ceiling-limited`。
-- [x] 保存 revision lineage 和明确 delta；near-SA 队列优先于盲目扩池。
-- [x] direct-hit / CRITICAL 才进入永久禁复活集合，其余结论保留可审计的复查条件。
+- [x] Generation explores broadly; an independent selector ranks candidates by proposition strength, clear-accept ceiling, minimum falsification experiment, and executability. Novelty evidence is unavailable before submission and remains the responsibility of prior-work search and reviewers.
+- [x] `roles/research.md` reports prior-work coverage facts without pre-judging the clear-accept ceiling.
+- [x] Distinguish `direct-hit`, `medium-overlap`, and incomplete retrieval. Incomplete retrieval receives more search before formal classification.
+- [x] Classify non-SA outcomes as `novelty-dead`, `evidence-incomplete`, `design-fixable`, or `ceiling-limited`.
+- [x] Preserve revision lineage and explicit deltas; prioritize the near-SA queue over blind pool expansion.
+- [x] Add only direct hits and CRITICAL findings to the permanent non-revival set; retain auditable recheck conditions for all other outcomes.
 
-检索完整性只做结构机检，语义完整由可信后端判断。跨修订（改写后 R≠L）、跨 A/B 路径的 story-once 归存储里程碑 #3：`lineages` 保存不可变身份，`reentry_grants` 分路径保存资格证据，`reentry_requests` 以 `UNIQUE(lineage_key)` 统一 readiness、claim 与消耗记录；rich 修订链保存逐版 delta 和语义血缘归并。#3 落地前保留 Path A 的 generate 自律门。
+Retrieval completeness receives structural machine checks; semantic completeness remains a trusted-backend judgment. Story-once enforcement across revisions where R≠L and across paths A/B belongs to storage milestone #3: `lineages` stores immutable identity, `reentry_grants` stores path-specific eligibility evidence, and `reentry_requests` uses `UNIQUE(lineage_key)` to unify readiness, claims, and consumption. Rich revision chains preserve per-version deltas and semantic lineage merges. Until #3 is complete, Path A retains the generation self-discipline gate.
 
-验收：至少一张 SA 票的候选比例提高；每个 near-SA 均有补证、修订、重评或判死的终态。
+Acceptance: the share of candidates receiving at least one SA vote increases, and every near-SA candidate reaches a terminal state through added evidence, revision, reevaluation, or rejection.
 
-#### P1：重建 AwR 复活链路
+#### P1: AwR re-entry architecture
 
-整体搁置——实验闸已判定不建；完整设计规格与 crash matrix 见 [`AWR-REBUILD-DRAFT.md`](AWR-REBUILD-DRAFT.md)，保留待更强候选证据。
+Status: deferred. The experiment gate rejected implementation. The complete architecture and crash matrix remain in [`AWR-REBUILD-DRAFT.md`](AWR-REBUILD-DRAFT.md) pending stronger candidate evidence.
 
-实验闸（2026-07-14 跑，零新管道）：
+Experiment gate run on 2026-07-14, with no new pipeline:
 
-- [x] 挑池内最强且唯一标注就绪的候选 `2b500d736c99`（VLA autopilot），用当前工具重建主环 ideas/priorwork/三席，忠实重判。
-- [x] 判据 ≥1 条全票 SA 进薄切片、0 条搁置 —— **结果 = 从未达 SA**。核查产出 row 172 的原始轮全程 claude（非 agy）：其 priorwork 已查到最近邻 Fighting Copycat（2010.14876）、判 overlap=low → 三席 2,2,1 → accept-w-rev（near-SA）。本次严查（priorwork 补 de Haan 1905.11979 + 闭环 causal benchmark 2504.14709）判 overlap=high → 三席 reject。同一条 idea 在 low↔high 间摆动，取决于 copycat 这个命名七年的相邻现象算不算占掉「VLA + autopilot 分数 + 观测强制」这个组合；overlap 判定对 priorwork 措辞高度敏感（本次严查 brief 点名了 copycat，有引导成分，非纯中立）。
+- [x] Select the strongest and only readiness-labeled candidate in the pool, `2b500d736c99` (VLA autopilot), then faithfully reconstruct main-loop ideas, prior work, and three-reviewer evaluation with current tools.
+- [x] Gate rule: at least 1 unanimous-SA candidate permits the thin slice; 0 defers it. **Result: the candidate never reached SA.** The source audit found that row 172's original round used Claude for every role, not agy. Its prior-work review found the nearest neighbor Fighting Copycat (2010.14876), classified overlap as low, and produced a 2,2,1 vote with accept-w-rev (near-SA). The stricter review added de Haan 1905.11979 and closed-loop causal benchmark 2504.14709, classified overlap as high, and produced a unanimous reject. The same idea moved between low and high depending on whether the seven-year-old neighboring copycat phenomenon occupied the combination "VLA + autopilot score + observation forcing." The overlap decision was highly sensitive to prior-work phrasing; the stricter brief explicitly named copycat and therefore was guided rather than fully neutral.
 
-结论：AwR 复活链路（含下面薄切片）整体搁置。候选卡在 near-SA↔reject 的 overlap 校准刀刃上、从未到过真 SA；真正的杠杆是 overlap 校准口径（low/high 的尺度）与候选质量，不是复活管道。回到候选质量与校准（与 P0 校准直接相关）。下面的薄切片与搁置清单保留为设计记录，gate 未过不启动。
+Conclusion: the AwR re-entry architecture, including the thin slice below, remains deferred. The candidate sits on the near-SA/reject overlap-calibration boundary and never reached true SA. The operative levers are the low/high overlap scale and candidate quality, not a re-entry pipeline. Work returns to candidate quality and calibration under P0. The thin slice and deferred set remain as architecture records; the failed gate does not activate them.
 
-薄切片（实验闸通过后，只碰研究质量）：
+Thin slice, conditional on a future successful experiment gate and limited to research quality:
 
-- [ ] 把「最强反例 + distinct-neighbor + 实读」证据门（`AWR-REBUILD-DRAFT.md` §3.5）接到现有 `check_judge`。
-- [ ] trusted judge 换 claude/codex，用现有 `--ignore-user-config`/`workspace-write`/`--strict-mcp-config` 约束；接受 `asserted` 独立性，不卡 OS 级封闭。
+- [ ] Connect the Strongest Counterexample, distinct-neighbor, and Papers Read evidence gates from `AWR-REBUILD-DRAFT.md` §3.5 to the existing `check_judge`.
+- [ ] Use Claude or Codex as the trusted judge through the existing `--ignore-user-config`, `workspace-write`, and `--strict-mcp-config` controls; accept `asserted` independence without blocking on OS-level confinement.
 
-搁置到有 ≥1 SA 证据后再评估（细节全在 `AWR-REBUILD-DRAFT.md`）：入口真值表与 capability predicate、invocation bundle 与 provenance DAG（§3.4）、原子 `ledger.good` 发布 receipt（§3.7）、legacy migration sealed plan（§4）、人工 promote 的 exactly-once 发布（§3.8）、存储 #3 的 lineages/grants/requests/outbox（§5）。这些是 pipeline 能产出值得正确提交的东西之后才付的正确性成本。
+Deferred until evidence includes at least 1 SA candidate; full details remain in `AWR-REBUILD-DRAFT.md`: entry truth table and capability predicates, invocation bundle and provenance DAG (§3.4), atomic `ledger.good` publication receipt (§3.7), sealed-plan legacy migration (§4), exactly-once manual promotion (§3.8), and storage milestone #3 lineages/grants/requests/outbox (§5). These correctness costs become relevant only after the pipeline can produce artifacts worth committing correctly.
 
-验收：实验闸有明确的有 SA / 无 SA 结论并据此决定去留；若上薄切片，`SA-可能` 质量可人工复评，dormant 零副作用不变。正式主环回灌 verdict 属 #3。
+Acceptance: the experiment gate produces an explicit SA/no-SA result that determines whether work proceeds. If the thin slice is activated, `SA-possible` artifacts support manual review and dormant mode retains zero side effects. Formal main-loop verdict re-entry belongs to #3.
 
-#### P2：减少无效运行
+#### P2: Reduce ineffective runs
 
-- [ ] 分别记录结构、API/网络、模型和内容失败；基础设施失败不得形成永久 idea 结论。
-- [ ] 单候选失败只重试该候选，合格的前段产物支持安全 resume。
-- [ ] 保存超出 `SHORT_MAX` 的候选及 selector 分数，支持后续重排。
-- [ ] 每个配置 epoch 只改一个变量，在固定校准集和评审预算下比较。
+- [ ] Record structural, API/network, model, and content failures separately. Infrastructure failures must not create permanent idea conclusions.
+- [ ] Retry only the failed candidate; support safe resume from valid upstream artifacts.
+- [ ] Preserve candidates beyond `SHORT_MAX` and their selector scores for later reranking.
+- [ ] Change one variable per configuration epoch and compare on a fixed calibration set and review budget.
 
-验收：运行完成率提高，同等正式评审数量下调用成本下降；`SA-可能` 数量不作成功指标。
+Acceptance: completion rate rises and invocation cost falls for the same number of formal reviews. The count of `SA-possible` artifacts is not a success metric.
 
-## B. Harness 工程
+## B. Harness Engineering
 
-### 0. Shell-first 与 Claude / Codex 适配
+### 0. Shell-first control and Claude/Codex adapters
 
-自然语言负责研究判断；参数校验、状态迁移、重试、聚合、归档和安全边界由脚本执行。
+Natural language handles research judgment. Scripts handle parameter validation, state transitions, retries, aggregation, archival, and safety boundaries.
 
-- [ ] 盘点 prompt 中可机械判定的控制逻辑，并迁移至 `.sh` 或共享库。
-- [ ] 定义统一 agent adapter 接口：输入、环境变量、退出码、超时、能力声明、隔离和产物回收。
-- [ ] 为 Claude 与 Codex 建立独立适配层，复用命令解析、临时镜像、日志和错误分类。
-- [ ] 使用 fake agent 与小型 shell probe 覆盖解析、超时、失败恢复、路径边界和产物完整性。
+- [ ] Inventory mechanically decidable control logic in prompts and move it into `.sh` files or shared libraries.
+- [ ] Define one agent-adapter interface for input, environment variables, exit codes, timeouts, capability declarations, isolation, and artifact collection.
+- [ ] Build separate Claude and Codex adapters over shared command parsing, temporary mirrors, logging, and error classification.
+- [ ] Cover parsing, timeout, failure recovery, path boundaries, and artifact integrity with a fake agent and small shell probes.
 
-验收：同一阶段可通过配置切换 Claude / Codex；非法配置快速失败；关键不变量不依赖模型遵守自然语言指令。
+Acceptance: the same stage can switch between Claude and Codex through configuration; invalid configurations fail fast; critical invariants do not depend on a model obeying natural-language instructions.
 
-### 2. 解耦 Harness 与研究主题、生成内容
+### 2. Decouple the harness from research topics and generated content
 
-- [ ] Harness 只负责生命周期、调度、锁、重试、聚合、存储和发布。
-- [ ] 研究主题包负责 context、brainstorming policy、rubric、role prompts 和主题资源。
-- [ ] 运行产物与源码配置分离，避免状态写回主题定义。
-- [ ] 用最小合成主题 fixture 测试 Harness，不依赖具身领域内容。
+- [ ] Limit the harness to lifecycle, scheduling, locking, retries, aggregation, storage, and publication.
+- [ ] Put context, brainstorming policy, rubric, role prompts, and topic resources in the research-topic package.
+- [ ] Separate runtime artifacts from source configuration so state is never written back into topic definitions.
+- [ ] Test the harness with a minimal synthetic-topic fixture independent of embodied-domain content.
 
-验收：新增或切换研究主题无需修改 Harness；主题 prompt 变化不影响调度与存储测试。
+Acceptance: adding or switching a research topic requires no harness changes; topic-prompt changes do not affect scheduling or storage tests.
 
-### 3. `ledger.tsv` 轻量数据库评估与迁移
+### 3. Evaluate and migrate `ledger.tsv` to a lightweight database
 
-优先评估 SQLite；保留 TSV 导入导出，不直接删除现有 ledger。
+Evaluate SQLite first. Preserve TSV import/export and do not delete the existing ledger directly.
 
-- [ ] 明确 idea、run、candidate、review、artifact、invocation、revision lineage 的最小 schema；`lineages` 只存不可变身份和一个 deterministic root candidate，row-specific `origin_stable_id` 唯一存于各 candidate；`story_aliases(canonical_hash UNIQUE)` 防同一修订 story 跨 lineage，`reentry_grants` 分路径保存资格证据与规则版本并用 deterministic fact key 去重，`reentry_requests` 以 `UNIQUE(lineage_key)` 承载 readiness 与 claim generation，`round_slots` 以 `round_id UNIQUE + CHECK(slot_kind='reentry')` 让 evolve/recheck/Path B 共用单一名额并绑定 state/lineage/candidate/generation/token，`materialization_outbox(candidate_id UNIQUE)` 隔离事务外 effect。历史导入先把 ledger/父指针/promotion/mapping inputs 与 union plan 存 immutable CAS，建立 `import_epochs`，再单事务写 epoch done + lineage/alias/candidate/consumed request，禁止 provisional lineage 或无 plan 结果；普通未消费导入不创建 ready grant/request。expired claim 可跨 round reclaim；claim 绑定具体 grant，撤销该 grant 即原子 fence，request 再由剩余 grants 派生；committed slot 永不因 lease 到期复用；P1 与 #3 共用版本化 canonical lineage + `origin_stable_id`（ledger instance + 1-based data-row number + raw-row SHA），snapshot SHA 只作 provenance，promotion 对 lineage key 唯一；复查消费、进化父指针、sidecar origin fingerprint、tracked attestation、已正式提交的 `promoted.tsv` 和人工映射共同保持 story-once；见 `AWR-REBUILD-DRAFT.md` §5。
-- [ ] 比较 SQLite 与继续使用 TSV 的查询、并发写、迁移和维护成本，形成迁移决定。
-- [ ] 若迁移，先提供一次性导入、双读校验和稳定 TSV export，再切换主写入路径。
-- [ ] 数据写入支持事务、唯一约束、幂等 resume 和 schema version。
+- [ ] Define the minimal schema for ideas, runs, candidates, reviews, artifacts, invocations, and revision lineage. [`AWR-REBUILD-DRAFT.md` §5](AWR-REBUILD-DRAFT.md#5-automatic-re-entry-bridge-storage-milestone-3) is canonical for lineage identity, re-entry, historical import, transactions, and materialization.
+- [ ] Compare SQLite with continued TSV use across queries, concurrent writes, migration, and maintenance, then record the storage decision.
+- [ ] If migration proceeds, provide one-time import, dual-read validation, and stable TSV export before switching the primary write path.
+- [ ] Make writes transactional and support unique constraints, idempotent resume, and schema versions.
 
-验收：可查询历史运行、完整票据和修订链；重复执行不产生重复记录；现有 TSV 工作流仍可导出。
+Acceptance: historical runs, complete votes, and revision chains are queryable; repeated execution creates no duplicate records; existing TSV workflows remain exportable.
 
-### 4. 允许安全并发
+### 4. Support safe concurrency
 
-- [ ] 先并发候选级 research / review，再评估轮次级并发；每个任务使用独立工作目录和日志。
-- [ ] 提供全局并发上限、backend 限流、资源锁、取消和失败重试。
-- [ ] 聚合与持久化保持幂等，避免重复票据、文件覆盖和 ledger 写冲突。
-- [ ] 固定输入下，并发与串行得到相同的候选集合和 verdict。
+- [ ] Parallelize candidate-level research and review before evaluating round-level concurrency; give every task an independent working directory and log.
+- [ ] Provide a global concurrency limit, backend rate limits, resource locks, cancellation, and failure retries.
+- [ ] Keep aggregation and persistence idempotent to prevent duplicate votes, file overwrites, and ledger write conflicts.
+- [ ] Under fixed inputs, concurrent and serial execution must produce the same candidate set and verdicts.
 
-验收：并发运行无文件冲突和重复写入；中断后可安全 resume；结果不依赖完成顺序。
+Acceptance: concurrent runs create no file conflicts or duplicate writes; interrupted work resumes safely; results do not depend on completion order.
 
-## C. 交付与产品
+## C. Delivery and Product
 
-### 5. 重写 README，并决定仓库结构
+### 5. Build the README and decide repository structure
 
-- [ ] P1 Phase 0 已要求先修正 sidecar 启动示例与失败语义；本项是其后的完整用户路径重写，不得反向延迟该安全勘误。
-- [ ] README 按用户路径组织：项目用途、前置条件、快速开始、核心配置、输出位置、恢复方式和故障定位。
-- [ ] 详细内部机制链接到专门文档，README 不复制开发规划和策略正文。
-- [ ] 在完成 Harness / topic 边界设计后评估目录重构；只有新边界能降低耦合时才迁移。
-- [ ] 若重构，提供旧入口兼容层或一次性迁移说明，并同步脚本引用与文档链接。
+- [ ] P1 Phase 0 already requires correcting sidecar startup examples and failure semantics. This item covers the subsequent complete user journey and cannot delay that safety correction.
+- [ ] Organize the README around purpose, prerequisites, quick start, core configuration, output locations, recovery, and failure diagnosis.
+- [ ] Link detailed internals to dedicated documents instead of copying the roadmap and policy text into the README.
+- [ ] Evaluate directory restructuring after the harness/topic boundary is defined; migrate only if the new boundary reduces coupling.
+- [ ] If restructuring proceeds, provide compatibility for old entry points or a one-time migration guide, and update script references and documentation links together.
 
-验收：首次使用者可按 README 跑通最小示例并定位产物；目录结构能直接表达 Harness、主题、adapter 与运行状态的边界。
+Acceptance: a first-time operator can run the minimal example and locate its artifacts from the README; the directory layout expresses the harness, topic, adapter, and runtime-state boundaries directly.
 
-### 7. 容器化
+### 7. Containerize the system
 
-- [ ] 固定 shell 与系统工具依赖，提供最小镜像和可复现构建。
-- [ ] 明确 agent CLI、认证信息、仓库源码和运行产物的挂载边界。
-- [ ] 提供容器 smoke test，验证生成、评审、resume 和导出路径。
-- [ ] 比较 host 与 container 的产物格式和退出语义。
+- [ ] Pin shell and system-tool dependencies and provide a minimal reproducible image.
+- [ ] Define mount boundaries for agent CLIs, credentials, repository source, and runtime artifacts.
+- [ ] Provide a container smoke test covering generation, review, resume, and export paths.
+- [ ] Compare artifact formats and exit semantics between host and container execution.
 
-验收：干净环境可用单一入口启动最小流程；认证不写入镜像；host 与 container 产物兼容。
+Acceptance: a clean environment starts the minimal flow through one entry point; credentials are absent from the image; host and container artifacts remain compatible.
 
-### 8. 产品化
+### 8. Productize the workflow
 
-产品化以稳定 CLI 和可审计运行记录为起点，UI 在接口与存储稳定后评估。
+Stable CLI operations and auditable run records precede any UI evaluation.
 
-- [ ] 固化 `init`、`run`、`status`、`resume`、`review`、`export` 等用户动作及退出语义。
-- [ ] 提供版本化配置 schema、示例主题、运行注册表和结果浏览入口。
-- [ ] 建立可发布版本、升级路径和端到端验收流程。
-- [ ] 基于实际使用流程决定是否增加本地 UI 或服务化入口。
+- [ ] Stabilize `init`, `run`, `status`, `resume`, `review`, and `export` operations and their exit semantics.
+- [ ] Provide a versioned configuration schema, an example topic, a run registry, and a result-browsing entry point.
+- [ ] Establish release versions, upgrade paths, and end-to-end acceptance.
+- [ ] Decide whether to add a local UI or service entry point from observed workflows.
 
-验收：新项目可初始化、运行、恢复、审计和导出；版本升级不破坏已有配置与运行记录。
+Acceptance: a new project can be initialized, run, resumed, audited, and exported; upgrades preserve existing configurations and run records.
 
-## 实施顺序
+## Delivery Order
 
-1. `0 + 1`：固化控制面，统一判定，补齐可观测性和校准。
-2. `2 + 3 + 5`：划定架构与数据边界，完成存储决策和用户文档设计。
-3. `4 + 7`：在隔离和事务基础上增加并发与可移植部署。
-4. `8`：基于稳定 CLI、配置和运行记录形成产品入口。
+1. `0 + 1`: stabilize the control plane, align decisions, and complete observability and calibration.
+2. `2 + 3 + 5`: define architecture and data boundaries, decide storage, and design user documentation.
+3. `4 + 7`: add concurrency and portable deployment on top of isolation and transactions.
+4. `8`: form product entry points around a stable CLI, configuration, and run records.
 
-在判定、观测和架构边界稳定前，不以扩大 ledger、提高并发或增加 UI 代替 SA 成功率验证。
+Until decision rules, observability, and architecture boundaries are stable, ledger growth, higher concurrency, and UI work do not substitute for validating the SA success rate.

@@ -1,3 +1,3 @@
-# 端到端检索召回:已知占位 MP1(arXiv 2507.10543,2025-07);放开检索的查重应命中并如实记 high
+# Retrieval recall: MP1 (arXiv 2507.10543, 2025-07) is the known occupant and must be found with high overlap.
 overlap=high
 url_contains=2507.10543

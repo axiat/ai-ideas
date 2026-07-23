@@ -1,4 +1,4 @@
-# method 型正对照(RSS 2026 Outstanding Paper「FlashSAC」投稿前形态;case 名不含论文名——首轮 pos-flashsac 命名被裁判
-# 用作身份推测,改名重跑):目标/payoff 轴诚实 medium(FastTD3/FastSAC 占据)、机制轴 CrossQ 占据 UTD=1,
-# 零占据=sub-1 极端 UTD×规模化×机器人域联合。真奖项工作不应被 reject;SA 与否按净增量定价,留人工判读(见 results-2026-07-20)
+# Method boundary control reconstructed from the pre-submission form of the RSS 2026 Outstanding Paper "FlashSAC". The neutral case name prevents source-paper identity leakage.
+# Honest occupancy is medium on the goal and payoff axis through FastTD3/FastSAC and on the mechanism axis through CrossQ at UTD=1. The unoccupied joint axis is sub-1 extreme UTD × model and throughput scaling × robot-domain deployment.
+# A real award paper must not receive reject. Price SA only on the net increment; see results-2026-07-20.
 min_vote>=accept-w-rev

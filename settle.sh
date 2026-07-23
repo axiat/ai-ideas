@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# 收尾同步:验证本地残留产物已经在 origin/main,再对齐本地 main 并清理 routine 分支。
-# 用法:
+# Verify that local publication residue already exists on origin/main, align the
+# local main branch, and remove safely merged routine branches.
+# Usage:
 #   ./settle.sh
 #   DRY_RUN=1 ./settle.sh
 #   ./settle.sh 'ledger.tsv' 'ideas/*_hunt*.md'
 #
-# 默认只接受这些本地残留:
+# Default accepted local residue:
 #   ledger.tsv
 #   ideas/*_hunt*.md
 #   ideas/*_weekly*.md
@@ -50,7 +51,7 @@ git rev-parse --verify "$upstream" >/dev/null
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 if [[ "$current_branch" != "$base" ]]; then
   if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
-    echo "当前分支是 ${current_branch},且工作区不干净;先人工处理后再切 ${base}" >&2
+    echo "Current branch is ${current_branch} and the worktree is dirty; resolve it before switching to ${base}" >&2
     exit 2
   fi
   run git switch "$base"
@@ -60,7 +61,7 @@ local_head=$(git rev-parse "$base")
 upstream_head=$(git rev-parse "$upstream")
 merge_base=$(git merge-base "$base" "$upstream")
 if [[ "$local_head" != "$upstream_head" && "$merge_base" != "$local_head" ]]; then
-  echo "本地 ${base} 与 ${upstream} 已分叉;停止,避免丢本地提交" >&2
+  echo "Local ${base} diverged from ${upstream}; stopping to preserve local commits" >&2
   exit 2
 fi
 
@@ -69,8 +70,8 @@ git status --porcelain --untracked-files=all | sed 's/^...//' | sort -u > "$dirt
 while IFS= read -r path; do
   [[ -z "$path" ]] && continue
   if ! allowed_residue "$path"; then
-    echo "发现非 routine 残留: ${path}" >&2
-    echo "允许范围:" >&2
+    echo "Non-routine residue found: ${path}" >&2
+    echo "Allowed patterns:" >&2
     printf '  %s\n' "${allowed_patterns[@]}" >&2
     exit 2
   fi
@@ -79,15 +80,15 @@ done < "$dirty_list"
 while IFS= read -r path; do
   [[ -z "$path" ]] && continue
   if [[ ! -f "$path" ]]; then
-    echo "本地残留不是普通文件: ${path}" >&2
+    echo "Local residue is not a regular file: ${path}" >&2
     exit 2
   fi
   if ! git cat-file -e "${upstream}:${path}" 2>/dev/null; then
-    echo "${upstream} 不含 ${path};不能判定为已发布残留" >&2
+    echo "${upstream} does not contain ${path}; publication cannot be verified" >&2
     exit 2
   fi
   if ! git show "${upstream}:${path}" | cmp -s - "$path"; then
-    echo "本地 ${path} 与 ${upstream} 内容不一致;停止" >&2
+    echo "Local ${path} differs from ${upstream}; stopping" >&2
     exit 2
   fi
   echo "verified: ${path}"

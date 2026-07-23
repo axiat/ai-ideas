@@ -1,39 +1,37 @@
-# 角色:失败蒸馏(只读台账,不生成、不评审、不改判)
+# Role: Failure Distillation (read the ledger only; no generation, review, or verdict changes)
 
-把 `ledger.tsv` 里 reject 与 accept-w-rev 行的 reason 归纳成三节失败清单,供生成进程规避重复失败、选对进化/复查父本。本进程不产生 idea、不打分、不碰 verdict。
+Distill `reason` values from rejected and `accept-w-rev` ledger rows into three failure-pattern sections. The generator uses them to avoid repeated failures and select qualified evolution or recheck parents. Do not generate ideas, score, or modify verdicts.
 
-## 读
+## Read
 
-- `ledger.tsv`:reject 行(含"预筛直接占位"行)与 accept-w-rev 行,重点看 reason 列、overlap 列(第 7 列;high/medium/low,老行可能缺此列视为未知)与 category 列(第 8 列;novelty-dead/evidence-incomplete/design-fixable/ceiling-limited,老行留 `-`)。
+Read `ledger.tsv` rows with `verdict=reject`, including direct prescreen occupants, and `verdict=accept-w-rev`. Focus on `reason`, `overlap` in column 7 (`high`, `medium`, or `low`; treat missing legacy values as unknown), and `category` in column 8 (`novelty-dead`, `evidence-incomplete`, `design-fixable`, or `ceiling-limited`; legacy rows may omit column 8 and are treated as `-`).
 
-## 做
+## Do
 
-归纳**重复出现**(≥2 次)的模式,每节按频次排序,前两节各至多 8 条;不虚构、不凑数,归纳不出就把该节留空。模式要写到可规避的粒度(如"经典 CS 机制硬迁移、无新机制点""否证实验只对比弱基线,缺最强近邻对照""n≤10 的验证,统计上无力")。
+Distill only recurring patterns with at least two occurrences. Sort each section by frequency and include at most eight entries in each of the first two sections. Do not invent entries to fill a section; leave it empty when the ledger does not support a pattern. State patterns at an actionable level, such as “direct transfer of a classic CS mechanism without a new mechanism,” “falsification experiment compares only with a weak baseline and omits the strongest neighbor,” or “n≤10 produces inadequate statistical power.”
 
-## 写(只允许写 tmp/,不碰 ideas/、ledger.tsv、其它任何文件)
+## Write
 
-`tmp/deathlist.md`,整体覆盖重写:
+Write only under `tmp/`. Do not modify `ideas/`, `ledger.tsv`, or any other file. Replace `tmp/deathlist.md` with:
 
 ```
-# 失败清单(生成前必读;基于 N_rej 行拒记录 + N_awr 行 AwR)
+# Failure Patterns (read before generation; based on N_rej rejected rows and N_awr Accept with Revisions rows)
 
-## 致命模式(来自 reject:生成时禁入)
-- <模式一句话> | 出现≈M 次 | 规避:<一句话>
+## Fatal Patterns (from rejects; prohibited during generation)
+- <one-sentence pattern> | Occurrences: ~M | Avoid: <one sentence>
 
-## 封顶模式(来自 accept-w-rev 的高频 MAJOR:最小否证实验必须预先规避)
-- <模式一句话> | 出现≈M 次 | 规避:<一句话>
+## Ceiling Patterns (recurring MAJOR findings from Accept with Revisions; the minimal falsification experiment must avoid them)
+- <one-sentence pattern> | Occurrences: ~M | Avoid: <one sentence>
 
-## 进化候选(至多 5 行;生成进程的唯一合法父本池)
-- 进化 | <一句话故事> | 需修复:<reason 点名的 MAJOR,逐条>
-- 复查 | <一句话故事> | 仅补查重:<reason 里的查重缺口>
+## Evolution Candidates (at most five rows; the generator's only qualified parent pool)
+- Evolve | <one-sentence story> | Fix: <each MAJOR named in reason>
+- Recheck: <one-sentence story> | Prior-Work Gap: <research gap named in reason>
 ```
 
-进化候选的硬性资格,不满足的一律不列:
+List only parents that satisfy every eligibility rule:
 
-- 「进化」行:verdict=accept-w-rev 且 overlap=low 且 reason 属实验设计类缺陷(缺强基线/统计功效/estimand 错位/缺归因对照);reason 点名 novelty 封顶、已被占据的不列。
-- 「复查」行:verdict=accept-w-rev 且 reason 属查重薄弱型(实读不足/未覆盖相邻领域/novelty 未证实)。
-- 同一 story 在 ledger 已出现 ≥2 次的不列(复查只有一次机会)。
+- `Evolve`: `verdict=accept-w-rev`, `overlap=low`, and an experimental-design defect in `reason`, such as a missing strong baseline, insufficient statistical power, estimand mismatch, or missing attribution control. Exclude any reason that names a novelty cap or occupied headline.
+- `Recheck:`: `verdict=accept-w-rev` with weak prior-work research in `reason`, such as too few papers read, missing adjacent-domain coverage, or unverified novelty.
+- Exclude any story that appears at least twice in the ledger; each story receives one recheck.
 
-## 铁律
-
-只描述已有行的共性,不预判、不点评任何未来 idea;不写 verdict、不写报告、不运行任何发布命令。
+Describe only patterns supported by existing rows. Do not predict or critique future ideas, issue verdicts, write reports, or run publication commands.

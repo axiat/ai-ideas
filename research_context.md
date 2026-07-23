@@ -1,26 +1,26 @@
-# Research Context（供每周 idea routine 使用）
+# Research Context
 
-> 更新日期：2026-07-03。本文件只是可选灵感来源，**不构成约束**——发散规则见 `brainstorming_policy.md`：每轮至多 1-2 个 idea 与以下方向直接相关，其余应跳出此栈自由发散。
+Last updated: 2026-07-03. This file is optional inspiration, not a constraint. `brainstorming_policy.md` defines divergence: at most 1–2 ideas per round may directly concern this stack; the rest must range beyond it.
 
-## 核心方向
+## Core Direction
 
-DSRL 式的 frozen VLA 后训练/引导：backbone（π0.5）冻结，在 latent noise / action 空间用 RL（SAC 系）做 steering。关注 inference-time control 与 frozen backbone modulation，而非全量微调。
+DSRL-style post-training or steering for a frozen VLA: freeze the π0.5 backbone and use SAC-family RL in latent-noise or action space for control. The focus is inference-time control and frozen-backbone modulation, not full fine-tuning.
 
-## 当前技术栈与工作线
+## Current Stack and Workstreams
 
-- 基座：π0.5（flow-matching action head 的 VLA），openpi + jaxrl2 代码栈，仿真 manipulation 任务。
-- 奖励设计：VLM-based reward shaping —— subgoal 完成检测触发奖励、progress value（ProcVLM 式 procedure-grounded progress reward、VLLR 式 generalizable dense reward + policy self-certainty intrinsic reward）。
-- VLM 信号用途（已验证的定位）：reward shaping、SAC critic 的 state augmentation、episode 级静态任务分解。
+- Base model: π0.5, a VLA with a flow-matching action head; `openpi` + `jaxrl2`; simulated manipulation tasks.
+- Reward design: VLM-based reward shaping with subgoal-completion rewards, ProcVLM-style procedure-grounded progress rewards, and VLLR-style generalizable dense rewards plus policy self-certainty intrinsic rewards.
+- Validated uses of VLM signals: reward shaping, state augmentation for the SAC critic, and static task decomposition at episode granularity.
 
-## 已验证的关键结论（避免生成与之矛盾的 idea）
+## Validated Findings
 
-- π0.5 对 subgoal-level text prompt 响应不可靠（V1/V1-extra 实验：SNR 低，closed-loop 反例），"VLM 输出 subgoal text 喂给 VLA" 的通路已被砍掉；VLA 始终输入 full task text。
-- VLM judge 存在 sim 视觉穿模等感知遗留问题，reward 信号需做 audit / 多帧 / temporal 校验。
+- π0.5 responds unreliably to subgoal-level text prompts. V1 and V1-extra experiments showed low SNR and closed-loop counterexamples, so the path that feeds VLM-generated subgoal text into the VLA was dropped. The VLA always receives the full task text.
+- The VLM judge retains perception failures such as simulated visual penetration artifacts. Reward signals require auditing, multi-frame evidence, and temporal validation.
 
-## 兴趣关键词
+## Interest Keywords
 
-World model（latent dynamics、可交互世界模型、model-based RL for robotics）、VLA 后训练（RL post-training、noise-space steering、adaptive chunk replanning）、inference dynamics、frozen backbone 调制、VLM-as-judge 奖励、长时序 manipulation。
+World models (latent dynamics, interactive world models, model-based RL for robotics), VLA post-training (RL post-training, noise-space steering, adaptive chunk replanning), inference dynamics, frozen-backbone modulation, VLM-as-judge rewards, and long-horizon manipulation.
 
-## 资源设定（评审 feasibility 用）
+## Resource Assumptions
 
-单人研究者，每周约 40 有效小时，H100 级多卡 GPU，工程能力强，偏 applied。
+One researcher, approximately 40 effective hours per week, H100-class multi-GPU access, strong engineering ability, and an applied research preference.

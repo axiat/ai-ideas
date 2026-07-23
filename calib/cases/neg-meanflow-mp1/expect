@@ -1,3 +1,3 @@
-# direct-hit 阴性(2025 年新占位):头条被 MP1(2507.10543)单篇占据,"为何可能新"两条依据
-# 均被证伪(详见 calib/README.md);非全票 reject = 面板放水
+# Direct-hit negative with a recent 2025 occupant: MP1 (2507.10543) covers the headline and contradicts both novelty premises.
+# See calib/README.md. Anything short of unanimous reject is too permissive.
 all_votes=reject

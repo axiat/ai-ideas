@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""litwatch —— 领域近作监视的确定性取数/准入核。见 LITWATCH-DRAFT.md。
+"""Deterministic fetch and admission core for the recent-work monitor.
 
-只处理数据、不含判断。三个子命令:
-  parse   本地 API 响应文件 → 规范化 records JSONL(离线,可测)。
-  fetch   打 arXiv / Semantic Scholar 端点 → parse(联网)。
-  ingest  staging records + agy 标注 → index JSONL。标注只能挂到 staging 里
-          已有的 id;越界(引用未取到的 id)/坏行/重复一律丢弃并记 drop 日志。
-          record 只来自 API 响应,agy 结构上塞不进新记录。
+This module handles data, not research judgment:
+  parse   local API response -> normalized record JSONL.
+  fetch   arXiv or Semantic Scholar endpoint -> normalized records.
+  ingest  staging records plus annotations -> index JSONL.
 
-record 逐行 JSON: {id, source, title, abstract, url, date[, query, theme]}
-agy 标注逐行 JSON: {id, theme?, note}   id 必须 ∈ staging
+Ingest attaches annotations only to identifiers present in staging. It drops
+out-of-set, malformed, and duplicate annotations with explicit reasons, so an
+annotation backend cannot create a record.
+
+Record JSON: {id, source, title, abstract, url, date[, query, theme]}
+Annotation JSON: {id, theme?, note}; id must exist in staging.
 """
 import argparse
 import datetime
@@ -23,9 +25,9 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-ARXIV_API = "https://export.arxiv.org/api/query"   # http 会 301→https
+ARXIV_API = "https://export.arxiv.org/api/query"   # HTTP redirects to HTTPS.
 S2_API = "https://api.semanticscholar.org/graph/v1/paper/search"
-OAI_API = "https://oaipmh.arxiv.org/oai"           # export.arxiv.org/oai2 会 301 到这里
+OAI_API = "https://oaipmh.arxiv.org/oai"           # Canonical OAI endpoint.
 ATOM = "{http://www.w3.org/2005/Atom}"
 OAI = "{http://www.openarchives.org/OAI/2.0/}"
 OAI_ARX = "{http://arxiv.org/OAI/arXiv/}"
@@ -34,7 +36,7 @@ UA = "litwatch/0.1 (ai-ideas idea-hunt; research use)"
 
 def _norm_arxiv_id(raw):
     # http://arxiv.org/abs/2401.12345v2 -> 2401.12345
-    # http://arxiv.org/abs/cs/0309136v1 -> cs/0309136(保留老式类别前缀,url 才可达)
+    # http://arxiv.org/abs/cs/0309136v1 -> cs/0309136; retain legacy category prefix.
     raw = (raw or "").strip()
     for pre in ("http://arxiv.org/abs/", "https://arxiv.org/abs/"):
         if raw.startswith(pre):
@@ -52,8 +54,8 @@ def _squash(s):
 
 
 def _arxiv_search_query(q):
-    # theme 行可直接写 arXiv 查询表达式(带 all:/ti:/abs: 字段或 AND/OR 布尔);
-    # 纯文本则整体裹进 all:(),否则空格分词会被当松散 OR、配 date 排序召回近作噪声。
+    # Preserve explicit arXiv field/boolean expressions. Prefix plain text with
+    # all: so whitespace does not become a loose OR under date sorting.
     ql = q.lower()
     if any(op in ql for op in ("all:", "ti:", "abs:", "cat:")) or \
        any(b in " " + ql + " " for b in (" and ", " or ", " andnot ")):
@@ -66,7 +68,7 @@ def parse_arxiv(xml_text):
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as e:
-        sys.stderr.write("litwatch parse_arxiv: 无法解析 xml: %s\n" % e)
+        sys.stderr.write("litwatch parse_arxiv: invalid XML: %s\n" % e)
         return recs
     for e in root.findall(ATOM + "entry"):
         rid = _squash(e.findtext(ATOM + "id"))
@@ -92,7 +94,7 @@ def parse_s2(json_text):
     try:
         data = json.loads(json_text)
     except json.JSONDecodeError as e:
-        sys.stderr.write("litwatch parse_s2: 无法解析 json: %s\n" % e)
+        sys.stderr.write("litwatch parse_s2: invalid JSON: %s\n" % e)
         return recs
     if not isinstance(data, dict):
         return recs
@@ -123,12 +125,12 @@ def parse_s2(json_text):
 
 
 def parse_oai(xml_text):
-    """OAI-PMH ListRecords/GetRecord → (records[带 categories], resumptionToken 或 None)。"""
+    """Return OAI-PMH records with categories and an optional resumption token."""
     recs = []
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as e:
-        sys.stderr.write("litwatch parse_oai: 无法解析 xml: %s\n" % e)
+        sys.stderr.write("litwatch parse_oai: invalid XML: %s\n" % e)
         return recs, None
     err = root.find(OAI + "error")
     if err is not None:
@@ -168,7 +170,7 @@ def parse_oai(xml_text):
 
 
 def harvest_oai(from_date, until_date, sets, max_pages, sleep_s=3):
-    """按 set + 日期段批量抓,跟 resumptionToken 翻页(封顶 max_pages)。"""
+    """Harvest each set/date range, following tokens up to max_pages."""
     all_recs = []
     for setspec in sets:
         base = {"verb": "ListRecords", "metadataPrefix": "arXiv", "set": setspec, "from": from_date}
@@ -181,7 +183,7 @@ def harvest_oai(from_date, until_date, sets, max_pages, sleep_s=3):
             try:
                 body = _http_get(url)
             except (urllib.error.URLError, OSError) as e:
-                sys.stderr.write("litwatch oai harvest 失败(%s,set=%s): %s\n" % (type(e).__name__, setspec, e))
+                sys.stderr.write("litwatch OAI harvest failed (%s, set=%s): %s\n" % (type(e).__name__, setspec, e))
                 break
             recs, token = parse_oai(body)
             all_recs.extend(recs)
@@ -195,7 +197,7 @@ def harvest_oai(from_date, until_date, sets, max_pages, sleep_s=3):
 
 
 def load_themes(themes_file):
-    """每行一个主题;行内 | 分隔为等价关键词(小写子串匹配)。→ [(label, [kw...])]。"""
+    """Load one theme per line, with `|`-separated substring alternatives."""
     themes = []
     with open(themes_file, encoding="utf-8") as f:
         for line in f:
@@ -209,8 +211,7 @@ def load_themes(themes_file):
 
 
 def filter_tag(records, themes, cats=None):
-    """保留 (类别∈cats) 且 命中≥1 主题关键词 的记录,打 theme 标;keep-first 去重。
-    themes 为空则不按关键词过滤;cats 为空则不按类别过滤。"""
+    """Filter by optional categories/themes, tag the first match, and keep first."""
     catset = set(cats) if cats else None
     out, seen = [], set()
     for r in records:
@@ -238,7 +239,7 @@ def filter_tag(records, themes, cats=None):
 
 
 def _http_get(url, headers=None, retries=2, backoff=5):
-    # arXiv API 实测会间歇 429/503/超时(尤其未缓存的复杂 query);退避重试并认 Retry-After。
+    # arXiv intermittently returns 429/503 or times out; honor Retry-After.
     h = {"User-Agent": UA}
     if headers:
         h.update(headers)
@@ -255,14 +256,14 @@ def _http_get(url, headers=None, retries=2, backoff=5):
                 except (TypeError, ValueError):
                     wait = backoff * (attempt + 1)
                 wait = min(wait, 60)
-                sys.stderr.write("litwatch http %d,%ds 后重试(%d/%d)\n" % (e.code, wait, attempt + 1, retries))
+                sys.stderr.write("litwatch HTTP %d; retrying in %ds (%d/%d)\n" % (e.code, wait, attempt + 1, retries))
                 time.sleep(wait)
                 continue
             raise
         except (urllib.error.URLError, OSError) as e:
             if attempt < retries:
                 wait = backoff * (attempt + 1)
-                sys.stderr.write("litwatch http %s,%ds 后重试(%d/%d)\n" % (type(e).__name__, wait, attempt + 1, retries))
+                sys.stderr.write("litwatch HTTP %s; retrying in %ds (%d/%d)\n" % (type(e).__name__, wait, attempt + 1, retries))
                 time.sleep(wait)
                 continue
             raise
@@ -275,7 +276,7 @@ def fetch(source, query, max_results, window_days=0, sort="submittedDate"):
             "search_query": _arxiv_search_query(query),
             "start": 0,
             "max_results": max_results,
-            "sortBy": sort,          # submittedDate=近作优先(可能带 OR 噪声);relevance=相关优先
+            "sortBy": sort,          # submittedDate prioritizes recent work; relevance prioritizes fit.
             "sortOrder": "descending",
         })
     elif source == "s2":
@@ -284,15 +285,15 @@ def fetch(source, query, max_results, window_days=0, sort="submittedDate"):
             "limit": max_results,
             "fields": "title,abstract,url,publicationDate,externalIds",
         })
-        key = os.environ.get("LITWATCH_S2_KEY")   # 免 key 的 S2 免费额度基本 429;有 key 才可靠
+        key = os.environ.get("LITWATCH_S2_KEY")   # Unkeyed S2 requests are commonly rate-limited.
         if key:
             headers = {"x-api-key": key}
     else:
         raise SystemExit("unknown source: " + source)
     try:
         body = _http_get(url, headers)
-    except (urllib.error.URLError, OSError) as e:   # 含 HTTPError(429)/超时/连接错:干净跳过,不 traceback
-        sys.stderr.write("litwatch fetch %s 取数失败(%s): %s\n" % (source, type(e).__name__, e))
+    except (urllib.error.URLError, OSError) as e:   # Includes HTTP, timeout, and connection errors.
+        sys.stderr.write("litwatch fetch %s failed (%s): %s\n" % (source, type(e).__name__, e))
         return [], url
     recs = parse_arxiv(body) if source == "arxiv" else parse_s2(body)
     if window_days:
@@ -374,14 +375,14 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="litwatch")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("parse", help="解析本地 API 响应文件")
+    p = sub.add_parser("parse", help="parse a local API response")
     p.add_argument("--source", required=True, choices=["arxiv", "s2"])
     p.add_argument("--input", required=True)
     p.add_argument("--query", default="")
     p.add_argument("--theme", default="")
     p.add_argument("--out", default="")
 
-    f = sub.add_parser("fetch", help="联网取数并解析")
+    f = sub.add_parser("fetch", help="fetch and parse remote records")
     f.add_argument("--source", required=True, choices=["arxiv", "s2"])
     f.add_argument("--query", required=True)
     f.add_argument("--max", type=int, default=25)
@@ -391,20 +392,20 @@ def main(argv=None):
     f.add_argument("--theme", default="")
     f.add_argument("--out", default="")
 
-    g = sub.add_parser("ingest", help="标注挂到已取 record,产出 index")
+    g = sub.add_parser("ingest", help="attach in-set annotations and produce an index")
     g.add_argument("--staging", required=True)
     g.add_argument("--annotations", default="")
     g.add_argument("--drop-log", default="")
     g.add_argument("--out", default="")
 
-    hv = sub.add_parser("harvest", help="arXiv OAI-PMH 批量抓 + 本地类别/关键词过滤 → staging")
+    hv = sub.add_parser("harvest", help="harvest arXiv OAI-PMH and filter locally")
     hv.add_argument("--days", type=int, default=4)
-    hv.add_argument("--from", dest="from_date", default="")   # 覆盖 --days
+    hv.add_argument("--from", dest="from_date", default="")   # Overrides --days.
     hv.add_argument("--until", dest="until_date", default="")
-    hv.add_argument("--sets", default="cs")                   # 逗号分隔 OAI set
+    hv.add_argument("--sets", default="cs")                   # Comma-separated OAI sets.
     hv.add_argument("--max-pages", type=int, default=8)
-    hv.add_argument("--cats", default="")                     # 逗号分隔类别白名单;空=不按类别过滤
-    hv.add_argument("--themes-file", default="")              # 空=不按关键词过滤(全留)
+    hv.add_argument("--cats", default="")                     # Comma-separated category allowlist.
+    hv.add_argument("--themes-file", default="")              # Empty disables keyword filtering.
     hv.add_argument("--out", default="")
 
     args = ap.parse_args(argv)
@@ -437,7 +438,7 @@ def main(argv=None):
         themes = load_themes(args.themes_file) if args.themes_file else []
         cats = [c.strip() for c in args.cats.split(",") if c.strip()] if args.cats else None
         kept = filter_tag(raw, themes, cats)
-        sys.stderr.write("litwatch harvest from=%s -> 抓 %d,过滤后 %d\n" % (from_date, len(raw), len(kept)))
+        sys.stderr.write("litwatch harvest from=%s -> %d fetched, %d kept\n" % (from_date, len(raw), len(kept)))
         _emit(kept, args.out)
 
 

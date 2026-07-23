@@ -1,12 +1,12 @@
 ## I1
-一句话故事:删掉模仿学习策略的生成式动作头——主张动作分布无需生成式建模,直接 L2 回归即可,迭代采样是历史包袱
-主题:VLA-架构
-形态:删承重假设
-简述:diffusion/flow 动作头带来 10-100 步迭代采样,推理延迟与实现复杂度高。主张生成式建模并非动作头的承重组件:大规模预训练视觉表征已把观测编码得足够判别,动作多模态可由数据侧清洗与任务分解消除,回归头即可替代。若成立,主流 VLA 的采样栈可整体移除。
-删哪条承重假设:动作分布必须用生成式模型建模(迭代去噪/流积分采样)——Diffusion Policy、π0、RDT 等主流方法均默认此组件。
-为何现在能删:预训练视觉表征的判别力已大幅提升,配合数据清洗与任务分解,残余动作多模态可忽略,确定性回归足以拟合。
-forcing constraint:边缘部署——迭代采样的延迟与算力开销不满足高频实时控制,10ms 级控制周期装不下 10-100 步去噪。
-裂缝证据:https://arxiv.org/abs/2303.04137 —— Diffusion Policy 附录消融显示 L2 回归头与扩散头在 robomimic 上持平,扩散仅在真机长时程任务有优势
-裂缝证据:https://arxiv.org/abs/2410.24164 —— π0 报告 flow 头对成功率贡献可忽略,主要收益来自 VLM 预训练骨干
-最小否证实验:robomimic Lift+Can 两任务,同一视觉骨干下 L2 回归头对比 Diffusion Policy(最强基线),1×H100 一天;若回归头成功率不低于扩散头 5 个点以上,即证明生成式头非承重。
-为何可能新:尚无工作系统主张并验证"生成式动作头可整体删除"。这是待验证假设。
+One-Sentence Story: Remove the generative action head from imitation-learning policies: claim that action distributions need no generative model, direct L2 regression is sufficient, and iterative sampling is historical baggage.
+Theme: VLA - Architecture
+Form: remove-load-bearing-assumption
+Summary: Diffusion and flow action heads require 10-100 sampling steps, increasing inference latency and implementation complexity. The wager is that generative modeling is not load-bearing: large-scale pretrained visual representations already make observations discriminative enough, while data cleaning and task decomposition can remove residual action multimodality. If true, mainstream VLA sampling stacks can be removed wholesale.
+Assumption to Remove: Action distributions require a generative model with iterative denoising or flow integration. Diffusion Policy, π0, RDT, and other mainstream methods assume this component.
+Why It Can Be Removed Now: Pretrained visual representations are substantially more discriminative; combined with data cleaning and task decomposition, they may reduce residual action multimodality enough for deterministic regression.
+Forcing Constraint: Edge deployment. Iterative sampling does not meet high-frequency real-time control budgets; a 10ms control cycle cannot accommodate 10-100 denoising steps.
+Crack Evidence: https://arxiv.org/abs/2303.04137 — The Diffusion Policy appendix reportedly shows an L2 regression head matching the diffusion head on robomimic, with diffusion helping only on long-horizon real-robot tasks.
+Crack Evidence: https://arxiv.org/abs/2410.24164 — π0 reportedly shows that the flow head contributes little to success and that most gains come from the pretrained VLM backbone.
+Minimal Falsification Experiment: On robomimic Lift and Can, compare an L2 regression head with Diffusion Policy, the strongest baseline, under the same visual backbone using 1×H100 for one day. If the regression head trails the diffusion head by no more than 5 points, the generative head is not load-bearing.
+Why It May Be Novel: No work has yet been shown to make and test the systematic claim that generative action heads can be removed wholesale. This remains a hypothesis for independent verification.

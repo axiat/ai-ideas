@@ -1,49 +1,53 @@
-# PROGRAM — idea 调研回路协议
+# PROGRAM — Idea Research Loop Protocol
 
-所有入口(定时 routine、主动 loop)共用。此文件及下列不动项只由人修改,agent 只读。
+All entry points, including scheduled routines and active loops, follow this protocol. Only a human may modify this file or the immutable inputs below; agents read them without alteration.
 
-## 不动项
+## Immutable Inputs
 
-1. `rubric.md` — 评审流程,只读,不得跳步或重新解释。
-2. `brainstorming_policy.md` — 发散规则、idea 形态、verdict 校准,只读;Strong Accept 的尺度不得自行放宽或收紧。
-3. 指标唯一:verdict。keep ⇔ Strong Accept。verdict 不由任何单个 agent 决定,而由 orchestrator(`hunt.sh`)对 N 位独立裁判取**最低**票聚合;Strong Accept 需全票。
-4. 定级证据:候选 Strong Accept 必须附 policy 要求的定向查重记录(最相近 5-8 篇 + 链接,含「最强反例」行与 ≥1 条可复现的 arXiv/Semantic Scholar API 检索记录)与「最小否证实验」(数据 × 算力 × 预期信号);删承重假设形态另须「裂缝证据核验」节且 ≥2 条相符;缺任一不得定级。查重由独立进程完成,裁判的 novelty 只认该证据、feasibility 只认最小否证实验,不认生成方的说法。
-5. `ledger.tsv` schema 固定(见下);每个生成的 idea 无论 verdict 一律记一行,只追加,不改历史行。**只由 orchestrator 写入**,agent 不碰。
-6. 生成前必读 `ledger.tsv`,新 idea 不得与任何已有行实质雷同(包括已拒的)。唯一例外(每轮至多 1 个,进化与复查共用名额):进化——只准选 verdict=accept-w-rev 且 overlap=low 且死因属实验设计类缺陷的行做定向修复(novelty 封顶/已被占据的行不得进化);复查——查重薄弱型 accept-w-rev 行、或 category=evidence-incomplete 的 reject 行(全票 SA 仅因硬门槛降级、票够只差证据)原样重交补证/补查重,块首记「复活自」「复活条件」,同一 story 至多一次。均按全新 idea 走完整查重与评审,不继承旧票。reject 行复活资格按 category(第 8 列):novelty-dead(direct-hit / overlap=high / CRITICAL)永久禁复活;evidence-incomplete 准上述一次复查,补后仍不达标即并入永久禁。
-7. 角色分离(反串通):生成 / 查重 / 打分是互不共享 context 的独立进程,prompt 见 `roles/`。生成方不查重定性、不打分;裁判默认 Reject、互不通气、也不知道停机条件。
-8. 写入范围:agent 只允许写 `tmp/`(草稿区,gitignored)与 `ideas/`(仅报告角色);不得碰 `ledger.tsv` 及其它文件,不得运行 git/gh/publish。记账与发布由 orchestrator 负责,产出经 `./publish.sh` 走特性分支 + PR。
-9. 一轮 = 生成一批候选(约 10 个)经独立排序 + 预筛裁剪后完整走完"深查 → 打分 → 记账"。预筛 kill 的候选按 reject 记账(不得静默丢弃);预筛存活超出 SHORT_MAX 的截断候选不深查、不记账(未获任何评审,下轮可重新生成),此外不得半途丢弃已写入本轮产物的 idea。
-10. 循环期间不停下询问人、不请求确认;停机条件只由入口文件定义,未达标不得提前放水结束。
+1. `rubric.md` — the review procedure. It is read-only and may not be skipped or reinterpreted.
+2. `brainstorming_policy.md` — divergence rules, valid idea forms, and verdict calibration. It is read-only; agents may neither relax nor tighten the Strong Accept standard.
+3. Verdict is the sole success metric. Keep if and only if Strong Accept. No single agent decides a verdict: the orchestrator (`hunt.sh`) aggregates N independent reviewers by taking the lowest vote, so Strong Accept requires unanimity.
+4. Grading evidence is mandatory. Every prospective Strong Accept needs the policy's directed prior-work record: the 5–8 closest papers with links, a `Strongest Counterexample:` line, at least one reproducible arXiv or Semantic Scholar API `- Query:` record, and a `Minimal Falsification Experiment:` specifying data × compute × expected signal. `Form: remove-load-bearing-assumption` also requires a `Crack Evidence Verification` section with at least two `supports` results. Missing evidence prevents the grade. Prior-work research runs in an independent process. Reviewers accept novelty only from that evidence and feasibility only from the falsification experiment, never from the generator's claims.
+5. The `ledger.tsv` schema is fixed below. Every generated idea receives one row regardless of verdict. The ledger is append-only; historical rows are immutable. Only the orchestrator may write it.
+6. Generation begins by reading `ledger.tsv`; a new idea may not substantially duplicate any prior row, including rejected rows. One exception slot per round is shared by evolution and recheck:
+   - Evolution may repair only an `accept-w-rev` row with `overlap=low` whose failure was experimental-design related. A novelty-capped or occupied idea cannot evolve.
+   - Recheck may resubmit unchanged either an `accept-w-rev` row with weak prior-work evidence or a `reject` row with `category=evidence-incomplete`, where unanimous SA votes were reduced solely by a hard evidence gate. Start the block with `Recheck:` and its eligibility condition. A story gets at most one recheck.
+   - Both paths undergo a fresh full prior-work search and review and inherit no votes. Reject eligibility is mechanical from column 8: `novelty-dead` (`direct-hit`, `overlap=high`, or CRITICAL) is permanent; `evidence-incomplete` permits one recheck, after which another failure becomes permanent. Mark evolution lineage with `Evolved from:`.
+7. Roles remain isolated against collusion. Generation, prior-work research, and scoring are separate processes with no shared context; prompts live under `roles/`. The generator neither judges novelty nor scores candidates. Reviewers default to Reject, cannot communicate, and do not know the stopping condition.
+8. Agent writes are limited to `tmp/` (gitignored drafts) and `ideas/` (report role only). Agents may not modify `ledger.tsv` or other files and may not run `git`, `gh`, or publication commands. The orchestrator owns accounting and runs accepted output through `./publish.sh`, which uses a feature branch and pull request.
+9. One round generates about 10 candidates, independently ranks them, applies prescreen pruning, and then completes prior-work research → scoring → accounting. A prescreen kill is recorded as `reject`; it may not disappear silently. Survivors beyond `SHORT_MAX` are truncated before deep research, receive no ledger row because they received no review, and may be generated again later. No other idea already written to the round artifacts may be abandoned midway.
+10. During the loop, do not ask a human for confirmation. Only the entry point defines the stopping condition; never lower the bar or stop early before it is met.
 
-## 回路
+## Loop
 
-`hunt.sh` 按序调起独立进程,每轮:
+`hunt.sh` launches independent processes in this order for each round:
 
-0. **失败蒸馏**(`roles/meta.md`,每 META_EVERY 轮、reject+accept-w-rev 行足量时,可错):把拒因与封顶原因归纳成 `tmp/deathlist.md`(致命模式/封顶模式/进化候选),失败只记日志不阻塞。
-1. **生成**(`roles/generate.md`):读 policy、ledger 与失败清单,发散约 10 个候选(不自筛,排序与裁剪交下游)到 `tmp/round/`,遵守 policy 发散要求、主题反坍缩与五种合法形态(删承重假设形态带结构化字段与「删公理尝试」标记),避开 ledger 已有行、死因模式和已饱和套路;每个 idea 标注主题并附最小否证实验(点名最强基线、给样本量与预期效应);发散透镜由 `hunt.sh` 随机抽取注入。
-1.4 **排序**(`roles/select.md`,独立 context、便宜可错、只排不杀):按命题强度、clear-accept 上限、最小否证实验质量、可执行性四准则给发散全集排序,写 `tmp/round/select.tsv`;orchestrator 据名次定深查名额优先级(缺失/非法回落生成序,不废轮)。只 triage,不出 verdict、不查重、不背书;复查/进化与删公理配额、低存量主题仍是硬约束/tie-break,不被名次推翻。
-1.5 **预筛**(`roles/prescreen.md`,便宜可错、只杀不保):只杀"单篇工作直接占据头条"的 direct hit,kill 必附占位链接;被杀者由 orchestrator 立即按 reject 记账(overlap=high),存活取前 SHORT_MAX 个进深查。keep 不构成任何 novelty 结论。
-2. **深查重**(`roles/research.md`):对抗式定向查重,先 direct-hit 猎杀再铺开三类检索词;每个 idea 找最相近 5-8 篇实读摘要/方法,产出独立证据(含"最强反例"行);每个 idea 块须有至少 5 条带链接近邻与至少 1 条 API 检索记录(query URL);形态=删承重假设的 idea 另须逐条实读核验其自报「裂缝证据」URL(相符/部分/不符/不可达),写入该块「裂缝证据核验」节。
-3. **打分**(`roles/review.md`,跑 N 次):各裁判按 `rubric.md` 完整评审、用 policy 校准,默认 Reject,输出各自 verdict。
-4. **聚合记账**(orchestrator):每个 idea 取 N 位裁判最低票(SA 需全票),连同查重的重叠判定(overlap 列)与非 SA 四分类(category 列)全部追加进 `ledger.tsv`。
-5. 有全票 Strong Accept → `roles/report.md` 组装报告到 `ideas/`,orchestrator 调 `./publish.sh` 发布;当日累计达入口定义的目标数(`SA_TARGET`,默认 1)即停,未达则继续下一轮(调研可增量补充)。
+0. **Failure distillation** (`roles/meta.md`; every `META_EVERY` rounds when enough `reject` and `accept-w-rev` rows exist; fallible): summarize fatal patterns, ceiling patterns, and evolution candidates in `tmp/deathlist.md`. Failure is logged and never blocks the round.
+1. **Generation** (`roles/generate.md`): read the policy, ledger, and failure list; write about 10 unscreened candidates to `tmp/round/`. Respect the policy's divergence, cross-round theme anti-collapse, and five valid forms. An assumption-removal candidate carries its structured fields and an `Assumption-Removal Attempt:` marker. Avoid existing ledger stories, death patterns, and saturated templates. Label every idea with a policy theme and include a `Minimal Falsification Experiment:` that names the strongest baseline, sample size, and expected effect. `hunt.sh` injects a randomly selected divergence lens.
+1.4 **Selection** (`roles/select.md`; isolated context; cheap and fallible; rank only): rank the complete divergent set by proposition strength, clear-accept ceiling, falsification quality, and executability; write `tmp/round/select.tsv`. The orchestrator uses rank to prioritize deep-research slots. Missing or invalid output falls back to generation order and does not invalidate the round. Selection is triage: it issues no verdict, performs no prior-work search, and grants no endorsement. Recheck/evolution limits, the assumption-removal quota, and low-inventory themes remain hard constraints or tie-breakers.
+1.5 **Prescreen** (`roles/prescreen.md`; cheap and fallible; kill only): kill only a direct hit where one paper occupies the headline claim. `Decision: kill` requires the occupying link; the orchestrator immediately records `reject` with `overlap=high`. `Decision: keep` makes no novelty claim. Up to `SHORT_MAX` prioritized survivors proceed to deep research.
+2. **Deep prior-work research** (`roles/research.md`): search adversarially, hunting direct hits first and then expanding across problem wording, mechanism, and adjacent-domain queries. For each idea, read the abstracts and methods of the 5–8 closest papers and produce independent evidence with `Papers Read:`, `Strongest Counterexample:`, and at least one reproducible API `- Query:` URL. A `Form: remove-load-bearing-assumption` block also verifies every self-reported `Crack Evidence:` URL and records `supports`, `partial`, `contradicts`, or `unreachable` under `Crack Evidence Verification`.
+3. **Scoring** (`roles/review.md`; run N times): each reviewer independently completes `rubric.md`, applies policy calibration, defaults to Reject, and emits a verdict.
+4. **Aggregation and accounting** (orchestrator): take the lowest of N votes for every idea; unanimity is required for Strong Accept. Append each idea to `ledger.tsv` with the prior-work `overlap` value and the mechanically assigned non-SA `category`.
+5. If any idea receives unanimous Strong Accept, `roles/report.md` writes the report under `ideas/` and the orchestrator runs `./publish.sh`. Stop only when the day's accepted count reaches the entry point's `SA_TARGET` (default 1); otherwise begin another round. Prior-work research may be extended incrementally.
 
-## ledger.tsv
+## `ledger.tsv`
 
-制表符分隔,8 列:
+Tab-separated, eight columns:
 
 ```
 date	source	theme	idea	verdict	reason	overlap	category
 ```
 
-- date: YYYY-MM-DD
-- source: weekly | hunt
-- theme: policy 主题词表之一(跨轮反坍缩的统计依据)
-- idea: 一句话故事
-- verdict: strong-accept | accept-w-rev | reject
-- reason: 一句话(拒因,或 keep 的核心价值);预筛杀的以"预筛直接占位:"开头
-- overlap: high | medium | low | 未知(查重的重叠判定;进化父本资格的机械筛选依据;旧行缺此列视为未知)
-- category: novelty-dead | evidence-incomplete | design-fixable | ceiling-limited | -(SA 行与旧行留 `-`)
-  非 SA 的四分类,由 orchestrator 按(降级前最低票、是否硬门槛降级、overlap)机械判定(见 hunt.sh `classify_nonsa`):
-  novelty-dead=头条被占据(overlap=high)/CRITICAL;evidence-incomplete=全票 SA 被硬门槛降级(票够只差证据);
-  design-fixable=accept-w-rev 且 overlap=low(实验设计类可修);ceiling-limited=accept-w-rev 但被近邻封顶(overlap≠low)。
+- `date`: `YYYY-MM-DD`
+- `source`: `weekly` or `hunt`
+- `theme`: one value from the policy theme vocabulary; used for cross-round anti-collapse accounting
+- `idea`: one-sentence story
+- `verdict`: `strong-accept`, `accept-w-rev`, or `reject`
+- `reason`: one sentence containing the rejection cause or the kept idea's core value; a prescreen kill begins with `Prescreen direct hit:`
+- `overlap`: `high`, `medium`, `low`, or `unknown`; the prior-work overlap judgment. Evolution parent eligibility uses this field, and a legacy row without column 7 is treated as `unknown`.
+- `category`: `novelty-dead`, `evidence-incomplete`, `design-fixable`, `ceiling-limited`, or `-`. Strong Accept rows use `-`; legacy seven-column rows omit category and are treated as `-`. The orchestrator assigns a non-SA category mechanically from the lowest vote before hard-gate reduction, hard-gate status, and overlap (see `classify_nonsa` in `hunt.sh`):
+  - `novelty-dead`: the headline is occupied (`overlap=high`) or a CRITICAL defect exists.
+  - `evidence-incomplete`: unanimous Strong Accept was reduced only by a hard evidence gate.
+  - `design-fixable`: `accept-w-rev` with `overlap=low`, indicating an experimental-design defect that may be repaired.
+  - `ceiling-limited`: `accept-w-rev` capped by prior work (`overlap` is not `low`).
