@@ -192,6 +192,9 @@ def _evidence(
     source_artifact_id=None,
 ):
     span = " ".join(str(text).split())[:EVIDENCE_SPAN_LIMIT]
+    resolved_artifact_id = (
+        source_artifact_id or "canonical-row:" + row["raw_sha256"]
+    )
     material = canonical_bytes(
         {
             "candidate_id": row["candidate_id"],
@@ -199,6 +202,7 @@ def _evidence(
             "facet": facet,
             "span": span,
             "source_sequence": row["source_sequence"],
+            "source_artifact_id": resolved_artifact_id,
         }
     )
     return {
@@ -207,14 +211,53 @@ def _evidence(
         "facet": facet,
         "raw_score": round(float(raw_score), 12),
         "rank": int(rank),
-        "source_artifact_id": source_artifact_id
-        or "canonical-row:" + row["raw_sha256"],
+        "source_artifact_id": resolved_artifact_id,
         "source_location": "ledger.tsv#data-row=%d" % row["source_sequence"],
         "evidence_id": _sha(b"history-evidence-v1\0" + material),
         "evidence_span": span,
         "material_delta": "",
         "channel": channel,
     }
+
+
+def _bounded_material_delta(parent_story, child_story):
+    parent = str(parent_story).split()
+    child = str(child_story).split()
+    prefix = 0
+    while (
+        prefix < len(parent)
+        and prefix < len(child)
+        and parent[prefix] == child[prefix]
+    ):
+        prefix += 1
+    suffix = 0
+    while (
+        suffix < len(parent) - prefix
+        and suffix < len(child) - prefix
+        and parent[-suffix - 1] == child[-suffix - 1]
+    ):
+        suffix += 1
+    parent_end = len(parent) - suffix if suffix else len(parent)
+    child_end = len(child) - suffix if suffix else len(child)
+    parent_change = " ".join(parent[prefix:parent_end]) or "<none>"
+    child_change = " ".join(child[prefix:child_end]) or "<none>"
+    labels = "parent=", ";child="
+    available = EVIDENCE_SPAN_LIMIT - len(labels[0]) - len(labels[1])
+    parent_budget = min(len(parent_change), max(1, available // 2))
+    child_budget = min(len(child_change), max(1, available - parent_budget))
+    remaining = available - parent_budget - child_budget
+    if remaining:
+        parent_extra = min(remaining, len(parent_change) - parent_budget)
+        parent_budget += parent_extra
+        child_budget += min(
+            remaining - parent_extra, len(child_change) - child_budget
+        )
+    return (
+        labels[0]
+        + parent_change[:parent_budget]
+        + labels[1]
+        + child_change[:child_budget]
+    )
 
 
 def _rank_facet(values, depth):
@@ -455,9 +498,9 @@ def _lineage_channel(conn, seed_results, depth, query_story):
                         "relation_type": edge["relation_type"],
                         "edge_evidence_artifact_id": edge["evidence_artifact_id"],
                         "version_role": role,
-                        "material_delta": (
-                            edge["child_story"] + " versus " + edge["parent_story"]
-                        )[:EVIDENCE_SPAN_LIMIT],
+                        "material_delta": _bounded_material_delta(
+                            edge["parent_story"], edge["child_story"]
+                        ),
                     }
                 )
                 results.append(evidence)
@@ -671,6 +714,45 @@ def _fuse(channel_results, policy):
             }
         )
     return ranked, grouped
+
+
+def _fusion_summary(ranked, contributions):
+    candidate_lineages = {
+        match["candidate_id"]: lineage["lineage_id"]
+        for lineage in ranked
+        for match in lineage["matches"]
+    }
+    candidates = []
+    for contribution in contributions:
+        candidates.append(
+            {
+                "candidate_id": contribution["candidate_id"],
+                "lineage_id": candidate_lineages[contribution["candidate_id"]],
+                "rrf_score": round(
+                    sum(item["rrf_score"] for item in contribution["ranks"]),
+                    12,
+                ),
+            }
+        )
+    candidates.sort(
+        key=lambda item: (-item["rrf_score"], item["candidate_id"])
+    )
+    return {
+        "candidate_order": candidates,
+        "lineage_order": [
+            {
+                "lineage_id": lineage["lineage_id"],
+                "rank": lineage["rank"],
+                "rrf_score": lineage["rrf_score"],
+                "candidate_ids": [
+                    item["candidate_id"]
+                    for item in candidates
+                    if item["lineage_id"] == lineage["lineage_id"]
+                ],
+            }
+            for lineage in ranked
+        ],
+    }
 
 
 def _bounded_channels(channels, lineages):
@@ -956,6 +1038,7 @@ def _build_pack_snapshot(
             "channels": {
                 name: list(values) for name, values in results.items()
             },
+            "fusion": _fusion_summary(ranked, contributions),
         }
     )
     if intent == "evolution_search":
@@ -1059,6 +1142,23 @@ def _build_pack_snapshot(
         removable["matches"].pop()
         pack["lineages"] = retained
         pack["channels"] = _bounded_channels(channels, retained)
+        highest_candidates = (
+            {
+                match["candidate_id"]
+                for match in retained[0]["matches"]
+            }
+            if retained
+            else set()
+        )
+        pack["rank_contributions"] = (
+            []
+            if intent == "evolution_search"
+            else [
+                item
+                for item in contributions
+                if item["candidate_id"] in highest_candidates
+            ]
+        )
         sealed = _seal_pack(pack)
     if sealed["estimated_input_tokens"] <= int(policy["max_retrieval_tokens"]):
         return sealed
@@ -1074,10 +1174,14 @@ def _build_pack_snapshot(
             if retained
             else set()
         )
-        pack["rank_contributions"] = [
-            item for item in contributions
-            if item["candidate_id"] in highest_candidates
-        ]
+        pack["rank_contributions"] = (
+            []
+            if intent == "evolution_search"
+            else [
+                item for item in contributions
+                if item["candidate_id"] in highest_candidates
+            ]
+        )
         pack["omitted_lineage_count"] += 1
         sealed = _seal_pack(pack)
         if sealed["estimated_input_tokens"] <= int(policy["max_retrieval_tokens"]):
@@ -1118,17 +1222,18 @@ def _publish_pack(conn, pack, policy, preflight, rank_trace):
         rank_trace = {
             "contributions": [],
             "channels": {name: [] for name in pack["channels"]},
+            "fusion": {"candidate_order": [], "lineage_order": []},
         }
     rank_trace_bytes = canonical_bytes(rank_trace)
-    preflight_bytes = canonical_bytes(preflight).rstrip(b"\n")
+    preflight_bytes = canonical_bytes(preflight)
     conn.execute(
         """
         INSERT INTO history_pack_publications(
           publication_id, pack_sha256, pack_bytes, policy_sha256, generation,
           generation_manifest_sha256, source_watermark, retrieval_status,
           rank_trace_json, rank_trace_sha256, comparator_preflight_json,
-          created_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          comparator_preflight_sha256, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(publication_id) DO NOTHING
         """,
         (
@@ -1143,12 +1248,13 @@ def _publish_pack(conn, pack, policy, preflight, rank_trace):
             rank_trace_bytes.decode("utf-8"),
             _sha(rank_trace_bytes),
             preflight_bytes.decode("utf-8"),
+            _sha(preflight_bytes),
         ),
     )
     stored = conn.execute(
         """
         SELECT pack_bytes, rank_trace_json, rank_trace_sha256,
-               comparator_preflight_json
+               comparator_preflight_json, comparator_preflight_sha256
         FROM history_pack_publications
         WHERE publication_id = ?
         """,
@@ -1161,6 +1267,7 @@ def _publish_pack(conn, pack, policy, preflight, rank_trace):
         or stored["rank_trace_sha256"] != _sha(rank_trace_bytes)
         or stored["comparator_preflight_json"].encode("utf-8")
         != preflight_bytes
+        or stored["comparator_preflight_sha256"] != _sha(preflight_bytes)
     ):
         raise RetrievalError("pack publication identity collision")
 
@@ -1228,7 +1335,121 @@ def build_pack(
         raise
 
 
-def _validate_published_rank_trace(publication, pack):
+def _validate_trace_evidence(conn, channel, item):
+    base_fields = {
+        "candidate_id",
+        "lineage_id",
+        "facet",
+        "raw_score",
+        "rank",
+        "source_artifact_id",
+        "source_location",
+        "evidence_id",
+        "evidence_span",
+        "material_delta",
+        "channel",
+    }
+    expected_fields = (
+        base_fields
+        | {"relation_type", "edge_evidence_artifact_id", "version_role"}
+        if channel == "lineage"
+        else base_fields
+    )
+    allowed_facets = {
+        "exact": {"problem_estimand", "failure_code"},
+        "fts": set(history_projection.SEARCH_FACETS),
+        "dense": set(history_projection.SEARCH_FACETS),
+        "lineage": {"lineage"},
+        "expansion": {"lineage"},
+    }
+    if (
+        not isinstance(item, dict)
+        or set(item) != expected_fields
+        or item.get("channel") != channel
+        or item.get("facet") not in allowed_facets[channel]
+        or any(
+            not isinstance(item.get(field), str) or not item[field]
+            for field in (
+                "candidate_id",
+                "lineage_id",
+                "source_artifact_id",
+                "source_location",
+                "evidence_id",
+            )
+        )
+        or type(item.get("rank")) is not int
+        or item["rank"] < 1
+        or not isinstance(item.get("raw_score"), (int, float))
+        or isinstance(item.get("raw_score"), bool)
+        or not isinstance(item.get("evidence_span"), str)
+        or len(item["evidence_span"]) > EVIDENCE_SPAN_LIMIT
+        or not isinstance(item.get("material_delta"), str)
+    ):
+        raise ComparisonValidationError("published channel-result schema mismatch")
+    candidate = conn.execute(
+        "SELECT * FROM candidates WHERE candidate_id = ?",
+        (item["candidate_id"],),
+    ).fetchone()
+    if (
+        candidate is None
+        or candidate["lineage_id"] != item["lineage_id"]
+        or item["source_location"]
+        != "ledger.tsv#data-row=%d" % candidate["source_sequence"]
+    ):
+        raise ComparisonValidationError("published channel-result identity mismatch")
+    expected_evidence = _sha(
+        b"history-evidence-v1\0"
+        + canonical_bytes(
+            {
+                "candidate_id": candidate["candidate_id"],
+                "channel": channel,
+                "facet": item["facet"],
+                "span": item["evidence_span"],
+                "source_sequence": candidate["source_sequence"],
+                "source_artifact_id": item["source_artifact_id"],
+            }
+        )
+    )
+    if item["evidence_id"] != expected_evidence:
+        raise ComparisonValidationError("published evidence identity mismatch")
+    if channel != "lineage":
+        return
+    if (
+        item["source_artifact_id"] != item["edge_evidence_artifact_id"]
+        or not item["version_role"]
+    ):
+        raise ComparisonValidationError("published typed-edge identity mismatch")
+    edges = conn.execute(
+        """
+        SELECT edge.*, parent.story AS parent_story, child.story AS child_story
+        FROM lineage_edges edge
+        JOIN candidates parent
+          ON parent.candidate_id = edge.parent_candidate_id
+        JOIN candidates child
+          ON child.candidate_id = edge.child_candidate_id
+        WHERE edge.evidence_artifact_id = ? AND edge.relation_type = ?
+          AND (edge.parent_candidate_id = ? OR edge.child_candidate_id = ?)
+        """,
+        (
+            item["edge_evidence_artifact_id"],
+            item["relation_type"],
+            item["candidate_id"],
+            item["candidate_id"],
+        ),
+    ).fetchall()
+    if not any(
+        item["material_delta"]
+        == _bounded_material_delta(edge["parent_story"], edge["child_story"])
+        and item["evidence_span"]
+        == " ".join(
+            (edge["parent_story"] + " -> " + edge["child_story"]).split()
+        )[:EVIDENCE_SPAN_LIMIT]
+        for edge in edges
+    ):
+        raise ComparisonValidationError("published typed-edge delta mismatch")
+
+
+def _validate_published_rank_trace(conn, publication, pack, policy):
     try:
         trace_bytes = publication["rank_trace_json"].encode("utf-8")
         trace = json.loads(trace_bytes)
@@ -1238,7 +1459,7 @@ def _validate_published_rank_trace(publication, pack):
         trace_bytes != canonical_bytes(trace)
         or publication["rank_trace_sha256"] != _sha(trace_bytes)
         or not isinstance(trace, dict)
-        or set(trace) != {"channels", "contributions"}
+        or set(trace) != {"channels", "contributions", "fusion"}
         or not isinstance(trace["channels"], dict)
         or set(trace["channels"]) != set(pack["channels"])
         or not isinstance(trace["contributions"], list)
@@ -1250,6 +1471,8 @@ def _validate_published_rank_trace(publication, pack):
             or len(values) != pack["channels"][name]["result_count"]
         ):
             raise ComparisonValidationError("published rank trace count mismatch")
+        for item in values:
+            _validate_trace_evidence(conn, name, item)
     for contribution in trace["contributions"]:
         if (
             not isinstance(contribution, dict)
@@ -1257,6 +1480,71 @@ def _validate_published_rank_trace(publication, pack):
             != {"candidate_id", "channel", "facet", "rank", "rrf_score"}
         ):
             raise ComparisonValidationError("published rank trace schema mismatch")
+    ranked, contributions = _fuse(trace["channels"], policy)
+    expected_contributions = [
+        dict(rank, candidate_id=contribution["candidate_id"])
+        for contribution in contributions
+        for rank in contribution["ranks"]
+    ]
+    if trace["contributions"] != expected_contributions:
+        raise ComparisonValidationError("published fusion contributions mismatch")
+    if trace["fusion"] != _fusion_summary(ranked, contributions):
+        raise ComparisonValidationError("published fusion ordering mismatch")
+    expected_lineage_ids = [
+        lineage["lineage_id"] for lineage in ranked[:len(pack["lineages"])]
+    ]
+    if [lineage["lineage_id"] for lineage in pack["lineages"]] != expected_lineage_ids:
+        raise ComparisonValidationError("published fused lineage order mismatch")
+    ranked_by_lineage = {
+        lineage["lineage_id"]: lineage for lineage in ranked
+    }
+    for lineage in pack["lineages"]:
+        expected = ranked_by_lineage[lineage["lineage_id"]]
+        if (
+            lineage["rank"] != expected["rank"]
+            or lineage["rrf_score"] != expected["rrf_score"]
+        ):
+            raise ComparisonValidationError("published fused lineage score mismatch")
+        expected_matches = list(expected["matches"])
+        if pack["intent"] == "evolution_search":
+            expected_matches.sort(
+                key=lambda item: (
+                    0 if item["channel"] == "lineage" else 1,
+                    0 if item.get("version_role") == "highest_match" else 1,
+                    item["channel"],
+                    item["rank"],
+                    item["candidate_id"],
+                )
+            )
+        actual_keys = [
+            (item["channel"], item["facet"], item["candidate_id"], item["evidence_id"])
+            for item in lineage["matches"]
+        ]
+        expected_keys = [
+            (item["channel"], item["facet"], item["candidate_id"], item["evidence_id"])
+            for item in expected_matches[:len(actual_keys)]
+        ]
+        if actual_keys != expected_keys:
+            raise ComparisonValidationError("published fused candidate order mismatch")
+    highest_candidates = (
+        {
+            match["candidate_id"]
+            for match in pack["lineages"][0]["matches"]
+        }
+        if pack["lineages"]
+        else set()
+    )
+    expected_bounded = (
+        []
+        if pack["intent"] == "evolution_search"
+        else [
+            contribution
+            for contribution in contributions
+            if contribution["candidate_id"] in highest_candidates
+        ]
+    )
+    if pack["rank_contributions"] != expected_bounded:
+        raise ComparisonValidationError("published bounded fusion mismatch")
     bounded = [
         dict(rank, candidate_id=contribution["candidate_id"])
         for contribution in pack["rank_contributions"]
@@ -1458,7 +1746,7 @@ def _validate_pack(conn, pack, policy, require_complete=False):
         or publication["retrieval_status"] != pack["retrieval_status"]
     ):
         raise ComparisonValidationError("pack is not host-published")
-    _validate_published_rank_trace(publication, pack)
+    _validate_published_rank_trace(conn, publication, pack, policy)
     provenance = conn.execute(
         "SELECT * FROM history_generation_provenance WHERE generation = ?",
         (pack["index_generation"],),
@@ -1506,6 +1794,7 @@ def _validate_pack(conn, pack, policy, require_complete=False):
                     "facet": match["facet"],
                     "span": match["evidence_span"],
                     "source_sequence": candidate["source_sequence"],
+                    "source_artifact_id": match["source_artifact_id"],
                 }
             )
         )
@@ -1538,9 +1827,17 @@ def _validate_pack(conn, pack, policy, require_complete=False):
             if edge is None:
                 raise ComparisonValidationError("typed lineage evidence mismatch")
     try:
-        preflight = json.loads(publication["comparator_preflight_json"])
-    except (TypeError, ValueError) as exc:
+        preflight_bytes = publication["comparator_preflight_json"].encode("utf-8")
+        preflight = json.loads(preflight_bytes)
+    except (AttributeError, TypeError, ValueError) as exc:
         raise ComparisonValidationError("comparator preflight is corrupt") from exc
+    expected_preflight = _comparator_preflight(pack, policy)
+    if (
+        preflight_bytes != canonical_bytes(preflight)
+        or publication["comparator_preflight_sha256"] != _sha(preflight_bytes)
+        or preflight != expected_preflight
+    ):
+        raise ComparisonValidationError("comparator preflight identity mismatch")
     if pack["retrieval_status"] == "complete" and not preflight.get("fits"):
         raise ComparisonValidationError("comparator preflight did not pass")
 
@@ -1645,6 +1942,10 @@ def _validate_response(pack, response):
         raise ComparisonValidationError("uncertain status lacks uncertain evidence")
     request = response["expansion_request"]
     if request is not None:
+        if response["status"] != "uncertain":
+            raise ComparisonValidationError(
+                "expansion requires uncertain status"
+            )
         if (
             not isinstance(request, dict)
             or set(request) != {"lineage_ids"}
@@ -1666,6 +1967,14 @@ def _receipt_material(receipt):
 def finalize_comparison(conn, pack, response, policy):
     _validate_pack(conn, pack, policy, require_complete=True)
     _validate_response(pack, response)
+    publication = conn.execute(
+        """
+        SELECT rank_trace_sha256, comparator_preflight_sha256
+        FROM history_pack_publications
+        WHERE publication_id = ?
+        """,
+        (pack["pack_publication_id"],),
+    ).fetchone()
     response_hash = _sha(canonical_bytes(response))
     query = pack["query"]
     candidate_id = (
@@ -1681,6 +1990,9 @@ def finalize_comparison(conn, pack, response, policy):
         "pack_publication_id": pack["pack_publication_id"],
         "policy_sha256": pack["policy_sha256"],
         "generation_manifest_sha256": pack["generation_manifest_sha256"],
+        "rank_trace_sha256": publication["rank_trace_sha256"],
+        "comparator_preflight_sha256":
+            publication["comparator_preflight_sha256"],
         "retrieval_policy_version": pack["retrieval_policy_version"],
         "source_watermark": pack["source_watermark"],
         "index_generation": pack["index_generation"],
@@ -1707,9 +2019,11 @@ def finalize_comparison(conn, pack, response, policy):
             INSERT OR IGNORE INTO history_receipts(
               receipt_id, query_candidate_id, intent, pack_sha256,
               pack_publication_id, policy_sha256, generation_manifest_sha256,
+              rank_trace_sha256, comparator_preflight_sha256,
               retrieval_policy_version, source_watermark, index_generation,
               comparator_version, status, receipt_json, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     datetime('now'))
             """,
             (
                 receipt["receipt_id"],
@@ -1719,6 +2033,8 @@ def finalize_comparison(conn, pack, response, policy):
                 receipt["pack_publication_id"],
                 receipt["policy_sha256"],
                 receipt["generation_manifest_sha256"],
+                receipt["rank_trace_sha256"],
+                receipt["comparator_preflight_sha256"],
                 receipt["retrieval_policy_version"],
                 receipt["source_watermark"],
                 receipt["index_generation"],
@@ -1746,6 +2062,8 @@ def replay_receipt(conn, pack, receipt, policy):
             "pack_publication_id",
             "policy_sha256",
             "generation_manifest_sha256",
+            "rank_trace_sha256",
+            "comparator_preflight_sha256",
             "retrieval_policy_version",
             "source_watermark",
             "index_generation",
@@ -1776,6 +2094,22 @@ def replay_receipt(conn, pack, receipt, policy):
             != pack["generation_manifest_sha256"]
         ):
             raise ReceiptReplayError("pack provenance mismatch")
+        publication = conn.execute(
+            """
+            SELECT rank_trace_sha256, comparator_preflight_sha256
+            FROM history_pack_publications
+            WHERE publication_id = ?
+            """,
+            (pack["pack_publication_id"],),
+        ).fetchone()
+        if (
+            publication is None
+            or receipt.get("rank_trace_sha256")
+            != publication["rank_trace_sha256"]
+            or receipt.get("comparator_preflight_sha256")
+            != publication["comparator_preflight_sha256"]
+        ):
+            raise ReceiptReplayError("retrieval audit provenance mismatch")
         if receipt.get("retrieval_policy_version") != policy["retrieval_policy_version"]:
             raise ReceiptReplayError("retrieval policy mismatch")
         if receipt.get("source_watermark") != pack["source_watermark"]:

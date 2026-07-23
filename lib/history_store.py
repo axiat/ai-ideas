@@ -183,6 +183,8 @@ CREATE TABLE IF NOT EXISTS history_receipts(
   pack_publication_id TEXT NOT NULL REFERENCES history_pack_publications(publication_id),
   policy_sha256 TEXT NOT NULL,
   generation_manifest_sha256 TEXT NOT NULL,
+  rank_trace_sha256 TEXT NOT NULL,
+  comparator_preflight_sha256 TEXT NOT NULL,
   retrieval_policy_version TEXT NOT NULL,
   source_watermark INTEGER NOT NULL,
   index_generation INTEGER NOT NULL,
@@ -217,6 +219,7 @@ CREATE TABLE IF NOT EXISTS history_pack_publications(
   rank_trace_json TEXT NOT NULL,
   rank_trace_sha256 TEXT NOT NULL,
   comparator_preflight_json TEXT NOT NULL,
+  comparator_preflight_sha256 TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 CREATE TRIGGER IF NOT EXISTS history_pack_provenance_guard
@@ -239,6 +242,8 @@ BEGIN
       AND p.pack_sha256 = NEW.pack_sha256
       AND p.policy_sha256 = NEW.policy_sha256
       AND p.generation_manifest_sha256 = NEW.generation_manifest_sha256
+      AND p.rank_trace_sha256 = NEW.rank_trace_sha256
+      AND p.comparator_preflight_sha256 = NEW.comparator_preflight_sha256
       AND p.source_watermark = NEW.source_watermark
       AND p.generation = NEW.index_generation
   ) THEN RAISE(ABORT, 'receipt pack mismatch') END;
@@ -349,6 +354,8 @@ def _migrate_unverified_history_receipts(conn):
         "pack_publication_id",
         "policy_sha256",
         "generation_manifest_sha256",
+        "rank_trace_sha256",
+        "comparator_preflight_sha256",
     }
     if not required.issubset(columns):
         conn.execute("DROP TRIGGER IF EXISTS history_receipt_pack_guard")
@@ -360,6 +367,9 @@ def _migrate_unverified_history_receipts(conn):
 def init_schema(conn):
     _migrate_unverified_history_receipts(conn)
     conn.executescript(SCHEMA)
+    conn.execute(
+        "DROP TRIGGER IF EXISTS history_pack_publication_update_guard"
+    )
     pack_columns = {
         row[1]
         for row in conn.execute("PRAGMA table_info(history_pack_publications)")
@@ -368,37 +378,63 @@ def init_schema(conn):
         conn.execute(
             "ALTER TABLE history_pack_publications "
             "ADD COLUMN rank_trace_json TEXT NOT NULL DEFAULT "
-            """'{"channels":{},"contributions":[]}'"""
+            """'{"channels":{},"contributions":[],"fusion":"""
+            """{"candidate_order":[],"lineage_order":[]}}'"""
         )
     if "rank_trace_sha256" not in pack_columns:
         conn.execute(
             "ALTER TABLE history_pack_publications "
             "ADD COLUMN rank_trace_sha256 TEXT NOT NULL DEFAULT ''"
         )
+    if "comparator_preflight_sha256" not in pack_columns:
+        conn.execute(
+            "ALTER TABLE history_pack_publications "
+            "ADD COLUMN comparator_preflight_sha256 TEXT NOT NULL DEFAULT ''"
+        )
     for row in conn.execute(
         """
-        SELECT publication_id, rank_trace_json
+        SELECT publication_id, rank_trace_json, comparator_preflight_json
         FROM history_pack_publications
-        WHERE rank_trace_sha256 = ''
+        WHERE rank_trace_sha256 = '' OR comparator_preflight_sha256 = ''
         """
     ):
         try:
             trace = json.loads(row["rank_trace_json"])
+            preflight = json.loads(row["comparator_preflight_json"])
         except (TypeError, ValueError) as exc:
-            raise HistoryStoreError("published rank trace is invalid") from exc
+            raise HistoryStoreError("published retrieval audit is invalid") from exc
         trace_bytes = _json_bytes(trace)
+        preflight_bytes = _json_bytes(preflight)
         conn.execute(
             """
             UPDATE history_pack_publications
-            SET rank_trace_json = ?, rank_trace_sha256 = ?
+            SET rank_trace_json = ?, rank_trace_sha256 = ?,
+                comparator_preflight_json = ?,
+                comparator_preflight_sha256 = ?
             WHERE publication_id = ?
             """,
             (
                 trace_bytes.decode("utf-8"),
                 _sha(trace_bytes),
+                preflight_bytes.decode("utf-8"),
+                _sha(preflight_bytes),
                 row["publication_id"],
             ),
         )
+    conn.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS history_pack_publication_update_guard
+        BEFORE UPDATE ON history_pack_publications
+        BEGIN
+          SELECT RAISE(ABORT, 'history pack publication is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS history_pack_publication_delete_guard
+        BEFORE DELETE ON history_pack_publications
+        BEGIN
+          SELECT RAISE(ABORT, 'history pack publication is immutable');
+        END;
+        """
+    )
     conn.execute(
         "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('schema_version', '1')"
     )

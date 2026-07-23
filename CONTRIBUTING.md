@@ -53,7 +53,8 @@ python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 replay-receipt \
 Only `complete_match` and `complete_no_match` receipts permit a permanent
 internal-history conclusion. Receipt replay is bound to the policy, projection
 generation, source watermark, comparator version, pack hash, evidence IDs, and
-the SHA-256 of the host-owned canonical rank trace.
+the SHA-256 values of the host-owned canonical rank trace and exact comparator
+preflight. Pack publications are append-only.
 
 Shell changes also require `bash -n` on every touched script. Litwatch behavior is covered by `bash litwatch_test.sh`; its live-network probe may report an intentional skip when network access is unavailable.
 

@@ -222,7 +222,8 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
     def test_full_rank_trace_is_host_owned_while_pack_trace_is_bounded(self):
         publication = self.conn.execute(
             """
-            SELECT rank_trace_json, rank_trace_sha256
+            SELECT rank_trace_json, rank_trace_sha256,
+                   comparator_preflight_json, comparator_preflight_sha256
             FROM history_pack_publications
             WHERE publication_id = ?
             """,
@@ -241,30 +242,87 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
         )
         self.assertTrue(trace["channels"]["fts"])
         self.assertNotIn("results", self.pack["channels"]["fts"])
-
-    def test_replay_rejects_mutated_host_rank_trace(self):
+        preflight_bytes = publication["comparator_preflight_json"].encode("utf-8")
+        preflight = json.loads(preflight_bytes)
+        self.assertEqual(preflight_bytes, retrieval.canonical_bytes(preflight))
+        self.assertEqual(
+            publication["comparator_preflight_sha256"],
+            hashlib.sha256(preflight_bytes).hexdigest(),
+        )
+        self.assertEqual(
+            preflight,
+            retrieval._comparator_preflight(self.pack, self.policy),
+        )
         receipt = retrieval.finalize_comparison(
             self.conn, self.pack, self.response, self.policy
         )
+        self.assertEqual(receipt["rank_trace_sha256"], publication["rank_trace_sha256"])
+        self.assertEqual(
+            receipt["comparator_preflight_sha256"],
+            publication["comparator_preflight_sha256"],
+        )
+
+    def test_pack_publication_rejects_update_and_delete(self):
+        for statement, parameters in (
+            (
+                "UPDATE history_pack_publications "
+                "SET rank_trace_json = '{}' WHERE publication_id = ?",
+                (self.pack["pack_publication_id"],),
+            ),
+            (
+                "UPDATE history_pack_publications "
+                "SET comparator_preflight_json = '{}' WHERE publication_id = ?",
+                (self.pack["pack_publication_id"],),
+            ),
+            (
+                "DELETE FROM history_pack_publications WHERE publication_id = ?",
+                (self.pack["pack_publication_id"],),
+            ),
+        ):
+            with self.subTest(statement=statement):
+                with self.assertRaises(sqlite3.IntegrityError):
+                    self.conn.execute(statement, parameters)
+
+    def test_replay_rederives_fusion_from_full_channel_results(self):
+        receipt = retrieval.finalize_comparison(
+            self.conn, self.pack, self.response, self.policy
+        )
+        self.conn.execute("DROP TRIGGER history_pack_publication_update_guard")
+        self.conn.execute(
+            "DROP TRIGGER history_pack_publication_delete_guard"
+        )
+        publication = self.conn.execute(
+            """
+            SELECT rank_trace_json
+            FROM history_pack_publications
+            WHERE publication_id = ?
+            """,
+            (self.pack["pack_publication_id"],),
+        ).fetchone()
+        trace = json.loads(publication[0])
+        dense = next(
+            item
+            for item in trace["channels"]["dense"]
+            if item["candidate_id"]
+            == self.pack["lineages"][0]["matches"][0]["candidate_id"]
+        )
+        dense["rank"] += 1000
+        trace_bytes = retrieval.canonical_bytes(trace)
         self.conn.execute(
             """
             UPDATE history_pack_publications
-            SET rank_trace_json = ?
+            SET rank_trace_json = ?, rank_trace_sha256 = ?
             WHERE publication_id = ?
             """,
             (
-                retrieval.canonical_bytes(
-                    {
-                        "channels": {
-                            name: [] for name in self.pack["channels"]
-                        },
-                        "contributions": [],
-                    }
-                ).decode("utf-8"),
+                trace_bytes.decode("utf-8"),
+                hashlib.sha256(trace_bytes).hexdigest(),
                 self.pack["pack_publication_id"],
             ),
         )
-        with self.assertRaises(retrieval.ReceiptReplayError):
+        with self.assertRaisesRegex(
+            retrieval.ReceiptReplayError, "fusion"
+        ):
             retrieval.replay_receipt(
                 self.conn, self.pack, receipt, self.policy
             )
@@ -304,10 +362,13 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
         mapped.mkdir()
         (mapped / "ledger.instance-id").write_text("mapped\n", encoding="utf-8")
         ledger = mapped / "ledger.tsv"
+        common_prefix = "shared-prefix " * 8
+        parent_story = common_prefix + "PARENT-MECHANISM"
+        child_story = common_prefix + "CHILD-MECHANISM"
         ledger.write_bytes(
             HEADER
-            + row("mapped parent confidence mechanism")
-            + row("mapped child calibrated confidence mechanism")
+            + row(parent_story)
+            + row(child_story)
         )
         evidence = mapped / "edge-evidence.json"
         evidence.write_text('{"verified":true}\n', encoding="utf-8")
@@ -339,7 +400,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
                 conn,
                 {
                     "candidate_id": "mapped-query",
-                    "story": "mapped parent confidence mechanism",
+                    "story": parent_story,
                     "theme": "World Models",
                 },
                 "evolution_search",
@@ -363,6 +424,19 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
                     and match["material_delta"]
                     for match in lineage_matches
                 )
+            )
+            self.assertTrue(
+                all(
+                    "PARENT-MECHANISM" in match["material_delta"]
+                    and "CHILD-MECHANISM" in match["material_delta"]
+                    and len(match["material_delta"])
+                    <= retrieval.EVIDENCE_SPAN_LIMIT
+                    for match in lineage_matches
+                )
+            )
+            self.assertEqual(
+                len({match["evidence_id"] for match in lineage_matches}),
+                len(lineage_matches),
             )
             self.assertLessEqual(len(lineage_matches), 2)
         finally:
@@ -560,6 +634,48 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
                 with self.assertRaises(retrieval.ReceiptReplayError):
                     retrieval.replay_receipt(
                         self.conn, self.pack, changed, self.policy
+                    )
+
+    def test_expansion_request_requires_uncertain_status_on_finalize_and_replay(self):
+        lineage_id = self.pack["lineages"][0]["lineage_id"]
+        expansion_request = {"lineage_ids": [lineage_id]}
+        responses = []
+        complete_match = copy.deepcopy(self.response)
+        complete_match["expansion_request"] = expansion_request
+        responses.append(complete_match)
+        complete_no_match = copy.deepcopy(self.response)
+        complete_no_match["status"] = "complete_no_match"
+        complete_no_match["relations"][0]["relation"] = "distinct"
+        complete_no_match["expansion_request"] = expansion_request
+        responses.append(complete_no_match)
+        for response in responses:
+            with self.subTest(status=response["status"], operation="finalize"):
+                with self.assertRaisesRegex(
+                    retrieval.ComparisonValidationError,
+                    "expansion requires uncertain status",
+                ):
+                    retrieval.finalize_comparison(
+                        self.conn, self.pack, response, self.policy
+                    )
+
+            replay_response = copy.deepcopy(response)
+            replay_response["expansion_request"] = None
+            valid = retrieval.finalize_comparison(
+                self.conn, self.pack, replay_response, self.policy
+            )
+            forged = copy.deepcopy(valid)
+            forged["expansion_request"] = expansion_request
+            forged["comparison_sha256"] = hashlib.sha256(
+                retrieval.canonical_bytes(response)
+            ).hexdigest()
+            self._rehash_receipt(forged)
+            with self.subTest(status=response["status"], operation="replay"):
+                with self.assertRaisesRegex(
+                    retrieval.ReceiptReplayError,
+                    "expansion requires uncertain status",
+                ):
+                    retrieval.replay_receipt(
+                        self.conn, self.pack, forged, self.policy
                     )
 
     def test_replay_survives_clean_rebuild_without_generation_id_reuse(self):

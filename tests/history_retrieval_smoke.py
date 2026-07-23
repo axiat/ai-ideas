@@ -405,9 +405,11 @@ class HistoryRetrievalSmoke(unittest.TestCase):
             INSERT INTO history_receipts(
               receipt_id, query_candidate_id, intent, pack_sha256,
               pack_publication_id, policy_sha256, generation_manifest_sha256,
+              rank_trace_sha256, comparator_preflight_sha256,
               retrieval_policy_version, source_watermark, index_generation,
               comparator_version, status, receipt_json, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     datetime('now'))
             """,
             (
                 changed["receipt_id"],
@@ -417,6 +419,8 @@ class HistoryRetrievalSmoke(unittest.TestCase):
                 changed["pack_publication_id"],
                 changed["policy_sha256"],
                 changed["generation_manifest_sha256"],
+                changed["rank_trace_sha256"],
+                changed["comparator_preflight_sha256"],
                 changed["retrieval_policy_version"],
                 changed["source_watermark"],
                 changed["index_generation"],
