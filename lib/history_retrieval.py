@@ -1562,7 +1562,11 @@ def comparator_output_schema(pack, policy):
         "properties": {
             "status": {
                 "type": "string",
-                "enum": sorted(COMPARATOR_STATUSES),
+                "enum": (
+                    sorted(COMPARATOR_STATUSES)
+                    if lineages
+                    else ["complete_no_match"]
+                ),
             },
             "comparator_version": {
                 "type": "string",
@@ -1708,7 +1712,9 @@ def _publish_pack(
     )
     stored = conn.execute(
         """
-        SELECT pack_bytes, rank_trace_json, rank_trace_sha256,
+        SELECT pack_sha256, pack_bytes, policy_sha256, generation,
+               generation_manifest_sha256, source_watermark,
+               retrieval_status, rank_trace_json, rank_trace_sha256,
                comparator_invocation_json, comparator_invocation_sha256,
                comparator_preflight_json, comparator_preflight_sha256
         FROM history_pack_publications
@@ -1718,7 +1724,15 @@ def _publish_pack(
     ).fetchone()
     if (
         stored is None
+        or stored["pack_sha256"] != pack["pack_sha256"]
         or bytes(stored["pack_bytes"]) != encoded
+        or stored["policy_sha256"]
+        != history_projection._policy_sha256(policy)
+        or stored["generation"] != pack["index_generation"]
+        or stored["generation_manifest_sha256"]
+        != pack["generation_manifest_sha256"]
+        or stored["source_watermark"] != pack["source_watermark"]
+        or stored["retrieval_status"] != pack["retrieval_status"]
         or stored["rank_trace_json"].encode("utf-8") != rank_trace_bytes
         or stored["rank_trace_sha256"] != _sha(rank_trace_bytes)
         or stored["comparator_invocation_json"].encode("utf-8")
@@ -2506,6 +2520,13 @@ def _validate_response(pack, response):
     if response["comparator_version"] != COMPARATOR_VERSION:
         raise ComparisonValidationError("unsupported comparator version")
     _validate_relations(pack, response["relations"])
+    if (
+        not pack.get("lineages")
+        and response["status"] != "complete_no_match"
+    ):
+        raise ComparisonValidationError(
+            "zero-lineage comparison must be complete no-match"
+        )
     relations = {item["relation"] for item in response["relations"]}
     if response["status"] == "complete_match" and "uncertain" in relations:
         raise ComparisonValidationError(

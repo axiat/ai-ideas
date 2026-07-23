@@ -6,6 +6,7 @@ import hashlib
 import json
 import pathlib
 import pickle
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -1043,6 +1044,24 @@ class LineageUnitTests(RoundTwoFixture):
 
 
 class PublicationAuditTests(RoundTwoFixture):
+    def _zero_lineage_pack(self):
+        projection.remove_candidate_from_search(
+            self.conn, self.candidate_id
+        )
+        projection.rebuild(self.conn, self.policy)
+        pack = build_pack(
+            self.conn,
+            {
+                "candidate_id": "zero-lineage-query",
+                "story": "query with no searchable history",
+            },
+            "duplicate_search",
+            self.policy,
+        )
+        self.assertEqual(pack["retrieval_status"], "complete")
+        self.assertFalse(pack["lineages"])
+        return pack
+
     def test_comparator_output_schema_is_closed_and_pack_bound(self):
         schema = retrieval.comparator_output_schema(
             self.pack, self.policy
@@ -1136,6 +1155,64 @@ class PublicationAuditTests(RoundTwoFixture):
             )
         )
         self.assertEqual(invocation["tool_schemas"], [schema])
+
+    def test_zero_lineage_schema_and_finalize_only_allow_no_match(self):
+        pack = self._zero_lineage_pack()
+        schema = retrieval.comparator_output_schema(pack, self.policy)
+        self.assertEqual(
+            schema["properties"]["status"]["enum"],
+            ["complete_no_match"],
+        )
+        for status in (
+            retrieval.COMPARATOR_STATUSES - {"complete_no_match"}
+        ):
+            with self.subTest(status=status):
+                with self.assertRaises(
+                    retrieval.ComparisonValidationError
+                ):
+                    retrieval.finalize_comparison(
+                        self.conn,
+                        pack,
+                        {
+                            "status": status,
+                            "comparator_version":
+                                retrieval.COMPARATOR_VERSION,
+                            "relations": [],
+                            "expansion_request": None,
+                        },
+                        self.policy,
+                    )
+        receipt = retrieval.finalize_comparison(
+            self.conn,
+            pack,
+            {
+                "status": "complete_no_match",
+                "comparator_version": retrieval.COMPARATOR_VERSION,
+                "relations": [],
+                "expansion_request": None,
+            },
+            self.policy,
+        )
+        self.assertEqual(receipt["status"], "complete_no_match")
+
+    def test_replay_rejects_legacy_zero_lineage_non_no_match_receipt(self):
+        pack = self._zero_lineage_pack()
+        response = {
+            "status": "conflicting_evidence",
+            "comparator_version": retrieval.COMPARATOR_VERSION,
+            "relations": [],
+            "expansion_request": None,
+        }
+        with mock.patch.object(
+            retrieval, "_validate_response", return_value=None
+        ):
+            receipt = retrieval.finalize_comparison(
+                self.conn, pack, response, self.policy
+            )
+        with self.assertRaises(retrieval.ReceiptReplayError):
+            retrieval.replay_receipt(
+                self.conn, pack, receipt, self.policy
+            )
 
     def test_canonical_invocation_binds_explicit_role_bytes_and_identity(self):
         invocation_bytes = retrieval.comparator_invocation_bytes(
@@ -1268,6 +1345,57 @@ class PublicationAuditTests(RoundTwoFixture):
                 json.loads(trace_bytes),
                 invocation_bytes + b" ",
             )
+        collision_fields = {
+            "pack_sha256": "f" * 64,
+            "policy_sha256": "e" * 64,
+            "generation": publication["generation"] + 1,
+            "generation_manifest_sha256": "d" * 64,
+            "source_watermark": publication["source_watermark"] + 1,
+            "retrieval_status": "partial",
+        }
+        columns = tuple(publication.keys())
+        placeholders = ", ".join("?" for _ in columns)
+        for field, mismatched_value in collision_fields.items():
+            with self.subTest(field=field):
+                collision_conn = sqlite3.connect(":memory:")
+                collision_conn.row_factory = sqlite3.Row
+                try:
+                    self.conn.backup(collision_conn)
+                    collision_conn.execute(
+                        "DROP TRIGGER history_pack_publication_delete_guard"
+                    )
+                    collision_conn.execute(
+                        "DROP TRIGGER history_pack_provenance_guard"
+                    )
+                    collision_conn.execute(
+                        """
+                        DELETE FROM history_pack_publications
+                        WHERE publication_id = ?
+                        """,
+                        (self.pack["pack_publication_id"],),
+                    )
+                    values = dict(publication)
+                    values[field] = mismatched_value
+                    collision_conn.execute(
+                        "INSERT INTO history_pack_publications(%s) "
+                        "VALUES(%s)"
+                        % (", ".join(columns), placeholders),
+                        tuple(values[column] for column in columns),
+                    )
+                    with self.assertRaisesRegex(
+                        retrieval.RetrievalError,
+                        "pack publication identity collision",
+                    ):
+                        retrieval._publish_pack(
+                            collision_conn,
+                            self.pack,
+                            self.policy,
+                            json.loads(preflight_bytes),
+                            json.loads(trace_bytes),
+                            invocation_bytes,
+                        )
+                finally:
+                    collision_conn.close()
 
     def test_oversized_role_republishes_truthful_matching_failure_pack(self):
         role_bytes = (
