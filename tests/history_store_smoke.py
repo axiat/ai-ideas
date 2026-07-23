@@ -125,6 +125,61 @@ class HistoryStoreSmoke(unittest.TestCase):
         self.assertEqual(appended["field_count"], 8)
         self.assertEqual(json.loads(appended["provenance_json"]), {"run_id": "r1"})
 
+    def test_append_after_unterminated_import_preserves_sealed_row_framing(self):
+        root = pathlib.Path(tempfile.mkdtemp(dir=self.root))
+        (root / "ledger.instance-id").write_text(
+            "unterminated-ledger-instance\n", encoding="utf-8"
+        )
+        legacy = (
+            b"2026-07-20\thunt\tSafety and Robustness\tunterminated proposition"
+            b"\taccept-w-rev\tlegacy reason\tunknown"
+        )
+        ledger = root / "ledger.tsv"
+        ledger.write_bytes(HEADER + legacy)
+        state_root = root / ".ai-ideas"
+        conn = history_store.connect(root / "history.sqlite3")
+        history_store.init_schema(conn)
+        try:
+            plan = history_store.build_import_plan({"ledger": ledger}, state_root)
+            history_store.commit_import_plan(conn, plan)
+            imported = conn.execute(
+                """
+                SELECT candidate_id, origin_stable_id, field_count, row_terminator
+                FROM candidates WHERE source_sequence = 1
+                """
+            ).fetchone()
+            self.assertEqual(imported["field_count"], 7)
+            self.assertEqual(bytes(imported["row_terminator"]), b"")
+
+            history_store.append_rows(
+                conn, [row("appended proposition")], {"run_id": "r2"}
+            )
+            after_append = conn.execute(
+                """
+                SELECT candidate_id, origin_stable_id, field_count, row_terminator
+                FROM candidates WHERE source_sequence = 1
+                """
+            ).fetchone()
+            self.assertEqual(tuple(after_append), tuple(imported))
+
+            retry = history_store.commit_import_plan(conn, plan)
+            self.assertTrue(retry["idempotent"])
+            self.assertTrue(history_store.validate_store(conn)["ok"])
+
+            ledger_good = root / "tmp" / "ledger.good"
+            publication = history_store.materialize_ledger_projection(
+                conn,
+                {"ledger.tsv": ledger, "tmp/ledger.good": ledger_good},
+                state_root,
+            )
+            expected = HEADER + legacy + b"\n" + row("appended proposition") + b"\n"
+            self.assertEqual(publication["row_count"], 2)
+            self.assertEqual(ledger.read_bytes(), expected)
+            self.assertEqual(ledger_good.read_bytes(), expected)
+            self.assertTrue(history_store.validate_store(conn)["ok"])
+        finally:
+            conn.close()
+
     def test_eight_column_row_with_empty_category_remains_eight_column(self):
         ledger = self.root / "empty-category.tsv"
         ledger.write_bytes(

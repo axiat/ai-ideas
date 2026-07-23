@@ -846,15 +846,26 @@ def _store_state_root(conn):
     return pathlib.Path(value)
 
 
+def _render_projection_rows(header, rows):
+    chunks = [header]
+    previous_terminator = None
+    for row_value in rows:
+        if previous_terminator == b"":
+            chunks.append(b"\n")
+        raw_row = bytes(row_value[0])
+        row_terminator = bytes(row_value[1])
+        chunks.extend((raw_row, row_terminator))
+        previous_terminator = row_terminator
+    return b"".join(chunks)
+
+
 def _render_tsv_in_transaction(conn):
     header_b64 = _meta(conn, "ledger_header_b64")
     header = HEADER if header_b64 is None else base64.b64decode(header_b64)
-    chunks = [header]
-    for item in conn.execute(
+    rows = conn.execute(
         "SELECT raw_row, row_terminator FROM candidates ORDER BY source_sequence"
-    ):
-        chunks.extend((bytes(item[0]), bytes(item[1])))
-    return b"".join(chunks)
+    ).fetchall()
+    return _render_projection_rows(header, rows)
 
 
 def render_tsv(conn):
@@ -1384,17 +1395,6 @@ def _append_rows_locked(conn, rows, provenance):
                 "SELECT COALESCE(MAX(source_sequence), 0) + 1 FROM candidates"
             ).fetchone()[0]
         )
-        last = conn.execute(
-            """
-            SELECT candidate_id, row_terminator FROM candidates
-            ORDER BY source_sequence DESC LIMIT 1
-            """
-        ).fetchone()
-        if last is not None and bytes(last["row_terminator"]) == b"":
-            conn.execute(
-                "UPDATE candidates SET row_terminator = ? WHERE candidate_id = ?",
-                (b"\n", last["candidate_id"]),
-            )
         candidate_ids = []
         for offset, raw in enumerate(raw_rows):
             sequence = next_sequence + offset
@@ -2168,10 +2168,8 @@ def _render_projection_prefix(conn, row_count):
     if len(rows) != row_count:
         raise ProjectionConflict("projection row count exceeds canonical history")
     header_b64 = _meta(conn, "ledger_header_b64")
-    chunks = [HEADER if header_b64 is None else base64.b64decode(header_b64)]
-    for row_value in rows:
-        chunks.extend((bytes(row_value[0]), bytes(row_value[1])))
-    return b"".join(chunks)
+    header = HEADER if header_b64 is None else base64.b64decode(header_b64)
+    return _render_projection_rows(header, rows)
 
 
 def _satisfy_older_projections_from_current_done(conn, publication, now):
