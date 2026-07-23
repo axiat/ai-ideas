@@ -825,6 +825,80 @@ class HistoryStoreSmoke(unittest.TestCase):
         finally:
             fixture.conn.close()
 
+    def test_reconcile_satisfies_repaired_older_projection_behind_current_done(self):
+        root = pathlib.Path(tempfile.mkdtemp(dir=self.root))
+        (root / "ledger.instance-id").write_text(
+            "repaired-projection-instance\n", encoding="utf-8"
+        )
+        ledger = root / "ledger.tsv"
+        ledger.write_bytes(HEADER + row("first projection") + b"\n")
+        state_root = root / ".ai-ideas"
+        conn = history_store.connect(root / "history.sqlite3")
+        history_store.init_schema(conn)
+        try:
+            plan = history_store.build_import_plan({"ledger": ledger}, state_root)
+            history_store.commit_import_plan(conn, plan)
+            history_store.append_rows(
+                conn, [row("second projection")], {"run_id": "r2"}
+            )
+            targets = {
+                "ledger.tsv": ledger,
+                "tmp/ledger.good": root / "tmp" / "ledger.good",
+            }
+            history_store.reconcile_ledger_projection(conn, targets, state_root)
+            conn.execute(
+                "DELETE FROM ledger_projection_outbox "
+                "WHERE projection_sequence = 1"
+            )
+            history_store.commit_import_plan(conn, plan)
+
+            conn.execute(
+                """
+                UPDATE ledger_projection_outbox
+                SET state = 'processing', generation = generation + 1,
+                    claim_token = 'live-older-claim', lease_until = ?,
+                    satisfied_by_sequence = NULL, satisfied_by_sha256 = NULL,
+                    completed_at = NULL
+                WHERE projection_sequence = 1
+                """,
+                (str(time.time() + history_store.LEASE_SECONDS),),
+            )
+            self.assertTrue(history_store.validate_store(conn)["ok"])
+            conn.execute(
+                """
+                UPDATE ledger_projection_outbox
+                SET state = 'pending', claim_token = NULL, lease_until = NULL
+                WHERE projection_sequence = 1
+                """
+            )
+            invalid = history_store.validate_store(conn)
+            self.assertFalse(invalid["ok"])
+            self.assertIn(
+                "older_pending_projection_behind_current_done",
+                invalid["issues"],
+            )
+
+            publication = history_store.reconcile_ledger_projection(
+                conn, targets, state_root
+            )
+            self.assertEqual(publication["sequence"], 2)
+            rows = conn.execute(
+                """
+                SELECT projection_sequence, state, satisfied_by_sequence
+                FROM ledger_projection_outbox ORDER BY projection_sequence
+                """
+            ).fetchall()
+            self.assertEqual(
+                [tuple(item) for item in rows],
+                [(1, "done", 2), (2, "done", 2)],
+            )
+            self.assertEqual(
+                history_store.pending_ledger_projection_count(conn), 0
+            )
+            self.assertTrue(history_store.validate_store(conn)["ok"])
+        finally:
+            conn.close()
+
     def test_pointer_cannot_regress_or_change_hash_at_equal_sequence(self):
         fixture = self._fresh_projection_fixture()
         try:
@@ -1034,6 +1108,47 @@ class HistoryStoreSmoke(unittest.TestCase):
         self.assertEqual(first["plan_sha256"], second["plan_sha256"])
         self.assertGreaterEqual(len(repaired), 3)
         self.assertIn(self.state_root / "import-cas", directories)
+
+    def test_fresh_database_state_and_cas_directories_fsync_installed_parents(self):
+        layouts = (
+            ("database-under-state", True),
+            ("separate-database", False),
+        )
+        for name, database_under_state in layouts:
+            with self.subTest(name=name):
+                layout = self.root / name
+                layout.mkdir()
+                state_root = layout / ".ai-ideas"
+                database = (
+                    state_root / "history.sqlite3"
+                    if database_under_state
+                    else layout / "database" / "history.sqlite3"
+                )
+                fsynced = []
+                original_fsync_directory = history_store._fsync_directory
+
+                def record_fsync(path):
+                    fsynced.append(pathlib.Path(path))
+                    original_fsync_directory(path)
+
+                with mock.patch.object(
+                    history_store,
+                    "_fsync_directory",
+                    side_effect=record_fsync,
+                ):
+                    conn = history_store.connect(database)
+                    try:
+                        history_store.init_schema(conn)
+                        history_store.build_import_plan(
+                            {"ledger": self.ledger}, state_root
+                        )
+                    finally:
+                        conn.close()
+
+                self.assertIn(layout, fsynced)
+                self.assertIn(state_root, fsynced)
+                if not database_under_state:
+                    self.assertGreaterEqual(fsynced.count(layout), 2)
 
     def test_corrupt_filesystem_receipt_cannot_complete_projection(self):
         fixture = self._fresh_projection_fixture()

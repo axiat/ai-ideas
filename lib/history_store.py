@@ -265,7 +265,7 @@ def _db_path(conn):
 
 def connect(path):
     db = pathlib.Path(path)
-    db.parent.mkdir(parents=True, exist_ok=True)
+    _durable_mkdir(db.parent)
     conn = sqlite3.connect(str(db), isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -396,7 +396,7 @@ def _seal_object(path, cas_root):
     source = pathlib.Path(path)
     data = source.read_bytes()
     digest = _sha(data)
-    cas_root.mkdir(parents=True, exist_ok=True)
+    _durable_mkdir(cas_root)
     destination = cas_root / digest
     if destination.exists():
         if destination.read_bytes() != data:
@@ -439,7 +439,11 @@ def _durable_mkdir(path):
     if directory == directory.parent:
         raise HistoryStoreError(f"cannot create filesystem root {directory}")
     _durable_mkdir(directory.parent)
-    os.mkdir(str(directory))
+    try:
+        os.mkdir(str(directory))
+    except FileExistsError:
+        if directory.is_symlink() or not directory.is_dir():
+            raise HistoryStoreError(f"durable directory is unsafe: {directory}")
     _fsync_directory(directory.parent)
 
 
@@ -2153,6 +2157,86 @@ def _publish_effects(conn, claim, targets, state_root, fault_after=None, verify_
     return {"sequence": sequence, "sha256": digest, "row_count": row_count}
 
 
+def _render_projection_prefix(conn, row_count):
+    rows = conn.execute(
+        """
+        SELECT raw_row, row_terminator
+        FROM candidates ORDER BY source_sequence LIMIT ?
+        """,
+        (row_count,),
+    ).fetchall()
+    if len(rows) != row_count:
+        raise ProjectionConflict("projection row count exceeds canonical history")
+    header_b64 = _meta(conn, "ledger_header_b64")
+    chunks = [HEADER if header_b64 is None else base64.b64decode(header_b64)]
+    for row_value in rows:
+        chunks.extend((bytes(row_value[0]), bytes(row_value[1])))
+    return b"".join(chunks)
+
+
+def _satisfy_older_projections_from_current_done(conn, publication, now):
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = _current_projection(conn)
+        if (
+            current is None
+            or current["state"] != "done"
+            or current["projection_sequence"] != publication["sequence"]
+            or current["snapshot_sha256"] != publication["sha256"]
+            or current["row_count"] != publication["row_count"]
+        ):
+            raise ProjectionConflict(
+                "current completed projection changed during reconciliation"
+            )
+        completed_at = _utc_now()
+        older = conn.execute(
+            """
+            SELECT * FROM ledger_projection_outbox
+            WHERE projection_sequence < ? AND state != 'done'
+            ORDER BY projection_sequence
+            """,
+            (publication["sequence"],),
+        ).fetchall()
+        for item in older:
+            if item["state"] == "processing":
+                try:
+                    live_claim = (
+                        item["lease_until"] is not None
+                        and float(item["lease_until"]) > now
+                    )
+                except (TypeError, ValueError):
+                    live_claim = False
+                if live_claim:
+                    continue
+            if item["state"] not in ("pending", "processing"):
+                continue
+            if item["row_count"] > publication["row_count"]:
+                continue
+            prefix = _render_projection_prefix(conn, item["row_count"])
+            if _sha(prefix) != item["snapshot_sha256"]:
+                continue
+            conn.execute(
+                """
+                UPDATE ledger_projection_outbox
+                SET state = 'done', claim_token = NULL, lease_until = NULL,
+                    satisfied_by_sequence = ?, satisfied_by_sha256 = ?,
+                    completed_at = ?
+                WHERE projection_sequence = ? AND state != 'done'
+                """,
+                (
+                    publication["sequence"],
+                    publication["sha256"],
+                    completed_at,
+                    item["projection_sequence"],
+                ),
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 def _mark_projection_complete(conn, claim, publication, verify_claim=True):
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -2236,13 +2320,17 @@ def _reconcile_ledger_projection_locked(conn, targets, state, now):
         immutable_object,
     )
     if current["state"] == "done":
-        return _publish_effects(
+        publication = _publish_effects(
             conn,
             None,
             targets,
             state,
             verify_claim=False,
         )
+        _satisfy_older_projections_from_current_done(
+            conn, publication, float(now)
+        )
+        return publication
     claim = _claim_projection(conn, now)
     if claim is None:
         return None
@@ -2390,6 +2478,36 @@ def validate_store(conn):
                 )
     if deferred:
         issues.append("deferred_awr_tables_present=" + ",".join(sorted(deferred)))
+    current_sequence = int(_meta(conn, "projection_sequence", "0"))
+    current_projection = conn.execute(
+        """
+        SELECT state FROM ledger_projection_outbox
+        WHERE projection_sequence = ?
+        """,
+        (current_sequence,),
+    ).fetchone()
+    if current_projection is not None and current_projection["state"] == "done":
+        now = time.time()
+        for projection in conn.execute(
+            """
+            SELECT state, lease_until
+            FROM ledger_projection_outbox
+            WHERE projection_sequence < ? AND state != 'done'
+            """,
+            (current_sequence,),
+        ):
+            live_claim = False
+            if projection["state"] == "processing":
+                try:
+                    live_claim = (
+                        projection["lease_until"] is not None
+                        and float(projection["lease_until"]) > now
+                    )
+                except (TypeError, ValueError):
+                    live_claim = False
+            if not live_claim:
+                issues.append("older_pending_projection_behind_current_done")
+                break
     return {
         "ok": not issues,
         "issues": issues,
