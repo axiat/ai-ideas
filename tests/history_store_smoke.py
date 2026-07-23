@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 import hashlib
 import json
+import os
 import pathlib
 import sqlite3
 import tempfile
+import threading
+import time
 import types
 import unittest
+from unittest import mock
 
 import sys
 
@@ -202,6 +206,82 @@ class HistoryStoreSmoke(unittest.TestCase):
         with self.assertRaises(history_store.ImportConflict):
             history_store.commit_import_plan(self.conn, plan)
 
+    def test_import_retry_repairs_every_missing_sealed_union_result(self):
+        ledger = self.root / "retry-union.tsv"
+        ledger.write_bytes(
+            HEADER + row("retry parent") + b"\n" + row("retry child") + b"\n"
+        )
+        evidence = self.root / "retry-evidence.json"
+        evidence.write_text('{"verified":true}\n', encoding="utf-8")
+        mapping = self.root / "retry-mapping.json"
+        mapping.write_text(
+            json.dumps(
+                {
+                    "version": "lineage-mapping-v1",
+                    "mappings": [
+                        {
+                            "parent_row": 1,
+                            "child_row": 2,
+                            "evidence_path": str(evidence),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        plan = history_store.build_import_plan(
+            {"ledger": ledger, "mapping_manifest": mapping}, self.state_root
+        )
+        history_store.commit_import_plan(self.conn, plan)
+        self.conn.execute("DELETE FROM lineage_edges")
+        self.conn.execute("DELETE FROM artifacts")
+        self.conn.execute(
+            "DELETE FROM story_aliases WHERE canonical_story = 'retry child'"
+        )
+        self.conn.execute("DELETE FROM search_projection_outbox")
+        self.conn.execute("DELETE FROM ledger_projection_outbox")
+        self.assertFalse(history_store.validate_store(self.conn)["ok"])
+        receipt = history_store.commit_import_plan(self.conn, plan)
+        self.assertTrue(receipt["idempotent"])
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM lineage_edges").fetchone()[0], 1
+        )
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM artifacts").fetchone()[0], 1
+        )
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM story_aliases").fetchone()[0], 2
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM search_projection_outbox"
+            ).fetchone()[0],
+            2,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM ledger_projection_outbox"
+            ).fetchone()[0],
+            1,
+        )
+        self.assertTrue(history_store.validate_store(self.conn)["ok"])
+
+    def test_import_retry_rejects_conflicting_sealed_lineage_root(self):
+        duplicate = self.root / "retry-root.tsv"
+        duplicate.write_bytes(
+            HEADER + row("retry root") + b"\n" + row("retry root") + b"\n"
+        )
+        plan = history_store.build_import_plan(
+            {"ledger": duplicate}, self.state_root
+        )
+        history_store.commit_import_plan(self.conn, plan)
+        child = self.conn.execute(
+            "SELECT candidate_id FROM candidates WHERE source_sequence = 2"
+        ).fetchone()[0]
+        self.conn.execute("UPDATE lineages SET root_candidate_id = ?", (child,))
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.commit_import_plan(self.conn, plan)
+
     def test_conflicting_lineage_mapping_rolls_back_whole_epoch(self):
         self._import()
         other = self.root / "other.tsv"
@@ -214,6 +294,65 @@ class HistoryStoreSmoke(unittest.TestCase):
         with self.assertRaises(history_store.ImportConflict):
             history_store.commit_import_plan(self.conn, plan)
         self.assertEqual(self._canonical_counts(), before)
+
+    def test_existing_anchor_conflict_rolls_back_inside_import_transaction(self):
+        mapped = self.root / "transaction-conflict.tsv"
+        mapped.write_bytes(
+            HEADER + row("transaction root") + b"\n" + row("transaction child") + b"\n"
+        )
+        evidence = self.root / "transaction-evidence.json"
+        evidence.write_text('{"verified":true}\n', encoding="utf-8")
+        mapping = self.root / "transaction-mapping.json"
+        mapping.write_text(
+            json.dumps(
+                {
+                    "version": "lineage-mapping-v1",
+                    "mappings": [
+                        {
+                            "parent_row": 1,
+                            "child_row": 2,
+                            "evidence_path": str(evidence),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        plan = history_store.build_import_plan(
+            {"ledger": mapped, "mapping_manifest": mapping}, self.state_root
+        )
+        anchor = self.root / "anchor.tsv"
+        anchor.write_bytes(HEADER + row("transaction child") + b"\n")
+        history_store.import_tsv_epoch(self.conn, anchor)
+        before = tuple(
+            self.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in (
+                "import_epochs",
+                "lineages",
+                "candidates",
+                "story_aliases",
+                "lineage_edges",
+                "artifacts",
+                "search_projection_outbox",
+                "ledger_projection_outbox",
+            )
+        )
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.commit_import_plan(self.conn, plan)
+        after = tuple(
+            self.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in (
+                "import_epochs",
+                "lineages",
+                "candidates",
+                "story_aliases",
+                "lineage_edges",
+                "artifacts",
+                "search_projection_outbox",
+                "ledger_projection_outbox",
+            )
+        )
+        self.assertEqual(after, before)
 
     def test_explicit_mapping_unions_lineage_and_installs_typed_edge(self):
         ledger = self.root / "mapped.tsv"
@@ -345,6 +484,35 @@ class HistoryStoreSmoke(unittest.TestCase):
                 {"ledger": ledger, "mapping_manifest": mapping}, self.state_root
             )
 
+    def test_explicit_root_must_be_the_parentless_ancestor(self):
+        ledger = self.root / "wrong-root.tsv"
+        ledger.write_bytes(
+            HEADER + row("true root") + b"\n" + row("named child") + b"\n"
+        )
+        evidence = self.root / "wrong-root-evidence.json"
+        evidence.write_text('{"verified":true}\n', encoding="utf-8")
+        mapping = self.root / "wrong-root-mapping.json"
+        mapping.write_text(
+            json.dumps(
+                {
+                    "version": "lineage-mapping-v1",
+                    "roots": [{"row": 2}],
+                    "mappings": [
+                        {
+                            "parent_row": 1,
+                            "child_row": 2,
+                            "evidence_path": str(evidence),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.build_import_plan(
+                {"ledger": ledger, "mapping_manifest": mapping}, self.state_root
+            )
+
     def test_ambiguous_explicit_parent_is_rejected_before_plan_is_sealed(self):
         ledger = self.root / "ambiguous.tsv"
         ledger.write_bytes(
@@ -389,11 +557,11 @@ class HistoryStoreSmoke(unittest.TestCase):
         ledger = self.root / "edges.tsv"
         ledger.write_bytes(
             HEADER
-            + row("edge a")
+            + row("edge family")
             + b"\n"
-            + row("edge b")
+            + row("edge family")
             + b"\n"
-            + row("edge c")
+            + row("edge family")
             + b"\n"
         )
         history_store.import_tsv_epoch(self.conn, ledger)
@@ -442,6 +610,63 @@ class HistoryStoreSmoke(unittest.TestCase):
                 self.conn, ids[2], ids[0], "evolved_from", evidence[2], "explicit"
             )
 
+    def test_runtime_lineage_edge_cannot_cross_lineages(self):
+        self._import()
+        candidates = self.conn.execute(
+            "SELECT candidate_id FROM candidates ORDER BY source_sequence LIMIT 2"
+        ).fetchall()
+        artifact_id = "cross-lineage-evidence"
+        self.conn.execute(
+            """
+            INSERT INTO artifacts(
+              artifact_id, kind, state, sha256, byte_count, source_path,
+              source_sequence, provenance_json, idempotency_key
+            ) VALUES (?, 'lineage-evidence', 'installed', ?, 1, ?, 1, '{}', ?)
+            """,
+            (artifact_id, "1" * 64, "evidence/cross", artifact_id),
+        )
+        with self.assertRaises(ValueError):
+            history_store.add_lineage_edge(
+                self.conn,
+                candidates[0][0],
+                candidates[1][0],
+                "evolved_from",
+                artifact_id,
+                "explicit",
+            )
+
+    def test_runtime_lineage_edge_preserves_root_ancestry_and_one_parent(self):
+        ids, evidence = self._edge_fixture()
+        with self.assertRaises(ValueError):
+            history_store.add_lineage_edge(
+                self.conn, ids[1], ids[2], "evolved_from", evidence[0], "explicit"
+            )
+        history_store.add_lineage_edge(
+            self.conn, ids[0], ids[1], "evolved_from", evidence[0], "explicit"
+        )
+        history_store.add_lineage_edge(
+            self.conn, ids[0], ids[2], "evolved_from", evidence[1], "explicit"
+        )
+        with self.assertRaises(ValueError):
+            history_store.add_lineage_edge(
+                self.conn, ids[1], ids[2], "evolved_from", evidence[2], "explicit"
+            )
+
+    def test_validate_store_rejects_edge_outside_root_ancestry(self):
+        ids, evidence = self._edge_fixture()
+        self.conn.execute(
+            """
+            INSERT INTO lineage_edges(
+              parent_candidate_id, child_candidate_id, relation_type,
+              evidence_artifact_id
+            ) VALUES(?, ?, 'evolved_from', ?)
+            """,
+            (ids[1], ids[2], evidence[0]),
+        )
+        report = history_store.validate_store(self.conn)
+        self.assertFalse(report["ok"])
+        self.assertIn("lineage_edge_outside_root_ancestry", report["issues"])
+
     def test_near_sa_priority_survives_queue_removal(self):
         self._import()
         fixture = self.root / "near-sa.tsv"
@@ -487,6 +712,25 @@ class HistoryStoreSmoke(unittest.TestCase):
             [row("near  sa proposition")],
             {"run_id": "r2"},
         )
+        self.assertIsNone(history_store.select_generation_parent(self.conn))
+
+    def test_earlier_canonical_duplicate_consumes_near_sa_story_once(self):
+        ledger = self.root / "canonical-history.tsv"
+        ledger.write_bytes(
+            HEADER
+            + row("near  sa proposition")
+            + b"\n"
+            + row("near sa proposition")
+            + b"\n"
+        )
+        history_store.import_tsv_epoch(self.conn, ledger)
+        fixture = self.root / "canonical-near-sa.tsv"
+        fixture.write_text(
+            "2026-07-23\trun/I2\tnear sa proposition\t"
+            "Evaluation and Diagnostics\tlow\t2,1,1\tdesign-fixable\n",
+            encoding="utf-8",
+        )
+        history_store.import_near_sa_observations(self.conn, fixture)
         self.assertIsNone(history_store.select_generation_parent(self.conn))
 
     def _fresh_projection_fixture(self):
@@ -544,7 +788,10 @@ class HistoryStoreSmoke(unittest.TestCase):
                             fault_after=crash_after,
                         )
                     history_store.reconcile_ledger_projection(
-                        fixture.conn, fixture.targets, fixture.state_root
+                        fixture.conn,
+                        fixture.targets,
+                        fixture.state_root,
+                        now=time.time() + history_store.LEASE_SECONDS + 1,
                     )
                     expected = history_store.render_tsv(fixture.conn)
                     self.assertEqual(fixture.ledger.read_bytes(), expected)
@@ -642,6 +889,185 @@ class HistoryStoreSmoke(unittest.TestCase):
         finally:
             fixture.conn.close()
 
+    def test_reconcile_does_not_steal_an_unexpired_live_claim(self):
+        fixture = self._fresh_projection_fixture()
+        second = history_store.connect(fixture.root / "history.sqlite3")
+        try:
+            claim = history_store.claim_ledger_projection(
+                fixture.conn, now=time.time()
+            )
+            self.assertIsNone(
+                history_store.reconcile_ledger_projection(
+                    second, fixture.targets, fixture.state_root
+                )
+            )
+            row = second.execute(
+                "SELECT state, generation, claim_token FROM ledger_projection_outbox"
+            ).fetchone()
+            self.assertEqual(tuple(row), ("processing", claim["generation"],
+                                          claim["claim_token"]))
+        finally:
+            second.close()
+            fixture.conn.close()
+
+    def test_export_lock_excludes_append_between_render_and_publication(self):
+        fixture = self._fresh_projection_fixture()
+        rendered = threading.Event()
+        resume = threading.Event()
+        append_done = threading.Event()
+        publisher_result = []
+        append_result = []
+        original_atomic = history_store._atomic_replace
+
+        def paused_atomic(path, data, *args, **kwargs):
+            if (
+                pathlib.Path(path).parent.name == "ledger-snapshots"
+                and not rendered.is_set()
+            ):
+                rendered.set()
+                resume.wait(5)
+            return original_atomic(path, data, *args, **kwargs)
+
+        def publish():
+            conn = history_store.connect(fixture.root / "history.sqlite3")
+            try:
+                publisher_result.append(
+                    history_store.materialize_ledger_projection(
+                        conn, fixture.targets, fixture.state_root
+                    )
+                )
+            finally:
+                conn.close()
+
+        def append():
+            conn = history_store.connect(fixture.root / "history.sqlite3")
+            try:
+                append_result.append(
+                    history_store.append_rows(
+                        conn, [row("concurrent append")], {"run_id": "r2"}
+                    )
+                )
+            finally:
+                append_done.set()
+                conn.close()
+
+        with mock.patch.object(
+            history_store, "_atomic_replace", side_effect=paused_atomic
+        ):
+            publisher = threading.Thread(target=publish)
+            publisher.start()
+            self.assertTrue(rendered.wait(5))
+            appender = threading.Thread(target=append)
+            appender.start()
+            blocked = not append_done.wait(0.2)
+            resume.set()
+            publisher.join(5)
+            appender.join(5)
+        try:
+            self.assertTrue(blocked)
+            self.assertEqual(publisher_result[0]["sequence"], 1)
+            self.assertEqual(append_result[0]["projection_sequence"], 2)
+        finally:
+            fixture.conn.close()
+
+    def test_recovery_fsyncs_visible_snapshot_and_pointer_after_rename_crash(self):
+        for fault_point, expected_name in (
+            ("snapshot_rename", "ledger-snapshots"),
+            ("pointer_rename", "ledger-current.json"),
+        ):
+            with self.subTest(fault_point=fault_point):
+                fixture = self._fresh_projection_fixture()
+                try:
+                    with self.assertRaises(history_store.InjectedCrash):
+                        history_store.materialize_ledger_projection(
+                            fixture.conn,
+                            fixture.targets,
+                            fixture.state_root,
+                            fault_after=fault_point,
+                        )
+                    repaired = []
+                    with mock.patch.object(
+                        history_store,
+                        "_fsync_existing",
+                        side_effect=lambda path: repaired.append(pathlib.Path(path)),
+                        create=True,
+                    ):
+                        history_store.reconcile_ledger_projection(
+                            fixture.conn,
+                            fixture.targets,
+                            fixture.state_root,
+                            now=time.time() + history_store.LEASE_SECONDS + 1,
+                        )
+                    self.assertTrue(
+                        any(
+                            expected_name in str(path)
+                            for path in repaired
+                        )
+                    )
+                finally:
+                    fixture.conn.close()
+
+    def test_reusing_sealed_import_objects_repairs_file_and_parent_durability(self):
+        first = history_store.build_import_plan(
+            {"ledger": self.ledger}, self.state_root
+        )
+        repaired = []
+        directories = []
+        def record_existing(path):
+            existing = pathlib.Path(path)
+            repaired.append(existing)
+            history_store._fsync_directory(existing.parent)
+
+        with mock.patch.object(
+            history_store,
+            "_fsync_existing",
+            side_effect=record_existing,
+            create=True,
+        ), mock.patch.object(
+            history_store,
+            "_fsync_directory",
+            side_effect=lambda path: directories.append(pathlib.Path(path)),
+        ):
+            second = history_store.build_import_plan(
+                {"ledger": self.ledger}, self.state_root
+            )
+        self.assertEqual(first["plan_sha256"], second["plan_sha256"])
+        self.assertGreaterEqual(len(repaired), 3)
+        self.assertIn(self.state_root / "import-cas", directories)
+
+    def test_corrupt_filesystem_receipt_cannot_complete_projection(self):
+        fixture = self._fresh_projection_fixture()
+        original_atomic = history_store._atomic_replace
+
+        def corrupt_receipt(path, data, *args, **kwargs):
+            result = original_atomic(path, data, *args, **kwargs)
+            if pathlib.Path(path).name == "tmp__ledger.good.json":
+                pathlib.Path(path).write_bytes(b"corrupt\n")
+            return result
+
+        try:
+            with mock.patch.object(
+                history_store, "_atomic_replace", side_effect=corrupt_receipt
+            ):
+                with self.assertRaises(history_store.ProjectionConflict):
+                    history_store.materialize_ledger_projection(
+                        fixture.conn, fixture.targets, fixture.state_root
+                    )
+            self.assertEqual(
+                history_store.pending_ledger_projection_count(fixture.conn), 1
+            )
+            history_store.reconcile_ledger_projection(
+                fixture.conn,
+                fixture.targets,
+                fixture.state_root,
+                now=time.time() + history_store.LEASE_SECONDS + 1,
+            )
+            self.assertEqual(
+                history_store.pending_ledger_projection_count(fixture.conn), 0
+            )
+        finally:
+            fixture.conn.close()
+
     def test_materialization_is_idempotent_and_receipt_tampering_is_repaired(self):
         fixture = self._fresh_projection_fixture()
         try:
@@ -675,6 +1101,98 @@ class HistoryStoreSmoke(unittest.TestCase):
                 )
         finally:
             fixture.conn.close()
+
+    def test_projection_targets_reject_aliases_and_reserved_state_paths(self):
+        fixture = self._fresh_projection_fixture()
+        try:
+            with self.assertRaises(ValueError):
+                history_store.materialize_ledger_projection(
+                    fixture.conn,
+                    {
+                        "ledger.tsv": fixture.ledger,
+                        "tmp/ledger.good": fixture.ledger,
+                    },
+                    fixture.state_root,
+                )
+            with self.assertRaises(ValueError):
+                history_store.materialize_ledger_projection(
+                    fixture.conn,
+                    {
+                        "ledger.tsv": fixture.root / "history.sqlite3",
+                        "tmp/ledger.good": fixture.ledger_good,
+                    },
+                    fixture.state_root,
+                )
+            with self.assertRaises(ValueError):
+                history_store.materialize_ledger_projection(
+                    fixture.conn,
+                    {
+                        "ledger.tsv": fixture.state_root / "ledger-current.json",
+                        "tmp/ledger.good": fixture.ledger_good,
+                    },
+                    fixture.state_root,
+                )
+            with self.assertRaises(ValueError):
+                history_store.export_tsv(
+                    fixture.conn, fixture.root / "history.sqlite3"
+                )
+        finally:
+            fixture.conn.close()
+
+    def test_projection_targets_reject_hardlinks_to_database_and_state(self):
+        fixture = self._fresh_projection_fixture()
+        try:
+            database_alias = fixture.root / "database-alias"
+            os.link(fixture.root / "history.sqlite3", database_alias)
+            with self.assertRaises(ValueError):
+                history_store.materialize_ledger_projection(
+                    fixture.conn,
+                    {
+                        "ledger.tsv": database_alias,
+                        "tmp/ledger.good": fixture.ledger_good,
+                    },
+                    fixture.state_root,
+                )
+            history_store.materialize_ledger_projection(
+                fixture.conn, fixture.targets, fixture.state_root
+            )
+            pointer_alias = fixture.root / "pointer-alias"
+            os.link(fixture.state_root / "ledger-current.json", pointer_alias)
+            with self.assertRaises(ValueError):
+                history_store.materialize_ledger_projection(
+                    fixture.conn,
+                    {
+                        "ledger.tsv": pointer_alias,
+                        "tmp/ledger.good": fixture.ledger_good,
+                    },
+                    fixture.state_root,
+                )
+        finally:
+            fixture.conn.close()
+
+    def test_header_only_initialization_enqueues_and_materializes_projection(self):
+        ledger = self.root / "header-only.tsv"
+        ledger.write_bytes(HEADER.rstrip(b"\n") + b"\r\n")
+        receipt = history_store.import_tsv_epoch(self.conn, ledger)
+        self.assertEqual(receipt["data_rows"], 0)
+        self.assertEqual(
+            history_store.pending_ledger_projection_count(self.conn), 1
+        )
+        targets = {
+            "ledger.tsv": self.root / "published-ledger.tsv",
+            "tmp/ledger.good": self.root / "tmp" / "ledger.good",
+        }
+        history_store.materialize_ledger_projection(
+            self.conn, targets, self.state_root
+        )
+        self.assertEqual(targets["ledger.tsv"].read_bytes(), ledger.read_bytes())
+        self.assertEqual(targets["tmp/ledger.good"].read_bytes(), ledger.read_bytes())
+
+    def test_origin_stable_id_requires_exact_positive_integer_ordinal(self):
+        for invalid in (True, False, 1.5, "1", 0, -1):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises((TypeError, ValueError)):
+                    history_store.origin_stable_id("instance", invalid, b"a\tb")
 
     def test_validate_store_reports_clean_state(self):
         self._import()

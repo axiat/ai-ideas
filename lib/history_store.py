@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS import_epochs(
   state TEXT NOT NULL CHECK(state = 'done'),
   row_count INTEGER NOT NULL CHECK(row_count >= 0),
   result_sha256 TEXT NOT NULL,
+  projection_sequence INTEGER NOT NULL CHECK(projection_sequence >= 1),
   committed_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS lineages(
@@ -301,6 +302,8 @@ def origin_stable_id(ledger_instance_id, row_number, raw_row):
     instance = ledger_instance_id.strip()
     if not instance or "\n" in instance or "\r" in instance:
         raise ValueError("ledger instance ID must be one nonempty normalized line")
+    if type(row_number) is not int:
+        raise TypeError("data row ordinal must be an integer")
     if row_number < 1:
         raise ValueError("data row ordinal must be positive")
     raw_sha = _sha(_strip_one_terminator(bytes(raw_row)))
@@ -398,6 +401,7 @@ def _seal_object(path, cas_root):
     if destination.exists():
         if destination.read_bytes() != data:
             raise ImportConflict(f"CAS collision for {source}")
+        _fsync_existing(destination)
     else:
         _write_immutable(destination, data)
     return {
@@ -416,12 +420,36 @@ def _fsync_directory(path):
         os.close(descriptor)
 
 
+def _fsync_existing(path):
+    existing = pathlib.Path(path)
+    descriptor = os.open(str(existing), os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _fsync_directory(existing.parent)
+
+
+def _durable_mkdir(path):
+    directory = pathlib.Path(path)
+    if directory.exists():
+        if directory.is_symlink() or not directory.is_dir():
+            raise HistoryStoreError(f"durable directory is unsafe: {directory}")
+        return
+    if directory == directory.parent:
+        raise HistoryStoreError(f"cannot create filesystem root {directory}")
+    _durable_mkdir(directory.parent)
+    os.mkdir(str(directory))
+    _fsync_directory(directory.parent)
+
+
 def _write_immutable(path, data):
     path = pathlib.Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _durable_mkdir(path.parent)
     if path.exists():
         if path.read_bytes() != data:
             raise ImportConflict(f"immutable object conflicts at {path}")
+        _fsync_existing(path)
         return
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     try:
@@ -542,6 +570,8 @@ def _build_components(rows, mapping):
                     "relation_type": entry.get("relation_type", "evolved_from"),
                     "evidence_path": entry.get("evidence_path"),
                     "authority": entry.get("authority", "manual_mapping"),
+                    "parent_story": parent_story,
+                    "child_story": child_story,
                 }
             )
             root_number = entry.get("root_row")
@@ -570,6 +600,18 @@ def _build_components(rows, mapping):
                 frontier.sort()
     if len(visited) != len(stories):
         raise ImportConflict("mapping parent graph contains a cycle")
+    topological_rank = {story: index for index, story in enumerate(visited)}
+    explicit_edges.sort(
+        key=lambda item: (
+            topological_rank[item["parent_story"]],
+            topological_rank[item["child_story"]],
+            item["parent_row"],
+            item["child_row"],
+        )
+    )
+    for edge in explicit_edges:
+        edge.pop("parent_story")
+        edge.pop("child_story")
     components = {}
     for story in stories:
         components.setdefault(union.find(story), []).append(story)
@@ -583,6 +625,8 @@ def _build_components(rows, mapping):
             root = next(iter(named))
             if root not in component:
                 raise ImportConflict("explicit root is outside its component")
+            if root not in parentless:
+                raise ImportConflict("explicit root is not a parentless ancestor")
         elif len(parentless) == 1:
             root = parentless[0]
         elif len(component) == 1:
@@ -791,6 +835,13 @@ def _set_meta(conn, key, value):
     )
 
 
+def _store_state_root(conn):
+    value = _meta(conn, "state_root")
+    if not value:
+        raise HistoryStoreError("store is not bound to a durable state root")
+    return pathlib.Path(value)
+
+
 def _render_tsv_in_transaction(conn):
     header_b64 = _meta(conn, "ledger_header_b64")
     header = HEADER if header_b64 is None else base64.b64decode(header_b64)
@@ -894,10 +945,173 @@ def _insert_artifact_from_evidence(conn, evidence, source_sequence, cas_root):
             f"lineage-evidence:{evidence['sha256']}",
         ),
     )
+    installed = conn.execute(
+        """
+        SELECT state, sha256, byte_count, source_path
+        FROM artifacts WHERE artifact_id = ?
+        """,
+        (artifact_id,),
+    ).fetchone()
+    if installed is None or tuple(installed) != (
+        "installed",
+        evidence["sha256"],
+        evidence["byte_count"],
+        str(cas_path),
+    ):
+        raise ImportConflict("lineage evidence artifact conflicts with sealed plan")
     return artifact_id
 
 
-def commit_import_plan(conn, plan):
+def _render_import_plan(plan):
+    chunks = [base64.b64decode(plan["header_b64"])]
+    for item in plan["rows"]:
+        chunks.append(base64.b64decode(item["raw_row_b64"]))
+        chunks.append(base64.b64decode(item["row_terminator_b64"]))
+    return b"".join(chunks)
+
+
+def _verify_epoch_results(conn, plan, epoch, cas_root, repair):
+    expected_result = _render_import_plan(plan)
+    expected_sha = _sha(expected_result)
+    if (
+        epoch["plan_sha256"] != plan["plan_sha256"]
+        or epoch["row_count"] != len(plan["rows"])
+        or epoch["result_sha256"] != expected_sha
+    ):
+        raise ImportConflict("import epoch result conflicts with sealed plan")
+    roots = {}
+    for item in plan["rows"]:
+        roots[item["lineage_id"]] = item["root_candidate_id"]
+    for lineage_id, root_candidate_id in roots.items():
+        lineage = conn.execute(
+            "SELECT root_candidate_id FROM lineages WHERE lineage_id = ?",
+            (lineage_id,),
+        ).fetchone()
+        if lineage is None and repair:
+            conn.execute(
+                "INSERT INTO lineages(lineage_id, root_candidate_id) VALUES(?, ?)",
+                (lineage_id, root_candidate_id),
+            )
+            lineage = (root_candidate_id,)
+        if lineage is None or lineage[0] != root_candidate_id:
+            raise ImportConflict("sealed lineage root is missing or conflicting")
+    for item in plan["rows"]:
+        existing = conn.execute(
+            """
+            SELECT * FROM candidates
+            WHERE source_sequence = ? AND origin_stable_id = ?
+            """,
+            (item["row_number"], item["origin_stable_id"]),
+        ).fetchone()
+        if existing is None:
+            raise ImportConflict("committed import row is missing")
+        _verify_existing_candidate(existing, item)
+        alias = conn.execute(
+            """
+            SELECT canonical_story, lineage_id FROM story_aliases
+            WHERE canonical_version = ? AND canonical_hash = ?
+            """,
+            (CANONICAL_VERSION, item["canonical_hash"]),
+        ).fetchone()
+        expected_alias = (item["canonical_story"], item["lineage_id"])
+        if alias is None and repair:
+            conn.execute(
+                """
+                INSERT INTO story_aliases(
+                  canonical_version, canonical_hash, canonical_story, lineage_id
+                ) VALUES(?, ?, ?, ?)
+                """,
+                (
+                    CANONICAL_VERSION,
+                    item["canonical_hash"],
+                    item["canonical_story"],
+                    item["lineage_id"],
+                ),
+            )
+            alias = expected_alias
+        if alias is None or tuple(alias) != expected_alias:
+            raise ImportConflict("sealed story alias is missing or conflicting")
+        search = conn.execute(
+            """
+            SELECT source_sequence FROM search_projection_outbox
+            WHERE record_id = ? AND projection_kind = 'candidate'
+              AND content_version = 'candidate-v1'
+            """,
+            (item["candidate_id"],),
+        ).fetchone()
+        if search is None and repair:
+            _queue_search_projection(conn, item)
+            search = (item["row_number"],)
+        if search is None or search[0] != item["row_number"]:
+            raise ImportConflict("sealed search projection is missing or conflicting")
+    for index, edge in enumerate(plan["edges"], 1):
+        evidence_id = _insert_artifact_from_evidence(
+            conn, edge["evidence"], index, cas_root
+        ) if repair else _sha(
+            b"lineage-evidence-v1\0"
+            + edge["evidence"]["sha256"].encode("ascii")
+        )
+        evidence = conn.execute(
+            "SELECT sha256, state FROM artifacts WHERE artifact_id = ?",
+            (evidence_id,),
+        ).fetchone()
+        if evidence is None or tuple(evidence) != (
+            edge["evidence"]["sha256"],
+            "installed",
+        ):
+            raise ImportConflict("sealed lineage evidence is missing or conflicting")
+        typed_edge = conn.execute(
+            """
+            SELECT evidence_artifact_id FROM lineage_edges
+            WHERE parent_candidate_id = ? AND child_candidate_id = ?
+              AND relation_type = ?
+            """,
+            (
+                edge["parent_candidate_id"],
+                edge["child_candidate_id"],
+                edge["relation_type"],
+            ),
+        ).fetchone()
+        if typed_edge is None and repair:
+            _insert_lineage_edge(
+                conn,
+                edge["parent_candidate_id"],
+                edge["child_candidate_id"],
+                edge["relation_type"],
+                evidence_id,
+            )
+            typed_edge = (evidence_id,)
+        if typed_edge is None or typed_edge[0] != evidence_id:
+            raise ImportConflict("sealed typed lineage edge is missing or conflicting")
+    projection = conn.execute(
+        """
+        SELECT snapshot_sha256, row_count FROM ledger_projection_outbox
+        WHERE projection_sequence = ?
+        """,
+        (epoch["projection_sequence"],),
+    ).fetchone()
+    expected_projection = (expected_sha, len(plan["rows"]))
+    if projection is None and repair:
+        conn.execute(
+            """
+            INSERT INTO ledger_projection_outbox(
+              projection_sequence, snapshot_sha256, row_count, state, generation,
+              claim_token, lease_until, satisfied_by_sequence,
+              satisfied_by_sha256, completed_at
+            ) VALUES(?, ?, ?, 'pending', 0, NULL, NULL, NULL, NULL, NULL)
+            """,
+            (
+                epoch["projection_sequence"],
+                expected_sha,
+                len(plan["rows"]),
+            ),
+        )
+        projection = expected_projection
+    if projection is None or tuple(projection) != expected_projection:
+        raise ImportConflict("sealed ledger projection is missing or conflicting")
+
+
+def _commit_import_plan_locked(conn, plan):
     plan_body = _plan_body(plan)
     calculated_sha = _sha(_json_bytes(plan_body))
     if calculated_sha != plan.get("plan_sha256"):
@@ -930,8 +1144,17 @@ def commit_import_plan(conn, plan):
     epoch_id = _sha(
         b"import-epoch-v1\0" + plan["input_manifest_sha256"].encode("ascii")
     )
+    state_root = plan_path.parent.parent
     conn.execute("BEGIN IMMEDIATE")
     try:
+        existing_state_root = _meta(conn, "state_root")
+        resolved_state_root = str(state_root.resolve())
+        if (
+            existing_state_root is not None
+            and pathlib.Path(existing_state_root).resolve() != state_root.resolve()
+        ):
+            raise ImportConflict("database is bound to another state root")
+        _set_meta(conn, "state_root", resolved_state_root)
         previous = conn.execute(
             "SELECT * FROM import_epochs WHERE input_manifest_sha256 = ?",
             (plan["input_manifest_sha256"],),
@@ -939,17 +1162,7 @@ def commit_import_plan(conn, plan):
         if previous is not None:
             if previous["plan_sha256"] != calculated_sha:
                 raise ImportConflict("input manifest is already bound to another plan")
-            for item in plan["rows"]:
-                existing = conn.execute(
-                    """
-                    SELECT * FROM candidates
-                    WHERE source_sequence = ? AND origin_stable_id = ?
-                    """,
-                    (item["row_number"], item["origin_stable_id"]),
-                ).fetchone()
-                if existing is None:
-                    raise ImportConflict("committed import row is missing")
-                _verify_existing_candidate(existing, item)
+            _verify_epoch_results(conn, plan, previous, cas_root, repair=True)
             conn.execute("COMMIT")
             roots = {
                 item["root_candidate_id"] for item in plan["rows"]
@@ -966,6 +1179,7 @@ def commit_import_plan(conn, plan):
             raise ImportConflict("database is bound to another ledger instance")
         _set_meta(conn, "ledger_instance_id", plan["ledger_instance_id"])
         header_b64 = _meta(conn, "ledger_header_b64")
+        initializes_projection = header_b64 is None
         if header_b64 is not None and header_b64 != plan["header_b64"]:
             raise ImportConflict("ledger header bytes changed")
         _set_meta(conn, "ledger_header_b64", plan["header_b64"])
@@ -1072,16 +1286,22 @@ def commit_import_plan(conn, plan):
                 edge["relation_type"],
                 evidence_id,
             )
-        if inserted:
-            _enqueue_ledger_projection(conn)
+        projection_sequence = None
+        if inserted or initializes_projection:
+            projection_sequence = _enqueue_ledger_projection(conn)
+        if projection_sequence is None:
+            current_projection = _current_projection(conn)
+            if current_projection is None:
+                raise ImportConflict("import has no ledger projection anchor")
+            projection_sequence = current_projection["projection_sequence"]
         result = _render_tsv_in_transaction(conn)
         result_sha = _sha(result)
         conn.execute(
             """
             INSERT INTO import_epochs(
               epoch_id, input_manifest_sha256, plan_sha256, state, row_count,
-              result_sha256, committed_at
-            ) VALUES(?, ?, ?, 'done', ?, ?, ?)
+              result_sha256, projection_sequence, committed_at
+            ) VALUES(?, ?, ?, 'done', ?, ?, ?, ?)
             """,
             (
                 epoch_id,
@@ -1089,6 +1309,7 @@ def commit_import_plan(conn, plan):
                 calculated_sha,
                 len(plan["rows"]),
                 result_sha,
+                projection_sequence,
                 _utc_now(),
             ),
         )
@@ -1105,6 +1326,13 @@ def commit_import_plan(conn, plan):
         "root_candidate_id": next(iter(root_ids)) if len(root_ids) == 1 else None,
         "idempotent": False,
     }
+
+
+def commit_import_plan(conn, plan):
+    plan_path = pathlib.Path(plan["plan_path"])
+    state_root = plan_path.parent.parent
+    with _export_lock(state_root):
+        return _commit_import_plan_locked(conn, plan)
 
 
 def import_tsv_epoch(conn, path):
@@ -1138,7 +1366,7 @@ def _normalize_append_row(value):
     return raw
 
 
-def append_rows(conn, rows, provenance):
+def _append_rows_locked(conn, rows, provenance):
     raw_rows = [_normalize_append_row(item) for item in rows]
     if not raw_rows:
         return {"appended": 0, "projection_sequence": None}
@@ -1249,6 +1477,12 @@ def append_rows(conn, rows, provenance):
     }
 
 
+def append_rows(conn, rows, provenance):
+    state_root = _store_state_root(conn)
+    with _export_lock(state_root):
+        return _append_rows_locked(conn, rows, provenance)
+
+
 def get_candidate(conn, candidate_id):
     row = conn.execute(
         "SELECT * FROM candidates WHERE candidate_id = ?", (candidate_id,)
@@ -1256,9 +1490,49 @@ def get_candidate(conn, candidate_id):
     return None if row is None else dict(row)
 
 
-def export_tsv(conn, path):
+def _is_within(path, directory):
+    try:
+        pathlib.Path(path).relative_to(pathlib.Path(directory))
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_destination(conn, path, state_root=None):
     destination = pathlib.Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink():
+        raise ValueError(f"destination cannot be a symlink: {destination}")
+    resolved = destination.resolve()
+    database = _db_path(conn).resolve()
+    if resolved == database:
+        raise ValueError("destination cannot overlap the open SQLite database")
+    if destination.exists() and not destination.is_file():
+        raise ValueError(f"destination is not a regular file: {destination}")
+    if destination.exists() and database.exists() and os.path.samefile(
+        str(destination), str(database)
+    ):
+        raise ValueError("destination cannot alias the open SQLite database")
+    if state_root is not None:
+        resolved_state = pathlib.Path(state_root).resolve()
+        if _is_within(resolved, resolved_state):
+            raise ValueError("destination cannot overlap reserved history state")
+        if destination.exists() and resolved_state.exists():
+            for reserved in resolved_state.rglob("*"):
+                if (
+                    reserved.is_file()
+                    and not reserved.is_symlink()
+                    and os.path.samefile(str(destination), str(reserved))
+                ):
+                    raise ValueError(
+                        "destination cannot alias reserved history state"
+                    )
+    return resolved
+
+
+def export_tsv(conn, path):
+    state_value = _meta(conn, "state_root")
+    state_root = None if state_value is None else pathlib.Path(state_value)
+    destination = _validate_destination(conn, path, state_root)
     data = render_tsv(conn)
     _atomic_replace(destination, data, None, None, None)
     return {"path": str(destination), "sha256": _sha(data), "byte_count": len(data)}
@@ -1269,6 +1543,18 @@ def _insert_lineage_edge(conn, parent, child, relation, evidence):
         raise ValueError("unsupported lineage relation")
     if parent == child:
         raise LineageCycle("self edges are cycles")
+    endpoints = conn.execute(
+        """
+        SELECT candidate_id, lineage_id FROM candidates
+        WHERE candidate_id IN (?, ?)
+        """,
+        (parent, child),
+    ).fetchall()
+    endpoint_lineages = {item["candidate_id"]: item["lineage_id"] for item in endpoints}
+    if set(endpoint_lineages) != {parent, child}:
+        raise ValueError("lineage edge endpoint is missing")
+    if endpoint_lineages[parent] != endpoint_lineages[child]:
+        raise ValueError("lineage edge cannot cross lineages")
     reachable = conn.execute(
         """
         WITH RECURSIVE reachable(candidate_id) AS (
@@ -1285,6 +1571,39 @@ def _insert_lineage_edge(conn, parent, child, relation, evidence):
     ).fetchone()
     if reachable is not None:
         raise LineageCycle("lineage edge would create a cycle")
+    lineage_id = endpoint_lineages[parent]
+    root = conn.execute(
+        "SELECT root_candidate_id FROM lineages WHERE lineage_id = ?",
+        (lineage_id,),
+    ).fetchone()[0]
+    if child == root:
+        raise ValueError("lineage root cannot have an explicit parent")
+    existing_parent = conn.execute(
+        """
+        SELECT DISTINCT parent_candidate_id FROM lineage_edges
+        WHERE child_candidate_id = ?
+        """,
+        (child,),
+    ).fetchall()
+    if existing_parent and any(item[0] != parent for item in existing_parent):
+        raise ValueError("lineage child already has another explicit parent")
+    if parent != root:
+        root_reaches_parent = conn.execute(
+            """
+            WITH RECURSIVE reachable(candidate_id) AS (
+              SELECT child_candidate_id FROM lineage_edges
+              WHERE parent_candidate_id = ?
+              UNION
+              SELECT edge.child_candidate_id
+              FROM lineage_edges edge
+              JOIN reachable ON edge.parent_candidate_id = reachable.candidate_id
+            )
+            SELECT 1 FROM reachable WHERE candidate_id = ? LIMIT 1
+            """,
+            (root, parent),
+        ).fetchone()
+        if root_reaches_parent is None:
+            raise ValueError("lineage parent is not descended from its root")
     conn.execute(
         """
         INSERT INTO lineage_edges(
@@ -1399,7 +1718,7 @@ def select_generation_parent(conn):
     if started:
         conn.execute("BEGIN")
     try:
-        row = conn.execute(
+        eligible = conn.execute(
             """
             WITH latest_observation AS (
               SELECT o.*
@@ -1426,16 +1745,23 @@ def select_generation_parent(conn):
                 WHERE newer.lineage_id = c.lineage_id
                   AND newer.source_sequence > c.source_sequence
               )
-              AND (
-                SELECT count(*) FROM candidates same_story
-                WHERE same_story.lineage_id = c.lineage_id
-                  AND same_story.story = c.story
-              ) < 2
             ORDER BY c.source_sequence DESC
-            LIMIT 1
             """
-        ).fetchone()
-        result = None if row is None else dict(row)
+        ).fetchall()
+        result = None
+        for row in eligible:
+            canonical = canonical_story_v1(row["story"])
+            lineage_stories = conn.execute(
+                "SELECT story FROM candidates WHERE lineage_id = ?",
+                (row["lineage_id"],),
+            ).fetchall()
+            canonical_count = sum(
+                canonical_story_v1(item[0]) == canonical
+                for item in lineage_stories
+            )
+            if canonical_count < 2:
+                result = dict(row)
+                break
         if started:
             conn.execute("COMMIT")
         return result
@@ -1445,10 +1771,23 @@ def select_generation_parent(conn):
         raise
 
 
-def _normalize_targets(targets):
-    normalized = {key: pathlib.Path(value) for key, value in dict(targets).items()}
+def _normalize_targets(conn, targets, state_root):
+    expected_state = _store_state_root(conn).resolve()
+    provided_state = pathlib.Path(state_root).resolve()
+    if expected_state != provided_state:
+        raise ValueError("projection state root does not match the canonical store")
+    normalized = {
+        key: _validate_destination(conn, value, provided_state)
+        for key, value in dict(targets).items()
+    }
     if set(normalized) != set(TARGET_NAMES):
         raise ValueError(f"targets must be exactly {TARGET_NAMES}")
+    if normalized[TARGET_NAMES[0]] == normalized[TARGET_NAMES[1]]:
+        raise ValueError("ledger projection targets must be distinct")
+    left = normalized[TARGET_NAMES[0]]
+    right = normalized[TARGET_NAMES[1]]
+    if left.exists() and right.exists() and os.path.samefile(str(left), str(right)):
+        raise ValueError("ledger projection targets cannot alias one inode")
     return normalized
 
 
@@ -1506,34 +1845,40 @@ def _claim_projection(conn, now, allow_live_reclaim=False):
 
 
 def claim_ledger_projection(conn, now=None):
-    return _claim_projection(conn, time.time() if now is None else now)
+    state_root = _store_state_root(conn)
+    with _export_lock(state_root):
+        return _claim_projection(conn, time.time() if now is None else now)
 
 
 def renew_ledger_projection_claim(conn, claim, now=None):
     current_time = time.time() if now is None else float(now)
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        row = _verify_claim(conn, claim)
-        lease_until = current_time + LEASE_SECONDS
-        conn.execute(
-            """
-            UPDATE ledger_projection_outbox
-            SET lease_until = ?
-            WHERE projection_sequence = ? AND generation = ?
-              AND claim_token = ?
-            """,
-            (
-                str(lease_until),
-                claim["projection_sequence"],
-                claim["generation"],
-                claim["claim_token"],
-            ),
-        )
-        conn.execute("COMMIT")
-    except Exception:
-        if conn.in_transaction:
-            conn.execute("ROLLBACK")
-        raise
+    state_root = _store_state_root(conn)
+    with _export_lock(state_root):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = _verify_claim(conn, claim)
+            lease_until = max(
+                float(row["lease_until"]), current_time + LEASE_SECONDS
+            )
+            conn.execute(
+                """
+                UPDATE ledger_projection_outbox
+                SET lease_until = ?
+                WHERE projection_sequence = ? AND generation = ?
+                  AND claim_token = ?
+                """,
+                (
+                    str(lease_until),
+                    claim["projection_sequence"],
+                    claim["generation"],
+                    claim["claim_token"],
+                ),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
     renewed = dict(claim)
     renewed["lease_until"] = lease_until
     return renewed
@@ -1546,7 +1891,7 @@ def _fault(name, requested):
 
 def _atomic_replace(path, data, temp_fault, rename_fault, parent_fault, requested=None):
     path = pathlib.Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _durable_mkdir(path.parent)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     try:
         with os.fdopen(descriptor, "wb") as stream:
@@ -1569,9 +1914,14 @@ def _atomic_replace(path, data, temp_fault, rename_fault, parent_fault, requeste
 @contextlib.contextmanager
 def _export_lock(state_root):
     root = pathlib.Path(state_root)
-    root.mkdir(parents=True, exist_ok=True)
+    _durable_mkdir(root)
     lock_path = root / "ledger-export.lock"
+    created = not lock_path.exists()
     with lock_path.open("a+b") as stream:
+        if created:
+            stream.flush()
+            os.fsync(stream.fileno())
+            _fsync_directory(root)
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -1639,9 +1989,47 @@ def _receipt_path(state_root, target):
     return pathlib.Path(state_root) / "ledger-target-receipts" / filename
 
 
+def _verify_target_receipt(
+    conn, state, target_name, sequence, digest, byte_count
+):
+    receipt_path = _receipt_path(state, target_name)
+    try:
+        receipt_bytes = receipt_path.read_bytes()
+        receipt = json.loads(receipt_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise ProjectionConflict(f"{target_name} receipt is malformed") from exc
+    if _json_bytes(receipt) != receipt_bytes:
+        raise ProjectionConflict(f"{target_name} receipt is not canonical")
+    if (
+        receipt.get("target") != target_name
+        or receipt.get("published_sequence") != sequence
+        or receipt.get("sha256") != digest
+        or receipt.get("byte_count") != byte_count
+        or not receipt.get("installed_at")
+    ):
+        raise ProjectionConflict(f"{target_name} receipt binding conflicts")
+    database_receipt = conn.execute(
+        """
+        SELECT published_sequence, snapshot_sha256, receipt_sha256, installed_at
+        FROM ledger_projection_receipts
+        WHERE projection_sequence = ? AND target = ?
+        """,
+        (sequence, target_name),
+    ).fetchone()
+    expected = (
+        sequence,
+        digest,
+        _sha(receipt_bytes),
+        receipt["installed_at"],
+    )
+    if database_receipt is None or tuple(database_receipt) != expected:
+        raise ProjectionConflict(f"{target_name} SQLite receipt conflicts")
+    _fsync_existing(receipt_path)
+
+
 def _publish_effects(conn, claim, targets, state_root, fault_after=None, verify_claim=True):
-    targets = _normalize_targets(targets)
     state = pathlib.Path(state_root)
+    targets = _normalize_targets(conn, targets, state)
     row = _verify_claim(conn, claim) if verify_claim else _current_projection(conn)
     if row is None:
         return None
@@ -1658,9 +2046,17 @@ def _publish_effects(conn, claim, targets, state_root, fault_after=None, verify_
     pointer = _validate_pointer(
         pointer_path, sequence, digest, row_count, immutable_object
     )
+    if verify_claim:
+        final_row = _verify_claim(conn, claim)
+        if (
+            final_row["snapshot_sha256"] != digest
+            or final_row["row_count"] != row_count
+        ):
+            raise StaleClaim("projection changed before filesystem publication")
     if snapshot.exists():
         if snapshot.read_bytes() != data:
             raise ProjectionConflict("immutable snapshot content conflicts")
+        _fsync_existing(snapshot)
     else:
         _atomic_replace(
             snapshot,
@@ -1685,6 +2081,7 @@ def _publish_effects(conn, claim, targets, state_root, fault_after=None, verify_
             "pointer_parent_fsync",
             fault_after,
         )
+    _fsync_existing(pointer_path)
     installed_at = _utc_now()
     for target_name, prefix in (
         ("ledger.tsv", "ledger"),
@@ -1750,9 +2147,9 @@ def _publish_effects(conn, claim, targets, state_root, fault_after=None, verify_
     for target_name, destination in targets.items():
         if _sha(destination.read_bytes()) != digest:
             raise ProjectionConflict(f"{target_name} changed before completion")
-        receipt_path = _receipt_path(state, target_name)
-        if not receipt_path.exists():
-            raise ProjectionConflict(f"{target_name} receipt is missing")
+        _verify_target_receipt(
+            conn, state, target_name, sequence, digest, len(data)
+        )
     return {"sequence": sequence, "sha256": digest, "row_count": row_count}
 
 
@@ -1796,27 +2193,31 @@ def _publish_claimed_locked(
 
 
 def publish_claimed_ledger_projection(conn, claim, targets, state_root):
-    with _export_lock(state_root):
-        return _publish_claimed_locked(conn, claim, targets, state_root)
+    state = pathlib.Path(state_root)
+    normalized = _normalize_targets(conn, targets, state)
+    with _export_lock(state):
+        return _publish_claimed_locked(conn, claim, normalized, state)
 
 
 def materialize_ledger_projection(
     conn, targets, state_root, fault_after=None
 ):
-    with _export_lock(state_root):
+    state = pathlib.Path(state_root)
+    normalized = _normalize_targets(conn, targets, state)
+    with _export_lock(state):
         claim = _claim_projection(conn, time.time())
         if claim is None:
             return _reconcile_ledger_projection_locked(
-                conn, targets, pathlib.Path(state_root)
+                conn, normalized, state, time.time()
             )
         _fault("db_commit", fault_after)
         return _publish_claimed_locked(
-            conn, claim, targets, state_root, fault_after=fault_after
+            conn, claim, normalized, state, fault_after=fault_after
         )
 
 
-def _reconcile_ledger_projection_locked(conn, targets, state):
-    targets = _normalize_targets(targets)
+def _reconcile_ledger_projection_locked(conn, targets, state, now):
+    targets = _normalize_targets(conn, targets, state)
     current = _current_projection(conn)
     if current is None:
         return None
@@ -1842,16 +2243,22 @@ def _reconcile_ledger_projection_locked(conn, targets, state):
             state,
             verify_claim=False,
         )
-    claim = _claim_projection(conn, time.time(), allow_live_reclaim=True)
+    claim = _claim_projection(conn, now)
     if claim is None:
-        raise ProjectionConflict("pending projection could not be claimed")
+        return None
     return _publish_claimed_locked(conn, claim, targets, state)
 
 
-def reconcile_ledger_projection(conn, targets, state_root):
+def reconcile_ledger_projection(conn, targets, state_root, now=None):
     state = pathlib.Path(state_root)
+    normalized = _normalize_targets(conn, targets, state)
     with _export_lock(state):
-        return _reconcile_ledger_projection_locked(conn, targets, state)
+        return _reconcile_ledger_projection_locked(
+            conn,
+            normalized,
+            state,
+            time.time() if now is None else float(now),
+        )
 
 
 def validate_store(conn):
@@ -1889,6 +2296,98 @@ def validate_store(conn):
         issues.append(f"foreign_key_violations={len(foreign_keys)}")
     if cycle is not None:
         issues.append("lineage_cycle")
+    cross_lineage = conn.execute(
+        """
+        SELECT 1 FROM lineage_edges edge
+        JOIN candidates parent ON parent.candidate_id = edge.parent_candidate_id
+        JOIN candidates child ON child.candidate_id = edge.child_candidate_id
+        WHERE parent.lineage_id != child.lineage_id
+        LIMIT 1
+        """
+    ).fetchone()
+    if cross_lineage is not None:
+        issues.append("cross_lineage_edge")
+    multiple_parent = conn.execute(
+        """
+        SELECT child_candidate_id FROM lineage_edges
+        GROUP BY child_candidate_id
+        HAVING count(DISTINCT parent_candidate_id) > 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if multiple_parent is not None:
+        issues.append("multiple_explicit_parents")
+    rooted_child = conn.execute(
+        """
+        SELECT 1 FROM lineage_edges edge
+        JOIN lineages lineage
+          ON lineage.root_candidate_id = edge.child_candidate_id
+        LIMIT 1
+        """
+    ).fetchone()
+    if rooted_child is not None:
+        issues.append("lineage_root_has_parent")
+    outside_root_ancestry = conn.execute(
+        """
+        WITH RECURSIVE reached(lineage_id, candidate_id) AS (
+          SELECT lineage_id, root_candidate_id FROM lineages
+          UNION
+          SELECT reached.lineage_id, edge.child_candidate_id
+          FROM reached
+          JOIN lineage_edges edge
+            ON edge.parent_candidate_id = reached.candidate_id
+          JOIN candidates child
+            ON child.candidate_id = edge.child_candidate_id
+           AND child.lineage_id = reached.lineage_id
+        )
+        SELECT 1
+        FROM lineage_edges edge
+        JOIN candidates parent
+          ON parent.candidate_id = edge.parent_candidate_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reached
+          WHERE reached.lineage_id = parent.lineage_id
+            AND reached.candidate_id = parent.candidate_id
+        )
+        LIMIT 1
+        """
+    ).fetchone()
+    if outside_root_ancestry is not None:
+        issues.append("lineage_edge_outside_root_ancestry")
+    state_value = _meta(conn, "state_root")
+    if state_value:
+        state_root = pathlib.Path(state_value)
+        for epoch in conn.execute(
+            "SELECT * FROM import_epochs ORDER BY committed_at, epoch_id"
+        ).fetchall():
+            plan_path = state_root / "import-plans" / f"{epoch['plan_sha256']}.json"
+            try:
+                plan_body = json.loads(plan_path.read_text(encoding="utf-8"))
+                if _sha(_json_bytes(plan_body)) != epoch["plan_sha256"]:
+                    raise ImportConflict("sealed import plan hash conflicts")
+                plan = dict(plan_body)
+                plan.update(
+                    {
+                        "plan_sha256": epoch["plan_sha256"],
+                        "plan_path": str(plan_path),
+                        "manifest_path": str(
+                            state_root
+                            / "import-manifests"
+                            / f"{epoch['input_manifest_sha256']}.json"
+                        ),
+                    }
+                )
+                _verify_epoch_results(
+                    conn,
+                    plan,
+                    epoch,
+                    state_root / "import-cas",
+                    repair=False,
+                )
+            except (OSError, ValueError, HistoryStoreError) as exc:
+                issues.append(
+                    f"import_epoch_inconsistent:{epoch['epoch_id']}:{type(exc).__name__}"
+                )
     if deferred:
         issues.append("deferred_awr_tables_present=" + ",".join(sorted(deferred)))
     return {
