@@ -6,6 +6,7 @@ import json
 import pathlib
 
 import history_store
+import history_projection
 
 
 def _targets(args):
@@ -38,6 +39,15 @@ def parser():
     export = commands.add_parser("export-tsv")
     export.add_argument("path")
     commands.add_parser("validate")
+    for name in ("rebuild-projections", "recover-projections"):
+        projection = commands.add_parser(name)
+        projection.add_argument(
+            "--policy", default="history/retrieval-policy-v1.json"
+        )
+    brief = commands.add_parser("build-brief")
+    brief.add_argument("--policy", default="history/retrieval-policy-v1.json")
+    brief.add_argument("--output", default="generation_brief.json")
+    brief.add_argument("--research-context")
     return result
 
 
@@ -76,6 +86,28 @@ def main():
             if not value["ok"]:
                 _print(value)
                 raise SystemExit(1)
+        elif args.command == "rebuild-projections":
+            value = history_projection.rebuild(
+                conn, history_projection.load_policy(args.policy)
+            )
+        elif args.command == "recover-projections":
+            value = history_projection.recover(
+                conn, history_projection.load_policy(args.policy)
+            )
+        elif args.command == "build-brief":
+            research_context = None
+            if args.research_context:
+                research_context = pathlib.Path(args.research_context).read_text(
+                    encoding="utf-8"
+                )
+            value = history_projection.build_generation_brief(
+                conn, history_projection.load_policy(args.policy), research_context
+            )
+            pathlib.Path(args.output).write_text(
+                json.dumps(value, sort_keys=True, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            value = dict(value, output=str(pathlib.Path(args.output)))
         else:
             raise AssertionError(args.command)
         _print(value)

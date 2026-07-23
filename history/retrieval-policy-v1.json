@@ -1,0 +1,18 @@
+{
+  "adapter_version": "history-stage-v1",
+  "adapter_wrapper_allowance": 256,
+  "final_lineage_count": 10,
+  "max_expansion_rounds": 1,
+  "max_matches": 10,
+  "max_output_tokens": 2048,
+  "max_retrieval_tokens": 4096,
+  "mode": "shadow",
+  "model_context_limit": 32768,
+  "per_channel_depth": 50,
+  "retrieval_policy_version": "retrieval-policy-v1",
+  "rrf_k": 60,
+  "safety_margin": 1024,
+  "tested_adapter_allowances": {
+    "history-stage-v1": 256
+  }
+}

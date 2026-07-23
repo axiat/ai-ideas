@@ -14,6 +14,8 @@ Run focused gates while editing:
 
 ```bash
 python3 tests/history_store_smoke.py
+python3 tests/history_projection_smoke.py
+python3 tests/history_budget_smoke.py
 python3 tests/verify_product_contract.py runtime
 python3 tests/verify_product_contract.py fixtures
 bash tests/runtime_abi_smoke.sh

@@ -888,6 +888,31 @@ def _queue_search_projection(conn, candidate):
     )
 
 
+def queue_search_projection(conn, candidate_id, content_version):
+    """Queue one canonical candidate for a rebuildable search projection."""
+    row = conn.execute(
+        "SELECT source_sequence FROM candidates WHERE candidate_id = ?",
+        (candidate_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("candidate is missing")
+    if not isinstance(content_version, str) or not content_version:
+        raise ValueError("projection content version is required")
+    conn.execute(
+        """
+        INSERT INTO search_projection_outbox(
+          record_id, projection_kind, content_version, source_sequence,
+          state, generation, claim_token, lease_until
+        ) VALUES(?, 'candidate', ?, ?, 'pending', 0, NULL, NULL)
+        ON CONFLICT(record_id, projection_kind, content_version)
+        DO UPDATE SET source_sequence = excluded.source_sequence,
+                      state = 'pending', generation = generation + 1,
+                      claim_token = NULL, lease_until = NULL
+        """,
+        (candidate_id, content_version, row[0]),
+    )
+
+
 def _enqueue_ledger_projection(conn):
     sequence = int(_meta(conn, "projection_sequence", "0")) + 1
     _set_meta(conn, "projection_sequence", sequence)
