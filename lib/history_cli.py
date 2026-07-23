@@ -3,10 +3,16 @@
 
 import argparse
 import json
+import os
 import pathlib
+import tempfile
 
-import history_store
-import history_projection
+try:
+    from lib import history_store
+    from lib import history_projection
+except ImportError:  # Direct execution through lib/history_cli.py.
+    import history_store
+    import history_projection
 
 
 def _targets(args):
@@ -18,6 +24,45 @@ def _targets(args):
 
 def _print(value):
     print(json.dumps(value, sort_keys=True, ensure_ascii=False))
+
+
+def _fsync_directory(path):
+    descriptor = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write_generation_brief(conn, output, brief):
+    """Durably publish a brief without permitting canonical-state overwrite."""
+    destination = pathlib.Path(output)
+    state_root = history_store._store_state_root(conn)
+    history_store._validate_destination(conn, destination, state_root)
+    protected = {
+        (pathlib.Path.cwd() / "ledger.tsv").resolve(),
+        (pathlib.Path.cwd() / "tmp" / "ledger.good").resolve(),
+        (state_root.parent / "ledger.tsv").resolve(),
+        (state_root.parent / "tmp" / "ledger.good").resolve(),
+    }
+    if destination.resolve() in protected:
+        raise ValueError("generation brief cannot replace a ledger projection")
+    parent = destination.parent
+    if parent.is_symlink() or not parent.exists() or not parent.is_dir():
+        raise ValueError("generation brief parent must be an existing directory")
+    data = history_projection.generation_brief_bytes(brief)
+    descriptor, temporary = tempfile.mkstemp(prefix=".%s." % destination.name, dir=str(parent))
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+        _fsync_directory(parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return {"path": str(destination), "sha256": history_store._sha(data), "byte_count": len(data)}
 
 
 def parser():
@@ -103,11 +148,8 @@ def main():
             value = history_projection.build_generation_brief(
                 conn, history_projection.load_policy(args.policy), research_context
             )
-            pathlib.Path(args.output).write_text(
-                json.dumps(value, sort_keys=True, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-            value = dict(value, output=str(pathlib.Path(args.output)))
+            publication = write_generation_brief(conn, args.output, value)
+            value = dict(value, output=publication["path"])
         else:
             raise AssertionError(args.command)
         _print(value)

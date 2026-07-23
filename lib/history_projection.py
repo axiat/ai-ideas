@@ -30,6 +30,12 @@ VECTOR_DIMENSIONS = 256
 VECTOR_MODEL = "hash-ngram-v1"
 VECTOR_REVISION = "1"
 PREPROCESSING_VERSION = "search-text-v1"
+PROJECTION_SCHEMA_VERSION = "history-projection-v2"
+FTS_TOKENIZER = "unicode61"
+
+
+class ProjectionError(RuntimeError):
+    pass
 
 
 SCHEMA = """
@@ -56,26 +62,83 @@ CREATE TABLE IF NOT EXISTS search_index_generations(
   generation INTEGER PRIMARY KEY,
   source_watermark INTEGER NOT NULL,
   manifest_sha256 TEXT NOT NULL,
+  manifest_json TEXT NOT NULL DEFAULT '',
+  policy_sha256 TEXT NOT NULL DEFAULT '',
+  projection_schema_version TEXT NOT NULL DEFAULT '',
+  fts_tokenizer TEXT NOT NULL DEFAULT '',
+  vector_model TEXT NOT NULL DEFAULT '',
+  vector_revision TEXT NOT NULL DEFAULT '',
+  preprocessing_version TEXT NOT NULL DEFAULT '',
+  dimensions INTEGER NOT NULL DEFAULT 0,
+  metric TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
-CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
-  candidate_id UNINDEXED,
-  content,
-  tokenize='unicode61'
-);
 """
+
+_POLICY_FIXED = {
+    "retrieval_policy_version": "retrieval-policy-v1",
+    "mode": "shadow",
+    "per_channel_depth": 50,
+    "final_lineage_count": 10,
+    "comparator_cutoff": 10,
+    "max_matches": 10,
+    "max_retrieval_tokens": 4096,
+    "max_expansion_rounds": 1,
+    "model_context_limit": 32768,
+    "max_output_tokens": 2048,
+    "safety_margin": 1024,
+    "adapter_version": "history-stage-v1",
+    "adapter_wrapper_allowance": 256,
+    "rrf_k": 60,
+}
+_POLICY_CHANNELS = ["exact", "fts", "dense", "lineage"]
+_POLICY_PROJECTION = {
+    "schema_version": PROJECTION_SCHEMA_VERSION,
+    "fts_tokenizer": FTS_TOKENIZER,
+    "vector_model": VECTOR_MODEL,
+    "vector_revision": VECTOR_REVISION,
+    "preprocessing_version": PREPROCESSING_VERSION,
+    "dimensions": VECTOR_DIMENSIONS,
+    "metric": "cosine",
+}
 
 
 def load_policy(path):
     with open(path, "r", encoding="utf-8") as stream:
         policy = json.load(stream)
-    if policy.get("retrieval_policy_version") != "retrieval-policy-v1":
-        raise ValueError("unsupported retrieval policy")
+    if any(policy.get(key) != value for key, value in _POLICY_FIXED.items()):
+        raise ValueError("retrieval policy fixed values do not match v1")
+    if policy.get("mandatory_channels") != _POLICY_CHANNELS:
+        raise ValueError("retrieval policy channels do not match v1")
+    if policy.get("projection") != _POLICY_PROJECTION:
+        raise ValueError("retrieval policy projection versions do not match v1")
+    if policy.get("tested_adapter_allowances") != {"history-stage-v1": 256}:
+        raise ValueError("retrieval policy adapter allowance is not verified")
     return policy
 
 
 def _init(conn):
     conn.executescript(SCHEMA)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(search_index_generations)")}
+    for name, definition in (
+        ("manifest_json", "TEXT NOT NULL DEFAULT ''"),
+        ("policy_sha256", "TEXT NOT NULL DEFAULT ''"),
+        ("projection_schema_version", "TEXT NOT NULL DEFAULT ''"),
+        ("fts_tokenizer", "TEXT NOT NULL DEFAULT ''"),
+        ("vector_model", "TEXT NOT NULL DEFAULT ''"),
+        ("vector_revision", "TEXT NOT NULL DEFAULT ''"),
+        ("preprocessing_version", "TEXT NOT NULL DEFAULT ''"),
+        ("dimensions", "INTEGER NOT NULL DEFAULT 0"),
+        ("metric", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if name not in columns:
+            conn.execute("ALTER TABLE search_index_generations ADD COLUMN %s %s" % (name, definition))
+    fts_columns = {row[1] for row in conn.execute("PRAGMA table_info(search_fts)")}
+    if fts_columns and fts_columns != {"candidate_id", "facet", "content"}:
+        conn.execute("DROP TABLE search_fts")
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(candidate_id UNINDEXED, facet UNINDEXED, content, tokenize='unicode61')"
+    )
     conn.execute(
         "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('history_index_generation', '0')"
     )
@@ -221,29 +284,50 @@ def update_candidate_from_round_artifact(conn, candidate_id, artifact_text):
     updates = {
         facet: extracted[facet]
         for facet in ("mechanism", "evaluation_expected_signal")
-        if extracted[facet]
     }
-    return update_candidate_facets(conn, candidate_id, updates) if updates else {
-        "queued_facets": 0
-    }
+    return update_candidate_facets(conn, candidate_id, updates)
 
 
 def _candidate_content(conn, candidate_id):
     rows = conn.execute(
-        "SELECT facet, text FROM candidate_facets WHERE candidate_id = ? ORDER BY facet",
+        "SELECT facet, text FROM candidate_facets WHERE candidate_id = ? AND text != '' ORDER BY facet",
         (candidate_id,),
     ).fetchall()
     return "\n".join(row["facet"] + ": " + row["text"] for row in rows)
 
 
 def _write_candidate(conn, candidate_id):
+    excluded = conn.execute(
+        "SELECT 1 FROM search_exclusions WHERE candidate_id = ?", (candidate_id,)
+    ).fetchone()
+    if excluded is not None:
+        conn.execute("DELETE FROM search_fts WHERE candidate_id = ?", (candidate_id,))
+        conn.execute("DELETE FROM search_vectors WHERE candidate_id = ?", (candidate_id,))
+        candidate = history_store.get_candidate(conn, candidate_id)
+        conn.execute(
+            """INSERT INTO search_index_entries(candidate_id, active, content_hash, indexed_generation)
+               VALUES(?, 0, ?, 0) ON CONFLICT(candidate_id) DO UPDATE SET active = 0""",
+            (candidate_id, _content_hash(candidate_id)),
+        )
+        return 0
     _ensure_facets(conn, candidate_id)
     facets = conn.execute(
         "SELECT facet, text, content_hash FROM candidate_facets WHERE candidate_id = ? ORDER BY facet",
         (candidate_id,),
     ).fetchall()
     embedded = 0
+    active_facets = {row["facet"] for row in facets if row["text"]}
+    for stale in conn.execute(
+        "SELECT facet FROM search_vectors WHERE candidate_id = ?", (candidate_id,)
+    ).fetchall():
+        if stale["facet"] not in active_facets:
+            conn.execute(
+                "DELETE FROM search_vectors WHERE candidate_id = ? AND facet = ?",
+                (candidate_id, stale["facet"]),
+            )
     for row in facets:
+        if not row["text"]:
+            continue
         prior = conn.execute(
             "SELECT content_hash FROM search_vectors WHERE candidate_id = ? AND facet = ?",
             (candidate_id, row["facet"]),
@@ -272,7 +356,14 @@ def _write_candidate(conn, candidate_id):
     ).fetchone()
     if entry is None or entry[0] != digest:
         conn.execute("DELETE FROM search_fts WHERE candidate_id = ?", (candidate_id,))
-        conn.execute("INSERT INTO search_fts(candidate_id, content) VALUES(?, ?)", (candidate_id, content))
+        for facet, text in conn.execute(
+            "SELECT facet, text FROM candidate_facets WHERE candidate_id = ? AND text != '' ORDER BY facet",
+            (candidate_id,),
+        ):
+            conn.execute(
+                "INSERT INTO search_fts(candidate_id, facet, content) VALUES(?, ?, ?)",
+                (candidate_id, facet, text),
+            )
     conn.execute(
         """
         INSERT INTO search_index_entries(candidate_id, active, content_hash, indexed_generation)
@@ -282,6 +373,92 @@ def _write_candidate(conn, candidate_id):
         (candidate_id, digest),
     )
     return embedded
+
+
+def _canonical_bytes(value):
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _policy_sha256(policy):
+    return hashlib.sha256(_canonical_bytes(policy)).hexdigest()
+
+
+def _projection_manifest(conn, policy, source_watermark):
+    entries = [dict(row) for row in conn.execute(
+        "SELECT candidate_id, active, content_hash FROM search_index_entries ORDER BY candidate_id"
+    )]
+    vectors = []
+    for row in conn.execute(
+        """SELECT candidate_id, facet, content_hash, vector, model, revision,
+                  preprocessing_version, dimensions, metric, l2_norm
+           FROM search_vectors ORDER BY candidate_id, facet"""
+    ):
+        value = dict(row)
+        value["vector_sha256"] = hashlib.sha256(bytes(value.pop("vector"))).hexdigest()
+        vectors.append(value)
+    fts = [
+        {"candidate_id": row[0], "facet": row[1], "content_sha256": _content_hash(row[2])}
+        for row in conn.execute(
+            "SELECT candidate_id, facet, content FROM search_fts ORDER BY candidate_id, facet"
+        )
+    ]
+    return {
+        "schema_version": PROJECTION_SCHEMA_VERSION,
+        "source_watermark": source_watermark,
+        "policy_sha256": _policy_sha256(policy),
+        "fts_tokenizer": FTS_TOKENIZER,
+        "vector": {
+            "model": VECTOR_MODEL,
+            "revision": VECTOR_REVISION,
+            "preprocessing_version": PREPROCESSING_VERSION,
+            "dimensions": VECTOR_DIMENSIONS,
+            "metric": "cosine",
+        },
+        "entries": entries,
+        "vectors": vectors,
+        "fts": fts,
+    }
+
+
+def _latest_generation(conn):
+    return conn.execute(
+        "SELECT * FROM search_index_generations ORDER BY generation DESC LIMIT 1"
+    ).fetchone()
+
+
+def validate_published_generation(conn, policy):
+    _init(conn)
+    generation = _latest_generation(conn)
+    if generation is None:
+        return {"valid": False, "code": "no_published_generation"}
+    try:
+        manifest = json.loads(generation["manifest_json"])
+    except (TypeError, ValueError):
+        return {"valid": False, "code": "invalid_manifest"}
+    expected = _projection_manifest(conn, policy, generation["source_watermark"])
+    expected_bytes = _canonical_bytes(expected)
+    compatible = (
+        generation["policy_sha256"] == _policy_sha256(policy)
+        and generation["projection_schema_version"] == PROJECTION_SCHEMA_VERSION
+        and generation["fts_tokenizer"] == FTS_TOKENIZER
+        and generation["vector_model"] == VECTOR_MODEL
+        and generation["vector_revision"] == VECTOR_REVISION
+        and generation["preprocessing_version"] == PREPROCESSING_VERSION
+        and generation["dimensions"] == VECTOR_DIMENSIONS
+        and generation["metric"] == "cosine"
+    )
+    valid = compatible and generation["manifest_sha256"] == hashlib.sha256(expected_bytes).hexdigest() and manifest == expected
+    return {
+        "valid": valid,
+        "code": "ok" if valid else "manifest_mismatch",
+        "generation": generation["generation"],
+        "manifest": expected if valid else manifest,
+    }
+
+
+def _requeue_all(conn, content_version):
+    for candidate_id, in conn.execute("SELECT candidate_id FROM candidates ORDER BY source_sequence"):
+        _queue(conn, candidate_id, content_version)
 
 
 def rebuild(conn, policy):
@@ -306,10 +483,18 @@ def rebuild(conn, policy):
         if changed:
             generation += 1
             watermark = conn.execute("SELECT COALESCE(MAX(source_sequence), 0) FROM candidates").fetchone()[0]
-            manifest = "\n".join(sorted(changed)).encode("ascii")
+            manifest = _projection_manifest(conn, policy, watermark)
+            manifest_bytes = _canonical_bytes(manifest)
             conn.execute(
-                "INSERT INTO search_index_generations(generation, source_watermark, manifest_sha256, created_at) VALUES(?, ?, ?, datetime('now'))",
-                (generation, watermark, hashlib.sha256(manifest).hexdigest()),
+                """INSERT INTO search_index_generations(
+                   generation, source_watermark, manifest_sha256, manifest_json, policy_sha256,
+                   projection_schema_version, fts_tokenizer, vector_model, vector_revision,
+                   preprocessing_version, dimensions, metric, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (generation, watermark, hashlib.sha256(manifest_bytes).hexdigest(),
+                 manifest_bytes.decode("utf-8").rstrip("\n"), _policy_sha256(policy),
+                 PROJECTION_SCHEMA_VERSION, FTS_TOKENIZER, VECTOR_MODEL, VECTOR_REVISION,
+                 PREPROCESSING_VERSION, VECTOR_DIMENSIONS, "cosine"),
             )
             conn.execute(
                 "UPDATE search_index_entries SET indexed_generation = ? WHERE candidate_id IN (%s)" % ",".join("?" * len(changed)),
@@ -327,7 +512,26 @@ def rebuild(conn, policy):
 
 
 def recover(conn, policy):
-    return rebuild(conn, policy)
+    _init(conn)
+    validation = validate_published_generation(conn, policy)
+    pending = conn.execute(
+        "SELECT count(*) FROM search_projection_outbox WHERE state = 'pending'"
+    ).fetchone()[0]
+    if not validation["valid"]:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _requeue_all(conn, "recovery-v2")
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    result = rebuild(conn, policy)
+    if not validate_published_generation(conn, policy)["valid"]:
+        raise ProjectionError("published projection recovery failed closed")
+    result["recovered"] = not validation["valid"]
+    result["pending_before_recovery"] = pending
+    return result
 
 
 def drop_rebuildable_projections(conn):
@@ -339,8 +543,7 @@ def drop_rebuildable_projections(conn):
         conn.execute("DELETE FROM search_fts")
         conn.execute("DELETE FROM search_index_generations")
         conn.execute("UPDATE schema_meta SET value = '0' WHERE key = 'history_index_generation'")
-        for candidate_id, in conn.execute("SELECT candidate_id FROM candidates ORDER BY source_sequence"):
-            _queue(conn, candidate_id, "rebuild-v1")
+        _requeue_all(conn, "rebuild-v2")
         conn.execute("COMMIT")
     except Exception:
         if conn.in_transaction:
@@ -354,9 +557,11 @@ def remove_candidate_from_search(conn, candidate_id):
     try:
         if history_store.get_candidate(conn, candidate_id) is None:
             raise ValueError("candidate is missing")
-        conn.execute("DELETE FROM search_fts WHERE candidate_id = ?", (candidate_id,))
-        conn.execute("DELETE FROM search_vectors WHERE candidate_id = ?", (candidate_id,))
-        conn.execute("UPDATE search_index_entries SET active = 0 WHERE candidate_id = ?", (candidate_id,))
+        conn.execute(
+            "INSERT OR REPLACE INTO search_exclusions(candidate_id, exclusion_reason, excluded_at) VALUES(?, 'operator', datetime('now'))",
+            (candidate_id,),
+        )
+        _queue(conn, candidate_id, "exclusion-v1")
         conn.execute("COMMIT")
     except Exception:
         if conn.in_transaction:
@@ -405,17 +610,26 @@ def search(conn, query, policy):
     exact = exact_lookup(conn, query, depth)
     channels["exact"] = exact
     terms = _tokens(query)
+    fts_by_facet = {}
     if terms:
         expression = " OR ".join('"' + term.replace('"', '') + '"' for term in terms)
-        fts = [row[0] for row in conn.execute(
-            """SELECT f.candidate_id FROM search_fts f JOIN search_index_entries e
+        fts_rows = conn.execute(
+            """SELECT f.candidate_id, f.facet, bm25(search_fts) AS rank FROM search_fts f JOIN search_index_entries e
                ON e.candidate_id = f.candidate_id WHERE e.active = 1 AND search_fts MATCH ?
-               ORDER BY bm25(search_fts), f.candidate_id LIMIT ?""",
+               ORDER BY f.facet, rank, f.candidate_id LIMIT ?""",
             (expression, depth),
-        )]
+        ).fetchall()
+        for row in fts_rows:
+            fts_by_facet.setdefault(row["facet"], []).append(row["candidate_id"])
+        fts = []
+        for facet in sorted(fts_by_facet):
+            for candidate_id in fts_by_facet[facet]:
+                if candidate_id not in fts:
+                    fts.append(candidate_id)
     else:
         fts = []
     channels["fts"] = fts
+    channels["fts_by_facet"] = fts_by_facet
     vector, norm = embed(query)
     dense = {}
     if norm:
@@ -425,8 +639,11 @@ def search(conn, query, policy):
         ):
             dense[row["candidate_id"]] = max(dense.get(row["candidate_id"], -1.0), _cosine(vector, _unblob(row["vector"])))
     channels["dense"] = [key for key, _ in sorted(dense.items(), key=lambda item: (-item[1], item[0]))[:depth]]
+    channels["lineage"] = []
     scores = {}
-    for values in channels.values():
+    for channel, values in channels.items():
+        if channel == "fts_by_facet":
+            continue
         for rank, candidate_id in enumerate(values, 1):
             scores[candidate_id] = scores.get(candidate_id, 0.0) + 1.0 / (int(policy["rrf_k"]) + rank)
     ranked = [candidate_id for candidate_id, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:int(policy["max_matches"])]]
@@ -452,16 +669,24 @@ def failure_code(verdict, category, reason):
     return "other"
 
 
-def _estimated_tokens(value):
-    return len(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+def generation_brief_bytes(brief):
+    return _canonical_bytes(brief)
 
 
 def build_generation_brief(conn, policy, research_context=None):
     _init(conn)
-    row_count = conn.execute("SELECT count(*) FROM candidates").fetchone()[0]
-    index_generation = int(conn.execute(
-        "SELECT value FROM schema_meta WHERE key = 'history_index_generation'"
-    ).fetchone()[0])
+    pending = conn.execute(
+        "SELECT count(*) FROM search_projection_outbox WHERE state != 'done'"
+    ).fetchone()[0]
+    validation = validate_published_generation(conn, policy)
+    current_watermark = conn.execute(
+        "SELECT COALESCE(MAX(source_sequence), 0) FROM candidates"
+    ).fetchone()[0]
+    if pending or not validation["valid"]:
+        raise ProjectionError("generation brief requires one validated current projection")
+    generation = _latest_generation(conn)
+    if generation["source_watermark"] != current_watermark:
+        raise ProjectionError("generation brief cannot combine index and canonical snapshots")
     theme_counts = dict(conn.execute(
         "SELECT theme, count(*) FROM candidates GROUP BY theme ORDER BY theme"
     ).fetchall())
@@ -483,15 +708,19 @@ def build_generation_brief(conn, policy, research_context=None):
     brief = {
         "schema_version": 1,
         "retrieval_policy_version": policy["retrieval_policy_version"],
-        "source_watermark": row_count,
-        "index_generation": index_generation,
+        "source_watermark": generation["source_watermark"],
+        "index_generation": generation["generation"],
         "theme_counts": theme_counts,
         "failure_code_counts": dict(sorted(failure_counts.items())),
         "parent": parent_value,
-        "parents": [] if parent_value is None else [parent_value],
         "research_context": research_context,
     }
-    brief["estimated_tokens"] = _estimated_tokens(brief)
-    if brief["estimated_tokens"] > int(policy["max_retrieval_tokens"]):
+    brief["estimated_tokens"] = 0
+    while True:
+        final_size = len(generation_brief_bytes(brief))
+        if brief["estimated_tokens"] == final_size:
+            break
+        brief["estimated_tokens"] = final_size
+    if len(generation_brief_bytes(brief)) > int(policy["max_retrieval_tokens"]):
         raise ValueError("generation brief exceeds retrieval token budget")
     return brief

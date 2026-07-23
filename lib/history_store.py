@@ -136,6 +136,11 @@ CREATE TABLE IF NOT EXISTS candidate_facets(
   source_artifact_id TEXT REFERENCES artifacts(artifact_id),
   PRIMARY KEY(candidate_id, facet)
 );
+CREATE TABLE IF NOT EXISTS search_exclusions(
+  candidate_id TEXT PRIMARY KEY REFERENCES candidates(candidate_id),
+  exclusion_reason TEXT NOT NULL,
+  excluded_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS lineage_edges(
   parent_candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id),
   child_candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id),

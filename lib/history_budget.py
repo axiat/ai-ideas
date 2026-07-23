@@ -21,7 +21,7 @@ def _canonical_json(value):
 
 def _mounted_inputs(mounted_inputs):
     if mounted_inputs is None:
-        return []
+        raise ValueError("mounted inputs must be supplied")
     values = []
     for path, content in dict(mounted_inputs).items():
         relative = pathlib.PurePosixPath(path)
@@ -110,7 +110,79 @@ def _token_count(tokenizer, serialized):
     return count
 
 
-def preflight_stage_invocation(serialized, policy, tokenizer=None):
+_INVOCATION_FIELDS = {
+    "adapter", "candidate", "fixed_instructions", "messages", "mounted_inputs",
+    "output_schema_instructions", "receipts", "retrieval_payload", "schema_version",
+    "stage", "tool_schemas",
+}
+_STAGE_REQUIREMENTS = {
+    "generate": {"mounts": {"generation_brief.json"}, "candidate": False,
+                 "retrieval_payload": False},
+    "history-compare": {"mounts": {"retrieval_pack.json"}, "candidate": True,
+                        "retrieval_payload": True},
+    "review": {"mounts": {"retrieval_pack.json"}, "candidate": True,
+               "retrieval_payload": True},
+    "meta": {"mounts": set(), "candidate": False, "retrieval_payload": False},
+}
+
+
+def _expected_mount_hashes(expected_mounted_inputs):
+    if not isinstance(expected_mounted_inputs, dict):
+        raise TypeError("independent mount expectations must be a mapping")
+    result = {}
+    for path, value in expected_mounted_inputs.items():
+        normalized = _mounted_inputs({path: value})[0]
+        result[normalized["path"]] = normalized["sha256"]
+    return result
+
+
+def _validate_closed_invocation(invocation, expected_mounted_inputs):
+    if set(invocation) != _INVOCATION_FIELDS or invocation.get("schema_version") != 1:
+        raise ValueError("closed invocation schema mismatch")
+    adapter = invocation.get("adapter")
+    if not isinstance(adapter, dict) or set(adapter) != {"fixed_wrapper", "version"}:
+        raise ValueError("adapter schema mismatch")
+    stage = invocation.get("stage")
+    requirements = _STAGE_REQUIREMENTS.get(stage)
+    if requirements is None:
+        raise ValueError("unsupported stage")
+    if not isinstance(invocation["fixed_instructions"], str) or not invocation["fixed_instructions"]:
+        raise ValueError("fixed instructions are required")
+    if not isinstance(invocation["messages"], list) or not invocation["messages"]:
+        raise ValueError("ordered messages are required")
+    if not isinstance(invocation["receipts"], list) or not isinstance(invocation["tool_schemas"], list):
+        raise ValueError("receipt and tool schema lists are required")
+    if (invocation["candidate"] is not None) != requirements["candidate"]:
+        raise ValueError("candidate does not match stage")
+    if (invocation["retrieval_payload"] is not None) != requirements["retrieval_payload"]:
+        raise ValueError("retrieval payload does not match stage")
+    expected = _expected_mount_hashes(expected_mounted_inputs)
+    actual = {}
+    for mounted in invocation["mounted_inputs"]:
+        if set(mounted) != {"path", "sha256", "text"} or not isinstance(mounted["text"], str):
+            raise ValueError("mounted input schema mismatch")
+        actual[mounted["path"]] = mounted["sha256"]
+        if hashlib.sha256(mounted["text"].encode("utf-8")).hexdigest() != mounted["sha256"]:
+            raise ValueError("mounted input hash mismatch")
+    if actual != expected or not requirements["mounts"].issubset(actual):
+        raise ValueError("mounted input expectation mismatch")
+
+
+def _validate_tokenizer(tokenizer, policy):
+    if tokenizer is None:
+        return
+    identity = getattr(tokenizer, "identity", None)
+    revision = getattr(tokenizer, "revision", None)
+    if (
+        identity != policy.get("tokenizer_identity")
+        or revision != policy.get("tokenizer_revision")
+    ):
+        raise ValueError("tokenizer is not policy-bound")
+
+
+def preflight_stage_invocation(
+    serialized, policy, tokenizer=None, expected_mounted_inputs=None
+):
     """Return a receipt or raise before a backend process can launch."""
     if not isinstance(serialized, bytes):
         raise TypeError("serialized invocation must be bytes")
@@ -122,15 +194,12 @@ def preflight_stage_invocation(serialized, policy, tokenizer=None):
         _raise("unverified_adapter_allowance", serialized, policy)
     try:
         invocation = json.loads(serialized.decode("utf-8"))
+        _validate_closed_invocation(invocation, expected_mounted_inputs)
         serialized_adapter = invocation["adapter"]["version"]
         if invocation["adapter"]["fixed_wrapper"] != "history-stage-prompt-v1":
             raise ValueError("unexpected wrapper")
         if serialized_adapter != adapter_version:
             _raise("adapter_policy_mismatch", serialized, policy)
-        for mounted in invocation["mounted_inputs"]:
-            text = mounted["text"].encode("utf-8")
-            if hashlib.sha256(text).hexdigest() != mounted["sha256"]:
-                _raise("mounted_input_hash_mismatch", serialized, policy)
     except PreflightError:
         raise
     except (KeyError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
@@ -138,6 +207,10 @@ def preflight_stage_invocation(serialized, policy, tokenizer=None):
     required = ("model_context_limit", "max_output_tokens", "safety_margin")
     if any(type(policy.get(key)) is not int or policy[key] < 0 for key in required):
         _raise("invalid_budget_policy", serialized, policy)
+    try:
+        _validate_tokenizer(tokenizer, policy)
+    except (TypeError, ValueError):
+        _raise("unverified_tokenizer", serialized, policy)
     if tokenizer is None:
         input_upper_bound = len(serialized) + allowance
         count_method = "utf8_byte_upper_bound"

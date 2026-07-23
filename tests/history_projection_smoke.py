@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 from lib import history_projection as projection
 from lib import history_store
 from lib import history_budget
+from lib import history_cli
 
 
 HEADER = b"date\tsource\ttheme\tidea\tverdict\treason\toverlap\tcategory\n"
@@ -79,6 +80,7 @@ class HistoryProjectionSmoke(unittest.TestCase):
         result = projection.rebuild(self.conn, self.policy)
         self.assertEqual(result["embedded_facets"], 1)
         projection.remove_candidate_from_search(self.conn, self.candidate_id)
+        projection.rebuild(self.conn, self.policy)
         self.assertNotIn(self.candidate_id, self._all_searchable_ids())
         self.assertIsNotNone(history_store.get_candidate(self.conn, self.candidate_id))
 
@@ -134,9 +136,68 @@ class HistoryProjectionSmoke(unittest.TestCase):
             retrieval_payload=None, receipts=[], tool_schemas=[],
             messages=[{"role": "user", "content": "Generate candidates."}],
         )
-        receipt = history_budget.preflight_stage_invocation(invocation, self.policy)
+        receipt = history_budget.preflight_stage_invocation(
+            invocation, self.policy,
+            expected_mounted_inputs={"generation_brief.json": brief_bytes},
+        )
         self.assertTrue(receipt["fits"])
         self.assertEqual(receipt["serialized_sha256"], __import__("hashlib").sha256(invocation).hexdigest())
+
+    def test_recover_repairs_complete_generation_corruption(self):
+        projection.rebuild(self.conn, self.policy)
+        self.conn.execute("DELETE FROM search_vectors WHERE candidate_id = ?", (self.candidate_id,))
+        repaired = projection.recover(self.conn, self.policy)
+        self.assertGreater(repaired["embedded_facets"], 0)
+        self.assertTrue(projection.validate_published_generation(self.conn, self.policy)["valid"])
+
+    def test_brief_rejects_unpublished_canonical_append(self):
+        projection.rebuild(self.conn, self.policy)
+        history_store.append_rows(self.conn, [row("unpublished candidate")], {"run_id": "behind"})
+        with self.assertRaises(projection.ProjectionError):
+            projection.build_generation_brief(self.conn, self.policy)
+
+    def test_removal_and_empty_round_facets_survive_clean_rebuild(self):
+        projection.rebuild(self.conn, self.policy)
+        projection.update_candidate_from_round_artifact(
+            self.conn, self.candidate_id, "Summary: transient mechanism\n"
+        )
+        projection.rebuild(self.conn, self.policy)
+        projection.update_candidate_from_round_artifact(self.conn, self.candidate_id, "")
+        projection.remove_candidate_from_search(self.conn, self.candidate_id)
+        projection.rebuild(self.conn, self.policy)
+        projection.drop_rebuildable_projections(self.conn)
+        projection.rebuild(self.conn, self.policy)
+        self.assertNotIn(self.candidate_id, self._all_searchable_ids())
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM search_vectors WHERE candidate_id = ? AND facet = 'mechanism'",
+            (self.candidate_id,),
+        ).fetchone())
+
+    def test_policy_and_brief_bytes_are_strict_and_final(self):
+        invalid = self.root / "invalid-policy.json"
+        invalid.write_text('{"retrieval_policy_version":"retrieval-policy-v1"}\n', encoding="utf-8")
+        with self.assertRaises(ValueError):
+            projection.load_policy(invalid)
+        projection.rebuild(self.conn, self.policy)
+        brief = projection.build_generation_brief(self.conn, self.policy)
+        encoded = projection.generation_brief_bytes(brief)
+        self.assertEqual(len(encoded), brief["estimated_tokens"])
+        self.assertNotIn("parents", brief)
+        manifest = projection.validate_published_generation(self.conn, self.policy)
+        self.assertTrue(manifest["valid"])
+        self.assertEqual(manifest["manifest"]["vector"]["dimensions"], 256)
+
+    def test_per_facet_fts_and_atomic_protected_brief_output(self):
+        projection.rebuild(self.conn, self.policy)
+        facets = {row[0] for row in self.conn.execute("SELECT DISTINCT facet FROM search_fts")}
+        self.assertIn("problem_estimand", facets)
+        self.assertIn("setting_task", facets)
+        preserved = self.ledger.read_bytes()
+        with self.assertRaises(ValueError):
+            history_cli.write_generation_brief(
+                self.conn, self.ledger, projection.build_generation_brief(self.conn, self.policy)
+            )
+        self.assertEqual(self.ledger.read_bytes(), preserved)
 
 
 if __name__ == "__main__":

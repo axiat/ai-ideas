@@ -1,14 +1,30 @@
 {
   "adapter_version": "history-stage-v1",
   "adapter_wrapper_allowance": 256,
+  "comparator_cutoff": 10,
   "final_lineage_count": 10,
   "max_expansion_rounds": 1,
   "max_matches": 10,
   "max_output_tokens": 2048,
   "max_retrieval_tokens": 4096,
+  "mandatory_channels": [
+    "exact",
+    "fts",
+    "dense",
+    "lineage"
+  ],
   "mode": "shadow",
   "model_context_limit": 32768,
   "per_channel_depth": 50,
+  "projection": {
+    "dimensions": 256,
+    "fts_tokenizer": "unicode61",
+    "metric": "cosine",
+    "preprocessing_version": "search-text-v1",
+    "schema_version": "history-projection-v2",
+    "vector_model": "hash-ngram-v1",
+    "vector_revision": "1"
+  },
   "retrieval_policy_version": "retrieval-policy-v1",
   "rrf_k": 60,
   "safety_margin": 1024,
