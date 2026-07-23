@@ -52,6 +52,31 @@ python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 replay-receipt \
   --pack tmp/retrieval_pack.json --receipt tmp/history_receipt.json
 ```
 
+Generation, internal comparison, review, and bounded failure distillation use
+the same contained stage ABI:
+
+```bash
+python3 lib/history_stage.py run \
+  --stage generate \
+  --manifest /absolute/run/generate-manifest.json \
+  --command '["/absolute/path/to/codex","-m","gpt-5.3-codex-spark","-c","model_reasoning_effort=xhigh"]'
+```
+
+The command is a closed JSON argv array. The host captures and hashes the
+registered role, policy, mounted inputs, executable, fixed argv, and canonical
+prompt before launch. A registered Codex capability replaces the CLI harness
+with the exact preflighted request, disables tools, and exposes only one
+declared loopback port to the contained client. The host broker reads the
+canonical Codex authentication file without modifying it; an expired session
+fails with `auth_refresh_required` and requires a normal operator login before
+retry. Darwin Codex execution requires `sandbox-exec`. Linux fixture
+containment requires `bwrap`; Codex fails closed there until a loopback-only
+network namespace is registered. Absence or activation failure is fatal. A
+preflight receipt is durable before launch, copied artifacts are untrusted
+without the completion receipt, and the completion receipt is published only
+after every declared output passes no-follow, type, size, schema, and
+prompt-attestation checks.
+
 Only `complete_match` and `complete_no_match` receipts permit a permanent
 internal-history conclusion. Receipt replay is bound to the policy, projection
 generation, source watermark, comparator version, pack hash, evidence IDs, and

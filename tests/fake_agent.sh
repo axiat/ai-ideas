@@ -8,6 +8,17 @@ set -eu
 
 prompt=${1:-}
 FAKE_AGENT_MODE=${FAKE_AGENT_MODE:-default}
+
+if [[ "$prompt" == \{* && "$prompt" == *'"schema_version":1'* ]]; then
+  script_dir=${BASH_SOURCE[0]%/*}
+  if [ -x /Applications/Xcode.app/Contents/Developer/usr/bin/python3 ]; then
+    stage_python=/Applications/Xcode.app/Contents/Developer/usr/bin/python3
+  else
+    stage_python=$(command -v python3)
+  fi
+  exec "$stage_python" "$script_dir/fake_stage_agent.py" "$prompt"
+fi
+
 mkdir -p tmp/round
 
 record_call() {

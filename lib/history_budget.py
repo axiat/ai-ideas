@@ -116,13 +116,37 @@ _INVOCATION_FIELDS = {
     "stage", "tool_schemas",
 }
 _STAGE_REQUIREMENTS = {
-    "generate": {"mounts": {"generation_brief.json"}, "candidate": False,
-                 "retrieval_payload": False},
-    "history-compare": {"mounts": {"retrieval_pack.json"}, "candidate": True,
-                        "retrieval_payload": True},
-    "review": {"mounts": {"retrieval_pack.json"}, "candidate": True,
-               "retrieval_payload": True},
-    "meta": {"mounts": set(), "candidate": False, "retrieval_payload": False},
+    "generate": {
+        "required_mounts": {
+            "generation_brief.json",
+            "generation_policy.md",
+        },
+        "optional_mounts": {"research_context.md"},
+        "candidate": False,
+        "retrieval_payload": False,
+    },
+    "history-compare": {
+        "required_mounts": {"retrieval_pack.json"},
+        "optional_mounts": set(),
+        "candidate": True,
+        "retrieval_payload": True,
+    },
+    "review": {
+        "required_mounts": {
+            "candidate.json",
+            "prior_work.md",
+            "review_contract.md",
+        },
+        "optional_mounts": {"history_summary.json"},
+        "candidate": True,
+        "retrieval_payload": False,
+    },
+    "meta": {
+        "required_mounts": {"failure_batch.json"},
+        "optional_mounts": set(),
+        "candidate": False,
+        "retrieval_payload": False,
+    },
 }
 
 
@@ -161,10 +185,18 @@ def _validate_closed_invocation(invocation, expected_mounted_inputs):
     for mounted in invocation["mounted_inputs"]:
         if set(mounted) != {"path", "sha256", "text"} or not isinstance(mounted["text"], str):
             raise ValueError("mounted input schema mismatch")
+        if mounted["path"] in actual:
+            raise ValueError("duplicate mounted input path")
         actual[mounted["path"]] = mounted["sha256"]
         if hashlib.sha256(mounted["text"].encode("utf-8")).hexdigest() != mounted["sha256"]:
             raise ValueError("mounted input hash mismatch")
-    if actual != expected or not requirements["mounts"].issubset(actual):
+    required_mounts = requirements["required_mounts"]
+    allowed_mounts = required_mounts | requirements["optional_mounts"]
+    if (
+        actual != expected
+        or not required_mounts.issubset(actual)
+        or not set(actual).issubset(allowed_mounts)
+    ):
         raise ValueError("mounted input expectation mismatch")
 
 
@@ -243,6 +275,142 @@ def preflight_stage_invocation(
         "serialized_byte_count": len(serialized),
         "serialized_sha256": hashlib.sha256(serialized).hexdigest(),
         "input_sha256s": sorted(_declared_input_sha256s(invocation)),
+        "total_upper_bound": total,
+    }
+    if not receipt["fits"]:
+        raise PreflightError("budget_exceeded", receipt)
+    return receipt
+
+
+def preflight_canonical_request(prompt, request, policy):
+    """Budget the exact provider request authored by the canonicalizer."""
+    if not isinstance(prompt, bytes) or not isinstance(request, bytes):
+        raise TypeError("prompt and canonical request must be bytes")
+    try:
+        prompt_text = prompt.decode("utf-8")
+        value = json.loads(request.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise PreflightError(
+            "canonical_request_invalid",
+            {
+                "code": "canonical_request_invalid",
+                "fits": False,
+                "canonical_request_sha256": hashlib.sha256(
+                    request
+                ).hexdigest(),
+            },
+        ) from exc
+    required = (
+        "model_context_limit",
+        "max_output_tokens",
+        "safety_margin",
+    )
+    text = value.get("text") if isinstance(value, dict) else None
+    output_format = (
+        text.get("format") if isinstance(text, dict) else None
+    )
+    reasoning = (
+        value.get("reasoning") if isinstance(value, dict) else None
+    )
+    if (
+        not isinstance(value, dict)
+        or request != _canonical_json(value).encode("utf-8")
+        or set(value)
+        != {
+            "include",
+            "input",
+            "instructions",
+            "max_output_tokens",
+            "model",
+            "parallel_tool_calls",
+            "reasoning",
+            "store",
+            "stream",
+            "text",
+            "tool_choice",
+            "tools",
+            "truncation",
+        }
+        or value.get("include") != []
+        or value.get("input")
+        != [
+            {
+                "content": [
+                    {"text": prompt_text, "type": "input_text"}
+                ],
+                "role": "user",
+                "type": "message",
+            }
+        ]
+        or value.get("instructions") != ""
+        or not isinstance(value.get("model"), str)
+        or not value["model"]
+        or len(value["model"].encode("utf-8")) > 256
+        or value.get("parallel_tool_calls") is not False
+        or not isinstance(reasoning, dict)
+        or set(reasoning) != {"effort", "summary"}
+        or reasoning.get("effort")
+        not in {"low", "medium", "high", "xhigh"}
+        or reasoning.get("summary") != "auto"
+        or value.get("store") is not False
+        or value.get("tools") != []
+        or value.get("tool_choice") != "none"
+        or value.get("truncation") != "disabled"
+        or value.get("stream") is not True
+        or not isinstance(text, dict)
+        or set(text) != {"format", "verbosity"}
+        or text.get("verbosity") != "low"
+        or not isinstance(output_format, dict)
+        or set(output_format)
+        != {"name", "schema", "strict", "type"}
+        or output_format.get("name") != "bounded_stage_output_v1"
+        or not isinstance(output_format.get("schema"), dict)
+        or output_format.get("strict") is not True
+        or output_format.get("type") != "json_schema"
+        or any(
+            type(policy.get(key)) is not int or policy[key] < 0
+            for key in required
+        )
+        or value.get("max_output_tokens")
+        != policy.get("max_output_tokens")
+    ):
+        raise PreflightError(
+            "canonical_request_invalid",
+            {
+                "code": "canonical_request_invalid",
+                "fits": False,
+                "canonical_request_sha256": hashlib.sha256(
+                    request
+                ).hexdigest(),
+            },
+        )
+    envelope = json.loads(request.decode("utf-8"))
+    envelope["input"][0]["content"][0]["text"] = ""
+    envelope_bytes = (
+        _canonical_json(envelope).encode("utf-8")
+    )
+    input_upper_bound = len(request)
+    total = (
+        input_upper_bound
+        + policy["max_output_tokens"]
+        + policy["safety_margin"]
+    )
+    receipt = {
+        "code": (
+            "ok"
+            if total <= policy["model_context_limit"]
+            else "budget_exceeded"
+        ),
+        "fits": total <= policy["model_context_limit"],
+        "count_method": "canonical_request_utf8_byte_upper_bound",
+        "prompt_sha256": hashlib.sha256(prompt).hexdigest(),
+        "canonical_request_sha256": hashlib.sha256(request).hexdigest(),
+        "canonical_request_bytes": len(request),
+        "fixed_envelope_bytes": len(envelope_bytes),
+        "input_upper_bound": input_upper_bound,
+        "model_context_limit": policy["model_context_limit"],
+        "output_tokens": policy["max_output_tokens"],
+        "safety_margin": policy["safety_margin"],
         "total_upper_bound": total,
     }
     if not receipt["fits"]:

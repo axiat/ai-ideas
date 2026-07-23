@@ -130,16 +130,21 @@ class HistoryProjectionSmoke(unittest.TestCase):
         projection.rebuild(self.conn, self.policy)
         brief = projection.build_generation_brief(self.conn, self.policy)
         brief_bytes = (json.dumps(brief, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        policy_bytes = b"Generate one bounded candidate.\n"
+        mounted_inputs = {
+            "generation_brief.json": brief_bytes,
+            "generation_policy.md": policy_bytes,
+        }
         invocation = history_budget.serialize_stage_invocation(
             stage="generate", adapter_version="history-stage-v1",
             fixed_instructions="Generate candidates.",
-            mounted_inputs={"generation_brief.json": brief_bytes}, candidate=None,
+            mounted_inputs=mounted_inputs, candidate=None,
             retrieval_payload=None, receipts=[], tool_schemas=[],
             messages=[{"role": "user", "content": "Generate candidates."}],
         )
         receipt = history_budget.preflight_stage_invocation(
             invocation, self.policy,
-            expected_mounted_inputs={"generation_brief.json": brief_bytes},
+            expected_mounted_inputs=mounted_inputs,
         )
         self.assertTrue(receipt["fits"])
         self.assertEqual(receipt["serialized_sha256"], __import__("hashlib").sha256(invocation).hexdigest())

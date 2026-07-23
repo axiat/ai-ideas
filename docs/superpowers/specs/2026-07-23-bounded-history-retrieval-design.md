@@ -82,6 +82,31 @@ At the current corpus size, dense retrieval uses an exhaustive flat scan. Approx
 
 ## Stage Boundaries
 
+### Contained model transport
+
+Generation, comparison, review, and optional distillation share one contained
+stage ABI. The host serializes the role and mounted inputs once, builds a
+tool-free structured Responses request, and budgets that exact canonical byte
+sequence before launch. A pinned host proxy accepts one request from the
+contained Codex client, verifies that its final user input is the preflighted
+prompt, discards the client harness, and forwards exactly the canonical body.
+It buffers and validates the complete upstream response before returning a
+minimal validated stream to Codex. The host then validates the
+`--output-last-message` file, materializes only the declared artifacts, and
+publishes a completion receipt that binds the canonical request, upstream
+transcript, model output, and output contract.
+
+The contained client has no provider credential and can reach only the proxy's
+declared loopback port. The host broker reads `~/.codex/auth.json` as a
+single-link, owner-only file, retains only the access token and account ID in
+memory, and never modifies or copies the file. Provider authentication failure
+returns `auth_refresh_required`; a normal operator Codex login refreshes the
+canonical file before retry. Capability registration binds the Codex binary
+and version, fixed argv grammar, adapter and proxy hashes, canonical serializer,
+per-stage response schemas, model, reasoning effort, and policy bounds.
+Per-run receipts bind prompt-specific request hashes. Unknown or drifted
+capabilities fail before backend launch.
+
 ### Generation input
 
 `generate` receives only:
@@ -201,7 +226,13 @@ input_upper_bound
 <= model_context_limit
 ```
 
-`input_upper_bound` is the target tokenizer's exact count when that tokenizer is available. The fallback is `UTF-8 byte length of the serialized invocation + adapter_wrapper_allowance`; one input byte is treated as no less than one token. The adapter version fixes and tests its wrapper allowance. If neither an exact tokenizer nor a verified wrapper allowance exists, preflight fails closed. The same rule applies to `generation_brief.json`.
+For a registered Codex transport, `input_upper_bound` is the UTF-8 byte length
+of the exact canonical provider request; no CLI harness allowance is added.
+Local fixtures retain the verified fallback of `UTF-8 byte length of the
+serialized invocation + adapter_wrapper_allowance`, where one input byte is
+treated as no less than one token. If neither an exact request nor a verified
+fixture allowance exists, preflight fails closed. The same rule applies to
+`generation_brief.json`.
 
 If a pack exceeds its budget, reduction occurs in this order:
 
