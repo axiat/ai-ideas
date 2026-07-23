@@ -176,16 +176,73 @@ CREATE TABLE IF NOT EXISTS near_sa_observations(
 CREATE TABLE IF NOT EXISTS history_receipts(
   receipt_id TEXT PRIMARY KEY,
   query_candidate_id TEXT NOT NULL,
-  intent TEXT NOT NULL,
+  intent TEXT NOT NULL CHECK(intent IN (
+    'duplicate_search','evolution_search','failure_pattern_search'
+  )),
   pack_sha256 TEXT NOT NULL,
+  pack_publication_id TEXT NOT NULL REFERENCES history_pack_publications(publication_id),
+  policy_sha256 TEXT NOT NULL,
+  generation_manifest_sha256 TEXT NOT NULL,
   retrieval_policy_version TEXT NOT NULL,
   source_watermark INTEGER NOT NULL,
   index_generation INTEGER NOT NULL,
   comparator_version TEXT NOT NULL,
-  status TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN (
+    'complete_match','complete_no_match','uncertain','partial',
+    'backend_failed','budget_exceeded','conflicting_evidence'
+  )),
   receipt_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS history_generation_provenance(
+  generation INTEGER PRIMARY KEY CHECK(generation >= 1),
+  manifest_sha256 TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  source_watermark INTEGER NOT NULL CHECK(source_watermark >= 0),
+  policy_sha256 TEXT NOT NULL,
+  projection_schema_version TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS history_pack_publications(
+  publication_id TEXT PRIMARY KEY,
+  pack_sha256 TEXT NOT NULL UNIQUE,
+  pack_bytes BLOB NOT NULL,
+  policy_sha256 TEXT NOT NULL,
+  generation INTEGER NOT NULL REFERENCES history_generation_provenance(generation),
+  generation_manifest_sha256 TEXT NOT NULL,
+  source_watermark INTEGER NOT NULL CHECK(source_watermark >= 0),
+  retrieval_status TEXT NOT NULL CHECK(retrieval_status IN (
+    'complete','partial','backend_failed','budget_exceeded'
+  )),
+  rank_trace_json TEXT NOT NULL,
+  rank_trace_sha256 TEXT NOT NULL,
+  comparator_preflight_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS history_pack_provenance_guard
+BEFORE INSERT ON history_pack_publications
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM history_generation_provenance p
+    WHERE p.generation = NEW.generation
+      AND p.manifest_sha256 = NEW.generation_manifest_sha256
+      AND p.source_watermark = NEW.source_watermark
+      AND p.policy_sha256 = NEW.policy_sha256
+  ) THEN RAISE(ABORT, 'pack provenance mismatch') END;
+END;
+CREATE TRIGGER IF NOT EXISTS history_receipt_pack_guard
+BEFORE INSERT ON history_receipts
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM history_pack_publications p
+    WHERE p.publication_id = NEW.pack_publication_id
+      AND p.pack_sha256 = NEW.pack_sha256
+      AND p.policy_sha256 = NEW.policy_sha256
+      AND p.generation_manifest_sha256 = NEW.generation_manifest_sha256
+      AND p.source_watermark = NEW.source_watermark
+      AND p.generation = NEW.index_generation
+  ) THEN RAISE(ABORT, 'receipt pack mismatch') END;
+END;
 CREATE TABLE IF NOT EXISTS search_projection_outbox(
   record_id TEXT NOT NULL REFERENCES candidates(candidate_id),
   projection_kind TEXT NOT NULL,
@@ -279,13 +336,78 @@ def connect(path):
     return conn
 
 
+def _migrate_unverified_history_receipts(conn):
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'history_receipts'"
+    ).fetchone()
+    if exists is None:
+        return
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(history_receipts)")
+    }
+    required = {
+        "pack_publication_id",
+        "policy_sha256",
+        "generation_manifest_sha256",
+    }
+    if not required.issubset(columns):
+        conn.execute("DROP TRIGGER IF EXISTS history_receipt_pack_guard")
+        conn.execute(
+            "ALTER TABLE history_receipts RENAME TO history_receipts_legacy_unverified"
+        )
+
+
 def init_schema(conn):
+    _migrate_unverified_history_receipts(conn)
     conn.executescript(SCHEMA)
+    pack_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(history_pack_publications)")
+    }
+    if "rank_trace_json" not in pack_columns:
+        conn.execute(
+            "ALTER TABLE history_pack_publications "
+            "ADD COLUMN rank_trace_json TEXT NOT NULL DEFAULT "
+            """'{"channels":{},"contributions":[]}'"""
+        )
+    if "rank_trace_sha256" not in pack_columns:
+        conn.execute(
+            "ALTER TABLE history_pack_publications "
+            "ADD COLUMN rank_trace_sha256 TEXT NOT NULL DEFAULT ''"
+        )
+    for row in conn.execute(
+        """
+        SELECT publication_id, rank_trace_json
+        FROM history_pack_publications
+        WHERE rank_trace_sha256 = ''
+        """
+    ):
+        try:
+            trace = json.loads(row["rank_trace_json"])
+        except (TypeError, ValueError) as exc:
+            raise HistoryStoreError("published rank trace is invalid") from exc
+        trace_bytes = _json_bytes(trace)
+        conn.execute(
+            """
+            UPDATE history_pack_publications
+            SET rank_trace_json = ?, rank_trace_sha256 = ?
+            WHERE publication_id = ?
+            """,
+            (
+                trace_bytes.decode("utf-8"),
+                _sha(trace_bytes),
+                row["publication_id"],
+            ),
+        )
     conn.execute(
         "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('schema_version', '1')"
     )
     conn.execute(
         "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('projection_sequence', '0')"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_meta(key, value) "
+        "VALUES('history_index_generation_sequence', '0')"
     )
 
 
@@ -1532,20 +1654,44 @@ def _is_within(path, directory):
         return False
 
 
-def _validate_destination(conn, path, state_root=None):
+def _validate_destination(
+    conn, path, state_root=None, allow_ledger_projection=False
+):
     destination = pathlib.Path(path)
     if destination.is_symlink():
         raise ValueError(f"destination cannot be a symlink: {destination}")
     resolved = destination.resolve()
     database = _db_path(conn).resolve()
-    if resolved == database:
-        raise ValueError("destination cannot overlap the open SQLite database")
+    protected = {
+        pathlib.Path(str(database) + suffix).resolve()
+        for suffix in ("", "-wal", "-shm", "-journal")
+    }
+    if not allow_ledger_projection:
+        protected.update(
+            {
+                (pathlib.Path.cwd() / "ledger.tsv").resolve(),
+                (pathlib.Path.cwd() / "tmp" / "ledger.good").resolve(),
+            }
+        )
+    if state_root is not None:
+        resolved_state = pathlib.Path(state_root).resolve()
+        if not allow_ledger_projection:
+            protected.update(
+                {
+                    (resolved_state.parent / "ledger.tsv").resolve(),
+                    (resolved_state.parent / "tmp" / "ledger.good").resolve(),
+                }
+            )
+    if resolved in protected:
+        raise ValueError("destination cannot overlap reserved canonical state")
     if destination.exists() and not destination.is_file():
         raise ValueError(f"destination is not a regular file: {destination}")
-    if destination.exists() and database.exists() and os.path.samefile(
-        str(destination), str(database)
-    ):
-        raise ValueError("destination cannot alias the open SQLite database")
+    if destination.exists():
+        for reserved in protected:
+            if reserved.exists() and os.path.samefile(
+                str(destination), str(reserved)
+            ):
+                raise ValueError("destination cannot alias reserved canonical state")
     if state_root is not None:
         resolved_state = pathlib.Path(state_root).resolve()
         if _is_within(resolved, resolved_state):
@@ -1811,7 +1957,9 @@ def _normalize_targets(conn, targets, state_root):
     if expected_state != provided_state:
         raise ValueError("projection state root does not match the canonical store")
     normalized = {
-        key: _validate_destination(conn, value, provided_state)
+        key: _validate_destination(
+            conn, value, provided_state, allow_ledger_projection=True
+        )
         for key, value in dict(targets).items()
     }
     if set(normalized) != set(TARGET_NAMES):

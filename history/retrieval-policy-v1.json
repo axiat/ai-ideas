@@ -21,7 +21,7 @@
     "fts_tokenizer": "unicode61",
     "metric": "cosine",
     "preprocessing_version": "search-text-v1",
-    "schema_version": "history-projection-v2",
+    "schema_version": "history-projection-v3",
     "vector_model": "hash-ngram-v1",
     "vector_revision": "1"
   },

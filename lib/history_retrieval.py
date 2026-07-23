@@ -3,12 +3,13 @@
 
 import hashlib
 import json
-import math
 
 try:
+    from lib import history_budget
     from lib import history_projection
     from lib import history_store
 except ImportError:  # Direct execution through lib/history_cli.py.
+    import history_budget
     import history_projection
     import history_store
 
@@ -38,7 +39,21 @@ FINAL_STATUSES = {
 }
 PERMANENT_STATUSES = {"complete_match", "complete_no_match"}
 COMPARATOR_VERSION = "history-comparator-v1"
-EVIDENCE_SPAN_LIMIT = 192
+EVIDENCE_SPAN_LIMIT = 48
+QUERY_TEXT_LIMIT = 4096
+QUERY_BYTES_LIMIT = 16384
+QUERY_FIELDS = {
+    "candidate_id", "story", "theme", "verdict", "reason", "category", "facets"
+}
+COMPARATOR_INSTRUCTIONS = (
+    "Classify only evidence-addressed internal-history relations."
+)
+COMPARATOR_OUTPUT_SCHEMA = {
+    "type": "object",
+    "required": [
+        "status", "comparator_version", "relations", "expansion_request"
+    ],
+}
 
 
 class RetrievalError(RuntimeError):
@@ -51,6 +66,16 @@ class ComparisonValidationError(RetrievalError):
 
 class ReceiptReplayError(RetrievalError):
     pass
+
+
+_VERIFICATION_TOKEN = object()
+
+
+class VerifiedReceipt(dict):
+    def __init__(self, value, token):
+        if token is not _VERIFICATION_TOKEN:
+            raise TypeError("verified receipts are host-constructed")
+        super().__init__(value)
 
 
 def canonical_bytes(value):
@@ -68,14 +93,40 @@ def pack_sha256(pack):
     value = dict(pack)
     value.pop("pack_sha256", None)
     value.pop("receipt_id", None)
+    value.pop("pack_publication_id", None)
     return _sha(canonical_bytes(value))
 
 
+def _normalize_query(query):
+    if not isinstance(query, dict) or set(query) - QUERY_FIELDS:
+        raise ValueError("query schema is not closed")
+    if not isinstance(query.get("candidate_id"), str) or not query["candidate_id"]:
+        raise ValueError("query candidate ID is required")
+    if not isinstance(query.get("story"), str) or not query["story"].strip():
+        raise ValueError("query story is required")
+    normalized = {}
+    for field in QUERY_FIELDS - {"facets"}:
+        value = query.get(field, "")
+        if not isinstance(value, str) or len(value.encode("utf-8")) > QUERY_TEXT_LIMIT:
+            raise ValueError("query text field exceeds its bound")
+        if value or field in {"candidate_id", "story"}:
+            normalized[field] = value
+    facets = query.get("facets", {})
+    if not isinstance(facets, dict) or set(facets) - set(history_projection.FACETS):
+        raise ValueError("query facets are not closed")
+    normalized_facets = {}
+    for facet, text in sorted(facets.items()):
+        if not isinstance(text, str) or len(text.encode("utf-8")) > QUERY_TEXT_LIMIT:
+            raise ValueError("query facet exceeds its bound")
+        normalized_facets[facet] = text
+    if normalized_facets:
+        normalized["facets"] = normalized_facets
+    if len(canonical_bytes(normalized)) > QUERY_BYTES_LIMIT:
+        raise ValueError("query exceeds its aggregate bound")
+    return normalized
+
+
 def _query_value(query, name, default=""):
-    if isinstance(query, str):
-        return query if name == "story" else default
-    if not isinstance(query, dict):
-        raise TypeError("query must be text or a mapping")
     value = query.get(name, default)
     if not isinstance(value, str):
         raise TypeError("query fields must be text")
@@ -85,7 +136,7 @@ def _query_value(query, name, default=""):
 def _query_facets(query, intent):
     story = _query_value(query, "story")
     theme = _query_value(query, "theme")
-    supplied = {} if isinstance(query, str) else query.get("facets", {})
+    supplied = query.get("facets", {})
     if not isinstance(supplied, dict):
         raise TypeError("query facets must be a mapping")
     if intent == "failure_pattern_search":
@@ -108,7 +159,15 @@ def _query_facets(query, intent):
         if facet not in history_projection.FACETS or not isinstance(text, str):
             raise ValueError("query contains an unsupported facet")
         defaults[facet] = text
-    return {facet: text for facet, text in defaults.items() if text}
+    relevant = {
+        "duplicate_search": {"problem_estimand", "claimed_delta"},
+        "evolution_search": {"problem_estimand", "claimed_delta", "mechanism"},
+    }[intent]
+    return {
+        facet: text
+        for facet, text in defaults.items()
+        if text and facet in relevant
+    }
 
 
 def _candidate_row(conn, candidate_id):
@@ -153,21 +212,16 @@ def _evidence(
         "source_location": "ledger.tsv#data-row=%d" % row["source_sequence"],
         "evidence_id": _sha(b"history-evidence-v1\0" + material),
         "evidence_span": span,
-        "material_delta": span if facet == "claimed_delta" else "",
+        "material_delta": "",
         "channel": channel,
     }
 
 
-def _rank_best(values, depth):
-    best = {}
-    for value in values:
-        prior = best.get(value["candidate_id"])
-        key = (-value["_score"], value["candidate_id"], value["facet"])
-        if prior is None or key < prior[0]:
-            best[value["candidate_id"]] = (key, value)
-    ranked = [
-        item[1] for item in sorted(best.values(), key=lambda item: item[0])
-    ][:depth]
+def _rank_facet(values, depth):
+    ranked = sorted(
+        values,
+        key=lambda item: (-item["_score"], item["candidate_id"]),
+    )[:depth]
     for rank, item in enumerate(ranked, 1):
         item["rank"] = rank
         item.pop("_score", None)
@@ -236,30 +290,8 @@ def _exact_channel(conn, query, intent, depth):
 def _fts_channel(conn, query, intent, depth):
     query_facets = _query_facets(query, intent)
     values = []
-    if intent == "failure_pattern_search":
-        terms = history_projection._tokens(query_facets["failure_pattern"])
-        for row in conn.execute(
-            """
-            SELECT c.*, e.active
-            FROM candidates c
-            JOIN search_index_entries e ON e.candidate_id = c.candidate_id
-            WHERE e.active = 1 ORDER BY c.candidate_id
-            """
-        ):
-            text = " ".join((row["category"], row["reason"], row["verdict"]))
-            candidate_terms = set(history_projection._tokens(text))
-            score = sum(1 for term in terms if term in candidate_terms)
-            if score:
-                values.append(
-                    dict(
-                        _evidence(
-                            row, "fts", "failure_pattern", score, 0, text
-                        ),
-                        _score=float(score),
-                    )
-                )
-        return _rank_best(values, depth)
     for facet, text in sorted(query_facets.items()):
+        facet_values = []
         terms = history_projection._tokens(text)
         if not terms:
             continue
@@ -278,47 +310,21 @@ def _fts_channel(conn, query, intent, depth):
         ):
             row = _candidate_row(conn, hit["candidate_id"])
             score = -float(hit["bm25_score"])
-            values.append(
+            facet_values.append(
                 dict(
                     _evidence(row, "fts", facet, score, 0, hit["content"]),
                     _score=score,
                 )
             )
-    return _rank_best(values, depth)
+        values.extend(_rank_facet(facet_values, depth))
+    return values
 
 
 def _dense_channel(conn, query, intent, depth):
     query_facets = _query_facets(query, intent)
     values = []
-    if intent == "failure_pattern_search":
-        query_vector, query_norm = history_projection.embed(
-            query_facets["failure_pattern"]
-        )
-        if not query_norm:
-            return []
-        for row in conn.execute(
-            """
-            SELECT c.*, e.active
-            FROM candidates c
-            JOIN search_index_entries e ON e.candidate_id = c.candidate_id
-            WHERE e.active = 1 ORDER BY c.candidate_id
-            """
-        ):
-            text = " ".join((row["category"], row["reason"], row["verdict"]))
-            vector, norm = history_projection.embed(text)
-            if not norm:
-                continue
-            score = history_projection._cosine(query_vector, vector)
-            values.append(
-                dict(
-                    _evidence(
-                        row, "dense", "failure_pattern", score, 0, text
-                    ),
-                    _score=score,
-                )
-            )
-        return _rank_best(values, depth)
     for facet, text in sorted(query_facets.items()):
+        facet_values = []
         query_vector, norm = history_projection.embed(text)
         if not norm:
             continue
@@ -337,7 +343,7 @@ def _dense_channel(conn, query, intent, depth):
                 query_vector, history_projection._unblob(hit["vector"])
             )
             row = _candidate_row(conn, hit["candidate_id"])
-            values.append(
+            facet_values.append(
                 dict(
                     _evidence(
                         row,
@@ -351,38 +357,118 @@ def _dense_channel(conn, query, intent, depth):
                     _score=score,
                 )
             )
-    return _rank_best(values, depth)
+        values.extend(_rank_facet(facet_values, depth))
+    return values
 
 
-def _lineage_channel(conn, seed_results, depth):
-    seed_ids = sorted({item["candidate_id"] for item in seed_results})
+def _lineage_channel(conn, seed_results, depth, query_story):
+    seed_ids = []
+    for item in seed_results:
+        if item["candidate_id"] not in seed_ids:
+            seed_ids.append(item["candidate_id"])
     if not seed_ids:
         return []
     placeholders = ",".join("?" for _ in seed_ids)
-    rows = conn.execute(
-        """
-        SELECT DISTINCT related.*
-        FROM candidates seed
-        JOIN candidates related ON related.lineage_id = seed.lineage_id
-        JOIN search_index_entries active ON active.candidate_id = related.candidate_id
-        WHERE seed.candidate_id IN (%s) AND active.active = 1
-        ORDER BY related.source_sequence DESC, related.candidate_id
-        LIMIT ?
-        """
-        % placeholders,
-        (*seed_ids, depth),
-    ).fetchall()
-    return [
-        _evidence(row, "lineage", "lineage", 1.0, rank, row["story"])
-        for rank, row in enumerate(rows, 1)
+    lineages = [
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT lineage_id FROM candidates "
+            "WHERE candidate_id IN (%s) ORDER BY lineage_id" % placeholders,
+            tuple(seed_ids),
+        )
     ]
+    results = []
+    for lineage_id in lineages:
+        current = conn.execute(
+            """
+            SELECT c.* FROM candidates c
+            JOIN search_index_entries e ON e.candidate_id = c.candidate_id
+            WHERE c.lineage_id = ? AND e.active = 1
+            ORDER BY c.source_sequence DESC, c.candidate_id LIMIT 1
+            """,
+            (lineage_id,),
+        ).fetchone()
+        canonical_query = history_store.canonical_story_v1(query_story)
+        highest = next(
+            (
+                _candidate_row(conn, candidate_id)
+                for candidate_id in seed_ids
+                if _candidate_row(conn, candidate_id) is not None
+                and _candidate_row(conn, candidate_id)["lineage_id"] == lineage_id
+                and history_store.canonical_story_v1(
+                    _candidate_row(conn, candidate_id)["story"]
+                )
+                == canonical_query
+            ),
+            None,
+        )
+        if highest is None:
+            highest = next(
+                (
+                    _candidate_row(conn, candidate_id)
+                    for candidate_id in seed_ids
+                    if _candidate_row(conn, candidate_id) is not None
+                    and _candidate_row(conn, candidate_id)["lineage_id"] == lineage_id
+                ),
+                None,
+            )
+        selected = {}
+        for row, role in ((highest, "highest_match"), (current, "current")):
+            if row is None:
+                continue
+            prior = selected.get(row["candidate_id"])
+            selected[row["candidate_id"]] = (
+                row,
+                role if prior is None else prior[1] + "+" + role,
+            )
+        edges = conn.execute(
+            """
+            SELECT edge.*, parent.story AS parent_story, child.story AS child_story
+            FROM lineage_edges edge
+            JOIN candidates parent ON parent.candidate_id = edge.parent_candidate_id
+            JOIN candidates child ON child.candidate_id = edge.child_candidate_id
+            WHERE parent.lineage_id = ?
+            ORDER BY parent.source_sequence, child.source_sequence,
+                     edge.relation_type
+            """,
+            (lineage_id,),
+        ).fetchall()
+        for edge in edges:
+            for candidate_id in (
+                edge["parent_candidate_id"],
+                edge["child_candidate_id"],
+            ):
+                if candidate_id not in selected:
+                    continue
+                row, role = selected[candidate_id]
+                evidence = _evidence(
+                    row,
+                    "lineage",
+                    "lineage",
+                    1.0,
+                    len(results) + 1,
+                    edge["parent_story"] + " -> " + edge["child_story"],
+                    edge["evidence_artifact_id"],
+                )
+                evidence.update(
+                    {
+                        "relation_type": edge["relation_type"],
+                        "edge_evidence_artifact_id": edge["evidence_artifact_id"],
+                        "version_role": role,
+                        "material_delta": (
+                            edge["child_story"] + " versus " + edge["parent_story"]
+                        )[:EVIDENCE_SPAN_LIMIT],
+                    }
+                )
+                results.append(evidence)
+                if len(results) >= depth:
+                    return results
+    return results
 
 
 def _expansion_channel(conn, request, depth):
     if request is None:
         return []
-    if not isinstance(request, dict) or set(request) != {"lineage_ids"}:
-        raise ValueError("expansion request must name lineage IDs")
     lineage_ids = request["lineage_ids"]
     if not isinstance(lineage_ids, list) or not lineage_ids:
         raise ValueError("expansion request must name lineage IDs")
@@ -412,28 +498,50 @@ def _empty_pack(
 ):
     watermark = 0 if generation is None else generation["source_watermark"]
     generation_id = 0 if generation is None else generation["generation"]
+    manifest_sha256 = "0" * 64 if generation is None else generation["manifest_sha256"]
     pack = {
         "schema_version": 1,
         "query": query,
         "intent": intent,
         "retrieval_policy_version": policy["retrieval_policy_version"],
+        "policy_sha256": history_projection._policy_sha256(policy),
         "source_watermark": watermark,
         "index_generation": generation_id,
+        "generation_manifest_sha256": manifest_sha256,
         "projection": dict(policy["projection"]),
         "configured_depth": policy["per_channel_depth"],
         "comparator_cutoff": policy["comparator_cutoff"],
+        "hard_limits": {
+            key: policy[key]
+            for key in (
+                "max_matches",
+                "max_retrieval_tokens",
+                "max_expansion_rounds",
+                "model_context_limit",
+                "max_output_tokens",
+                "safety_margin",
+                "adapter_wrapper_allowance",
+            )
+        },
+        "channel_matrix": {
+            "mandatory": list(policy["mandatory_channels"]),
+            "expansion": "conditional",
+        },
+        "expansion_round": 0,
+        "prior_pack_publication_id": None,
+        "prior_comparison_receipt_id": None,
         "retrieval_status": status,
         "channels": {
             name: {
                 "status": "failed",
                 "failure_code": status,
                 "result_count": 0,
-                "omitted_result_count": 0,
-                "results": [],
+                "retained_result_count": 0,
             }
             for name in ("exact", "fts", "dense", "lineage")
         },
         "lineages": [],
+        "rank_contributions": [],
         "omitted_lineage_count": 0,
         "estimated_input_tokens": 0,
     }
@@ -441,8 +549,7 @@ def _empty_pack(
         "status": "failed" if expansion_requested else "not_applicable",
         "failure_code": status if expansion_requested else None,
         "result_count": 0,
-        "omitted_result_count": 0,
-        "results": [],
+        "retained_result_count": 0,
     }
     return _seal_pack(pack)
 
@@ -451,6 +558,7 @@ def _seal_pack(pack):
     value = dict(pack)
     value.pop("pack_sha256", None)
     value.pop("receipt_id", None)
+    value.pop("pack_publication_id", None)
     estimated = value.get("estimated_input_tokens", 0)
     while True:
         value["estimated_input_tokens"] = estimated
@@ -458,9 +566,18 @@ def _seal_pack(pack):
         sealed = dict(
             value,
             receipt_id=_sha(b"retrieval-pack-v1\0" + digest.encode("ascii")),
+            pack_publication_id=_sha(
+                b"history-pack-publication-v1\0"
+                + digest.encode("ascii")
+                + value["policy_sha256"].encode("ascii")
+                + value["generation_manifest_sha256"].encode("ascii")
+            ),
             pack_sha256=digest,
         )
-        updated = int(math.ceil(len(canonical_bytes(sealed)) / 4.0))
+        updated = (
+            len(canonical_bytes(sealed))
+            + int(value["hard_limits"]["adapter_wrapper_allowance"])
+        )
         if updated == estimated:
             return sealed
         estimated = updated
@@ -469,13 +586,24 @@ def _seal_pack(pack):
 def _fuse(channel_results, policy):
     scores = {}
     evidence = {}
+    contributions = []
     for channel in ("exact", "fts", "dense", "lineage", "expansion"):
         for item in channel_results.get(channel, []):
             candidate_id = item["candidate_id"]
-            scores[candidate_id] = scores.get(candidate_id, 0.0) + 1.0 / (
+            contribution = 1.0 / (
                 int(policy["rrf_k"]) + item["rank"]
             )
-            evidence[(channel, candidate_id)] = item
+            scores[candidate_id] = scores.get(candidate_id, 0.0) + contribution
+            evidence[(channel, item["facet"], candidate_id)] = item
+            contributions.append(
+                {
+                    "channel": channel,
+                    "facet": item["facet"],
+                    "candidate_id": candidate_id,
+                    "rank": item["rank"],
+                    "rrf_score": round(contribution, 12),
+                }
+            )
     candidates = {}
     for item in evidence.values():
         candidates[item["candidate_id"]] = item["lineage_id"]
@@ -502,16 +630,44 @@ def _fuse(channel_results, policy):
                 item["facet"],
             )
         )
-    return ranked
+    contributions.sort(
+        key=lambda item: (
+            item["channel"], item["facet"], item["rank"], item["candidate_id"]
+        )
+    )
+    grouped = []
+    for candidate_id in sorted({item["candidate_id"] for item in contributions}):
+        grouped.append(
+            {
+                "candidate_id": candidate_id,
+                "ranks": [
+                    {
+                        key: item[key]
+                        for key in ("channel", "facet", "rank", "rrf_score")
+                    }
+                    for item in contributions
+                    if item["candidate_id"] == candidate_id
+                ],
+            }
+        )
+    return ranked, grouped
 
 
 def _bounded_channels(channels, lineages):
     retained = {item["lineage_id"] for item in lineages}
+    retained_evidence = {
+        match["evidence_id"]
+        for lineage in lineages
+        for match in lineage["matches"]
+    }
     result = {}
     for name, channel in channels.items():
         values = list(channel.get("results", []))
         bounded = [
-            item for item in values if item.get("lineage_id") in retained
+            item
+            for item in values
+            if item.get("lineage_id") in retained
+            and item.get("evidence_id") in retained_evidence
         ]
         result[name] = {
             key: value for key, value in channel.items() if key != "results"
@@ -519,11 +675,95 @@ def _bounded_channels(channels, lineages):
         result[name].update(
             {
                 "result_count": len(values),
-                "omitted_result_count": len(values) - len(bounded),
-                "results": bounded,
+                "retained_result_count": len(bounded),
             }
         )
     return result
+
+
+def _cap_matches(lineages, limit):
+    result = [
+        dict(lineage, matches=[])
+        for lineage in lineages
+    ]
+    remaining = [list(lineage["matches"]) for lineage in lineages]
+    selected = 0
+    while selected < limit and any(remaining):
+        for index, values in enumerate(remaining):
+            if selected >= limit:
+                break
+            if values:
+                result[index]["matches"].append(values.pop(0))
+                selected += 1
+    return [lineage for lineage in result if lineage["matches"]]
+
+
+def _validate_runtime_policy(policy):
+    if (
+        not isinstance(policy, dict)
+        or set(policy) != history_projection._POLICY_KEYS
+        or any(
+            policy.get(key) != value
+            for key, value in history_projection._POLICY_FIXED.items()
+        )
+        or policy.get("mandatory_channels")
+        != history_projection._POLICY_CHANNELS
+        or policy.get("projection") != history_projection._POLICY_PROJECTION
+        or policy.get("tested_adapter_allowances")
+        != {"history-stage-v1": 256}
+    ):
+        raise RetrievalError("retrieval policy is not the sealed v1 policy")
+
+
+def _validate_expansion_request(conn, request, query, intent, policy):
+    if request is None:
+        return None
+    fields = {
+        "lineage_ids",
+        "round",
+        "prior_pack_publication_id",
+        "comparison_receipt_id",
+    }
+    if not isinstance(request, dict) or set(request) != fields:
+        raise RetrievalError("expansion provenance is incomplete")
+    round_number = request["round"]
+    if (
+        type(round_number) is not int
+        or round_number < 1
+        or round_number > int(policy["max_expansion_rounds"])
+    ):
+        raise RetrievalError("expansion round exceeds the sealed policy")
+    publication = conn.execute(
+        "SELECT * FROM history_pack_publications WHERE publication_id = ?",
+        (request["prior_pack_publication_id"],),
+    ).fetchone()
+    receipt_row = conn.execute(
+        "SELECT receipt_json FROM history_receipts WHERE receipt_id = ?",
+        (request["comparison_receipt_id"],),
+    ).fetchone()
+    if publication is None or receipt_row is None:
+        raise RetrievalError("expansion provenance is not host-published")
+    try:
+        prior_pack = json.loads(bytes(publication["pack_bytes"]).decode("utf-8"))
+        receipt = json.loads(receipt_row[0])
+    except (TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise RetrievalError("expansion provenance is corrupt") from exc
+    lineage_ids = request["lineage_ids"]
+    allowed = {item["lineage_id"] for item in prior_pack["lineages"]}
+    if (
+        not isinstance(lineage_ids, list)
+        or not lineage_ids
+        or any(not isinstance(item, str) for item in lineage_ids)
+        or not set(lineage_ids).issubset(allowed)
+        or receipt.get("status") != "uncertain"
+        or receipt.get("pack_publication_id")
+        != request["prior_pack_publication_id"]
+        or receipt.get("expansion_request") != {"lineage_ids": lineage_ids}
+        or prior_pack.get("query") != query
+        or prior_pack.get("intent") != intent
+    ):
+        raise RetrievalError("expansion is not bound to a validated outcome")
+    return dict(request)
 
 
 def _validate_generation_snapshot(conn, policy):
@@ -568,7 +808,10 @@ def _build_pack_snapshot(
     policy,
     disabled_channels=None,
     expansion_request=None,
+    trace_sink=None,
 ):
+    if trace_sink is None:
+        trace_sink = {}
     if intent not in INTENTS:
         raise ValueError("unsupported retrieval intent")
     disabled = set(disabled_channels or ())
@@ -576,18 +819,6 @@ def _build_pack_snapshot(
     if disabled - supported:
         raise ValueError("unknown retrieval channel")
     validation = _validate_generation_snapshot(conn, policy)
-    if (
-        not validation["valid"]
-        and policy.get("max_retrieval_tokens")
-        != history_projection._POLICY_FIXED["max_retrieval_tokens"]
-    ):
-        projection_policy = dict(policy)
-        projection_policy["max_retrieval_tokens"] = history_projection._POLICY_FIXED[
-            "max_retrieval_tokens"
-        ]
-        validation = _validate_generation_snapshot(
-            conn, projection_policy
-        )
     generation = conn.execute(
         "SELECT * FROM search_index_generations ORDER BY generation DESC LIMIT 1"
     ).fetchone()
@@ -648,7 +879,9 @@ def _build_pack_snapshot(
     else:
         try:
             seeds = results["exact"] + results["fts"] + results["dense"]
-            results["lineage"] = _lineage_channel(conn, seeds, depth)
+            results["lineage"] = _lineage_channel(
+                conn, seeds, depth, _query_value(query, "story")
+            )
             channels["lineage"] = {
                 "status": "complete",
                 "results": results["lineage"],
@@ -685,26 +918,121 @@ def _build_pack_snapshot(
                 "results": [],
             }
             mandatory_failed = True
-    ranked = _fuse(results, policy)
+    ranked, contributions = _fuse(results, policy)
+    trace_sink.update(
+        {
+            "contributions": [
+                dict(rank, candidate_id=contribution["candidate_id"])
+                for contribution in contributions
+                for rank in contribution["ranks"]
+            ],
+            "channels": {
+                name: list(values) for name, values in results.items()
+            },
+        }
+    )
+    if intent == "evolution_search":
+        for lineage in ranked:
+            lineage["matches"].sort(
+                key=lambda item: (
+                    0 if item["channel"] == "lineage" else 1,
+                    0 if item.get("version_role") == "highest_match" else 1,
+                    item["channel"],
+                    item["rank"],
+                    item["candidate_id"],
+                )
+            )
     retained_count = int(policy["final_lineage_count"])
-    retained = ranked[:retained_count]
+    retained = _cap_matches(
+        ranked[:retained_count], int(policy["max_matches"])
+    )
+    retained_candidates = {
+        match["candidate_id"]
+        for lineage in retained
+        for match in lineage["matches"]
+    }
+    highest_candidates = (
+        {match["candidate_id"] for match in retained[0]["matches"]}
+        if retained
+        else set()
+    )
+    retained_contributions = [
+        item for item in contributions
+        if item["candidate_id"] in highest_candidates
+    ]
+    if intent == "evolution_search":
+        retained_contributions = []
     pack = {
         "schema_version": 1,
         "query": query,
         "intent": intent,
         "retrieval_policy_version": policy["retrieval_policy_version"],
+        "policy_sha256": history_projection._policy_sha256(policy),
         "source_watermark": generation["source_watermark"],
         "index_generation": generation["generation"],
+        "generation_manifest_sha256": generation["manifest_sha256"],
         "projection": dict(policy["projection"]),
         "configured_depth": depth,
         "comparator_cutoff": int(policy["comparator_cutoff"]),
+        "hard_limits": {
+            key: policy[key]
+            for key in (
+                "max_matches",
+                "max_retrieval_tokens",
+                "max_expansion_rounds",
+                "model_context_limit",
+                "max_output_tokens",
+                "safety_margin",
+                "adapter_wrapper_allowance",
+            )
+        },
+        "channel_matrix": {
+            "mandatory": list(policy["mandatory_channels"]),
+            "expansion": "conditional",
+        },
+        "expansion_round": (
+            0 if expansion_request is None else expansion_request["round"]
+        ),
+        "prior_pack_publication_id": (
+            None
+            if expansion_request is None
+            else expansion_request["prior_pack_publication_id"]
+        ),
+        "prior_comparison_receipt_id": (
+            None
+            if expansion_request is None
+            else expansion_request["comparison_receipt_id"]
+        ),
         "retrieval_status": "partial" if mandatory_failed else "complete",
         "channels": _bounded_channels(channels, retained),
         "lineages": retained,
+        "rank_contributions": retained_contributions,
         "omitted_lineage_count": max(0, len(ranked) - len(retained)),
         "estimated_input_tokens": 0,
     }
     sealed = _seal_pack(pack)
+    while sealed["estimated_input_tokens"] > int(policy["max_retrieval_tokens"]):
+        removable = next(
+            (
+                lineage
+                for lineage in reversed(retained)
+                if len(lineage["matches"])
+                > max(
+                    1,
+                    sum(
+                        match["channel"] == "lineage"
+                        for match in lineage["matches"]
+                    ),
+                )
+            ),
+            None,
+        )
+        if removable is None:
+            break
+        removable["matches"].pop()
+        pack["lineages"] = retained
+        pack["channels"] = _bounded_channels(channels, retained)
+        sealed = _seal_pack(pack)
     if sealed["estimated_input_tokens"] <= int(policy["max_retrieval_tokens"]):
         return sealed
     cutoff = int(policy["comparator_cutoff"])
@@ -714,6 +1042,15 @@ def _build_pack_snapshot(
         retained = [item for item in retained if item["lineage_id"] != drop["lineage_id"]]
         pack["lineages"] = retained
         pack["channels"] = _bounded_channels(channels, retained)
+        highest_candidates = (
+            {match["candidate_id"] for match in retained[0]["matches"]}
+            if retained
+            else set()
+        )
+        pack["rank_contributions"] = [
+            item for item in contributions
+            if item["candidate_id"] in highest_candidates
+        ]
         pack["omitted_lineage_count"] += 1
         sealed = _seal_pack(pack)
         if sealed["estimated_input_tokens"] <= int(policy["max_retrieval_tokens"]):
@@ -722,7 +1059,83 @@ def _build_pack_snapshot(
     pack["omitted_lineage_count"] = len(ranked)
     pack["lineages"] = []
     pack["channels"] = _bounded_channels(channels, [])
+    pack["rank_contributions"] = []
     return _seal_pack(pack)
+
+
+def _comparator_preflight(pack, policy):
+    pack_bytes = canonical_bytes(pack)
+    invocation = history_budget.serialize_stage_invocation(
+        stage="history-compare",
+        adapter_version=policy["adapter_version"],
+        fixed_instructions=COMPARATOR_INSTRUCTIONS,
+        mounted_inputs={"retrieval_pack.json": pack_bytes},
+        candidate=pack["query"],
+        retrieval_payload=pack,
+        receipts=[{"pack_publication_id": pack["pack_publication_id"]}],
+        tool_schemas=[COMPARATOR_OUTPUT_SCHEMA],
+        messages=[{"role": "user", "content": "Compare the candidate."}],
+    )
+    return history_budget.preflight_stage_invocation(
+        invocation,
+        policy,
+        expected_mounted_inputs={"retrieval_pack.json": pack_bytes},
+    )
+
+
+def _publish_pack(conn, pack, policy, preflight, rank_trace):
+    if pack["index_generation"] < 1:
+        return
+    encoded = canonical_bytes(pack)
+    if not rank_trace:
+        rank_trace = {
+            "contributions": [],
+            "channels": {name: [] for name in pack["channels"]},
+        }
+    rank_trace_bytes = canonical_bytes(rank_trace)
+    preflight_bytes = canonical_bytes(preflight).rstrip(b"\n")
+    conn.execute(
+        """
+        INSERT INTO history_pack_publications(
+          publication_id, pack_sha256, pack_bytes, policy_sha256, generation,
+          generation_manifest_sha256, source_watermark, retrieval_status,
+          rank_trace_json, rank_trace_sha256, comparator_preflight_json,
+          created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(publication_id) DO NOTHING
+        """,
+        (
+            pack["pack_publication_id"],
+            pack["pack_sha256"],
+            encoded,
+            history_projection._policy_sha256(policy),
+            pack["index_generation"],
+            pack["generation_manifest_sha256"],
+            pack["source_watermark"],
+            pack["retrieval_status"],
+            rank_trace_bytes.decode("utf-8"),
+            _sha(rank_trace_bytes),
+            preflight_bytes.decode("utf-8"),
+        ),
+    )
+    stored = conn.execute(
+        """
+        SELECT pack_bytes, rank_trace_json, rank_trace_sha256,
+               comparator_preflight_json
+        FROM history_pack_publications
+        WHERE publication_id = ?
+        """,
+        (pack["pack_publication_id"],),
+    ).fetchone()
+    if (
+        stored is None
+        or bytes(stored["pack_bytes"]) != encoded
+        or stored["rank_trace_json"].encode("utf-8") != rank_trace_bytes
+        or stored["rank_trace_sha256"] != _sha(rank_trace_bytes)
+        or stored["comparator_preflight_json"].encode("utf-8")
+        != preflight_bytes
+    ):
+        raise RetrievalError("pack publication identity collision")
 
 
 def build_pack(
@@ -733,22 +1146,54 @@ def build_pack(
     disabled_channels=None,
     expansion_request=None,
 ):
+    _validate_runtime_policy(policy)
+    normalized_query = _normalize_query(query)
+    normalized_expansion = _validate_expansion_request(
+        conn, expansion_request, normalized_query, intent, policy
+    )
     started = not conn.in_transaction
     if started:
         history_projection._init(conn)
     if started:
         conn.execute("BEGIN")
     try:
+        rank_trace = {}
         result = _build_pack_snapshot(
             conn,
-            query,
+            normalized_query,
             intent,
             policy,
             disabled_channels=disabled_channels,
-            expansion_request=expansion_request,
+            expansion_request=normalized_expansion,
+            trace_sink=rank_trace,
         )
         if started:
             conn.execute("COMMIT")
+        if result["retrieval_status"] == "complete":
+            try:
+                preflight = _comparator_preflight(result, policy)
+            except history_budget.PreflightError as exc:
+                result = dict(
+                    result,
+                    retrieval_status="budget_exceeded",
+                    lineages=[],
+                    rank_contributions=[],
+                    channels=_bounded_channels(
+                        {
+                            key: value
+                            for key, value in result["channels"].items()
+                        },
+                        [],
+                    ),
+                )
+                result = _seal_pack(result)
+                preflight = exc.receipt
+        else:
+            preflight = {
+                "fits": False,
+                "code": result["retrieval_status"],
+            }
+        _publish_pack(conn, result, policy, preflight, rank_trace)
         return result
     except Exception:
         if started and conn.in_transaction:
@@ -756,15 +1201,321 @@ def build_pack(
         raise
 
 
-def _validate_pack(pack, policy):
-    if not isinstance(pack, dict) or pack.get("schema_version") != 1:
+def _validate_published_rank_trace(publication, pack):
+    try:
+        trace_bytes = publication["rank_trace_json"].encode("utf-8")
+        trace = json.loads(trace_bytes)
+    except (AttributeError, TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise ComparisonValidationError("published rank trace is corrupt") from exc
+    if (
+        trace_bytes != canonical_bytes(trace)
+        or publication["rank_trace_sha256"] != _sha(trace_bytes)
+        or not isinstance(trace, dict)
+        or set(trace) != {"channels", "contributions"}
+        or not isinstance(trace["channels"], dict)
+        or set(trace["channels"]) != set(pack["channels"])
+        or not isinstance(trace["contributions"], list)
+    ):
+        raise ComparisonValidationError("published rank trace hash mismatch")
+    for name, values in trace["channels"].items():
+        if (
+            not isinstance(values, list)
+            or len(values) != pack["channels"][name]["result_count"]
+        ):
+            raise ComparisonValidationError("published rank trace count mismatch")
+    for contribution in trace["contributions"]:
+        if (
+            not isinstance(contribution, dict)
+            or set(contribution)
+            != {"candidate_id", "channel", "facet", "rank", "rrf_score"}
+        ):
+            raise ComparisonValidationError("published rank trace schema mismatch")
+    bounded = [
+        dict(rank, candidate_id=contribution["candidate_id"])
+        for contribution in pack["rank_contributions"]
+        for rank in contribution["ranks"]
+    ]
+    if any(item not in trace["contributions"] for item in bounded):
+        raise ComparisonValidationError("bounded rank trace is not reproducible")
+
+
+def _validate_pack(conn, pack, policy, require_complete=False):
+    _validate_runtime_policy(policy)
+    fields = {
+        "schema_version",
+        "query",
+        "intent",
+        "retrieval_policy_version",
+        "policy_sha256",
+        "source_watermark",
+        "index_generation",
+        "generation_manifest_sha256",
+        "projection",
+        "configured_depth",
+        "comparator_cutoff",
+        "hard_limits",
+        "channel_matrix",
+        "expansion_round",
+        "prior_pack_publication_id",
+        "prior_comparison_receipt_id",
+        "retrieval_status",
+        "channels",
+        "lineages",
+        "rank_contributions",
+        "omitted_lineage_count",
+        "estimated_input_tokens",
+        "receipt_id",
+        "pack_publication_id",
+        "pack_sha256",
+    }
+    if (
+        not isinstance(pack, dict)
+        or set(pack) != fields
+        or pack.get("schema_version") != 1
+    ):
         raise ComparisonValidationError("invalid retrieval pack")
+    try:
+        if _normalize_query(pack["query"]) != pack["query"]:
+            raise ComparisonValidationError("query is not canonical")
+    except (TypeError, ValueError) as exc:
+        raise ComparisonValidationError("query schema mismatch") from exc
+    if pack.get("intent") not in INTENTS:
+        raise ComparisonValidationError("retrieval intent mismatch")
     if pack.get("pack_sha256") != pack_sha256(pack):
         raise ComparisonValidationError("retrieval pack hash mismatch")
-    if pack.get("retrieval_policy_version") != policy["retrieval_policy_version"]:
+    expected_receipt_id = _sha(
+        b"retrieval-pack-v1\0" + pack["pack_sha256"].encode("ascii")
+    )
+    expected_publication_id = _sha(
+        b"history-pack-publication-v1\0"
+        + pack["pack_sha256"].encode("ascii")
+        + pack["policy_sha256"].encode("ascii")
+        + pack["generation_manifest_sha256"].encode("ascii")
+    )
+    if (
+        pack.get("receipt_id") != expected_receipt_id
+        or pack.get("pack_publication_id") != expected_publication_id
+    ):
+        raise ComparisonValidationError("derived pack identity mismatch")
+    policy_sha256 = history_projection._policy_sha256(policy)
+    if (
+        pack.get("retrieval_policy_version") != policy["retrieval_policy_version"]
+        or pack.get("policy_sha256") != policy_sha256
+    ):
         raise ComparisonValidationError("retrieval policy mismatch")
     if pack.get("projection") != policy["projection"]:
         raise ComparisonValidationError("projection version mismatch")
+    hard_limits = {
+        key: policy[key]
+        for key in (
+            "max_matches",
+            "max_retrieval_tokens",
+            "max_expansion_rounds",
+            "model_context_limit",
+            "max_output_tokens",
+            "safety_margin",
+            "adapter_wrapper_allowance",
+        )
+    }
+    if (
+        pack.get("hard_limits") != hard_limits
+        or pack.get("configured_depth") != policy["per_channel_depth"]
+        or pack.get("comparator_cutoff") != policy["comparator_cutoff"]
+        or pack.get("channel_matrix")
+        != {
+            "mandatory": list(policy["mandatory_channels"]),
+            "expansion": "conditional",
+        }
+    ):
+        raise ComparisonValidationError("hard retrieval contract mismatch")
+    expected_estimate = (
+        len(canonical_bytes(pack)) + policy["adapter_wrapper_allowance"]
+    )
+    if (
+        pack.get("estimated_input_tokens") != expected_estimate
+        or expected_estimate > policy["max_retrieval_tokens"]
+    ):
+        raise ComparisonValidationError("pack byte bound mismatch")
+    if set(pack.get("channels", {})) != {
+        "exact", "fts", "dense", "lineage", "expansion"
+    }:
+        raise ComparisonValidationError("channel matrix mismatch")
+    for channel in pack["channels"].values():
+        allowed_channel_fields = {
+            "status", "failure_code", "result_count", "retained_result_count"
+        }
+        if (
+            not isinstance(channel, dict)
+            or set(channel) - allowed_channel_fields
+            or channel.get("status")
+            not in {"complete", "failed", "not_applicable"}
+            or type(channel.get("result_count")) is not int
+            or type(channel.get("retained_result_count")) is not int
+        ):
+            raise ComparisonValidationError("channel schema mismatch")
+    if require_complete and pack.get("retrieval_status") != "complete":
+        raise ComparisonValidationError("only a complete pack may be compared")
+    if pack.get("retrieval_status") == "complete":
+        for channel in policy["mandatory_channels"]:
+            if pack["channels"][channel].get("status") != "complete":
+                raise ComparisonValidationError("mandatory channel is incomplete")
+        expected_expansion = (
+            "not_applicable" if pack["expansion_round"] == 0 else "complete"
+        )
+        if pack["channels"]["expansion"].get("status") != expected_expansion:
+            raise ComparisonValidationError("expansion channel state mismatch")
+    matches = [
+        match for lineage in pack.get("lineages", [])
+        for match in lineage.get("matches", [])
+    ]
+    if len(matches) > policy["max_matches"]:
+        raise ComparisonValidationError("match bound exceeded")
+    lineage_fields = {"lineage_id", "rrf_score", "matches", "rank"}
+    match_fields = {
+        "candidate_id",
+        "lineage_id",
+        "facet",
+        "raw_score",
+        "rank",
+        "source_artifact_id",
+        "source_location",
+        "evidence_id",
+        "evidence_span",
+        "material_delta",
+        "channel",
+    }
+    lineage_match_fields = match_fields | {
+        "relation_type",
+        "edge_evidence_artifact_id",
+        "version_role",
+    }
+    for lineage in pack.get("lineages", []):
+        if not isinstance(lineage, dict) or set(lineage) != lineage_fields:
+            raise ComparisonValidationError("lineage schema mismatch")
+        for match in lineage["matches"]:
+            expected = (
+                lineage_match_fields
+                if match.get("channel") == "lineage"
+                else match_fields
+            )
+            if (
+                not isinstance(match, dict)
+                or set(match) != expected
+                or match.get("lineage_id") != lineage["lineage_id"]
+            ):
+                raise ComparisonValidationError("evidence schema mismatch")
+    for contribution in pack.get("rank_contributions", []):
+        if (
+            not isinstance(contribution, dict)
+            or set(contribution) != {"candidate_id", "ranks"}
+            or not isinstance(contribution["ranks"], list)
+        ):
+            raise ComparisonValidationError("rank trace schema mismatch")
+        for rank in contribution["ranks"]:
+            if set(rank) != {"channel", "facet", "rank", "rrf_score"}:
+                raise ComparisonValidationError("rank contribution schema mismatch")
+    publication = conn.execute(
+        "SELECT * FROM history_pack_publications WHERE publication_id = ?",
+        (pack["pack_publication_id"],),
+    ).fetchone()
+    encoded = canonical_bytes(pack)
+    if (
+        publication is None
+        or bytes(publication["pack_bytes"]) != encoded
+        or publication["pack_sha256"] != pack["pack_sha256"]
+        or publication["policy_sha256"] != policy_sha256
+        or publication["generation"] != pack["index_generation"]
+        or publication["generation_manifest_sha256"]
+        != pack["generation_manifest_sha256"]
+        or publication["source_watermark"] != pack["source_watermark"]
+        or publication["retrieval_status"] != pack["retrieval_status"]
+    ):
+        raise ComparisonValidationError("pack is not host-published")
+    _validate_published_rank_trace(publication, pack)
+    provenance = conn.execute(
+        "SELECT * FROM history_generation_provenance WHERE generation = ?",
+        (pack["index_generation"],),
+    ).fetchone()
+    if (
+        provenance is None
+        or provenance["manifest_sha256"] != pack["generation_manifest_sha256"]
+        or provenance["source_watermark"] != pack["source_watermark"]
+        or provenance["policy_sha256"] != policy_sha256
+        or provenance["projection_schema_version"]
+        != policy["projection"]["schema_version"]
+    ):
+        raise ComparisonValidationError("generation provenance mismatch")
+    try:
+        manifest = json.loads(provenance["manifest_json"])
+    except (TypeError, ValueError) as exc:
+        raise ComparisonValidationError("generation manifest is corrupt") from exc
+    manifest_candidates = {
+        item["candidate_id"] for item in manifest.get("entries", [])
+        if item.get("active") == 1
+    }
+    manifest_fts = {
+        (item["candidate_id"], item["facet"])
+        for item in manifest.get("fts", [])
+    }
+    manifest_vectors = {
+        (item["candidate_id"], item["facet"])
+        for item in manifest.get("vectors", [])
+    }
+    for match in matches:
+        if match.get("candidate_id") not in manifest_candidates:
+            raise ComparisonValidationError("evidence is outside generation")
+        candidate = conn.execute(
+            "SELECT * FROM candidates WHERE candidate_id = ?",
+            (match["candidate_id"],),
+        ).fetchone()
+        if candidate is None or candidate["lineage_id"] != match.get("lineage_id"):
+            raise ComparisonValidationError("evidence candidate binding mismatch")
+        expected_evidence = _sha(
+            b"history-evidence-v1\0"
+            + canonical_bytes(
+                {
+                    "candidate_id": candidate["candidate_id"],
+                    "channel": match["channel"],
+                    "facet": match["facet"],
+                    "span": match["evidence_span"],
+                    "source_sequence": candidate["source_sequence"],
+                }
+            )
+        )
+        if match["evidence_id"] != expected_evidence:
+            raise ComparisonValidationError("evidence identity mismatch")
+        if (
+            match["channel"] == "fts"
+            and (match["candidate_id"], match["facet"]) not in manifest_fts
+        ):
+            raise ComparisonValidationError("FTS evidence is outside generation")
+        if (
+            match["channel"] == "dense"
+            and (match["candidate_id"], match["facet"]) not in manifest_vectors
+        ):
+            raise ComparisonValidationError("dense evidence is outside generation")
+        if match.get("channel") == "lineage":
+            edge = conn.execute(
+                """
+                SELECT 1 FROM lineage_edges
+                WHERE evidence_artifact_id = ? AND relation_type = ?
+                  AND (parent_candidate_id = ? OR child_candidate_id = ?)
+                """,
+                (
+                    match.get("edge_evidence_artifact_id"),
+                    match.get("relation_type"),
+                    match["candidate_id"],
+                    match["candidate_id"],
+                ),
+            ).fetchone()
+            if edge is None:
+                raise ComparisonValidationError("typed lineage evidence mismatch")
+    try:
+        preflight = json.loads(publication["comparator_preflight_json"])
+    except (TypeError, ValueError) as exc:
+        raise ComparisonValidationError("comparator preflight is corrupt") from exc
+    if pack["retrieval_status"] == "complete" and not preflight.get("fits"):
+        raise ComparisonValidationError("comparator preflight did not pass")
 
 
 def _evidence_index(pack):
@@ -886,9 +1637,7 @@ def _receipt_material(receipt):
 
 
 def finalize_comparison(conn, pack, response, policy):
-    _validate_pack(pack, policy)
-    if pack.get("retrieval_status") != "complete":
-        raise ComparisonValidationError("only a complete pack may be compared")
+    _validate_pack(conn, pack, policy, require_complete=True)
     _validate_response(pack, response)
     response_hash = _sha(canonical_bytes(response))
     query = pack["query"]
@@ -902,6 +1651,9 @@ def finalize_comparison(conn, pack, response, policy):
         "query_candidate_id": candidate_id,
         "intent": pack["intent"],
         "pack_sha256": pack["pack_sha256"],
+        "pack_publication_id": pack["pack_publication_id"],
+        "policy_sha256": pack["policy_sha256"],
+        "generation_manifest_sha256": pack["generation_manifest_sha256"],
         "retrieval_policy_version": pack["retrieval_policy_version"],
         "source_watermark": pack["source_watermark"],
         "index_generation": pack["index_generation"],
@@ -927,15 +1679,19 @@ def finalize_comparison(conn, pack, response, policy):
             """
             INSERT OR IGNORE INTO history_receipts(
               receipt_id, query_candidate_id, intent, pack_sha256,
+              pack_publication_id, policy_sha256, generation_manifest_sha256,
               retrieval_policy_version, source_watermark, index_generation,
               comparator_version, status, receipt_json, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 receipt["receipt_id"],
                 receipt["query_candidate_id"],
                 receipt["intent"],
                 receipt["pack_sha256"],
+                receipt["pack_publication_id"],
+                receipt["policy_sha256"],
+                receipt["generation_manifest_sha256"],
                 receipt["retrieval_policy_version"],
                 receipt["source_watermark"],
                 receipt["index_generation"],
@@ -954,12 +1710,15 @@ def finalize_comparison(conn, pack, response, policy):
 
 def replay_receipt(conn, pack, receipt, policy):
     try:
-        _validate_pack(pack, policy)
+        _validate_pack(conn, pack, policy, require_complete=True)
         receipt_fields = {
             "schema_version",
             "query_candidate_id",
             "intent",
             "pack_sha256",
+            "pack_publication_id",
+            "policy_sha256",
+            "generation_manifest_sha256",
             "retrieval_policy_version",
             "source_watermark",
             "index_generation",
@@ -983,6 +1742,13 @@ def replay_receipt(conn, pack, receipt, policy):
             raise ReceiptReplayError("receipt hash mismatch")
         if receipt.get("pack_sha256") != pack["pack_sha256"]:
             raise ReceiptReplayError("pack hash mismatch")
+        if (
+            receipt.get("pack_publication_id") != pack["pack_publication_id"]
+            or receipt.get("policy_sha256") != pack["policy_sha256"]
+            or receipt.get("generation_manifest_sha256")
+            != pack["generation_manifest_sha256"]
+        ):
+            raise ReceiptReplayError("pack provenance mismatch")
         if receipt.get("retrieval_policy_version") != policy["retrieval_policy_version"]:
             raise ReceiptReplayError("retrieval policy mismatch")
         if receipt.get("source_watermark") != pack["source_watermark"]:
@@ -993,6 +1759,8 @@ def replay_receipt(conn, pack, receipt, policy):
             raise ReceiptReplayError("comparator version mismatch")
         if receipt.get("intent") != pack["intent"]:
             raise ReceiptReplayError("intent mismatch")
+        if receipt.get("query_candidate_id") != pack["query"]["candidate_id"]:
+            raise ReceiptReplayError("query candidate mismatch")
         _validate_relations(pack, receipt.get("relations"))
         reconstructed_response = {
             "status": receipt["status"],
@@ -1000,23 +1768,19 @@ def replay_receipt(conn, pack, receipt, policy):
             "relations": receipt["relations"],
             "expansion_request": receipt["expansion_request"],
         }
+        _validate_response(pack, reconstructed_response)
         if receipt.get("comparison_sha256") != _sha(
             canonical_bytes(reconstructed_response)
         ):
             raise ReceiptReplayError("comparison hash mismatch")
         generation = conn.execute(
-            """
-            SELECT * FROM search_index_generations WHERE generation = ?
-            """,
+            "SELECT * FROM history_generation_provenance WHERE generation = ?",
             (receipt["index_generation"],),
         ).fetchone()
         try:
-            manifest = None if generation is None else json.loads(
-                generation["manifest_json"]
-            )
+            manifest = None if generation is None else json.loads(generation["manifest_json"])
         except (TypeError, ValueError):
             manifest = None
-        projection = policy["projection"]
         generation_valid = (
             generation is not None
             and manifest is not None
@@ -1026,14 +1790,9 @@ def replay_receipt(conn, pack, receipt, policy):
             and generation["policy_sha256"]
             == history_projection._policy_sha256(policy)
             and generation["projection_schema_version"]
-            == projection["schema_version"]
-            and generation["fts_tokenizer"] == projection["fts_tokenizer"]
-            and generation["vector_model"] == projection["vector_model"]
-            and generation["vector_revision"] == projection["vector_revision"]
-            and generation["preprocessing_version"]
-            == projection["preprocessing_version"]
-            and generation["dimensions"] == projection["dimensions"]
-            and generation["metric"] == projection["metric"]
+            == policy["projection"]["schema_version"]
+            and generation["manifest_sha256"]
+            == receipt["generation_manifest_sha256"]
         )
         if not generation_valid:
             raise ReceiptReplayError("published generation drift")
@@ -1046,11 +1805,24 @@ def replay_receipt(conn, pack, receipt, policy):
             raise ReceiptReplayError("receipt is not durably recorded")
     except ComparisonValidationError as exc:
         raise ReceiptReplayError(str(exc)) from exc
-    return {"valid": True, "receipt_id": receipt["receipt_id"]}
+    return VerifiedReceipt(
+        {
+            "valid": True,
+            "verified": True,
+            "receipt_id": receipt["receipt_id"],
+            "status": receipt["status"],
+            "pack_publication_id": receipt["pack_publication_id"],
+        },
+        _VERIFICATION_TOKEN,
+    )
 
 
 def permits_permanent_conclusion(receipt):
     return (
-        isinstance(receipt, dict)
+        isinstance(receipt, VerifiedReceipt)
+        and receipt.get("verified") is True
+        and receipt.get("valid") is True
+        and isinstance(receipt.get("receipt_id"), str)
+        and isinstance(receipt.get("pack_publication_id"), str)
         and receipt.get("status") in PERMANENT_STATUSES
     )

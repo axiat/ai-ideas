@@ -45,12 +45,6 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         ledger.write_bytes(
             HEADER
             + row("confidence gated world model reduces unsafe rollout")
-            + row("causal world model confidence prevents unsafe rollout")
-            + row(
-                "latent policy audit needs stronger controls",
-                "direct hit in prior work",
-                "novelty-capped",
-            )
         )
         self.conn = history_store.connect(self.root / "history.sqlite3")
         history_store.init_schema(self.conn)
@@ -132,6 +126,16 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         self.assertEqual(pack["retrieval_status"], "backend_failed")
         for channel in ("exact", "fts", "dense", "lineage"):
             self.assertEqual(pack["channels"][channel]["status"], "failed")
+        for channel in pack["channels"].values():
+            self.assertEqual(
+                set(channel),
+                {
+                    "status",
+                    "failure_code",
+                    "result_count",
+                    "retained_result_count",
+                },
+            )
         self.assertEqual(
             pack["channels"]["expansion"]["status"], "not_applicable"
         )
@@ -143,16 +147,15 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         self.assertEqual(
             initial["channels"]["expansion"]["status"], "not_applicable"
         )
-        expanded = retrieval.build_pack(
-            self.conn,
-            self.query,
-            "duplicate_search",
-            self.policy,
-            expansion_request={"lineage_ids": [self.lineage_id]},
-            disabled_channels={"expansion"},
-        )
-        self.assertEqual(expanded["retrieval_status"], "partial")
-        self.assertEqual(expanded["channels"]["expansion"]["status"], "failed")
+        with self.assertRaises(retrieval.RetrievalError):
+            retrieval.build_pack(
+                self.conn,
+                self.query,
+                "duplicate_search",
+                self.policy,
+                expansion_request={"lineage_ids": [self.lineage_id]},
+                disabled_channels={"expansion"},
+            )
 
     def test_hybrid_trace_is_deterministic_and_evidence_addressed(self):
         repeated = retrieval.build_pack(
@@ -165,7 +168,8 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         )
         self.assertEqual(
             self.complete_pack["estimated_input_tokens"],
-            (len(retrieval.canonical_bytes(self.complete_pack)) + 3) // 4,
+            len(retrieval.canonical_bytes(self.complete_pack))
+            + self.policy["adapter_wrapper_allowance"],
         )
         for lineage in repeated["lineages"]:
             self.assertGreater(lineage["rrf_score"], 0)
@@ -210,24 +214,27 @@ class HistoryRetrievalSmoke(unittest.TestCase):
             dict(
                 self.query,
                 story="new wording with no story alias",
-                reason="a direct hit already exists",
-                category="novelty-capped",
+                reason="missing strong baseline",
+                category="design-fixable",
             ),
             "failure_pattern_search",
             self.policy,
         )
-        exact = pack["channels"]["exact"]["results"]
+        exact = [
+            match
+            for lineage in pack["lineages"]
+            for match in lineage["matches"]
+            if match["channel"] == "exact"
+        ]
         self.assertTrue(exact)
         self.assertTrue(all(item["facet"] == "failure_code" for item in exact))
 
     def test_cutoff_lineage_cannot_be_dropped_to_fit_budget(self):
         tiny = dict(self.policy, max_retrieval_tokens=1)
-        pack = retrieval.build_pack(
-            self.conn, self.query, "duplicate_search", tiny
-        )
-        self.assertEqual(pack["retrieval_status"], "budget_exceeded")
-        self.assertEqual(pack["lineages"], [])
-        self.assertGreater(pack["omitted_lineage_count"], 0)
+        with self.assertRaises(retrieval.RetrievalError):
+            retrieval.build_pack(
+                self.conn, self.query, "duplicate_search", tiny
+            )
 
     def test_channel_payload_exposes_only_retained_lineages(self):
         history_store.append_rows(
@@ -247,11 +254,9 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         )
         retained = {item["lineage_id"] for item in pack["lineages"]}
         for channel in pack["channels"].values():
-            self.assertTrue(
-                {item["lineage_id"] for item in channel["results"]}
-                .issubset(retained)
+            self.assertGreaterEqual(
+                channel["result_count"], channel["retained_result_count"]
             )
-            self.assertGreaterEqual(channel["result_count"], len(channel["results"]))
 
     def test_comparator_preflight_serializes_pack_and_receipts(self):
         pack_bytes = retrieval.canonical_bytes(self.complete_pack)
@@ -286,9 +291,16 @@ class HistoryRetrievalSmoke(unittest.TestCase):
                 retrieval.permits_permanent_conclusion({"status": status})
             )
         for status in ("complete_match", "complete_no_match"):
-            self.assertTrue(
+            self.assertFalse(
                 retrieval.permits_permanent_conclusion({"status": status})
             )
+        receipt = retrieval.finalize_comparison(
+            self.conn, self.complete_pack, self.valid_response, self.policy
+        )
+        verified = retrieval.replay_receipt(
+            self.conn, self.complete_pack, receipt, self.policy
+        )
+        self.assertTrue(retrieval.permits_permanent_conclusion(verified))
 
     def test_comparison_cannot_reference_evidence_outside_pack(self):
         for field, value in (
@@ -392,15 +404,19 @@ class HistoryRetrievalSmoke(unittest.TestCase):
             """
             INSERT INTO history_receipts(
               receipt_id, query_candidate_id, intent, pack_sha256,
+              pack_publication_id, policy_sha256, generation_manifest_sha256,
               retrieval_policy_version, source_watermark, index_generation,
               comparator_version, status, receipt_json, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 changed["receipt_id"],
                 changed["query_candidate_id"],
                 changed["intent"],
                 changed["pack_sha256"],
+                changed["pack_publication_id"],
+                changed["policy_sha256"],
+                changed["generation_manifest_sha256"],
                 changed["retrieval_policy_version"],
                 changed["source_watermark"],
                 changed["index_generation"],

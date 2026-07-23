@@ -41,19 +41,6 @@ def write_generation_brief(conn, output, brief):
     destination = pathlib.Path(output)
     state_root = history_store._store_state_root(conn)
     history_store._validate_destination(conn, destination, state_root)
-    protected = {
-        (pathlib.Path.cwd() / "ledger.tsv").resolve(),
-        (pathlib.Path.cwd() / "tmp" / "ledger.good").resolve(),
-        (state_root.parent / "ledger.tsv").resolve(),
-        (state_root.parent / "tmp" / "ledger.good").resolve(),
-    }
-    database = history_store._db_path(conn).resolve()
-    protected.update(
-        pathlib.Path(str(database) + suffix).resolve()
-        for suffix in ("", "-wal", "-shm", "-journal")
-    )
-    if destination.resolve() in protected:
-        raise ValueError("generation brief cannot replace a ledger projection")
     parent = destination.parent
     if parent.is_symlink() or not parent.exists() or not parent.is_dir():
         raise ValueError("generation brief parent must be an existing directory")
@@ -76,14 +63,6 @@ def write_json_artifact(conn, output, value):
     destination = pathlib.Path(output)
     state_root = history_store._store_state_root(conn)
     history_store._validate_destination(conn, destination, state_root)
-    protected = {
-        (pathlib.Path.cwd() / "ledger.tsv").resolve(),
-        (pathlib.Path.cwd() / "tmp" / "ledger.good").resolve(),
-        (state_root.parent / "ledger.tsv").resolve(),
-        (state_root.parent / "tmp" / "ledger.good").resolve(),
-    }
-    if destination.resolve() in protected:
-        raise ValueError("JSON artifact cannot replace a ledger projection")
     if destination.is_symlink():
         raise ValueError("JSON artifact destination cannot be a symlink")
     parent = destination.parent

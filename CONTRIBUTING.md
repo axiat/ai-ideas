@@ -17,6 +17,7 @@ python3 tests/history_store_smoke.py
 python3 tests/history_projection_smoke.py
 python3 tests/history_budget_smoke.py
 python3 tests/history_retrieval_smoke.py
+python3 tests/history_retrieval_adversarial.py
 python3 tests/verify_product_contract.py runtime
 python3 tests/verify_product_contract.py fixtures
 bash tests/runtime_abi_smoke.sh
@@ -51,7 +52,8 @@ python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 replay-receipt \
 
 Only `complete_match` and `complete_no_match` receipts permit a permanent
 internal-history conclusion. Receipt replay is bound to the policy, projection
-generation, source watermark, comparator version, pack hash, and evidence IDs.
+generation, source watermark, comparator version, pack hash, evidence IDs, and
+the SHA-256 of the host-owned canonical rank trace.
 
 Shell changes also require `bash -n` on every touched script. Litwatch behavior is covered by `bash litwatch_test.sh`; its live-network probe may report an intentional skip when network access is unavailable.
 

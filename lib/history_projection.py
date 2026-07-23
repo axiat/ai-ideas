@@ -21,6 +21,8 @@ FACETS = (
     "setting_task",
     "entities_datasets_methods",
 )
+FAILURE_FACETS = ("failure_pattern",)
+SEARCH_FACETS = FACETS + FAILURE_FACETS
 FAILURE_CODES = (
     "direct-hit", "strong-baseline", "statistical-power", "estimand",
     "attribution-control", "weak-prior-work", "novelty-cap", "feasibility",
@@ -30,7 +32,7 @@ VECTOR_DIMENSIONS = 256
 VECTOR_MODEL = "hash-ngram-v1"
 VECTOR_REVISION = "1"
 PREPROCESSING_VERSION = "search-text-v1"
-PROJECTION_SCHEMA_VERSION = "history-projection-v2"
+PROJECTION_SCHEMA_VERSION = "history-projection-v3"
 FTS_TOKENIZER = "unicode61"
 
 
@@ -149,6 +151,9 @@ def _init(conn):
     conn.execute(
         "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('history_index_generation', '0')"
     )
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('history_index_generation_sequence', '0')"
+    )
 
 
 def _tokens(text):
@@ -168,6 +173,18 @@ def _default_facets(candidate):
         "evaluation_expected_signal": "",
         "setting_task": candidate["theme"] + "\n" + story,
         "entities_datasets_methods": _entities(candidate["theme"] + " " + story),
+        "failure_pattern": " ".join(
+            (
+                failure_code(
+                    candidate.get("verdict", ""),
+                    candidate.get("category", ""),
+                    candidate.get("reason", ""),
+                ),
+                candidate.get("category", ""),
+                candidate.get("reason", ""),
+                candidate.get("verdict", ""),
+            )
+        ).strip(),
     }
     return values
 
@@ -485,11 +502,15 @@ def rebuild(conn, policy):
                 "UPDATE search_projection_outbox SET state = 'done', claim_token = NULL, lease_until = NULL WHERE record_id = ? AND projection_kind = ? AND content_version = ?",
                 (item["record_id"], item["projection_kind"], item["content_version"]),
             )
-        generation = int(conn.execute(
+        current_generation = int(conn.execute(
             "SELECT value FROM schema_meta WHERE key = 'history_index_generation'"
         ).fetchone()[0])
+        generation_sequence = int(conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'history_index_generation_sequence'"
+        ).fetchone()[0])
+        generation = current_generation
         if changed:
-            generation += 1
+            generation = generation_sequence + 1
             watermark = conn.execute("SELECT COALESCE(MAX(source_sequence), 0) FROM candidates").fetchone()[0]
             manifest = _projection_manifest(conn, policy, watermark)
             manifest_bytes = _canonical_bytes(manifest)
@@ -505,11 +526,31 @@ def rebuild(conn, policy):
                  PREPROCESSING_VERSION, VECTOR_DIMENSIONS, "cosine"),
             )
             conn.execute(
+                """
+                INSERT INTO history_generation_provenance(
+                  generation, manifest_sha256, manifest_json, source_watermark,
+                  policy_sha256, projection_schema_version, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    generation,
+                    hashlib.sha256(manifest_bytes).hexdigest(),
+                    manifest_bytes.decode("utf-8").rstrip("\n"),
+                    watermark,
+                    _policy_sha256(policy),
+                    PROJECTION_SCHEMA_VERSION,
+                ),
+            )
+            conn.execute(
                 "UPDATE search_index_entries SET indexed_generation = ? WHERE candidate_id IN (%s)" % ",".join("?" * len(changed)),
                 (generation, *sorted(changed)),
             )
             conn.execute(
                 "UPDATE schema_meta SET value = ? WHERE key = 'history_index_generation'", (str(generation),)
+            )
+            conn.execute(
+                "UPDATE schema_meta SET value = ? WHERE key = 'history_index_generation_sequence'",
+                (str(generation),),
             )
         conn.execute("COMMIT")
     except Exception:
