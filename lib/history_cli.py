@@ -10,9 +10,11 @@ import tempfile
 try:
     from lib import history_store
     from lib import history_projection
+    from lib import history_retrieval
 except ImportError:  # Direct execution through lib/history_cli.py.
     import history_store
     import history_projection
+    import history_retrieval
 
 
 def _targets(args):
@@ -70,6 +72,44 @@ def write_generation_brief(conn, output, brief):
     return {"path": str(destination), "sha256": history_store._sha(data), "byte_count": len(data)}
 
 
+def write_json_artifact(conn, output, value):
+    destination = pathlib.Path(output)
+    state_root = history_store._store_state_root(conn)
+    history_store._validate_destination(conn, destination, state_root)
+    protected = {
+        (pathlib.Path.cwd() / "ledger.tsv").resolve(),
+        (pathlib.Path.cwd() / "tmp" / "ledger.good").resolve(),
+        (state_root.parent / "ledger.tsv").resolve(),
+        (state_root.parent / "tmp" / "ledger.good").resolve(),
+    }
+    if destination.resolve() in protected:
+        raise ValueError("JSON artifact cannot replace a ledger projection")
+    if destination.is_symlink():
+        raise ValueError("JSON artifact destination cannot be a symlink")
+    parent = destination.parent
+    if parent.is_symlink() or not parent.exists() or not parent.is_dir():
+        raise ValueError("JSON artifact parent must be an existing directory")
+    data = history_retrieval.canonical_bytes(value)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".%s." % destination.name, dir=str(parent)
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+        _fsync_directory(parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return {
+        "path": str(destination),
+        "sha256": history_store._sha(data),
+        "byte_count": len(data),
+    }
+
+
 def parser():
     result = argparse.ArgumentParser()
     result.add_argument("--db", required=True)
@@ -98,6 +138,27 @@ def parser():
     brief.add_argument("--policy", default="history/retrieval-policy-v1.json")
     brief.add_argument("--output", default="generation_brief.json")
     brief.add_argument("--research-context")
+    retrieve = commands.add_parser("retrieve")
+    retrieve.add_argument(
+        "--policy", default="history/retrieval-policy-v1.json"
+    )
+    retrieve.add_argument("--query", required=True)
+    retrieve.add_argument("--intent", choices=sorted(history_retrieval.INTENTS), required=True)
+    retrieve.add_argument("--output", default="retrieval_pack.json")
+    retrieve.add_argument("--expansion-request")
+    finalize = commands.add_parser("finalize-comparison")
+    finalize.add_argument(
+        "--policy", default="history/retrieval-policy-v1.json"
+    )
+    finalize.add_argument("--pack", required=True)
+    finalize.add_argument("--comparison", required=True)
+    finalize.add_argument("--output", default="history_receipt.json")
+    replay = commands.add_parser("replay-receipt")
+    replay.add_argument(
+        "--policy", default="history/retrieval-policy-v1.json"
+    )
+    replay.add_argument("--pack", required=True)
+    replay.add_argument("--receipt", required=True)
     return result
 
 
@@ -155,6 +216,46 @@ def main():
             )
             publication = write_generation_brief(conn, args.output, value)
             value = dict(value, output=publication["path"])
+        elif args.command == "retrieve":
+            query = json.loads(pathlib.Path(args.query).read_text(encoding="utf-8"))
+            expansion_request = None
+            if args.expansion_request:
+                expansion_request = json.loads(
+                    pathlib.Path(args.expansion_request).read_text(encoding="utf-8")
+                )
+            value = history_retrieval.build_pack(
+                conn,
+                query,
+                args.intent,
+                history_projection.load_policy(args.policy),
+                expansion_request=expansion_request,
+            )
+            publication = write_json_artifact(conn, args.output, value)
+            value = dict(value, output=publication["path"])
+        elif args.command == "finalize-comparison":
+            pack = json.loads(pathlib.Path(args.pack).read_text(encoding="utf-8"))
+            comparison = json.loads(
+                pathlib.Path(args.comparison).read_text(encoding="utf-8")
+            )
+            value = history_retrieval.finalize_comparison(
+                conn,
+                pack,
+                comparison,
+                history_projection.load_policy(args.policy),
+            )
+            publication = write_json_artifact(conn, args.output, value)
+            value = dict(value, output=publication["path"])
+        elif args.command == "replay-receipt":
+            pack = json.loads(pathlib.Path(args.pack).read_text(encoding="utf-8"))
+            receipt = json.loads(
+                pathlib.Path(args.receipt).read_text(encoding="utf-8")
+            )
+            value = history_retrieval.replay_receipt(
+                conn,
+                pack,
+                receipt,
+                history_projection.load_policy(args.policy),
+            )
         else:
             raise AssertionError(args.command)
         _print(value)

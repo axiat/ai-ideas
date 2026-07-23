@@ -16,6 +16,7 @@ Run focused gates while editing:
 python3 tests/history_store_smoke.py
 python3 tests/history_projection_smoke.py
 python3 tests/history_budget_smoke.py
+python3 tests/history_retrieval_smoke.py
 python3 tests/verify_product_contract.py runtime
 python3 tests/verify_product_contract.py fixtures
 bash tests/runtime_abi_smoke.sh
@@ -34,6 +35,23 @@ Recover both ledger projections from the canonical database before an offline ru
 ```bash
 python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 reconcile-ledger
 ```
+
+Build and resolve a bounded internal-history comparison from JSON artifacts:
+
+```bash
+python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 retrieve \
+  --query tmp/candidate.json --intent duplicate_search \
+  --output tmp/retrieval_pack.json
+python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 finalize-comparison \
+  --pack tmp/retrieval_pack.json --comparison tmp/history-comparison.json \
+  --output tmp/history_receipt.json
+python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 replay-receipt \
+  --pack tmp/retrieval_pack.json --receipt tmp/history_receipt.json
+```
+
+Only `complete_match` and `complete_no_match` receipts permit a permanent
+internal-history conclusion. Receipt replay is bound to the policy, projection
+generation, source watermark, comparator version, pack hash, and evidence IDs.
 
 Shell changes also require `bash -n` on every touched script. Litwatch behavior is covered by `bash litwatch_test.sh`; its live-network probe may report an intentional skip when network access is unavailable.
 

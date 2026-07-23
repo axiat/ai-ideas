@@ -180,6 +180,19 @@ def _validate_tokenizer(tokenizer, policy):
         raise ValueError("tokenizer is not policy-bound")
 
 
+def _declared_input_sha256s(value):
+    result = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key.endswith("sha256") and isinstance(item, str) and len(item) == 64:
+                result.add(item)
+            result.update(_declared_input_sha256s(item))
+    elif isinstance(value, list):
+        for item in value:
+            result.update(_declared_input_sha256s(item))
+    return result
+
+
 def preflight_stage_invocation(
     serialized, policy, tokenizer=None, expected_mounted_inputs=None
 ):
@@ -229,6 +242,7 @@ def preflight_stage_invocation(
         "safety_margin": policy["safety_margin"],
         "serialized_byte_count": len(serialized),
         "serialized_sha256": hashlib.sha256(serialized).hexdigest(),
+        "input_sha256s": sorted(_declared_input_sha256s(invocation)),
         "total_upper_bound": total,
     }
     if not receipt["fits"]:
