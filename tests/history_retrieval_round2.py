@@ -5,9 +5,11 @@ import copy
 import hashlib
 import json
 import pathlib
+import pickle
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -18,6 +20,17 @@ from lib import history_store
 
 
 HEADER = b"date\tsource\ttheme\tidea\tverdict\treason\toverlap\tcategory\n"
+COMPARATOR_ROLE_IDENTITY = "tests/fixtures/history-compare-role.md"
+COMPARATOR_ROLE_BYTES = (
+    "Classify every retained lineage.\n"
+    "Preserve exact evidence identifiers. \u03b4\n"
+).encode("utf-8")
+
+
+def build_pack(*args, **kwargs):
+    kwargs.setdefault("comparator_role_bytes", COMPARATOR_ROLE_BYTES)
+    kwargs.setdefault("comparator_role_identity", COMPARATOR_ROLE_IDENTITY)
+    return retrieval.build_pack(*args, **kwargs)
 
 
 def ledger_row(story, reason="missing strong baseline", category="design-fixable"):
@@ -62,7 +75,7 @@ class RoundTwoFixture(unittest.TestCase):
             "category": candidate["category"],
             "verdict": candidate["verdict"],
         }
-        self.pack = retrieval.build_pack(
+        self.pack = build_pack(
             self.conn, self.query, "duplicate_search", self.policy
         )
         match = self.pack["lineages"][0]["matches"][0]
@@ -118,8 +131,12 @@ class VerifiedCapabilityTests(RoundTwoFixture):
         uncertain_response["relations"][0]["relation"] = "uncertain"
         uncertain_receipt, uncertain = self._verify(uncertain_response)
 
-        self.assertTrue(retrieval.permits_permanent_conclusion(permanent))
-        self.assertFalse(retrieval.permits_permanent_conclusion(uncertain))
+        self.assertTrue(
+            retrieval.permits_permanent_conclusion(self.conn, permanent)
+        )
+        self.assertFalse(
+            retrieval.permits_permanent_conclusion(self.conn, uncertain)
+        )
         for capability, receipt in (
             (permanent, permanent_receipt),
             (uncertain, uncertain_receipt),
@@ -142,8 +159,197 @@ class VerifiedCapabilityTests(RoundTwoFixture):
 
         self.assertEqual(permanent["receipt_id"], permanent_receipt["receipt_id"])
         self.assertEqual(uncertain["receipt_id"], uncertain_receipt["receipt_id"])
-        self.assertTrue(retrieval.permits_permanent_conclusion(permanent))
-        self.assertFalse(retrieval.permits_permanent_conclusion(uncertain))
+        self.assertTrue(
+            retrieval.permits_permanent_conclusion(self.conn, permanent)
+        )
+        self.assertFalse(
+            retrieval.permits_permanent_conclusion(self.conn, uncertain)
+        )
+
+    def test_verified_receipt_constructor_bypasses_do_not_forge_capability(self):
+        for label, constructor in (
+            (
+                "base-tuple",
+                lambda: tuple.__new__(
+                    retrieval.VerifiedReceipt,
+                    (
+                        True,
+                        True,
+                        "forged",
+                        "complete_match",
+                        "forged-publication",
+                    ),
+                ),
+            ),
+            (
+                "base-object",
+                lambda: object.__new__(retrieval.VerifiedReceipt),
+            ),
+        ):
+            with self.subTest(constructor=label):
+                try:
+                    forged = constructor()
+                except TypeError:
+                    continue
+                self.assertFalse(
+                    retrieval.permits_permanent_conclusion(self.conn, forged)
+                )
+
+    def test_capability_copy_subclass_and_durable_tamper_preserve_authority(self):
+        receipt, capability = self._verify(self.match_response)
+        attempts = (
+            ("copy", lambda: copy.copy(capability)),
+            ("deepcopy", lambda: copy.deepcopy(capability)),
+            ("pickle", lambda: pickle.loads(pickle.dumps(capability))),
+        )
+        for label, operation in attempts:
+            with self.subTest(operation=label):
+                try:
+                    duplicated = operation()
+                except (TypeError, pickle.PickleError, AttributeError):
+                    continue
+                self.assertEqual(
+                    retrieval.permits_permanent_conclusion(
+                        self.conn, duplicated
+                    ),
+                    duplicated is capability,
+                )
+
+        class ForgedSubclass(retrieval.VerifiedReceipt):
+            pass
+
+        forged_subclass = object.__new__(ForgedSubclass)
+        self.assertFalse(
+            retrieval.permits_permanent_conclusion(
+                self.conn, forged_subclass
+            )
+        )
+
+        with self.assertRaisesRegex(
+            Exception, "history receipt is immutable"
+        ):
+            self.conn.execute(
+                """
+                UPDATE history_receipts
+                SET status = 'uncertain'
+                WHERE receipt_id = ?
+                """,
+                (receipt["receipt_id"],),
+            )
+        with self.assertRaisesRegex(
+            Exception, "history receipt is immutable"
+        ):
+            self.conn.execute(
+                "DELETE FROM history_receipts WHERE receipt_id = ?",
+                (receipt["receipt_id"],),
+            )
+
+        self.conn.execute(
+            "DROP TRIGGER IF EXISTS history_receipt_update_guard"
+        )
+        self.conn.execute(
+            """
+            UPDATE history_receipts
+            SET status = 'uncertain'
+            WHERE receipt_id = ?
+            """,
+            (receipt["receipt_id"],),
+        )
+        self.assertFalse(
+            retrieval.permits_permanent_conclusion(self.conn, capability)
+        )
+
+
+class ClassificationCoverageTests(RoundTwoFixture):
+    @staticmethod
+    def _classification_pack():
+        lineages = []
+        relations = []
+        for index in (1, 2):
+            lineage_id = "classification-lineage-%d" % index
+            candidate_id = "classification-candidate-%d" % index
+            evidence_id = "classification-evidence-%d" % index
+            lineages.append(
+                {
+                    "lineage_id": lineage_id,
+                    "matches": [{
+                        "candidate_id": candidate_id,
+                        "lineage_id": lineage_id,
+                        "facet": "problem_estimand",
+                        "evidence_id": evidence_id,
+                    }],
+                }
+            )
+            relations.append(
+                {
+                    "relation": "distinct",
+                    "candidate_id": candidate_id,
+                    "lineage_id": lineage_id,
+                    "facet": "problem_estimand",
+                    "evidence_id": evidence_id,
+                    "material_difference": "different",
+                    "confidence": 1.0,
+                }
+            )
+        return {
+            "intent": "duplicate_search",
+            "lineages": lineages,
+        }, relations
+
+    @staticmethod
+    def _response(status, relations):
+        return {
+            "status": status,
+            "comparator_version": retrieval.COMPARATOR_VERSION,
+            "relations": relations,
+            "expansion_request": None,
+        }
+
+    def test_nonempty_pack_cannot_authorize_empty_complete_no_match(self):
+        response = self._response("complete_no_match", [])
+        with self.assertRaises(retrieval.ComparisonValidationError):
+            retrieval.finalize_comparison(
+                self.conn, self.pack, response, self.policy
+            )
+
+    def test_each_retained_lineage_requires_one_unique_classification(self):
+        pack, relations = self._classification_pack()
+        duplicate = [relations[0], dict(relations[0])]
+        with self.assertRaisesRegex(
+            retrieval.ComparisonValidationError,
+            "lineage classification coverage mismatch",
+        ):
+            retrieval._validate_response(
+                pack, self._response("complete_no_match", duplicate)
+            )
+
+    def test_complete_match_no_match_and_uncertain_statuses_are_coherent(self):
+        pack, relations = self._classification_pack()
+
+        complete_match = [dict(item) for item in relations]
+        complete_match[0]["relation"] = "same_core_idea"
+        retrieval._validate_response(
+            pack, self._response("complete_match", complete_match)
+        )
+
+        retrieval._validate_response(
+            pack, self._response("complete_no_match", relations)
+        )
+
+        uncertain = [dict(item) for item in relations]
+        uncertain[0]["relation"] = "uncertain"
+        retrieval._validate_response(
+            pack, self._response("uncertain", uncertain)
+        )
+
+        incoherent = [dict(item) for item in uncertain]
+        with self.assertRaisesRegex(
+            retrieval.ComparisonValidationError,
+            "complete match contains uncertain classification",
+        ):
+            retrieval._validate_response(
+                pack, self._response("complete_match", incoherent)
+            )
 
 
 class ProjectionSnapshotTests(RoundTwoFixture):
@@ -178,7 +384,7 @@ class ProjectionSnapshotTests(RoundTwoFixture):
         ).fetchone()[0]
         self.assertGreater(canonical_revision, prior_revision)
         self.assertEqual(queued_revision, canonical_revision)
-        pending = retrieval.build_pack(
+        pending = build_pack(
             self.conn, self.query, "duplicate_search", self.policy
         )
         self.assertEqual(pending["retrieval_status"], "partial")
@@ -187,7 +393,7 @@ class ProjectionSnapshotTests(RoundTwoFixture):
         )
 
         rebuilt = projection.rebuild(self.conn, self.policy)
-        published = retrieval.build_pack(
+        published = build_pack(
             self.conn,
             dict(
                 self.query,
@@ -228,12 +434,12 @@ class ProjectionSnapshotTests(RoundTwoFixture):
 
     def test_pending_exclusion_and_supersession_fail_closed_until_publish(self):
         projection.remove_candidate_from_search(self.conn, self.candidate_id)
-        excluded_pending = retrieval.build_pack(
+        excluded_pending = build_pack(
             self.conn, self.query, "duplicate_search", self.policy
         )
         self.assertEqual(excluded_pending["retrieval_status"], "partial")
         projection.rebuild(self.conn, self.policy)
-        excluded = retrieval.build_pack(
+        excluded = build_pack(
             self.conn, self.query, "duplicate_search", self.policy
         )
         self.assertEqual(excluded["retrieval_status"], "complete")
@@ -277,12 +483,12 @@ class ProjectionSnapshotTests(RoundTwoFixture):
         self.assertEqual(
             len({row["canonical_revision"] for row in edge_queue}), 1
         )
-        supersession_pending = retrieval.build_pack(
+        supersession_pending = build_pack(
             self.conn, self.query, "evolution_search", self.policy
         )
         self.assertEqual(supersession_pending["retrieval_status"], "partial")
         projection.rebuild(self.conn, self.policy)
-        supersession = retrieval.build_pack(
+        supersession = build_pack(
             self.conn, self.query, "evolution_search", self.policy
         )
         self.assertEqual(supersession["retrieval_status"], "complete")
@@ -294,8 +500,60 @@ class ProjectionSnapshotTests(RoundTwoFixture):
             )
         )
 
+    def test_supersedes_edge_deactivates_parent_without_manual_exclusion(self):
+        baseline_receipt = retrieval.finalize_comparison(
+            self.conn, self.pack, self.match_response, self.policy
+        )
+        appended = history_store.append_rows(
+            self.conn,
+            [ledger_row("confidence world model unsafe rollout")],
+            {"run_id": "round-two-derived-supersession"},
+        )
+        child_id = appended["candidate_ids"][0]
+        projection.rebuild(self.conn, self.policy)
+        self._install_edge_artifact("round-two-derived-supersession-edge")
+        history_store.add_lineage_edge(
+            self.conn,
+            self.candidate_id,
+            child_id,
+            "supersedes",
+            "round-two-derived-supersession-edge",
+            "explicit",
+        )
+
+        pending = build_pack(
+            self.conn, self.query, "duplicate_search", self.policy
+        )
+        self.assertEqual(pending["retrieval_status"], "partial")
+
+        projection.rebuild(self.conn, self.policy)
+        active = {
+            row["candidate_id"]: row["active"]
+            for row in self.conn.execute(
+                """
+                SELECT candidate_id, active
+                FROM search_index_entries
+                WHERE candidate_id IN (?, ?)
+                """,
+                (self.candidate_id, child_id),
+            )
+        }
+        self.assertEqual(active[self.candidate_id], 0)
+        self.assertEqual(active[child_id], 1)
+        self.assertEqual(
+            projection.exact_lookup(
+                self.conn, self.query["story"], self.policy["per_channel_depth"]
+            ),
+            [child_id],
+        )
+
+        verified = retrieval.replay_receipt(
+            self.conn, self.pack, baseline_receipt, self.policy
+        )
+        self.assertTrue(verified["verified"])
+
     def test_dense_evidence_uses_published_text_not_live_facets(self):
-        baseline = retrieval.build_pack(
+        baseline = build_pack(
             self.conn,
             dict(self.query, story="unrelated dense probe"),
             "duplicate_search",
@@ -319,7 +577,7 @@ class ProjectionSnapshotTests(RoundTwoFixture):
                 self.candidate_id,
             ),
         )
-        repeated = retrieval.build_pack(
+        repeated = build_pack(
             self.conn,
             dict(self.query, story="unrelated dense probe"),
             "duplicate_search",
@@ -390,6 +648,61 @@ class LineageUnitTests(RoundTwoFixture):
                 intent="evolution_search",
             )
 
+    def test_overflowed_evolution_units_preserve_truthful_channel_audit(self):
+        rows = []
+        for index in range(10):
+            story = "shared mechanism lineage %d" % index
+            rows.extend((ledger_row(story), ledger_row(story)))
+        appended = history_store.append_rows(
+            self.conn,
+            rows,
+            {"run_id": "round-two-unit-overflow"},
+        )
+        projection.rebuild(self.conn, self.policy)
+        for index in range(10):
+            artifact_id = "round-two-unit-overflow-%d" % index
+            self._install_edge_artifact(artifact_id)
+            history_store.add_lineage_edge(
+                self.conn,
+                appended["candidate_ids"][index * 2],
+                appended["candidate_ids"][index * 2 + 1],
+                "evolved_from",
+                artifact_id,
+                "explicit",
+            )
+        projection.rebuild(self.conn, self.policy)
+
+        trace = {}
+        pack = retrieval._build_pack_snapshot(
+            self.conn,
+            {
+                "candidate_id": "round-two-unit-overflow-query",
+                "story": "shared mechanism lineage",
+                "theme": "World Models",
+            },
+            "evolution_search",
+            self.policy,
+            trace_sink=trace,
+        )
+
+        self.assertEqual(pack["retrieval_status"], "budget_exceeded")
+        self.assertFalse(pack["lineages"])
+        self.assertGreaterEqual(
+            pack["omitted_lineage_count"], 6
+        )
+        self.assertEqual(
+            pack["omitted_lineage_count"],
+            len(trace["fusion"]["lineage_order"]),
+        )
+        for channel in ("exact", "fts", "dense", "lineage"):
+            with self.subTest(channel=channel):
+                self.assertEqual(pack["channels"][channel]["status"], "complete")
+                self.assertEqual(
+                    pack["channels"][channel]["result_count"],
+                    len(trace["channels"][channel]),
+                )
+        self.assertGreater(pack["channels"]["lineage"]["result_count"], 10)
+
     def test_lineage_evidence_binds_exact_endpoints_and_direction(self):
         appended = history_store.append_rows(
             self.conn,
@@ -407,7 +720,7 @@ class LineageUnitTests(RoundTwoFixture):
             "explicit",
         )
         projection.rebuild(self.conn, self.policy)
-        pack = retrieval.build_pack(
+        pack = build_pack(
             self.conn, self.query, "evolution_search", self.policy
         )
         lineage_matches = [
@@ -433,8 +746,299 @@ class LineageUnitTests(RoundTwoFixture):
             )
         )
 
+    def _version_pair(self, run_id):
+        appended = history_store.append_rows(
+            self.conn,
+            [ledger_row("confidence world model unsafe rollout")],
+            {"run_id": run_id},
+        )
+        current_id = appended["candidate_ids"][0]
+        edge_id = run_id + "-edge"
+        self._install_edge_artifact(edge_id)
+        history_store.add_lineage_edge(
+            self.conn,
+            self.candidate_id,
+            current_id,
+            "evolved_from",
+            edge_id,
+            "explicit",
+        )
+        projection.rebuild(self.conn, self.policy)
+        return (
+            retrieval._candidate_row(self.conn, self.candidate_id),
+            retrieval._candidate_row(self.conn, current_id),
+        )
+
+    def _assert_prelineage_highest(self, exact, fts, dense):
+        semantic_results = {
+            "exact": exact,
+            "fts": fts,
+            "dense": dense,
+            "expansion": [],
+            "lineage": [],
+        }
+        ranked, contributions = retrieval._fuse(
+            semantic_results, self.policy
+        )
+        candidate_order = retrieval._fusion_summary(
+            ranked, contributions
+        )["candidate_order"]
+        lineage_id = retrieval._candidate_row(
+            self.conn, self.candidate_id
+        )["lineage_id"]
+        expected = next(
+            item["candidate_id"]
+            for item in candidate_order
+            if item["lineage_id"] == lineage_id
+        )
+        with (
+            mock.patch.object(
+                retrieval, "_exact_channel", return_value=exact
+            ),
+            mock.patch.object(
+                retrieval, "_fts_channel", return_value=fts
+            ),
+            mock.patch.object(
+                retrieval, "_dense_channel", return_value=dense
+            ),
+        ):
+            pack = retrieval._build_pack_snapshot(
+                self.conn,
+                self.query,
+                "evolution_search",
+                self.policy,
+            )
+        highest = {
+            match["candidate_id"]
+            for lineage in pack["lineages"]
+            for match in lineage["matches"]
+            if "highest_match" in match.get("version_role", "").split("+")
+        }
+        self.assertEqual(highest, {expected})
+        return expected
+
+    def test_highest_match_uses_prelineage_semantic_rrf(self):
+        older, current = self._version_pair(
+            "round-three-fused-highest"
+        )
+        fts_results = [
+            retrieval._evidence(
+                older,
+                "fts",
+                "claimed_delta",
+                1.0,
+                1,
+                older["story"],
+            ),
+            retrieval._evidence(
+                current,
+                "fts",
+                "claimed_delta",
+                0.5,
+                2,
+                current["story"],
+            ),
+            retrieval._evidence(
+                current,
+                "fts",
+                "problem_estimand",
+                1.0,
+                1,
+                current["story"],
+            ),
+        ]
+        self.assertEqual(
+            self._assert_prelineage_highest([], fts_results, []),
+            current["candidate_id"],
+        )
+
+    def test_highest_match_prelineage_rrf_includes_exact_hits(self):
+        older, current = self._version_pair(
+            "round-three-fused-exact"
+        )
+        exact = [
+            retrieval._evidence(
+                older,
+                "exact",
+                "problem_estimand",
+                1.0,
+                1,
+                older["story"],
+            )
+        ]
+        fts = [
+            retrieval._evidence(
+                current,
+                "fts",
+                "claimed_delta",
+                0.5,
+                2,
+                current["story"],
+            )
+        ]
+        self.assertEqual(
+            self._assert_prelineage_highest(exact, fts, []),
+            older["candidate_id"],
+        )
+
+    def test_highest_match_prelineage_rrf_ties_by_candidate_id(self):
+        older, current = self._version_pair(
+            "round-three-fused-tie"
+        )
+        fts = [
+            retrieval._evidence(
+                row,
+                "fts",
+                "claimed_delta",
+                1.0,
+                1,
+                row["story"],
+            )
+            for row in (older, current)
+        ]
+        self.assertEqual(
+            self._assert_prelineage_highest([], fts, []),
+            min(older["candidate_id"], current["candidate_id"]),
+        )
+
+    def test_multihop_evolution_keeps_complete_highest_to_current_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            ledger = root / "ledger.tsv"
+            stories = [
+                "stage-A-mechanism",
+                "stage-B-mechanism",
+                "stage-C-mechanism",
+                "stage-D-mechanism",
+            ]
+            ledger.write_bytes(
+                HEADER + b"".join(ledger_row(story) for story in stories)
+            )
+            (root / "ledger.instance-id").write_text(
+                "round-two-multihop\n", encoding="utf-8"
+            )
+            mappings = []
+            for index in range(3):
+                artifact = root / ("edge-%d.json" % index)
+                artifact.write_text('{"verified":true}\n', encoding="utf-8")
+                mappings.append(
+                    {
+                        "parent_row": index + 1,
+                        "child_row": index + 2,
+                        "relation_type": "evolved_from",
+                        "authority": "manual_mapping",
+                        "evidence_path": str(artifact),
+                    }
+                )
+            mapping = root / "mapping.json"
+            mapping.write_text(
+                json.dumps(
+                    {"version": "lineage-mapping-v1", "mappings": mappings}
+                ),
+                encoding="utf-8",
+            )
+            conn = history_store.connect(root / "history.sqlite3")
+            try:
+                history_store.init_schema(conn)
+                plan = history_store.build_import_plan(
+                    {
+                        "ledger": ledger,
+                        "mapping_manifest": mapping,
+                    },
+                    root / ".ai-ideas",
+                )
+                history_store.commit_import_plan(conn, plan)
+                projection.rebuild(conn, self.policy)
+                candidates = conn.execute(
+                    """
+                    SELECT candidate_id, story
+                    FROM candidates
+                    ORDER BY source_sequence
+                    """
+                ).fetchall()
+                candidate_ids = [row["candidate_id"] for row in candidates]
+                pack = build_pack(
+                    conn,
+                    {
+                        "candidate_id": "round-two-multihop-query",
+                        "story": stories[1],
+                        "theme": "World Models",
+                    },
+                    "evolution_search",
+                    self.policy,
+                )
+
+                self.assertEqual(pack["retrieval_status"], "complete")
+                lineage_matches = [
+                    match
+                    for lineage in pack["lineages"]
+                    for match in lineage["matches"]
+                    if match["channel"] == "lineage"
+                ]
+                self.assertEqual(
+                    [
+                        (
+                            match["parent_candidate_id"],
+                            match["child_candidate_id"],
+                            match["candidate_id"],
+                            match["edge_direction"],
+                        )
+                        for match in lineage_matches
+                    ],
+                    [
+                        (
+                            candidate_ids[1],
+                            candidate_ids[2],
+                            candidate_ids[1],
+                            "parent",
+                        ),
+                        (
+                            candidate_ids[2],
+                            candidate_ids[3],
+                            candidate_ids[3],
+                            "child",
+                        ),
+                    ],
+                )
+                self.assertTrue(
+                    all(
+                        left in match["material_delta"]
+                        and right in match["material_delta"]
+                        for match, left, right in zip(
+                            lineage_matches,
+                            stories[1:3],
+                            stories[2:4],
+                        )
+                    )
+                )
+            finally:
+                conn.close()
+
 
 class PublicationAuditTests(RoundTwoFixture):
+    def test_canonical_invocation_binds_explicit_role_bytes_and_identity(self):
+        invocation_bytes = retrieval.comparator_invocation_bytes(
+            self.pack,
+            self.policy,
+            role_bytes=COMPARATOR_ROLE_BYTES,
+            role_identity=COMPARATOR_ROLE_IDENTITY,
+        )
+        invocation = json.loads(invocation_bytes)
+        self.assertEqual(
+            invocation["fixed_instructions"],
+            COMPARATOR_ROLE_BYTES.decode("utf-8"),
+        )
+        self.assertEqual(
+            invocation["receipts"],
+            [{
+                "pack_publication_id": self.pack["pack_publication_id"],
+                "role_identity": COMPARATOR_ROLE_IDENTITY,
+                "role_sha256": hashlib.sha256(
+                    COMPARATOR_ROLE_BYTES
+                ).hexdigest(),
+            }],
+        )
+
     def test_publication_preflight_binds_canonical_invocation(self):
         publication = self.conn.execute(
             """
@@ -444,7 +1048,10 @@ class PublicationAuditTests(RoundTwoFixture):
             (self.pack["pack_publication_id"],),
         ).fetchone()
         invocation_bytes = retrieval.comparator_invocation_bytes(
-            self.pack, self.policy
+            self.pack,
+            self.policy,
+            role_bytes=COMPARATOR_ROLE_BYTES,
+            role_identity=COMPARATOR_ROLE_IDENTITY,
         )
         invocation = json.loads(invocation_bytes)
         self.assertEqual(
@@ -454,6 +1061,14 @@ class PublicationAuditTests(RoundTwoFixture):
             "utf-8"
         )
         preflight = json.loads(preflight_bytes)
+        stored_invocation_bytes = publication[
+            "comparator_invocation_json"
+        ].encode("utf-8")
+        self.assertEqual(stored_invocation_bytes, invocation_bytes)
+        self.assertEqual(
+            publication["comparator_invocation_sha256"],
+            hashlib.sha256(invocation_bytes).hexdigest(),
+        )
         self.assertEqual(
             preflight["serialized_sha256"],
             hashlib.sha256(invocation_bytes).hexdigest(),
@@ -470,10 +1085,68 @@ class PublicationAuditTests(RoundTwoFixture):
             receipt["comparator_preflight_sha256"],
             publication["comparator_preflight_sha256"],
         )
+        self.assertEqual(
+            receipt["comparator_invocation_sha256"],
+            publication["comparator_invocation_sha256"],
+        )
         verified = retrieval.replay_receipt(
             self.conn, self.pack, receipt, self.policy
         )
         self.assertTrue(verified["verified"])
+
+    def test_immutable_publication_binds_pack_trace_invocation_and_preflight(self):
+        publication = self.conn.execute(
+            """
+            SELECT * FROM history_pack_publications
+            WHERE publication_id = ?
+            """,
+            (self.pack["pack_publication_id"],),
+        ).fetchone()
+        invocation_bytes = publication[
+            "comparator_invocation_json"
+        ].encode("utf-8")
+        trace_bytes = publication["rank_trace_json"].encode("utf-8")
+        preflight_bytes = publication[
+            "comparator_preflight_json"
+        ].encode("utf-8")
+        self.assertEqual(
+            bytes(publication["pack_bytes"]),
+            retrieval.canonical_bytes(self.pack),
+        )
+        self.assertEqual(
+            publication["comparator_invocation_sha256"],
+            hashlib.sha256(invocation_bytes).hexdigest(),
+        )
+        self.assertEqual(
+            publication["rank_trace_sha256"],
+            hashlib.sha256(trace_bytes).hexdigest(),
+        )
+        self.assertEqual(
+            publication["comparator_preflight_sha256"],
+            hashlib.sha256(preflight_bytes).hexdigest(),
+        )
+        with self.assertRaisesRegex(
+            Exception, "history pack publication is immutable"
+        ):
+            self.conn.execute(
+                """
+                UPDATE history_pack_publications
+                SET comparator_invocation_json = '{}'
+                WHERE publication_id = ?
+                """,
+                (self.pack["pack_publication_id"],),
+            )
+        with self.assertRaisesRegex(
+            retrieval.RetrievalError, "publication identity collision"
+        ):
+            retrieval._publish_pack(
+                self.conn,
+                self.pack,
+                self.policy,
+                json.loads(preflight_bytes),
+                json.loads(trace_bytes),
+                invocation_bytes + b" ",
+            )
 
 
 class ActualLedgerBudgetTests(unittest.TestCase):
@@ -539,7 +1212,7 @@ class ActualLedgerBudgetTests(unittest.TestCase):
                 }
                 for label, (query, intent) in queries.items():
                     with self.subTest(label=label):
-                        pack = retrieval.build_pack(
+                        pack = build_pack(
                             conn, query, intent, policy
                         )
                         self.assertEqual(
@@ -560,7 +1233,30 @@ class ActualLedgerBudgetTests(unittest.TestCase):
                             (pack["pack_publication_id"],),
                         ).fetchone()
                         trace = json.loads(publication[0])
-                        self.assertTrue(trace["fusion"]["lineage_order"])
+                        self.assertTrue(
+                            trace["fusion"]["lineage_order"]
+                        )
+                        self.assertEqual(
+                            pack["omitted_lineage_count"],
+                            len(trace["fusion"]["lineage_order"]),
+                        )
+                        for channel, evidence in trace["channels"].items():
+                            self.assertEqual(
+                                pack["channels"][channel]["result_count"],
+                                len(evidence),
+                            )
+                        with self.assertRaisesRegex(
+                            Exception,
+                            "history pack publication is immutable",
+                        ):
+                            conn.execute(
+                                """
+                                UPDATE history_pack_publications
+                                SET rank_trace_json = '{}'
+                                WHERE publication_id = ?
+                                """,
+                                (pack["pack_publication_id"],),
+                            )
             finally:
                 conn.close()
 

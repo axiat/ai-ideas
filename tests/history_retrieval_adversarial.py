@@ -18,6 +18,16 @@ from lib import history_retrieval as retrieval
 from lib import history_store
 
 
+COMPARATOR_ROLE_IDENTITY = "tests/fixtures/history-compare-role.md"
+COMPARATOR_ROLE_BYTES = b"Classify every retained lineage.\n"
+
+
+def build_pack(*args, **kwargs):
+    kwargs.setdefault("comparator_role_bytes", COMPARATOR_ROLE_BYTES)
+    kwargs.setdefault("comparator_role_identity", COMPARATOR_ROLE_IDENTITY)
+    return retrieval.build_pack(*args, **kwargs)
+
+
 HEADER = b"date\tsource\ttheme\tidea\tverdict\treason\toverlap\tcategory\n"
 
 
@@ -60,7 +70,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
             "reason": "missing strong baseline",
             "category": "design-fixable",
         }
-        self.pack = retrieval.build_pack(
+        self.pack = build_pack(
             self.conn, self.query, "duplicate_search", self.policy
         )
         self.assertEqual(self.pack["retrieval_status"], "complete")
@@ -131,7 +141,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
         ):
             with self.subTest(field=field):
                 with self.assertRaises(retrieval.RetrievalError):
-                    retrieval.build_pack(
+                    build_pack(
                         self.conn,
                         self.query,
                         "duplicate_search",
@@ -163,7 +173,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
         statements = []
         self.conn.set_trace_callback(statements.append)
         try:
-            pack = retrieval.build_pack(
+            pack = build_pack(
                 self.conn,
                 dict(
                     self.query,
@@ -251,7 +261,12 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
         )
         self.assertEqual(
             preflight,
-            retrieval._comparator_preflight(self.pack, self.policy),
+            retrieval._comparator_preflight(
+                self.pack,
+                self.policy,
+                role_bytes=COMPARATOR_ROLE_BYTES,
+                role_identity=COMPARATOR_ROLE_IDENTITY,
+            ),
         )
         receipt = retrieval.finalize_comparison(
             self.conn, self.pack, self.response, self.policy
@@ -334,7 +349,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
             {"run_id": "hard-bounds"},
         )
         projection.rebuild(self.conn, self.policy)
-        pack = retrieval.build_pack(
+        pack = build_pack(
             self.conn,
             dict(self.query, story="confidence shared candidate"),
             "duplicate_search",
@@ -396,7 +411,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
             )
             history_store.commit_import_plan(conn, plan)
             projection.rebuild(conn, self.policy)
-            pack = retrieval.build_pack(
+            pack = build_pack(
                 conn,
                 {
                     "candidate_id": "mapped-query",
@@ -449,13 +464,15 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
         ):
             with self.subTest(keys=sorted(query)):
                 with self.assertRaises((ValueError, retrieval.RetrievalError)):
-                    retrieval.build_pack(
+                    build_pack(
                         self.conn, query, "duplicate_search", self.policy
                     )
         query_path = self.root / "bad-query.json"
         query_path.write_text(
             json.dumps(dict(self.query, ledger_rows=["secret"])), encoding="utf-8"
         )
+        role_path = self.root / "history-compare.md"
+        role_path.write_bytes(COMPARATOR_ROLE_BYTES)
         completed = subprocess.run(
             [
                 sys.executable,
@@ -469,6 +486,10 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
                 str(query_path),
                 "--intent",
                 "duplicate_search",
+                "--comparator-role",
+                str(role_path),
+                "--comparator-role-identity",
+                COMPARATOR_ROLE_IDENTITY,
             ],
             cwd=str(self.root),
             stdout=subprocess.PIPE,
@@ -480,7 +501,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
         lineage_id = self.pack["lineages"][0]["lineage_id"]
         raw = {"lineage_ids": [lineage_id], "round": 1}
         with self.assertRaises(retrieval.RetrievalError):
-            retrieval.build_pack(
+            build_pack(
                 self.conn,
                 self.query,
                 "duplicate_search",
@@ -500,7 +521,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
             "prior_pack_publication_id": self.pack["pack_publication_id"],
             "comparison_receipt_id": receipt["receipt_id"],
         }
-        expanded = retrieval.build_pack(
+        expanded = build_pack(
             self.conn,
             self.query,
             "duplicate_search",
@@ -513,7 +534,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
             self.pack["pack_publication_id"],
         )
         with self.assertRaises(retrieval.RetrievalError):
-            retrieval.build_pack(
+            build_pack(
                 self.conn,
                 self.query,
                 "duplicate_search",
@@ -531,6 +552,21 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
             self.conn, self.pack, uncertain, self.policy
         )
         corrupted = dict(receipt, comparison_sha256="0" * 64)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                UPDATE history_receipts
+                SET receipt_json = ?
+                WHERE receipt_id = ?
+                """,
+                (
+                    retrieval.canonical_bytes(corrupted)
+                    .decode("utf-8")
+                    .rstrip("\n"),
+                    receipt["receipt_id"],
+                ),
+            )
+        self.conn.execute("DROP TRIGGER history_receipt_update_guard")
         self.conn.execute(
             """
             UPDATE history_receipts
@@ -543,7 +579,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
             ),
         )
         with self.assertRaises(retrieval.RetrievalError):
-            retrieval.build_pack(
+            build_pack(
                 self.conn,
                 self.query,
                 "duplicate_search",
@@ -593,7 +629,7 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
             "explicit",
         )
         projection.rebuild(self.conn, self.policy)
-        pack = retrieval.build_pack(
+        pack = build_pack(
             self.conn, self.query, "evolution_search", self.policy
         )
         lineage_matches = [

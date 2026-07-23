@@ -342,7 +342,14 @@ def _candidate_content(conn, candidate_id):
 
 def _write_candidate(conn, candidate_id):
     excluded = conn.execute(
-        "SELECT 1 FROM search_exclusions WHERE candidate_id = ?", (candidate_id,)
+        """
+        SELECT 1 FROM search_exclusions WHERE candidate_id = ?
+        UNION ALL
+        SELECT 1 FROM lineage_edges
+        WHERE parent_candidate_id = ? AND relation_type = 'supersedes'
+        LIMIT 1
+        """,
+        (candidate_id, candidate_id),
     ).fetchone()
     if excluded is not None:
         conn.execute("DELETE FROM search_fts WHERE candidate_id = ?", (candidate_id,))

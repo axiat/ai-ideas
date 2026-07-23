@@ -3,6 +3,7 @@
 
 import hashlib
 import json
+import weakref
 
 try:
     from lib import history_budget
@@ -28,13 +29,10 @@ RELATIONS = {
     "distinct",
     "uncertain",
 }
-FINAL_STATUSES = {
+COMPARATOR_STATUSES = {
     "complete_match",
     "complete_no_match",
     "uncertain",
-    "partial",
-    "backend_failed",
-    "budget_exceeded",
     "conflicting_evidence",
 }
 PERMANENT_STATUSES = {"complete_match", "complete_no_match"}
@@ -45,9 +43,6 @@ QUERY_BYTES_LIMIT = 16384
 QUERY_FIELDS = {
     "candidate_id", "story", "theme", "verdict", "reason", "category", "facets"
 }
-COMPARATOR_INSTRUCTIONS = (
-    "Classify only evidence-addressed internal-history relations."
-)
 COMPARATOR_OUTPUT_SCHEMA = {
     "type": "object",
     "required": [
@@ -68,53 +63,68 @@ class ReceiptReplayError(RetrievalError):
     pass
 
 
-_VERIFICATION_TOKEN = object()
-
-
-class VerifiedReceipt(tuple):
-    """Immutable host capability returned only after durable receipt replay."""
-
-    __slots__ = ()
-    _FIELDS = (
+def _verified_receipt_capability():
+    fields = (
         "valid",
         "verified",
         "receipt_id",
         "status",
         "pack_publication_id",
     )
+    registry = weakref.WeakKeyDictionary()
 
-    def __new__(cls, value, token):
-        if token is not _VERIFICATION_TOKEN:
+    class VerifiedReceipt:
+        """Opaque host capability returned only after durable receipt replay."""
+
+        __slots__ = ("__weakref__",)
+
+        def __new__(cls, *args, **kwargs):
             raise TypeError("verified receipts are host-constructed")
-        if not isinstance(value, dict) or set(value) != set(cls._FIELDS):
-            raise TypeError("verified receipt fields are invalid")
-        return tuple.__new__(cls, tuple(value[field] for field in cls._FIELDS))
 
-    def __getitem__(self, key):
-        if isinstance(key, str):
+        def __getitem__(self, key):
+            decision = registry.get(self)
+            if decision is None:
+                raise TypeError("unsealed verified receipt")
+            if isinstance(key, str):
+                try:
+                    key = fields.index(key)
+                except ValueError as exc:
+                    raise KeyError(key) from exc
+            return decision[key]
+
+        def get(self, key, default=None):
             try:
-                key = self._FIELDS.index(key)
-            except ValueError as exc:
-                raise KeyError(key) from exc
-        return tuple.__getitem__(self, key)
+                return self[key]
+            except KeyError:
+                return default
 
-    def get(self, key, default=None):
-        try:
-            return self[key]
-        except KeyError:
-            return default
+        def keys(self):
+            return fields
 
-    def keys(self):
-        return self._FIELDS
+        def items(self):
+            return tuple((field, self[field]) for field in fields)
 
-    def items(self):
-        return tuple((field, self[field]) for field in self._FIELDS)
+        def values(self):
+            return tuple(self[field] for field in fields)
 
-    def values(self):
-        return tuple(tuple.__getitem__(self, index) for index in range(len(self)))
+    def issue(value):
+        if not isinstance(value, dict) or set(value) != set(fields):
+            raise TypeError("verified receipt fields are invalid")
+        capability = object.__new__(VerifiedReceipt)
+        registry[capability] = tuple(value[field] for field in fields)
+        return capability
 
-    def sealed_decision(self):
-        return tuple(tuple.__getitem__(self, index) for index in range(len(self)))
+    def decision(capability):
+        if type(capability) is not VerifiedReceipt:
+            return None
+        return registry.get(capability)
+
+    return VerifiedReceipt, issue, decision
+
+
+VerifiedReceipt, _issue_verified_receipt, _verified_receipt_decision = (
+    _verified_receipt_capability()
+)
 
 
 def canonical_bytes(value):
@@ -442,11 +452,8 @@ def _dense_channel(conn, query, intent, depth):
     return values
 
 
-def _lineage_channel(conn, seed_results, depth, query_story):
-    seed_ids = []
-    for item in seed_results:
-        if item["candidate_id"] not in seed_ids:
-            seed_ids.append(item["candidate_id"])
+def _lineage_channel(conn, seed_ids, depth):
+    seed_ids = list(dict.fromkeys(seed_ids))
     if not seed_ids:
         return []
     placeholders = ",".join("?" for _ in seed_ids)
@@ -469,39 +476,15 @@ def _lineage_channel(conn, seed_results, depth, query_story):
             """,
             (lineage_id,),
         ).fetchone()
-        canonical_query = history_store.canonical_story_v1(query_story)
         highest = next(
             (
-                _candidate_row(conn, candidate_id)
+                row
                 for candidate_id in seed_ids
-                if _candidate_row(conn, candidate_id) is not None
-                and _candidate_row(conn, candidate_id)["lineage_id"] == lineage_id
-                and history_store.canonical_story_v1(
-                    _candidate_row(conn, candidate_id)["story"]
-                )
-                == canonical_query
+                for row in [_candidate_row(conn, candidate_id)]
+                if row is not None and row["lineage_id"] == lineage_id
             ),
             None,
         )
-        if highest is None:
-            highest = next(
-                (
-                    _candidate_row(conn, candidate_id)
-                    for candidate_id in seed_ids
-                    if _candidate_row(conn, candidate_id) is not None
-                    and _candidate_row(conn, candidate_id)["lineage_id"] == lineage_id
-                ),
-                None,
-            )
-        selected = {}
-        for row, role in ((highest, "highest_match"), (current, "current")):
-            if row is None:
-                continue
-            prior = selected.get(row["candidate_id"])
-            selected[row["candidate_id"]] = (
-                row,
-                role if prior is None else prior[1] + "+" + role,
-            )
         edges = conn.execute(
             """
             SELECT edge.*, parent.story AS parent_story, child.story AS child_story
@@ -514,46 +497,101 @@ def _lineage_channel(conn, seed_results, depth, query_story):
             """,
             (lineage_id,),
         ).fetchall()
-        for edge in edges:
-            for candidate_id in (
-                edge["parent_candidate_id"],
-                edge["child_candidate_id"],
-            ):
-                if candidate_id not in selected:
-                    continue
-                row, role = selected[candidate_id]
-                material_delta = _bounded_material_delta(
-                    edge["parent_story"], edge["child_story"]
+        if highest is None or current is None or not edges:
+            continue
+        highest_id = highest["candidate_id"]
+        current_id = current["candidate_id"]
+        if highest_id == current_id:
+            incoming = [
+                edge for edge in edges
+                if edge["child_candidate_id"] == current_id
+            ]
+            incident = incoming or [
+                edge for edge in edges
+                if edge["parent_candidate_id"] == current_id
+            ]
+            descriptors = (
+                []
+                if not incident
+                else [(incident[-1], current_id, "highest_match+current")]
+            )
+        else:
+            adjacency = {}
+            for edge in edges:
+                adjacency.setdefault(edge["parent_candidate_id"], []).append(
+                    (edge["child_candidate_id"], edge)
                 )
-                # material_delta is the bounded extractive span for typed
-                # edges; avoid duplicating it in the generic evidence field.
-                evidence = _evidence(
-                    row,
-                    "lineage",
-                    "lineage",
-                    1.0,
-                    len(results) + 1,
-                    "",
-                    edge["evidence_artifact_id"],
+                adjacency.setdefault(edge["child_candidate_id"], []).append(
+                    (edge["parent_candidate_id"], edge)
                 )
-                evidence.update(
-                    {
-                        "relation_type": edge["relation_type"],
-                        "edge_evidence_artifact_id": edge["evidence_artifact_id"],
-                        "version_role": role,
-                        "parent_candidate_id": edge["parent_candidate_id"],
-                        "child_candidate_id": edge["child_candidate_id"],
-                        "edge_direction": (
-                            "parent"
-                            if candidate_id == edge["parent_candidate_id"]
-                            else "child"
-                        ),
-                        "material_delta": material_delta,
-                    }
-                )
-                results.append(evidence)
-                if len(results) >= depth:
-                    return results
+            queue = [(highest_id, [])]
+            visited = {highest_id}
+            path = None
+            while queue:
+                node, traversed = queue.pop(0)
+                if node == current_id:
+                    path = traversed
+                    break
+                for neighbor, edge in adjacency.get(node, []):
+                    if neighbor in visited:
+                        continue
+                    visited.add(neighbor)
+                    queue.append(
+                        (neighbor, traversed + [(edge, node, neighbor)])
+                    )
+            if path is None:
+                descriptors = []
+            elif len(path) == 1:
+                edge, _, _ = path[0]
+                descriptors = [
+                    (edge, highest_id, "highest_match"),
+                    (edge, current_id, "current"),
+                ]
+            else:
+                descriptors = []
+                for index, (edge, _, destination_id) in enumerate(path):
+                    if index == 0:
+                        descriptors.append(
+                            (edge, highest_id, "highest_match")
+                        )
+                    elif index == len(path) - 1:
+                        descriptors.append((edge, current_id, "current"))
+                    else:
+                        descriptors.append((edge, destination_id, "path"))
+        if len(results) + len(descriptors) > depth:
+            raise RetrievalError("lineage path exceeds channel depth")
+        for edge, candidate_id, role in descriptors:
+            row = _candidate_row(conn, candidate_id)
+            material_delta = _bounded_material_delta(
+                edge["parent_story"], edge["child_story"]
+            )
+            # material_delta is the bounded extractive span for typed
+            # edges; avoid duplicating it in the generic evidence field.
+            evidence = _evidence(
+                row,
+                "lineage",
+                "lineage",
+                1.0,
+                len(results) + 1,
+                "",
+                edge["evidence_artifact_id"],
+            )
+            evidence.update(
+                {
+                    "relation_type": edge["relation_type"],
+                    "edge_evidence_artifact_id": edge["evidence_artifact_id"],
+                    "version_role": role,
+                    "parent_candidate_id": edge["parent_candidate_id"],
+                    "child_candidate_id": edge["child_candidate_id"],
+                    "edge_direction": (
+                        "parent"
+                        if candidate_id == edge["parent_candidate_id"]
+                        else "child"
+                    ),
+                    "material_delta": material_delta,
+                }
+            )
+            results.append(evidence)
     return results
 
 
@@ -645,6 +683,30 @@ def _empty_pack(
     return _seal_pack(pack)
 
 
+def _budget_exceeded_audit_pack(
+    query, intent, policy, generation, channels, ranked, expansion_request
+):
+    pack = _empty_pack(
+        query,
+        intent,
+        policy,
+        "budget_exceeded",
+        generation,
+        expansion_request is not None,
+    )
+    pack["channels"] = _bounded_channels(channels, [])
+    pack["omitted_lineage_count"] = len(ranked)
+    if expansion_request is not None:
+        pack["expansion_round"] = expansion_request["round"]
+        pack["prior_pack_publication_id"] = expansion_request[
+            "prior_pack_publication_id"
+        ]
+        pack["prior_comparison_receipt_id"] = expansion_request[
+            "comparison_receipt_id"
+        ]
+    return _seal_pack(pack)
+
+
 def _seal_pack(pack):
     value = dict(pack)
     value.pop("pack_sha256", None)
@@ -656,7 +718,9 @@ def _seal_pack(pack):
         digest = pack_sha256(value)
         sealed = dict(
             value,
-            receipt_id=_sha(b"retrieval-pack-v1\0" + digest.encode("ascii")),
+            receipt_id=_sha(
+                b"retrieval-pack-v1\0" + digest.encode("ascii")
+            ),
             pack_publication_id=_sha(
                 b"history-pack-publication-v1\0"
                 + digest.encode("ascii")
@@ -733,9 +797,16 @@ def _fuse(channel_results, policy):
     for lineage_rank, lineage in enumerate(ranked, 1):
         lineage["rank"] = lineage_rank
         lineage["rrf_score"] = round(lineage["rrf_score"], 12)
+        channel_priority = {
+            "exact": 0,
+            "fts": 1,
+            "dense": 2,
+            "lineage": 3,
+            "expansion": 4,
+        }
         lineage["matches"].sort(
             key=lambda item: (
-                item["channel"],
+                channel_priority[item["channel"]],
                 item["rank"],
                 item["candidate_id"],
                 item["facet"],
@@ -832,11 +903,18 @@ def _bounded_channels(channels, lineages):
 
 
 def _evolution_unit(lineage):
-    lineage_matches = [
-        match
-        for match in lineage["matches"]
-        if match.get("channel") == "lineage"
-    ]
+    lineage_matches = sorted(
+        [
+            match
+            for match in lineage["matches"]
+            if match.get("channel") == "lineage"
+        ],
+        key=lambda item: (
+            item["rank"],
+            item["candidate_id"],
+            item.get("evidence_id", ""),
+        ),
+    )
     if not lineage_matches:
         facet_priority = {
             "mechanism": 0,
@@ -852,30 +930,31 @@ def _evolution_unit(lineage):
                 item["candidate_id"],
             ),
         )[:1]
-    selected = []
-    identities = set()
-    for role in ("highest_match", "current"):
-        match = next(
-            (
-                item
-                for item in lineage_matches
-                if role in item.get("version_role", "").split("+")
-            ),
-            None,
+    highest_index = next(
+        (
+            index
+            for index, item in enumerate(lineage_matches)
+            if "highest_match" in item.get("version_role", "").split("+")
+        ),
+        None,
+    )
+    current_index = next(
+        (
+            index
+            for index, item in enumerate(lineage_matches)
+            if "current" in item.get("version_role", "").split("+")
+        ),
+        None,
+    )
+    if (
+        highest_index is None
+        or current_index is None
+        or highest_index > current_index
+    ):
+        raise RetrievalError(
+            "evolution lineage lacks a complete highest/current unit"
         )
-        if match is None:
-            raise RetrievalError(
-                "evolution lineage lacks a complete highest/current unit"
-            )
-        identity = (
-            match["candidate_id"],
-            match.get("evidence_id"),
-            match.get("version_role"),
-        )
-        if identity not in identities:
-            selected.append(match)
-            identities.add(identity)
-    return selected
+    return lineage_matches[highest_index:current_index + 1]
 
 
 def _cap_matches(lineages, limit, intent="duplicate_search"):
@@ -1108,28 +1187,6 @@ def _build_pack_snapshot(
                 "results": [],
             }
             mandatory_failed = True
-    if "lineage" in disabled:
-        results["lineage"] = []
-        channels["lineage"] = {"status": "failed", "results": []}
-        mandatory_failed = True
-    else:
-        try:
-            seeds = results["exact"] + results["fts"] + results["dense"]
-            results["lineage"] = _lineage_channel(
-                conn, seeds, depth, _query_value(query, "story")
-            )
-            channels["lineage"] = {
-                "status": "complete",
-                "results": results["lineage"],
-            }
-        except Exception as exc:
-            results["lineage"] = []
-            channels["lineage"] = {
-                "status": "failed",
-                "failure_code": type(exc).__name__,
-                "results": [],
-            }
-            mandatory_failed = True
     if expansion_request is None:
         results["expansion"] = []
         channels["expansion"] = {"status": "not_applicable", "results": []}
@@ -1154,6 +1211,37 @@ def _build_pack_snapshot(
                 "results": [],
             }
             mandatory_failed = True
+    if "lineage" in disabled:
+        results["lineage"] = []
+        channels["lineage"] = {"status": "failed", "results": []}
+        mandatory_failed = True
+    else:
+        try:
+            seed_results = dict(results, lineage=[])
+            seed_ranked, seed_contributions = _fuse(
+                seed_results, policy
+            )
+            seed_order = [
+                item["candidate_id"]
+                for item in _fusion_summary(
+                    seed_ranked, seed_contributions
+                )["candidate_order"]
+            ]
+            results["lineage"] = _lineage_channel(
+                conn, seed_order, depth
+            )
+            channels["lineage"] = {
+                "status": "complete",
+                "results": results["lineage"],
+            }
+        except Exception as exc:
+            results["lineage"] = []
+            channels["lineage"] = {
+                "status": "failed",
+                "failure_code": type(exc).__name__,
+                "results": [],
+            }
+            mandatory_failed = True
     ranked, contributions = _fuse(results, policy)
     trace_sink.update(
         {
@@ -1173,9 +1261,8 @@ def _build_pack_snapshot(
             lineage["matches"].sort(
                 key=lambda item: (
                     0 if item["channel"] == "lineage" else 1,
-                    0 if item.get("version_role") == "highest_match" else 1,
-                    item["channel"],
                     item["rank"],
+                    item["channel"],
                     item["candidate_id"],
                 )
             )
@@ -1187,13 +1274,14 @@ def _build_pack_snapshot(
             intent=intent,
         )
     except RetrievalError:
-        return _empty_pack(
+        return _budget_exceeded_audit_pack(
             query,
             intent,
             policy,
-            "budget_exceeded",
             generation,
-            expansion_request is not None,
+            channels,
+            ranked,
+            expansion_request,
         )
     retained_candidates = {
         match["candidate_id"]
@@ -1333,33 +1421,65 @@ def _build_pack_snapshot(
     return _seal_pack(pack)
 
 
-def comparator_invocation_bytes(pack, policy):
+def _validated_comparator_role(role_bytes, role_identity):
+    if not isinstance(role_bytes, bytes) or not role_bytes:
+        raise RetrievalError("comparator role bytes are required")
+    try:
+        role_text = role_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RetrievalError("comparator role is not UTF-8") from exc
+    if (
+        not isinstance(role_identity, str)
+        or not role_identity
+        or "\n" in role_identity
+        or "\r" in role_identity
+    ):
+        raise RetrievalError("comparator role identity is invalid")
+    return role_text
+
+
+def comparator_invocation_bytes(
+    pack, policy, *, role_bytes, role_identity
+):
     """Return the canonical serialized invocation consumed by the comparator."""
+    role_text = _validated_comparator_role(role_bytes, role_identity)
     pack_bytes = canonical_bytes(pack)
     return history_budget.serialize_stage_invocation(
         stage="history-compare",
         adapter_version=policy["adapter_version"],
-        fixed_instructions=COMPARATOR_INSTRUCTIONS,
+        fixed_instructions=role_text,
         mounted_inputs={"retrieval_pack.json": pack_bytes},
         candidate=pack["query"],
         retrieval_payload=pack,
-        receipts=[{"pack_publication_id": pack["pack_publication_id"]}],
+        receipts=[{
+            "pack_publication_id": pack["pack_publication_id"],
+            "role_identity": role_identity,
+            "role_sha256": _sha(role_bytes),
+        }],
         tool_schemas=[COMPARATOR_OUTPUT_SCHEMA],
         messages=[{"role": "user", "content": "Compare the candidate."}],
     )
 
 
-def _comparator_preflight(pack, policy):
+def _comparator_preflight(
+    pack, policy, *, role_bytes, role_identity
+):
     pack_bytes = canonical_bytes(pack)
-    invocation = comparator_invocation_bytes(pack, policy)
+    invocation = comparator_invocation_bytes(
+        pack,
+        policy,
+        role_bytes=role_bytes,
+        role_identity=role_identity,
+    )
     return history_budget.preflight_stage_invocation(
         invocation,
         policy,
         expected_mounted_inputs={"retrieval_pack.json": pack_bytes},
     )
 
-
-def _publish_pack(conn, pack, policy, preflight, rank_trace):
+def _publish_pack(
+    conn, pack, policy, preflight, rank_trace, invocation_bytes
+):
     if pack["index_generation"] < 1:
         return
     encoded = canonical_bytes(pack)
@@ -1376,9 +1496,11 @@ def _publish_pack(conn, pack, policy, preflight, rank_trace):
         INSERT INTO history_pack_publications(
           publication_id, pack_sha256, pack_bytes, policy_sha256, generation,
           generation_manifest_sha256, source_watermark, retrieval_status,
-          rank_trace_json, rank_trace_sha256, comparator_preflight_json,
+          rank_trace_json, rank_trace_sha256, comparator_invocation_json,
+          comparator_invocation_sha256, comparator_preflight_json,
           comparator_preflight_sha256, created_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 datetime('now'))
         ON CONFLICT(publication_id) DO NOTHING
         """,
         (
@@ -1392,6 +1514,8 @@ def _publish_pack(conn, pack, policy, preflight, rank_trace):
             pack["retrieval_status"],
             rank_trace_bytes.decode("utf-8"),
             _sha(rank_trace_bytes),
+            invocation_bytes.decode("utf-8"),
+            _sha(invocation_bytes),
             preflight_bytes.decode("utf-8"),
             _sha(preflight_bytes),
         ),
@@ -1399,6 +1523,7 @@ def _publish_pack(conn, pack, policy, preflight, rank_trace):
     stored = conn.execute(
         """
         SELECT pack_bytes, rank_trace_json, rank_trace_sha256,
+               comparator_invocation_json, comparator_invocation_sha256,
                comparator_preflight_json, comparator_preflight_sha256
         FROM history_pack_publications
         WHERE publication_id = ?
@@ -1410,6 +1535,9 @@ def _publish_pack(conn, pack, policy, preflight, rank_trace):
         or bytes(stored["pack_bytes"]) != encoded
         or stored["rank_trace_json"].encode("utf-8") != rank_trace_bytes
         or stored["rank_trace_sha256"] != _sha(rank_trace_bytes)
+        or stored["comparator_invocation_json"].encode("utf-8")
+        != invocation_bytes
+        or stored["comparator_invocation_sha256"] != _sha(invocation_bytes)
         or stored["comparator_preflight_json"].encode("utf-8")
         != preflight_bytes
         or stored["comparator_preflight_sha256"] != _sha(preflight_bytes)
@@ -1424,8 +1552,14 @@ def build_pack(
     policy,
     disabled_channels=None,
     expansion_request=None,
+    *,
+    comparator_role_bytes=None,
+    comparator_role_identity=None,
 ):
     _validate_runtime_policy(policy)
+    _validated_comparator_role(
+        comparator_role_bytes, comparator_role_identity
+    )
     normalized_query = _normalize_query(query)
     normalized_expansion = _validate_expansion_request(
         conn, expansion_request, normalized_query, intent, policy
@@ -1450,7 +1584,12 @@ def build_pack(
             conn.execute("COMMIT")
         if result["retrieval_status"] == "complete":
             try:
-                preflight = _comparator_preflight(result, policy)
+                preflight = _comparator_preflight(
+                    result,
+                    policy,
+                    role_bytes=comparator_role_bytes,
+                    role_identity=comparator_role_identity,
+                )
             except history_budget.PreflightError as exc:
                 result = dict(
                     result,
@@ -1472,7 +1611,20 @@ def build_pack(
                 "fits": False,
                 "code": result["retrieval_status"],
             }
-        _publish_pack(conn, result, policy, preflight, rank_trace)
+        invocation_bytes = comparator_invocation_bytes(
+            result,
+            policy,
+            role_bytes=comparator_role_bytes,
+            role_identity=comparator_role_identity,
+        )
+        _publish_pack(
+            conn,
+            result,
+            policy,
+            preflight,
+            rank_trace,
+            invocation_bytes,
+        )
         return result
     except Exception:
         if started and conn.in_transaction:
@@ -1997,15 +2149,82 @@ def _validate_pack(conn, pack, policy, require_complete=False):
             if edge is None:
                 raise ComparisonValidationError("typed lineage evidence mismatch")
     try:
+        invocation_bytes = publication[
+            "comparator_invocation_json"
+        ].encode("utf-8")
+        invocation = json.loads(invocation_bytes)
+        invocation_receipts = invocation["receipts"]
+        role_identity = invocation_receipts[0]["role_identity"]
+        role_bytes = invocation["fixed_instructions"].encode("utf-8")
+    except (
+        AttributeError,
+        IndexError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ComparisonValidationError(
+            "comparator invocation is corrupt"
+        ) from exc
+    if (
+        invocation_bytes != canonical_bytes(invocation)
+        or publication["comparator_invocation_sha256"]
+        != _sha(invocation_bytes)
+        or len(invocation_receipts) != 1
+        or invocation_bytes
+        != comparator_invocation_bytes(
+            pack,
+            policy,
+            role_bytes=role_bytes,
+            role_identity=role_identity,
+        )
+    ):
+        raise ComparisonValidationError(
+            "comparator invocation identity mismatch"
+        )
+    try:
         preflight_bytes = publication["comparator_preflight_json"].encode("utf-8")
         preflight = json.loads(preflight_bytes)
     except (AttributeError, TypeError, ValueError) as exc:
         raise ComparisonValidationError("comparator preflight is corrupt") from exc
-    expected_preflight = _comparator_preflight(pack, policy)
+    expected_preflight_fields = {
+        "adapter_version",
+        "code",
+        "count_method",
+        "fits",
+        "input_upper_bound",
+        "model_context_limit",
+        "output_tokens",
+        "safety_margin",
+        "serialized_byte_count",
+        "serialized_sha256",
+        "input_sha256s",
+        "total_upper_bound",
+    }
     if (
         preflight_bytes != canonical_bytes(preflight)
         or publication["comparator_preflight_sha256"] != _sha(preflight_bytes)
-        or preflight != expected_preflight
+        or set(preflight) != expected_preflight_fields
+        or preflight["adapter_version"] != policy["adapter_version"]
+        or preflight["code"] != "ok"
+        or preflight["fits"] is not True
+        or preflight["count_method"] != "utf8_byte_upper_bound"
+        or preflight["input_upper_bound"]
+        != preflight["serialized_byte_count"]
+        + policy["adapter_wrapper_allowance"]
+        or preflight["model_context_limit"] != policy["model_context_limit"]
+        or preflight["output_tokens"] != policy["max_output_tokens"]
+        or preflight["safety_margin"] != policy["safety_margin"]
+        or preflight["total_upper_bound"]
+        != preflight["input_upper_bound"]
+        + preflight["output_tokens"]
+        + preflight["safety_margin"]
+        or preflight["total_upper_bound"] > policy["model_context_limit"]
+        or not isinstance(preflight["serialized_sha256"], str)
+        or len(preflight["serialized_sha256"]) != 64
+        or pack["pack_sha256"] not in preflight["input_sha256s"]
+        or _sha(canonical_bytes(pack)) not in preflight["input_sha256s"]
+        or preflight["serialized_sha256"] != _sha(invocation_bytes)
     ):
         raise ComparisonValidationError("comparator preflight identity mismatch")
     if pack["retrieval_status"] == "complete" and not preflight.get("fits"):
@@ -2063,6 +2282,7 @@ def _validate_relations(pack, relations):
         },
     }
     allowed = semantic_relations.get(pack.get("intent"), set())
+    classified_lineages = []
     for relation in relations:
         if not isinstance(relation, dict) or set(relation) != required:
             raise ComparisonValidationError("relation schema mismatch")
@@ -2082,6 +2302,18 @@ def _validate_relations(pack, relations):
             raise ComparisonValidationError("confidence is outside [0,1]")
         if not isinstance(relation["material_difference"], str):
             raise ComparisonValidationError("material difference must be text")
+        classified_lineages.append(relation["lineage_id"])
+    retained_lineages = [
+        lineage["lineage_id"] for lineage in pack.get("lineages", [])
+    ]
+    if (
+        len(classified_lineages) != len(retained_lineages)
+        or len(set(classified_lineages)) != len(classified_lineages)
+        or set(classified_lineages) != set(retained_lineages)
+    ):
+        raise ComparisonValidationError(
+            "lineage classification coverage mismatch"
+        )
 
 
 def _validate_response(pack, response):
@@ -2093,12 +2325,16 @@ def _validate_response(pack, response):
     }
     if not isinstance(response, dict) or set(response) != expected:
         raise ComparisonValidationError("comparison schema mismatch")
-    if response["status"] not in FINAL_STATUSES:
+    if response["status"] not in COMPARATOR_STATUSES:
         raise ComparisonValidationError("unsupported comparison status")
     if response["comparator_version"] != COMPARATOR_VERSION:
         raise ComparisonValidationError("unsupported comparator version")
     _validate_relations(pack, response["relations"])
     relations = {item["relation"] for item in response["relations"]}
+    if response["status"] == "complete_match" and "uncertain" in relations:
+        raise ComparisonValidationError(
+            "complete match contains uncertain classification"
+        )
     if response["status"] == "complete_match" and not (
         relations
         - {"distinct", "uncertain"}
@@ -2139,7 +2375,8 @@ def finalize_comparison(conn, pack, response, policy):
     _validate_response(pack, response)
     publication = conn.execute(
         """
-        SELECT rank_trace_sha256, comparator_preflight_sha256
+        SELECT rank_trace_sha256, comparator_invocation_sha256,
+               comparator_preflight_sha256
         FROM history_pack_publications
         WHERE publication_id = ?
         """,
@@ -2161,6 +2398,8 @@ def finalize_comparison(conn, pack, response, policy):
         "policy_sha256": pack["policy_sha256"],
         "generation_manifest_sha256": pack["generation_manifest_sha256"],
         "rank_trace_sha256": publication["rank_trace_sha256"],
+        "comparator_invocation_sha256":
+            publication["comparator_invocation_sha256"],
         "comparator_preflight_sha256":
             publication["comparator_preflight_sha256"],
         "retrieval_policy_version": pack["retrieval_policy_version"],
@@ -2189,10 +2428,11 @@ def finalize_comparison(conn, pack, response, policy):
             INSERT OR IGNORE INTO history_receipts(
               receipt_id, query_candidate_id, intent, pack_sha256,
               pack_publication_id, policy_sha256, generation_manifest_sha256,
-              rank_trace_sha256, comparator_preflight_sha256,
+              rank_trace_sha256, comparator_invocation_sha256,
+              comparator_preflight_sha256,
               retrieval_policy_version, source_watermark, index_generation,
               comparator_version, status, receipt_json, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                      datetime('now'))
             """,
             (
@@ -2204,6 +2444,7 @@ def finalize_comparison(conn, pack, response, policy):
                 receipt["policy_sha256"],
                 receipt["generation_manifest_sha256"],
                 receipt["rank_trace_sha256"],
+                receipt["comparator_invocation_sha256"],
                 receipt["comparator_preflight_sha256"],
                 receipt["retrieval_policy_version"],
                 receipt["source_watermark"],
@@ -2233,6 +2474,7 @@ def replay_receipt(conn, pack, receipt, policy):
             "policy_sha256",
             "generation_manifest_sha256",
             "rank_trace_sha256",
+            "comparator_invocation_sha256",
             "comparator_preflight_sha256",
             "retrieval_policy_version",
             "source_watermark",
@@ -2266,7 +2508,8 @@ def replay_receipt(conn, pack, receipt, policy):
             raise ReceiptReplayError("pack provenance mismatch")
         publication = conn.execute(
             """
-            SELECT rank_trace_sha256, comparator_preflight_sha256
+            SELECT rank_trace_sha256, comparator_invocation_sha256,
+                   comparator_preflight_sha256
             FROM history_pack_publications
             WHERE publication_id = ?
             """,
@@ -2276,6 +2519,8 @@ def replay_receipt(conn, pack, receipt, policy):
             publication is None
             or receipt.get("rank_trace_sha256")
             != publication["rank_trace_sha256"]
+            or receipt.get("comparator_invocation_sha256")
+            != publication["comparator_invocation_sha256"]
             or receipt.get("comparator_preflight_sha256")
             != publication["comparator_preflight_sha256"]
         ):
@@ -2336,28 +2581,64 @@ def replay_receipt(conn, pack, receipt, policy):
             raise ReceiptReplayError("receipt is not durably recorded")
     except ComparisonValidationError as exc:
         raise ReceiptReplayError(str(exc)) from exc
-    return VerifiedReceipt(
+    return _issue_verified_receipt(
         {
             "valid": True,
             "verified": True,
             "receipt_id": receipt["receipt_id"],
             "status": receipt["status"],
             "pack_publication_id": receipt["pack_publication_id"],
-        },
-        _VERIFICATION_TOKEN,
+        }
     )
 
 
-def permits_permanent_conclusion(receipt):
-    if type(receipt) is not VerifiedReceipt:
+def permits_permanent_conclusion(conn, receipt):
+    decision = _verified_receipt_decision(receipt)
+    if decision is None:
         return False
-    valid, verified, receipt_id, status, publication_id = (
-        receipt.sealed_decision()
-    )
-    return (
+    valid, verified, receipt_id, status, publication_id = decision
+    if not (
         verified is True
         and valid is True
         and isinstance(receipt_id, str)
         and isinstance(publication_id, str)
         and status in PERMANENT_STATUSES
+    ):
+        return False
+    stored = conn.execute(
+        """
+        SELECT r.receipt_json, r.status, r.pack_publication_id
+        FROM history_receipts r
+        JOIN history_pack_publications p
+         ON p.publication_id = r.pack_publication_id
+         AND p.pack_sha256 = r.pack_sha256
+         AND p.rank_trace_sha256 = r.rank_trace_sha256
+         AND p.comparator_invocation_sha256 =
+             r.comparator_invocation_sha256
+         AND p.comparator_preflight_sha256 =
+             r.comparator_preflight_sha256
+        WHERE r.receipt_id = ?
+        """,
+        (receipt_id,),
+    ).fetchone()
+    if (
+        stored is None
+        or stored["status"] != status
+        or stored["pack_publication_id"] != publication_id
+    ):
+        return False
+    try:
+        durable_receipt = json.loads(stored["receipt_json"])
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(durable_receipt, dict)
+        and durable_receipt.get("receipt_id") == receipt_id
+        and durable_receipt.get("status") == status
+        and durable_receipt.get("pack_publication_id") == publication_id
+        and receipt_id
+        == _sha(
+            b"history-receipt-v1\0"
+            + canonical_bytes(_receipt_material(durable_receipt))
+        )
     )

@@ -42,6 +42,8 @@ Build and resolve a bounded internal-history comparison from JSON artifacts:
 ```bash
 python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 retrieve \
   --query tmp/candidate.json --intent duplicate_search \
+  --comparator-role tmp/history-compare-role.md \
+  --comparator-role-identity roles/history-compare.md \
   --output tmp/retrieval_pack.json
 python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 finalize-comparison \
   --pack tmp/retrieval_pack.json --comparison tmp/history-comparison.json \

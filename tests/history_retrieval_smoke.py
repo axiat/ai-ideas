@@ -19,6 +19,16 @@ from lib import history_retrieval as retrieval
 from lib import history_store
 
 
+COMPARATOR_ROLE_IDENTITY = "tests/fixtures/history-compare-role.md"
+COMPARATOR_ROLE_BYTES = b"Classify every retained lineage.\n"
+
+
+def build_pack(*args, **kwargs):
+    kwargs.setdefault("comparator_role_bytes", COMPARATOR_ROLE_BYTES)
+    kwargs.setdefault("comparator_role_identity", COMPARATOR_ROLE_IDENTITY)
+    return retrieval.build_pack(*args, **kwargs)
+
+
 HEADER = b"date\tsource\ttheme\tidea\tverdict\treason\toverlap\tcategory\n"
 
 
@@ -68,7 +78,7 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         self.compare_role = "Classify only evidence-addressed internal relations."
         self.output_schema = {"type": "object", "required": ["status", "relations"]}
         self.tool_receipt = {"tool": "history-retrieve", "status": "complete"}
-        self.complete_pack = retrieval.build_pack(
+        self.complete_pack = build_pack(
             self.conn, self.query, "duplicate_search", self.policy
         )
         self.assertEqual(self.complete_pack["retrieval_status"], "complete")
@@ -104,7 +114,7 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         for intent in intents:
             for channel in required:
                 with self.subTest(intent=intent, channel=channel):
-                    pack = retrieval.build_pack(
+                    pack = build_pack(
                         self.conn,
                         self.query,
                         intent,
@@ -120,7 +130,7 @@ class HistoryRetrievalSmoke(unittest.TestCase):
             [row("unpublished history candidate")],
             {"run_id": "unpublished"},
         )
-        pack = retrieval.build_pack(
+        pack = build_pack(
             self.conn, self.query, "duplicate_search", self.policy
         )
         self.assertEqual(pack["retrieval_status"], "partial")
@@ -141,14 +151,14 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         )
 
     def test_not_applicable_and_requested_expansion_contract(self):
-        initial = retrieval.build_pack(
+        initial = build_pack(
             self.conn, self.query, "duplicate_search", self.policy
         )
         self.assertEqual(
             initial["channels"]["expansion"]["status"], "not_applicable"
         )
         with self.assertRaises(retrieval.RetrievalError):
-            retrieval.build_pack(
+            build_pack(
                 self.conn,
                 self.query,
                 "duplicate_search",
@@ -158,7 +168,7 @@ class HistoryRetrievalSmoke(unittest.TestCase):
             )
 
     def test_hybrid_trace_is_deterministic_and_evidence_addressed(self):
-        repeated = retrieval.build_pack(
+        repeated = build_pack(
             self.conn, self.query, "duplicate_search", self.policy
         )
         self.assertEqual(repeated, self.complete_pack)
@@ -198,7 +208,7 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         statements = []
         self.conn.set_trace_callback(statements.append)
         try:
-            retrieval.build_pack(
+            build_pack(
                 self.conn, self.query, "duplicate_search", self.policy
             )
         finally:
@@ -209,7 +219,7 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         self.assertFalse(self.conn.in_transaction)
 
     def test_failure_exact_uses_structured_failure_code(self):
-        pack = retrieval.build_pack(
+        pack = build_pack(
             self.conn,
             dict(
                 self.query,
@@ -232,7 +242,7 @@ class HistoryRetrievalSmoke(unittest.TestCase):
     def test_cutoff_lineage_cannot_be_dropped_to_fit_budget(self):
         tiny = dict(self.policy, max_retrieval_tokens=1)
         with self.assertRaises(retrieval.RetrievalError):
-            retrieval.build_pack(
+            build_pack(
                 self.conn, self.query, "duplicate_search", tiny
             )
 
@@ -246,7 +256,7 @@ class HistoryRetrievalSmoke(unittest.TestCase):
             {"run_id": "bounded-channel-payload"},
         )
         projection.rebuild(self.conn, self.policy)
-        pack = retrieval.build_pack(
+        pack = build_pack(
             self.conn,
             dict(self.query, story="shared bounded retrieval candidate"),
             "duplicate_search",
@@ -288,11 +298,15 @@ class HistoryRetrievalSmoke(unittest.TestCase):
             "conflicting_evidence",
         ):
             self.assertFalse(
-                retrieval.permits_permanent_conclusion({"status": status})
+                retrieval.permits_permanent_conclusion(
+                    self.conn, {"status": status}
+                )
             )
         for status in ("complete_match", "complete_no_match"):
             self.assertFalse(
-                retrieval.permits_permanent_conclusion({"status": status})
+                retrieval.permits_permanent_conclusion(
+                    self.conn, {"status": status}
+                )
             )
         receipt = retrieval.finalize_comparison(
             self.conn, self.complete_pack, self.valid_response, self.policy
@@ -300,7 +314,9 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         verified = retrieval.replay_receipt(
             self.conn, self.complete_pack, receipt, self.policy
         )
-        self.assertTrue(retrieval.permits_permanent_conclusion(verified))
+        self.assertTrue(
+            retrieval.permits_permanent_conclusion(self.conn, verified)
+        )
 
     def test_comparison_cannot_reference_evidence_outside_pack(self):
         for field, value in (
@@ -405,10 +421,11 @@ class HistoryRetrievalSmoke(unittest.TestCase):
             INSERT INTO history_receipts(
               receipt_id, query_candidate_id, intent, pack_sha256,
               pack_publication_id, policy_sha256, generation_manifest_sha256,
-              rank_trace_sha256, comparator_preflight_sha256,
+              rank_trace_sha256, comparator_invocation_sha256,
+              comparator_preflight_sha256,
               retrieval_policy_version, source_watermark, index_generation,
               comparator_version, status, receipt_json, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                      datetime('now'))
             """,
             (
@@ -420,6 +437,7 @@ class HistoryRetrievalSmoke(unittest.TestCase):
                 changed["policy_sha256"],
                 changed["generation_manifest_sha256"],
                 changed["rank_trace_sha256"],
+                changed["comparator_invocation_sha256"],
                 changed["comparator_preflight_sha256"],
                 changed["retrieval_policy_version"],
                 changed["source_watermark"],
@@ -447,7 +465,9 @@ class HistoryRetrievalSmoke(unittest.TestCase):
         pack_path = self.root / "retrieval_pack.json"
         comparison_path = self.root / "comparison.json"
         receipt_path = self.root / "history_receipt.json"
+        role_path = self.root / "history-compare.md"
         query_path.write_text(json.dumps(self.query), encoding="utf-8")
+        role_path.write_bytes(COMPARATOR_ROLE_BYTES)
         commands = [
             [
                 "retrieve",
@@ -459,6 +479,10 @@ class HistoryRetrievalSmoke(unittest.TestCase):
                 "duplicate_search",
                 "--output",
                 str(pack_path),
+                "--comparator-role",
+                str(role_path),
+                "--comparator-role-identity",
+                COMPARATOR_ROLE_IDENTITY,
             ],
         ]
         for command in commands:

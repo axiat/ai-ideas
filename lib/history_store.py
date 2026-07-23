@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS history_receipts(
   policy_sha256 TEXT NOT NULL,
   generation_manifest_sha256 TEXT NOT NULL,
   rank_trace_sha256 TEXT NOT NULL,
+  comparator_invocation_sha256 TEXT NOT NULL,
   comparator_preflight_sha256 TEXT NOT NULL,
   retrieval_policy_version TEXT NOT NULL,
   source_watermark INTEGER NOT NULL,
@@ -218,6 +219,8 @@ CREATE TABLE IF NOT EXISTS history_pack_publications(
   )),
   rank_trace_json TEXT NOT NULL,
   rank_trace_sha256 TEXT NOT NULL,
+  comparator_invocation_json TEXT NOT NULL,
+  comparator_invocation_sha256 TEXT NOT NULL,
   comparator_preflight_json TEXT NOT NULL,
   comparator_preflight_sha256 TEXT NOT NULL,
   created_at TEXT NOT NULL
@@ -243,6 +246,7 @@ BEGIN
       AND p.policy_sha256 = NEW.policy_sha256
       AND p.generation_manifest_sha256 = NEW.generation_manifest_sha256
       AND p.rank_trace_sha256 = NEW.rank_trace_sha256
+      AND p.comparator_invocation_sha256 = NEW.comparator_invocation_sha256
       AND p.comparator_preflight_sha256 = NEW.comparator_preflight_sha256
       AND p.source_watermark = NEW.source_watermark
       AND p.generation = NEW.index_generation
@@ -342,6 +346,61 @@ def connect(path):
     return conn
 
 
+def _rename_unverified_table(conn, table):
+    target = table + "_legacy_unverified"
+    existing = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (target,),
+    ).fetchone()
+    if existing is not None:
+        target += "_" + _sha(table.encode("utf-8"))[:8]
+    conn.execute("ALTER TABLE %s RENAME TO %s" % (table, target))
+
+
+def _migrate_unverified_history_audit(conn):
+    publication = conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'history_pack_publications'"
+    ).fetchone()
+    if publication is not None:
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(history_pack_publications)"
+            )
+        }
+        required = {
+            "rank_trace_sha256",
+            "comparator_invocation_json",
+            "comparator_invocation_sha256",
+            "comparator_preflight_sha256",
+        }
+        if not required.issubset(columns):
+            conn.execute("DROP TRIGGER IF EXISTS history_receipt_pack_guard")
+            conn.execute(
+                "DROP TRIGGER IF EXISTS history_receipt_update_guard"
+            )
+            conn.execute(
+                "DROP TRIGGER IF EXISTS history_receipt_delete_guard"
+            )
+            conn.execute(
+                "DROP TRIGGER IF EXISTS history_pack_provenance_guard"
+            )
+            conn.execute(
+                "DROP TRIGGER IF EXISTS history_pack_publication_update_guard"
+            )
+            conn.execute(
+                "DROP TRIGGER IF EXISTS history_pack_publication_delete_guard"
+            )
+            receipt = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'history_receipts'"
+            ).fetchone()
+            if receipt is not None:
+                _rename_unverified_table(conn, "history_receipts")
+            _rename_unverified_table(conn, "history_pack_publications")
+
+
 def _migrate_unverified_history_receipts(conn):
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'history_receipts'"
@@ -356,16 +415,16 @@ def _migrate_unverified_history_receipts(conn):
         "policy_sha256",
         "generation_manifest_sha256",
         "rank_trace_sha256",
+        "comparator_invocation_sha256",
         "comparator_preflight_sha256",
     }
     if not required.issubset(columns):
         conn.execute("DROP TRIGGER IF EXISTS history_receipt_pack_guard")
-        conn.execute(
-            "ALTER TABLE history_receipts RENAME TO history_receipts_legacy_unverified"
-        )
+        _rename_unverified_table(conn, "history_receipts")
 
 
 def init_schema(conn):
+    _migrate_unverified_history_audit(conn)
     _migrate_unverified_history_receipts(conn)
     conn.executescript(SCHEMA)
     conn.execute(
@@ -433,6 +492,16 @@ def init_schema(conn):
         BEFORE DELETE ON history_pack_publications
         BEGIN
           SELECT RAISE(ABORT, 'history pack publication is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS history_receipt_update_guard
+        BEFORE UPDATE ON history_receipts
+        BEGIN
+          SELECT RAISE(ABORT, 'history receipt is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS history_receipt_delete_guard
+        BEFORE DELETE ON history_receipts
+        BEGIN
+          SELECT RAISE(ABORT, 'history receipt is immutable');
         END;
         """
     )

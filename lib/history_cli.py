@@ -25,6 +25,8 @@ def _targets(args):
 
 
 def _print(value):
+    if type(value) is history_retrieval.VerifiedReceipt:
+        value = dict(value.items())
     print(json.dumps(value, sort_keys=True, ensure_ascii=False))
 
 
@@ -125,6 +127,8 @@ def parser():
     retrieve.add_argument("--intent", choices=sorted(history_retrieval.INTENTS), required=True)
     retrieve.add_argument("--output", default="retrieval_pack.json")
     retrieve.add_argument("--expansion-request")
+    retrieve.add_argument("--comparator-role", required=True)
+    retrieve.add_argument("--comparator-role-identity", required=True)
     finalize = commands.add_parser("finalize-comparison")
     finalize.add_argument(
         "--policy", default="history/retrieval-policy-v1.json"
@@ -208,6 +212,10 @@ def main():
                 args.intent,
                 history_projection.load_policy(args.policy),
                 expansion_request=expansion_request,
+                comparator_role_bytes=pathlib.Path(
+                    args.comparator_role
+                ).read_bytes(),
+                comparator_role_identity=args.comparator_role_identity,
             )
             publication = write_json_artifact(conn, args.output, value)
             value = dict(value, output=publication["path"])
