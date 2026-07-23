@@ -409,26 +409,16 @@ def init_schema(conn):
         "INSERT OR IGNORE INTO schema_meta(key, value) "
         "VALUES('history_index_generation_sequence', '0')"
     )
-    generation_values = [
-        int(
-            conn.execute(
-                """
-                SELECT value
-                FROM schema_meta
-                WHERE key = ?
-                """,
-                (key,),
-            ).fetchone()[0]
-        )
-        for key in (
-            "history_index_generation",
-            "history_index_generation_sequence",
-        )
-        if conn.execute(
-            "SELECT 1 FROM schema_meta WHERE key = ?", (key,)
+    generation_values = []
+    for key in (
+        "history_index_generation",
+        "history_index_generation_sequence",
+    ):
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?", (key,)
         ).fetchone()
-        is not None
-    ]
+        if row is not None:
+            generation_values.append(int(row[0]))
     generation_values.append(
         int(
             conn.execute(
