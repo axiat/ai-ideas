@@ -29,6 +29,7 @@ class HistoryProjectionSmoke(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temp.name)
+        self.state_root = self.root / ".ai-ideas"
         (self.root / "ledger.instance-id").write_text("projection-test\n", encoding="utf-8")
         self.ledger = self.root / "ledger.tsv"
         self.ledger.write_bytes(
@@ -178,6 +179,12 @@ class HistoryProjectionSmoke(unittest.TestCase):
         invalid.write_text('{"retrieval_policy_version":"retrieval-policy-v1"}\n', encoding="utf-8")
         with self.assertRaises(ValueError):
             projection.load_policy(invalid)
+        with_extra = self.root / "extra-policy.json"
+        policy_data = json.loads((ROOT / "history/retrieval-policy-v1.json").read_text())
+        policy_data["unexpected_semantics"] = True
+        with_extra.write_text(json.dumps(policy_data), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            projection.load_policy(with_extra)
         projection.rebuild(self.conn, self.policy)
         brief = projection.build_generation_brief(self.conn, self.policy)
         encoded = projection.generation_brief_bytes(brief)
@@ -198,6 +205,62 @@ class HistoryProjectionSmoke(unittest.TestCase):
                 self.conn, self.ledger, projection.build_generation_brief(self.conn, self.policy)
             )
         self.assertEqual(self.ledger.read_bytes(), preserved)
+
+    def test_per_facet_channel_depth_retains_later_facets(self):
+        history_store.append_rows(
+            self.conn,
+            [row("commonterm candidate %03d" % index) for index in range(60)],
+            {"run_id": "facet-depth"},
+        )
+        projection.rebuild(self.conn, self.policy)
+        result = projection.search(self.conn, "commonterm", self.policy)
+        self.assertEqual(len(result["channels"]["fts_by_facet"]["claimed_delta"]), 50)
+        self.assertEqual(len(result["channels"]["fts_by_facet"]["problem_estimand"]), 50)
+        self.assertEqual(len(result["channels"]["dense_by_facet"]["claimed_delta"]), 50)
+        self.assertEqual(len(result["channels"]["dense_by_facet"]["setting_task"]), 50)
+
+    def test_brief_writer_rejects_main_database_sidecars(self):
+        projection.rebuild(self.conn, self.policy)
+        brief = projection.build_generation_brief(self.conn, self.policy)
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            with self.subTest(outside_state_root=suffix):
+                with self.assertRaises(ValueError):
+                    history_cli.write_generation_brief(self.conn, str(self.root / "history.sqlite3") + suffix, brief)
+        inside_db = self.state_root / "inside.sqlite3"
+        inside = history_store.connect(inside_db)
+        try:
+            history_store.init_schema(inside)
+            history_store.import_tsv_epoch(inside, self.ledger)
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                with self.subTest(inside_state_root=suffix):
+                    with self.assertRaises(ValueError):
+                        history_cli.write_generation_brief(inside, str(inside_db) + suffix, brief)
+        finally:
+            inside.close()
+
+    def test_exclusion_incremental_and_clean_projection_bodies_match(self):
+        projection.rebuild(self.conn, self.policy)
+        projection.remove_candidate_from_search(self.conn, self.candidate_id)
+        projection.rebuild(self.conn, self.policy)
+        incremental = self._projection_body()
+        projection.drop_rebuildable_projections(self.conn)
+        projection.rebuild(self.conn, self.policy)
+        self.assertEqual(incremental, self._projection_body())
+
+    def _projection_body(self):
+        entries = [tuple(row) for row in self.conn.execute(
+            "SELECT candidate_id, active, content_hash FROM search_index_entries ORDER BY candidate_id"
+        )]
+        vectors = [tuple(row) for row in self.conn.execute(
+            "SELECT candidate_id, facet, content_hash, hex(vector) FROM search_vectors ORDER BY candidate_id, facet"
+        )]
+        fts = [tuple(row) for row in self.conn.execute(
+            "SELECT candidate_id, facet, content FROM search_fts ORDER BY candidate_id, facet"
+        )]
+        manifest = self.conn.execute(
+            "SELECT manifest_json FROM search_index_generations ORDER BY generation DESC LIMIT 1"
+        ).fetchone()[0]
+        return entries, vectors, fts, manifest
 
 
 if __name__ == "__main__":

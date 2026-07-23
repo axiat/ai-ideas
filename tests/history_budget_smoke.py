@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
+import json
 import pathlib
 import sys
 import unittest
@@ -8,6 +9,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from lib import history_budget as budget
+from lib import history_projection
 
 
 class RecordingTokenizer:
@@ -125,6 +127,22 @@ class HistoryBudgetSmoke(unittest.TestCase):
                 malformed, self.policy,
                 expected_mounted_inputs={"generation_brief.json": b'{"schema_version":1}\n'},
             )
+
+    def test_tracked_policy_binds_positive_tokenizer_identity(self):
+        policy = history_projection.load_policy(
+            ROOT / "history" / "retrieval-policy-v1.json"
+        )
+        invocation = budget.serialize_stage_invocation(**self.minimal_invocation)
+        with self.assertRaises(budget.PreflightError):
+            budget.preflight_stage_invocation(
+                invocation, policy, tokenizer=lambda _: 0,
+                expected_mounted_inputs={"generation_brief.json": b'{"schema_version":1}\n'},
+            )
+        receipt = budget.preflight_stage_invocation(
+            invocation, policy, tokenizer=RecordingTokenizer(1),
+            expected_mounted_inputs={"generation_brief.json": b'{"schema_version":1}\n'},
+        )
+        self.assertEqual(receipt["count_method"], "exact_tokenizer")
         with self.assertRaises(budget.PreflightError):
             budget.preflight_stage_invocation(
                 invocation, self.policy,

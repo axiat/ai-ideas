@@ -89,6 +89,8 @@ _POLICY_FIXED = {
     "safety_margin": 1024,
     "adapter_version": "history-stage-v1",
     "adapter_wrapper_allowance": 256,
+    "tokenizer_identity": "history-stage-tokenizer-v1",
+    "tokenizer_revision": "1",
     "rrf_k": 60,
 }
 _POLICY_CHANNELS = ["exact", "fts", "dense", "lineage"]
@@ -101,11 +103,16 @@ _POLICY_PROJECTION = {
     "dimensions": VECTOR_DIMENSIONS,
     "metric": "cosine",
 }
+_POLICY_KEYS = set(_POLICY_FIXED) | {
+    "mandatory_channels", "projection", "tested_adapter_allowances",
+}
 
 
 def load_policy(path):
     with open(path, "r", encoding="utf-8") as stream:
         policy = json.load(stream)
+    if set(policy) != _POLICY_KEYS:
+        raise ValueError("retrieval policy keys do not match v1")
     if any(policy.get(key) != value for key, value in _POLICY_FIXED.items()):
         raise ValueError("retrieval policy fixed values do not match v1")
     if policy.get("mandatory_channels") != _POLICY_CHANNELS:
@@ -306,7 +313,8 @@ def _write_candidate(conn, candidate_id):
         candidate = history_store.get_candidate(conn, candidate_id)
         conn.execute(
             """INSERT INTO search_index_entries(candidate_id, active, content_hash, indexed_generation)
-               VALUES(?, 0, ?, 0) ON CONFLICT(candidate_id) DO UPDATE SET active = 0""",
+               VALUES(?, 0, ?, 0) ON CONFLICT(candidate_id) DO UPDATE SET
+                 active = 0, content_hash = excluded.content_hash""",
             (candidate_id, _content_hash(candidate_id)),
         )
         return 0
@@ -613,14 +621,14 @@ def search(conn, query, policy):
     fts_by_facet = {}
     if terms:
         expression = " OR ".join('"' + term.replace('"', '') + '"' for term in terms)
-        fts_rows = conn.execute(
-            """SELECT f.candidate_id, f.facet, bm25(search_fts) AS rank FROM search_fts f JOIN search_index_entries e
-               ON e.candidate_id = f.candidate_id WHERE e.active = 1 AND search_fts MATCH ?
-               ORDER BY f.facet, rank, f.candidate_id LIMIT ?""",
-            (expression, depth),
-        ).fetchall()
-        for row in fts_rows:
-            fts_by_facet.setdefault(row["facet"], []).append(row["candidate_id"])
+        for facet in FACETS:
+            fts_by_facet[facet] = [row["candidate_id"] for row in conn.execute(
+                """SELECT f.candidate_id, bm25(search_fts) AS rank FROM search_fts f
+                   JOIN search_index_entries e ON e.candidate_id = f.candidate_id
+                   WHERE e.active = 1 AND f.facet = ? AND search_fts MATCH ?
+                   ORDER BY rank, f.candidate_id LIMIT ?""",
+                (facet, expression, depth),
+            )]
         fts = []
         for facet in sorted(fts_by_facet):
             for candidate_id in fts_by_facet[facet]:
@@ -631,18 +639,33 @@ def search(conn, query, policy):
     channels["fts"] = fts
     channels["fts_by_facet"] = fts_by_facet
     vector, norm = embed(query)
-    dense = {}
+    dense_by_facet = {}
     if norm:
-        for row in conn.execute(
-            """SELECT v.candidate_id, v.vector FROM search_vectors v JOIN search_index_entries e
-               ON e.candidate_id = v.candidate_id WHERE e.active = 1"""
-        ):
-            dense[row["candidate_id"]] = max(dense.get(row["candidate_id"], -1.0), _cosine(vector, _unblob(row["vector"])))
-    channels["dense"] = [key for key, _ in sorted(dense.items(), key=lambda item: (-item[1], item[0]))[:depth]]
+        for facet in FACETS:
+            values = []
+            for row in conn.execute(
+                """SELECT v.candidate_id, v.vector FROM search_vectors v
+                   JOIN search_index_entries e ON e.candidate_id = v.candidate_id
+                   WHERE e.active = 1 AND v.facet = ?""",
+                (facet,),
+            ):
+                values.append((row["candidate_id"], _cosine(vector, _unblob(row["vector"]))))
+            dense_by_facet[facet] = [candidate_id for candidate_id, _ in sorted(
+                values, key=lambda item: (-item[1], item[0])
+            )[:depth]]
+    else:
+        dense_by_facet = {facet: [] for facet in FACETS}
+    dense = []
+    for facet in FACETS:
+        for candidate_id in dense_by_facet[facet]:
+            if candidate_id not in dense:
+                dense.append(candidate_id)
+    channels["dense"] = dense
+    channels["dense_by_facet"] = dense_by_facet
     channels["lineage"] = []
     scores = {}
     for channel, values in channels.items():
-        if channel == "fts_by_facet":
+        if channel in ("fts_by_facet", "dense_by_facet"):
             continue
         for rank, candidate_id in enumerate(values, 1):
             scores[candidate_id] = scores.get(candidate_id, 0.0) + 1.0 / (int(policy["rrf_k"]) + rank)

@@ -45,6 +45,11 @@ def write_generation_brief(conn, output, brief):
         (state_root.parent / "ledger.tsv").resolve(),
         (state_root.parent / "tmp" / "ledger.good").resolve(),
     }
+    database = history_store._db_path(conn).resolve()
+    protected.update(
+        pathlib.Path(str(database) + suffix).resolve()
+        for suffix in ("", "-wal", "-shm", "-journal")
+    )
     if destination.resolve() in protected:
         raise ValueError("generation brief cannot replace a ledger projection")
     parent = destination.parent

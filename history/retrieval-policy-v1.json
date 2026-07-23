@@ -30,5 +30,7 @@
   "safety_margin": 1024,
   "tested_adapter_allowances": {
     "history-stage-v1": 256
-  }
+  },
+  "tokenizer_identity": "history-stage-tokenizer-v1",
+  "tokenizer_revision": "1"
 }
