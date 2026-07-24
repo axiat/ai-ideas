@@ -72,6 +72,17 @@ ALLOWED_RELATIONS = ("evolved_from", "recheck_of", "supersedes")
 ALLOWED_EDGE_AUTHORITIES = ("explicit", "manual_mapping", "promotion")
 TARGET_NAMES = ("ledger.tsv", "tmp/ledger.good")
 LEASE_SECONDS = 60
+IMPORT_PLAN_FIELDS = (
+    "schema_version",
+    "input_manifest_sha256",
+    "ledger_instance_id",
+    "ledger_instance_sha256",
+    "ledger_sha256",
+    "header_b64",
+    "run_metadata",
+    "rows",
+    "edges",
+)
 
 
 class HistoryStoreError(RuntimeError):
@@ -193,8 +204,57 @@ CREATE TABLE IF NOT EXISTS candidates(
   raw_row BLOB NOT NULL,
   row_terminator BLOB NOT NULL,
   provenance_json TEXT NOT NULL,
-  UNIQUE(candidate_id, lineage_id)
+  UNIQUE(candidate_id, lineage_id),
+  UNIQUE(candidate_id, source_sequence)
 );
+CREATE TRIGGER IF NOT EXISTS candidates_insert_once
+BEFORE INSERT ON candidates
+WHEN EXISTS(
+  SELECT 1 FROM candidates
+  WHERE candidate_id = NEW.candidate_id
+     OR source_sequence = NEW.source_sequence
+     OR (
+       NEW.origin_stable_id IS NOT NULL
+       AND origin_stable_id = NEW.origin_stable_id
+     )
+)
+BEGIN
+  SELECT CASE
+    WHEN EXISTS(
+      SELECT 1 FROM candidates
+      WHERE candidate_id = NEW.candidate_id
+        AND origin_stable_id IS NEW.origin_stable_id
+        AND lineage_id = NEW.lineage_id
+        AND row_number IS NEW.row_number
+        AND raw_sha256 = NEW.raw_sha256
+        AND field_count = NEW.field_count
+        AND date = NEW.date
+        AND source = NEW.source
+        AND theme = NEW.theme
+        AND story = NEW.story
+        AND verdict = NEW.verdict
+        AND reason = NEW.reason
+        AND overlap = NEW.overlap
+        AND category = NEW.category
+        AND source_sequence = NEW.source_sequence
+        AND raw_row = NEW.raw_row
+        AND row_terminator = NEW.row_terminator
+        AND provenance_json = NEW.provenance_json
+    )
+    THEN RAISE(IGNORE)
+    ELSE RAISE(ABORT, 'candidate identity is immutable')
+  END;
+END;
+CREATE TRIGGER IF NOT EXISTS candidates_immutable_update
+BEFORE UPDATE ON candidates
+BEGIN
+  SELECT RAISE(ABORT, 'candidate is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS candidates_immutable_delete
+BEFORE DELETE ON candidates
+BEGIN
+  SELECT RAISE(ABORT, 'candidate is immutable');
+END;
 CREATE TABLE IF NOT EXISTS story_aliases(
   canonical_version TEXT NOT NULL,
   canonical_hash TEXT NOT NULL,
@@ -274,8 +334,20 @@ CREATE TABLE IF NOT EXISTS near_sa_observations(
   category TEXT NOT NULL,
   reason TEXT NOT NULL,
   observed_at TEXT NOT NULL,
-  UNIQUE(candidate_id, source_sequence)
+  UNIQUE(candidate_id, source_sequence),
+  FOREIGN KEY(candidate_id, source_sequence)
+    REFERENCES candidates(candidate_id, source_sequence)
 );
+CREATE TRIGGER IF NOT EXISTS near_sa_candidate_identity_guard
+BEFORE INSERT ON near_sa_observations
+WHEN NOT EXISTS(
+  SELECT 1 FROM candidates
+  WHERE candidate_id = NEW.candidate_id
+    AND source_sequence = NEW.source_sequence
+)
+BEGIN
+  SELECT RAISE(ABORT, 'near-SA candidate identity mismatch');
+END;
 CREATE TRIGGER IF NOT EXISTS near_sa_observations_insert_once
 BEFORE INSERT ON near_sa_observations
 WHEN EXISTS(
@@ -777,10 +849,25 @@ def _canonical_hash(canonical_story):
 
 
 def _read_instance_id(value):
-    if isinstance(value, pathlib.Path):
-        raw = value.read_text(encoding="utf-8")
-    elif isinstance(value, os.PathLike):
-        raw = pathlib.Path(value).read_text(encoding="utf-8")
+    if value is None:
+        raise ImportConflict("ledger.instance-id is required")
+    if isinstance(value, (pathlib.Path, os.PathLike)):
+        data = _read_regular_file_nofollow(
+            pathlib.Path(value), "ledger.instance-id"
+        )
+        try:
+            raw = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ImportConflict(
+                "ledger.instance-id must be UTF-8"
+            ) from exc
+    elif isinstance(value, bytes):
+        try:
+            raw = value.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ImportConflict(
+                "ledger.instance-id must be UTF-8"
+            ) from exc
     else:
         raw = str(value)
     normalized = raw.strip()
@@ -906,23 +993,40 @@ def _read_regular_file_nofollow(path, description):
         os.close(descriptor)
 
 
+def _read_content_addressed_file(
+    path, expected_sha256, description, expected_bytes=None
+):
+    data = _read_regular_file_nofollow(path, description)
+    if _sha(data) != expected_sha256 or (
+        expected_bytes is not None and data != expected_bytes
+    ):
+        raise ImportConflict(f"{description} digest or content changed")
+    return data
+
+
 def _seal_object(path, cas_root):
     source = pathlib.Path(path)
     data = _read_regular_file_nofollow(source, "import input")
+    return _seal_bytes(data, cas_root, str(source.absolute()))
+
+
+def _seal_bytes(data, cas_root, source_path):
+    data = bytes(data)
     digest = _sha(data)
     _durable_mkdir(cas_root)
     destination = cas_root / digest
-    if destination.exists():
-        if destination.read_bytes() != data:
-            raise ImportConflict(f"CAS collision for {source}")
-        _fsync_existing(destination)
-    else:
-        _write_immutable(destination, data)
+    _write_immutable(destination, data)
+    _read_content_addressed_file(
+        destination,
+        digest,
+        "sealed CAS object",
+        expected_bytes=data,
+    )
     return {
-        "source_path": str(source.absolute()),
+        "source_path": str(source_path),
         "sha256": digest,
         "byte_count": len(data),
-        "cas_path": str(destination.resolve()),
+        "cas_path": str(destination.absolute()),
     }
 
 
@@ -936,9 +1040,60 @@ def _fsync_directory(path):
 
 def _fsync_existing(path):
     existing = pathlib.Path(path)
-    descriptor = os.open(str(existing), os.O_RDONLY)
     try:
+        before = os.lstat(str(existing))
+    except OSError as exc:
+        raise HistoryStoreError(
+            f"durable file is unavailable: {existing}"
+        ) from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise HistoryStoreError(f"durable file is unsafe: {existing}")
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(str(existing), flags)
+    except OSError as exc:
+        raise HistoryStoreError(
+            f"durable file cannot be opened safely: {existing}"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        current = os.lstat(str(existing))
+        identity = {
+            (item.st_dev, item.st_ino)
+            for item in (before, opened, current)
+        }
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or stat.S_ISLNK(current.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or len(identity) != 1
+        ):
+            raise HistoryStoreError(
+                f"durable file changed during safe open: {existing}"
+            )
         os.fsync(descriptor)
+        finished = os.fstat(descriptor)
+        after = os.lstat(str(existing))
+        identity.update(
+            (item.st_dev, item.st_ino)
+            for item in (finished, after)
+        )
+        if (
+            not stat.S_ISREG(finished.st_mode)
+            or stat.S_ISLNK(after.st_mode)
+            or not stat.S_ISREG(after.st_mode)
+            or len(identity) != 1
+        ):
+            raise HistoryStoreError(
+                f"durable file changed during fsync: {existing}"
+            )
+    except OSError as exc:
+        raise HistoryStoreError(
+            f"durable file cannot be fsynced safely: {existing}"
+        ) from exc
     finally:
         os.close(descriptor)
     _fsync_directory(existing.parent)
@@ -963,11 +1118,30 @@ def _durable_mkdir(path):
 
 def _write_immutable(path, data):
     path = pathlib.Path(path)
+    data = bytes(data)
     _durable_mkdir(path.parent)
-    if path.exists():
-        if path.read_bytes() != data:
+    try:
+        existing = os.lstat(str(path))
+    except FileNotFoundError:
+        existing = None
+    except OSError as exc:
+        raise ImportConflict(
+            f"immutable object cannot be inspected at {path}"
+        ) from exc
+    if existing is not None:
+        if stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(
+            existing.st_mode
+        ):
+            raise ImportConflict(f"immutable object is unsafe at {path}")
+        if _read_regular_file_nofollow(
+            path, "immutable object"
+        ) != data:
             raise ImportConflict(f"immutable object conflicts at {path}")
         _fsync_existing(path)
+        if _read_regular_file_nofollow(
+            path, "immutable object"
+        ) != data:
+            raise ImportConflict(f"immutable object changed at {path}")
         return
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     try:
@@ -975,7 +1149,16 @@ def _write_immutable(path, data):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            if _read_regular_file_nofollow(
+                path, "immutable object"
+            ) != data:
+                raise ImportConflict(
+                    f"immutable object conflicts at {path}"
+                )
+            _fsync_existing(path)
         _fsync_directory(path.parent)
     finally:
         if os.path.exists(temporary):
@@ -999,12 +1182,18 @@ class _UnionFind:
             self.parent[max(left_root, right_root)] = min(left_root, right_root)
 
 
-def _mapping_data(path):
-    if not path:
+def _mapping_data(sealed_object):
+    if not sealed_object:
         return None
     try:
-        value = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        value = json.loads(
+            _read_content_addressed_file(
+                pathlib.Path(sealed_object["cas_path"]),
+                sealed_object["sha256"],
+                "sealed lineage mapping manifest",
+            )
+        )
+    except (TypeError, ValueError) as exc:
         raise ImportConflict("lineage mapping manifest is not valid JSON") from exc
     if value.get("version") != "lineage-mapping-v1":
         raise ImportConflict("unsupported lineage mapping version")
@@ -1014,9 +1203,13 @@ def _mapping_data(path):
 def _union_source_data(sealed_object, source_kind):
     try:
         value = json.loads(
-            pathlib.Path(sealed_object["cas_path"]).read_text(encoding="utf-8")
+            _read_content_addressed_file(
+                pathlib.Path(sealed_object["cas_path"]),
+                sealed_object["sha256"],
+                f"sealed {source_kind}",
+            )
         )
-    except (OSError, ValueError) as exc:
+    except (TypeError, ValueError) as exc:
         raise ImportConflict(f"{source_kind} is not valid JSON") from exc
     if source_kind == "parent_evidence":
         if value.get("version") != "history-parent-evidence-v1":
@@ -1166,15 +1359,40 @@ def build_import_plan(inputs, state_root):
     ledger = pathlib.Path(inputs["ledger"])
     state = pathlib.Path(state_root)
     cas_root = state / "import-cas"
-    instance_value = inputs.get("ledger_instance_id")
-    if instance_value is None:
-        instance_value = inputs.get(
-            "ledger_instance_id_path", ledger.parent / "ledger.instance-id"
+    inline_instance = inputs.get("ledger_instance_id")
+    if inline_instance is not None and not isinstance(
+        inline_instance, (pathlib.Path, os.PathLike)
+    ):
+        if isinstance(inline_instance, bytes):
+            instance_data = inline_instance
+        else:
+            instance_data = str(inline_instance).encode("utf-8")
+        ledger_instance_id = _read_instance_id(instance_data)
+        instance_object = _seal_bytes(
+            instance_data,
+            cas_root,
+            "<inline:ledger-instance-id>",
         )
-    ledger_instance_id = _read_instance_id(instance_value)
+    else:
+        instance_path = pathlib.Path(
+            inline_instance
+            if inline_instance is not None
+            else inputs.get(
+                "ledger_instance_id_path",
+                ledger.parent / "ledger.instance-id",
+            )
+        )
+        instance_object = _seal_object(instance_path, cas_root)
+        instance_data = _read_content_addressed_file(
+            instance_object["cas_path"],
+            instance_object["sha256"],
+            "sealed ledger.instance-id",
+        )
+        ledger_instance_id = _read_instance_id(instance_data)
+    instance_object["role"] = "ledger-instance-id"
     ledger_object = _seal_object(ledger, cas_root)
     ledger_object["role"] = "ledger"
-    sealed = [ledger_object]
+    sealed = [ledger_object, instance_object]
     mapping_object = None
     parent_objects = []
     promotion_objects = []
@@ -1191,7 +1409,11 @@ def build_import_plan(inputs, state_root):
                 parent_objects.append(item)
             else:
                 promotion_objects.append(item)
-    data = pathlib.Path(sealed[0]["cas_path"]).read_bytes()
+    data = _read_content_addressed_file(
+        ledger_object["cas_path"],
+        ledger_object["sha256"],
+        "sealed ledger",
+    )
     physical = _split_physical_lines(data)
     header_raw, header_terminator = physical[0]
     if header_raw.split(b"\t") != HEADER.rstrip(b"\n").split(b"\t"):
@@ -1202,9 +1424,7 @@ def build_import_plan(inputs, state_root):
     ]
     if any(not raw for raw, _ in physical[1:]):
         raise ImportConflict("ledger contains a blank physical data row")
-    explicit_mapping = _mapping_data(
-        None if mapping_object is None else mapping_object["cas_path"]
-    )
+    explicit_mapping = _mapping_data(mapping_object)
     combined_mapping = {"version": "lineage-mapping-v1", "mappings": [], "roots": []}
     if explicit_mapping:
         combined_mapping["mappings"].extend(
@@ -1297,19 +1517,25 @@ def build_import_plan(inputs, state_root):
     manifest_bytes = _json_bytes(manifest)
     manifest_sha = _sha(manifest_bytes)
     manifest_path = state / "import-manifests" / f"{manifest_sha}.json"
-    _write_immutable(manifest_path, manifest_bytes)
     plan_body = {
         "schema_version": 1,
         "input_manifest_sha256": manifest_sha,
         "ledger_instance_id": ledger_instance_id,
+        "ledger_instance_sha256": instance_object["sha256"],
+        "ledger_sha256": ledger_object["sha256"],
         "header_b64": base64.b64encode(header_raw + header_terminator).decode("ascii"),
         "run_metadata": inputs.get("run_metadata"),
         "rows": rows,
         "edges": edges,
     }
+    if _render_import_plan(plan_body) != data:
+        raise ImportConflict(
+            "ledger bytes are not projection-equivalent to the sealed import plan"
+        )
     plan_bytes = _json_bytes(plan_body)
     plan_sha = _sha(plan_bytes)
     plan_path = state / "import-plans" / f"{plan_sha}.json"
+    _write_immutable(manifest_path, manifest_bytes)
     _write_immutable(plan_path, plan_bytes)
     plan = dict(plan_body)
     plan.update(
@@ -1324,18 +1550,7 @@ def build_import_plan(inputs, state_root):
 
 
 def _plan_body(plan):
-    return {
-        key: plan[key]
-        for key in (
-            "schema_version",
-            "input_manifest_sha256",
-            "ledger_instance_id",
-            "header_b64",
-            "run_metadata",
-            "rows",
-            "edges",
-        )
-    }
+    return {key: plan[key] for key in IMPORT_PLAN_FIELDS}
 
 
 def _meta(conn, key, default=None):
@@ -1508,36 +1723,308 @@ def _enqueue_ledger_projection(conn):
     return sequence
 
 
-def _verify_existing_candidate(existing, item):
-    expected = (
-        item["origin_stable_id"],
-        item["lineage_id"],
-        item["row_number"],
-        item["raw_sha256"],
-        item["candidate_id"],
+def _decode_plan_bytes(value, description):
+    if not isinstance(value, str):
+        raise ImportConflict(f"{description} is not base64 text")
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ImportConflict(f"{description} is not valid base64") from exc
+    if base64.b64encode(decoded).decode("ascii") != value:
+        raise ImportConflict(f"{description} is not canonical base64")
+    return decoded
+
+
+def _validate_import_plan_rows(plan):
+    expected_fields = {
+        "row_number",
+        "raw_row_b64",
+        "row_terminator_b64",
+        "raw_sha256",
+        "field_count",
+        "date",
+        "source",
+        "theme",
+        "story",
+        "verdict",
+        "reason",
+        "overlap",
+        "category",
+        "canonical_story",
+        "canonical_hash",
+        "origin_stable_id",
+        "candidate_id",
+        "root_story",
+        "lineage_id",
+        "root_candidate_id",
+    }
+    ledger_instance_id = _read_instance_id(
+        plan.get("ledger_instance_id", "")
     )
-    actual = (
-        existing["origin_stable_id"],
-        existing["lineage_id"],
-        existing["row_number"],
-        existing["raw_sha256"],
-        existing["candidate_id"],
+    rows = plan.get("rows")
+    edges = plan.get("edges")
+    header = _decode_plan_bytes(
+        plan.get("header_b64"), "import plan header"
     )
+    if header.endswith(b"\r\n"):
+        header_row = header[:-2]
+    elif header.endswith(b"\n"):
+        header_row = header[:-1]
+    else:
+        header_row = header
     if (
-        actual != expected
-        or bytes(existing["raw_row"]) != base64.b64decode(item["raw_row_b64"])
-        or bytes(existing["row_terminator"])
-        != base64.b64decode(item["row_terminator_b64"])
-        or existing["field_count"] != item["field_count"]
+        type(plan.get("schema_version")) is not int
+        or plan["schema_version"] != 1
+        or ledger_instance_id != plan.get("ledger_instance_id")
+        or not isinstance(rows, list)
+        or not isinstance(edges, list)
+        or header_row.split(b"\t")
+        != HEADER.rstrip(b"\n").split(b"\t")
+    ):
+        raise ImportConflict("import plan ledger instance ID is not normalized")
+    roots = {}
+    for expected_number, item in enumerate(rows, 1):
+        if (
+            not isinstance(item, dict)
+            or set(item) != expected_fields
+            or type(item["row_number"]) is not int
+            or item["row_number"] != expected_number
+        ):
+            raise ImportConflict("import plan row schema or order is invalid")
+        raw = _decode_plan_bytes(
+            item["raw_row_b64"],
+            f"import row {expected_number}",
+        )
+        terminator = _decode_plan_bytes(
+            item["row_terminator_b64"],
+            f"import row {expected_number} terminator",
+        )
+        if terminator not in {b"", b"\n", b"\r\n"}:
+            raise ImportConflict(
+                f"import row {expected_number} has an invalid terminator"
+            )
+        parsed = _parse_row(raw, expected_number, terminator)
+        for field in (
+            "row_number",
+            "raw_row_b64",
+            "row_terminator_b64",
+            "raw_sha256",
+            "field_count",
+            "date",
+            "source",
+            "theme",
+            "story",
+            "verdict",
+            "reason",
+            "overlap",
+            "category",
+            "canonical_story",
+            "canonical_hash",
+        ):
+            if item[field] != parsed[field]:
+                raise ImportConflict(
+                    f"import row {expected_number} parsed fields conflict"
+                )
+        expected_origin = origin_stable_id(
+            ledger_instance_id, expected_number, raw
+        )
+        if (
+            item["origin_stable_id"] != expected_origin
+            or item["candidate_id"] != _candidate_id(expected_origin)
+            or not isinstance(item["root_story"], str)
+            or not item["root_story"]
+            or canonical_story_v1(item["root_story"])
+            != item["root_story"]
+            or item["lineage_id"] != _lineage_id(item["root_story"])
+        ):
+            raise ImportConflict(
+                f"import row {expected_number} identity conflicts"
+            )
+        if item["canonical_story"] == item["root_story"]:
+            roots.setdefault(
+                item["lineage_id"], item["candidate_id"]
+            )
+    for item in rows:
+        if (
+            item["lineage_id"] not in roots
+            or item["root_candidate_id"]
+            != roots[item["lineage_id"]]
+        ):
+            raise ImportConflict("import plan lineage root conflicts")
+    candidate_ids = {item["candidate_id"] for item in rows}
+    for edge in edges:
+        evidence = edge.get("evidence") if isinstance(edge, dict) else None
+        if (
+            not isinstance(edge, dict)
+            or set(edge)
+            != {
+                "parent_candidate_id",
+                "child_candidate_id",
+                "relation_type",
+                "authority",
+                "evidence",
+            }
+            or edge["parent_candidate_id"] not in candidate_ids
+            or edge["child_candidate_id"] not in candidate_ids
+            or edge["parent_candidate_id"]
+            == edge["child_candidate_id"]
+            or edge["relation_type"] not in ALLOWED_RELATIONS
+            or edge["authority"] not in ALLOWED_EDGE_AUTHORITIES
+            or not isinstance(evidence, dict)
+            or set(evidence)
+            != {"artifact_id", "byte_count", "sha256"}
+            or not _is_sha256_text(evidence["sha256"])
+            or evidence["artifact_id"]
+            != _sha(
+                b"import-artifact-v1\0"
+                + evidence["sha256"].encode("ascii")
+            )
+            or type(evidence["byte_count"]) is not int
+            or evidence["byte_count"] < 0
+        ):
+            raise ImportConflict("import plan lineage edge is invalid")
+
+
+def _import_candidate_provenance(plan):
+    return json.dumps(
+        {
+            "import_epoch": _bootstrap_epoch_id(plan),
+            "run_metadata": plan.get("run_metadata"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+
+
+def _verify_existing_candidate(existing, item, plan):
+    raw = _decode_plan_bytes(
+        item["raw_row_b64"], f"import row {item['row_number']}"
+    )
+    terminator = _decode_plan_bytes(
+        item["row_terminator_b64"],
+        f"import row {item['row_number']} terminator",
+    )
+    expected = {
+        "candidate_id": item["candidate_id"],
+        "origin_stable_id": item["origin_stable_id"],
+        "lineage_id": item["lineage_id"],
+        "row_number": item["row_number"],
+        "raw_sha256": item["raw_sha256"],
+        "field_count": item["field_count"],
+        "date": item["date"],
+        "source": item["source"],
+        "theme": item["theme"],
+        "story": item["story"],
+        "verdict": item["verdict"],
+        "reason": item["reason"],
+        "overlap": item["overlap"],
+        "category": item["category"],
+        "source_sequence": item["row_number"],
+        "provenance_json": _import_candidate_provenance(plan),
+    }
+    if (
+        any(existing[field] != value for field, value in expected.items())
+        or bytes(existing["raw_row"]) != raw
+        or bytes(existing["row_terminator"]) != terminator
     ):
         raise ImportConflict(
             f"append-only row location {item['row_number']} changed"
         )
 
 
+def _validate_candidate_record(conn, candidate):
+    try:
+        row_number = candidate["row_number"]
+        source_sequence = candidate["source_sequence"]
+        raw = bytes(candidate["raw_row"])
+        terminator = bytes(candidate["row_terminator"])
+        if (
+            type(row_number) is not int
+            or row_number < 1
+            or source_sequence != row_number
+            or terminator not in {b"", b"\n", b"\r\n"}
+        ):
+            raise ImportConflict("candidate row location is invalid")
+        parsed = _parse_row(raw, row_number, terminator)
+        for field in (
+            "raw_sha256",
+            "field_count",
+            "date",
+            "source",
+            "theme",
+            "story",
+            "verdict",
+            "reason",
+            "overlap",
+            "category",
+        ):
+            if candidate[field] != parsed[field]:
+                raise ImportConflict("candidate parsed fields changed")
+        instance_id = _meta(conn, "ledger_instance_id")
+        expected_origin = origin_stable_id(
+            instance_id, row_number, raw
+        )
+        if (
+            candidate["origin_stable_id"] != expected_origin
+            or candidate["candidate_id"]
+            != _candidate_id(expected_origin)
+        ):
+            raise ImportConflict("candidate origin identity changed")
+        alias = conn.execute(
+            """
+            SELECT canonical_story, lineage_id
+            FROM story_aliases
+            WHERE canonical_version = ? AND canonical_hash = ?
+            """,
+            (CANONICAL_VERSION, parsed["canonical_hash"]),
+        ).fetchone()
+        if (
+            alias is None
+            or tuple(alias)
+            != (
+                parsed["canonical_story"],
+                candidate["lineage_id"],
+            )
+        ):
+            raise ImportConflict("candidate canonical alias changed")
+        provenance = json.loads(candidate["provenance_json"])
+        canonical_provenance = {
+            json.dumps(
+                provenance,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=ensure_ascii,
+            )
+            for ensure_ascii in (True, False)
+        }
+        if (
+            not isinstance(provenance, dict)
+            or candidate["provenance_json"]
+            not in canonical_provenance
+        ):
+            raise ImportConflict("candidate provenance is invalid")
+    except (
+        TypeError,
+        ValueError,
+        KeyError,
+        AttributeError,
+        UnicodeError,
+        ImportConflict,
+    ) as exc:
+        if isinstance(exc, ImportConflict):
+            raise
+        raise ImportConflict("candidate record is invalid") from exc
+
+
 def _insert_artifact_from_evidence(conn, evidence, source_sequence, cas_root):
     cas_path = pathlib.Path(cas_root) / evidence["sha256"]
-    if not cas_path.is_file() or _sha(cas_path.read_bytes()) != evidence["sha256"]:
+    evidence_data = _read_content_addressed_file(
+        cas_path,
+        evidence["sha256"],
+        "sealed lineage evidence",
+    )
+    if len(evidence_data) != evidence["byte_count"]:
         raise ImportConflict("sealed lineage evidence is missing or changed")
     artifact_id = _sha(
         b"lineage-evidence-v1\0" + evidence["sha256"].encode("ascii")
@@ -1580,22 +2067,178 @@ def _insert_artifact_from_evidence(conn, evidence, source_sequence, cas_root):
 
 
 def _render_import_plan(plan):
-    chunks = [base64.b64decode(plan["header_b64"])]
-    for item in plan["rows"]:
-        chunks.append(base64.b64decode(item["raw_row_b64"]))
-        chunks.append(base64.b64decode(item["row_terminator_b64"]))
-    return b"".join(chunks)
+    return _render_projection_rows(
+        _decode_plan_bytes(
+            plan["header_b64"], "import plan header"
+        ),
+        (
+            (
+                _decode_plan_bytes(
+                    item["raw_row_b64"],
+                    f"import row {item['row_number']}",
+                ),
+                _decode_plan_bytes(
+                    item["row_terminator_b64"],
+                    f"import row {item['row_number']} terminator",
+                ),
+            )
+            for item in plan["rows"]
+        ),
+    )
+
+
+def _validate_sealed_import_manifest(plan, manifest_path, cas_root):
+    manifest_bytes = _read_content_addressed_file(
+        manifest_path,
+        plan["input_manifest_sha256"],
+        "sealed input manifest",
+    )
+    try:
+        manifest = json.loads(manifest_bytes)
+    except (TypeError, ValueError) as exc:
+        raise ImportConflict("sealed input manifest is malformed") from exc
+    if (
+        not isinstance(manifest, dict)
+        or _json_bytes(manifest) != manifest_bytes
+        or set(manifest)
+        != {
+            "schema_version",
+            "ledger_instance_id",
+            "artifacts",
+            "run_metadata",
+        }
+        or type(manifest["schema_version"]) is not int
+        or manifest["schema_version"] != 1
+        or manifest["ledger_instance_id"] != plan["ledger_instance_id"]
+        or _json_bytes(manifest["run_metadata"])
+        != _json_bytes(plan.get("run_metadata"))
+        or not isinstance(manifest["artifacts"], list)
+    ):
+        raise ImportConflict("sealed input manifest schema is invalid")
+    for artifact in manifest["artifacts"]:
+        if (
+            not isinstance(artifact, dict)
+            or set(artifact) != {"artifact_id", "role", "sha256"}
+            or not isinstance(artifact["role"], str)
+            or not artifact["role"]
+            or not _is_sha256_text(artifact["sha256"])
+        ):
+            raise ImportConflict("sealed import artifact schema is invalid")
+        expected_artifact_id = _sha(
+            b"import-artifact-v1\0"
+            + artifact["sha256"].encode("ascii")
+        )
+        if artifact["artifact_id"] != expected_artifact_id:
+            raise ImportConflict(
+                "sealed import artifact identity is invalid"
+            )
+        _read_content_addressed_file(
+            pathlib.Path(cas_root) / artifact["sha256"],
+            artifact["sha256"],
+            "sealed import input",
+        )
+    if manifest["artifacts"] != sorted(
+        manifest["artifacts"],
+        key=lambda item: (item["role"], item["sha256"]),
+    ):
+        raise ImportConflict("sealed import artifact order is invalid")
+    row_number_by_candidate = {
+        item["candidate_id"]: item["row_number"]
+        for item in plan["rows"]
+    }
+    expected_evidence_members = sorted(
+        (
+            "lineage-evidence:"
+            f"{row_number_by_candidate[edge['parent_candidate_id']]}:"
+            f"{row_number_by_candidate[edge['child_candidate_id']]}",
+            edge["evidence"]["artifact_id"],
+            edge["evidence"]["sha256"],
+        )
+        for edge in plan["edges"]
+    )
+    actual_evidence_members = sorted(
+        (
+            artifact["role"],
+            artifact["artifact_id"],
+            artifact["sha256"],
+        )
+        for artifact in manifest["artifacts"]
+        if artifact["role"].startswith("lineage-evidence:")
+    )
+    if actual_evidence_members != expected_evidence_members:
+        raise ImportConflict(
+            "sealed lineage evidence manifest membership is invalid"
+        )
+    ledger_artifacts = [
+        item
+        for item in manifest["artifacts"]
+        if item["role"] == "ledger"
+    ]
+    instance_artifacts = [
+        item
+        for item in manifest["artifacts"]
+        if item["role"] == "ledger-instance-id"
+    ]
+    rendered_plan = _render_import_plan(plan)
+    if (
+        len(ledger_artifacts) != 1
+        or ledger_artifacts[0]["sha256"] != plan["ledger_sha256"]
+        or len(instance_artifacts) != 1
+        or instance_artifacts[0]["sha256"]
+        != plan["ledger_instance_sha256"]
+    ):
+        raise ImportConflict(
+            "sealed manifest conflicts with rendered ledger artifacts"
+        )
+    _read_content_addressed_file(
+        pathlib.Path(cas_root) / plan["ledger_sha256"],
+        plan["ledger_sha256"],
+        "sealed manifest ledger",
+        expected_bytes=rendered_plan,
+    )
+    instance_data = _read_content_addressed_file(
+        pathlib.Path(cas_root) / plan["ledger_instance_sha256"],
+        plan["ledger_instance_sha256"],
+        "sealed manifest ledger.instance-id",
+    )
+    if _read_instance_id(instance_data) != plan["ledger_instance_id"]:
+        raise ImportConflict(
+            "sealed manifest conflicts with ledger.instance-id"
+        )
+    return manifest
 
 
 def _verify_epoch_results(conn, plan, epoch, cas_root, repair):
+    _validate_import_plan_rows(plan)
     expected_result = _render_import_plan(plan)
     expected_sha = _sha(expected_result)
     if (
-        epoch["plan_sha256"] != plan["plan_sha256"]
+        plan.get("ledger_sha256") != expected_sha
+        or not _is_sha256_text(
+            plan.get("ledger_instance_sha256")
+        )
+        or epoch["plan_sha256"] != plan["plan_sha256"]
         or epoch["row_count"] != len(plan["rows"])
         or epoch["result_sha256"] != expected_sha
     ):
         raise ImportConflict("import epoch result conflicts with sealed plan")
+    _read_content_addressed_file(
+        pathlib.Path(cas_root) / plan["ledger_sha256"],
+        plan["ledger_sha256"],
+        "sealed epoch ledger",
+        expected_bytes=expected_result,
+    )
+    instance_data = _read_content_addressed_file(
+        pathlib.Path(cas_root) / plan["ledger_instance_sha256"],
+        plan["ledger_instance_sha256"],
+        "sealed epoch ledger.instance-id",
+    )
+    if (
+        _read_instance_id(instance_data) != plan["ledger_instance_id"]
+    ):
+        raise ImportConflict(
+            "sealed epoch ledger.instance-id conflicts with rendered plan"
+        )
     roots = {}
     for item in plan["rows"]:
         roots[item["lineage_id"]] = item["root_candidate_id"]
@@ -1622,7 +2265,7 @@ def _verify_epoch_results(conn, plan, epoch, cas_root, repair):
         ).fetchone()
         if existing is None:
             raise ImportConflict("committed import row is missing")
-        _verify_existing_candidate(existing, item)
+        _verify_existing_candidate(existing, item, plan)
         alias = conn.execute(
             """
             SELECT canonical_story, lineage_id FROM story_aliases
@@ -1662,6 +2305,32 @@ def _verify_epoch_results(conn, plan, epoch, cas_root, repair):
         if search is None or search[0] != item["row_number"]:
             raise ImportConflict("sealed search projection is missing or conflicting")
     for index, edge in enumerate(plan["edges"], 1):
+        evidence_record = edge.get("evidence")
+        if (
+            not isinstance(evidence_record, dict)
+            or set(evidence_record)
+            != {"artifact_id", "byte_count", "sha256"}
+            or not _is_sha256_text(evidence_record["sha256"])
+            or evidence_record["artifact_id"]
+            != _sha(
+                b"import-artifact-v1\0"
+                + evidence_record["sha256"].encode("ascii")
+            )
+            or type(evidence_record["byte_count"]) is not int
+            or evidence_record["byte_count"] < 0
+        ):
+            raise ImportConflict(
+                "sealed lineage evidence identity is invalid"
+            )
+        evidence_data = _read_content_addressed_file(
+            pathlib.Path(cas_root) / evidence_record["sha256"],
+            evidence_record["sha256"],
+            "sealed epoch lineage evidence",
+        )
+        if len(evidence_data) != evidence_record["byte_count"]:
+            raise ImportConflict(
+                "sealed lineage evidence byte count changed"
+            )
         evidence_id = _insert_artifact_from_evidence(
             conn, edge["evidence"], index, cas_root
         ) if repair else _sha(
@@ -1730,34 +2399,34 @@ def _verify_epoch_results(conn, plan, epoch, cas_root, repair):
 
 def _commit_import_plan_locked(conn, plan, *, _manage_transaction=True):
     plan_body = _plan_body(plan)
-    calculated_sha = _sha(_json_bytes(plan_body))
+    plan_bytes = _json_bytes(plan_body)
+    calculated_sha = _sha(plan_bytes)
     if calculated_sha != plan.get("plan_sha256"):
         raise ImportConflict("import plan content does not match its sealed hash")
-    plan_path = pathlib.Path(plan["plan_path"])
-    if not plan_path.is_file() or _sha(plan_path.read_bytes()) != calculated_sha:
-        raise ImportConflict("sealed import plan is missing or changed")
-    manifest_path = pathlib.Path(plan["manifest_path"])
+    _validate_import_plan_rows(plan)
+    rendered_plan = _render_import_plan(plan)
     if (
-        not manifest_path.is_file()
-        or _sha(manifest_path.read_bytes()) != plan["input_manifest_sha256"]
-    ):
-        raise ImportConflict("sealed input manifest is missing or changed")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ImportConflict("sealed input manifest is malformed") from exc
-    cas_root = plan_path.parent.parent / "import-cas"
-    for artifact in manifest.get("artifacts", []):
-        expected_artifact_id = _sha(
-            b"import-artifact-v1\0" + artifact["sha256"].encode("ascii")
+        not _is_sha256_text(plan.get("ledger_sha256"))
+        or _sha(rendered_plan) != plan["ledger_sha256"]
+        or not _is_sha256_text(
+            plan.get("ledger_instance_sha256")
         )
-        cas_path = cas_root / artifact["sha256"]
-        if (
-            artifact.get("artifact_id") != expected_artifact_id
-            or not cas_path.is_file()
-            or _sha(cas_path.read_bytes()) != artifact["sha256"]
-        ):
-            raise ImportConflict("sealed import input is missing or changed")
+    ):
+        raise ImportConflict(
+            "import plan does not bind its rendered ledger artifacts"
+        )
+    plan_path = pathlib.Path(plan["plan_path"])
+    _read_content_addressed_file(
+        plan_path,
+        calculated_sha,
+        "sealed import plan",
+        expected_bytes=plan_bytes,
+    )
+    manifest_path = pathlib.Path(plan["manifest_path"])
+    cas_root = plan_path.parent.parent / "import-cas"
+    _validate_sealed_import_manifest(
+        plan, manifest_path, cas_root
+    )
     epoch_id = _sha(
         b"import-epoch-v1\0" + plan["input_manifest_sha256"].encode("ascii")
     )
@@ -1844,9 +2513,12 @@ def _commit_import_plan_locked(conn, plan, *, _manage_transaction=True):
                 (item["row_number"], item["origin_stable_id"]),
             ).fetchone()
             if existing is not None:
-                _verify_existing_candidate(existing, item)
+                _verify_existing_candidate(existing, item, plan)
                 continue
-            raw_row = base64.b64decode(item["raw_row_b64"])
+            raw_row = _decode_plan_bytes(
+                item["raw_row_b64"],
+                f"import row {item['row_number']}",
+            )
             conn.execute(
                 """
                 INSERT INTO candidates(
@@ -1873,15 +2545,11 @@ def _commit_import_plan_locked(conn, plan, *, _manage_transaction=True):
                     item["category"],
                     item["row_number"],
                     raw_row,
-                    base64.b64decode(item["row_terminator_b64"]),
-                    json.dumps(
-                        {
-                            "import_epoch": epoch_id,
-                            "run_metadata": plan.get("run_metadata"),
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
+                    _decode_plan_bytes(
+                        item["row_terminator_b64"],
+                        f"import row {item['row_number']} terminator",
                     ),
+                    _import_candidate_provenance(plan),
                 ),
             )
             conn.execute(
@@ -1920,6 +2588,10 @@ def _commit_import_plan_locked(conn, plan, *, _manage_transaction=True):
             projection_sequence = current_projection["projection_sequence"]
         result = _render_tsv_in_transaction(conn)
         result_sha = _sha(result)
+        if result_sha != plan["ledger_sha256"]:
+            raise ImportConflict(
+                "committed ledger differs from the sealed import artifact"
+            )
         conn.execute(
             """
             INSERT INTO import_epochs(
@@ -1980,12 +2652,16 @@ def _bootstrap_marker(plan, near_sa_sha256):
         for item in plan.get("sealed_inputs", ())
         if item.get("role") == "ledger"
     ]
-    if len(ledger_inputs) != 1:
+    if (
+        len(ledger_inputs) != 1
+        or ledger_inputs[0].get("sha256") != plan.get("ledger_sha256")
+        or _sha(_render_import_plan(plan)) != plan.get("ledger_sha256")
+    ):
         raise ImportConflict("bootstrap plan has no unique sealed ledger")
     body = {
         "import_epoch_id": _bootstrap_epoch_id(plan),
         "ledger_row_count": len(plan["rows"]),
-        "ledger_sha256": ledger_inputs[0]["sha256"],
+        "ledger_sha256": plan["ledger_sha256"],
         "near_sa_sha256": near_sa_sha256,
         "schema_version": SCHEMA_VERSION,
     }
@@ -3326,8 +4002,11 @@ def add_lineage_edge(
 
 def import_near_sa_observations(conn, path):
     source = pathlib.Path(path)
+    data = _read_regular_file_nofollow(
+        source, "near-SA observation snapshot"
+    )
     rows = []
-    for number, raw_line in enumerate(source.read_bytes().splitlines(), 1):
+    for number, raw_line in enumerate(data.splitlines(), 1):
         if not raw_line:
             continue
         try:
@@ -3337,10 +4016,38 @@ def import_near_sa_observations(conn, path):
         if len(fields) != 7:
             raise ImportConflict(f"near-SA row {number} must have seven fields")
         date, origin, story, _theme, overlap, votes, category = fields
+        if any(
+            not value
+            for value in (
+                date,
+                origin,
+                story,
+                _theme,
+                overlap,
+                votes,
+                category,
+            )
+        ):
+            raise ImportConflict(
+                f"near-SA row {number} has an empty required field"
+            )
+        vote_parts = votes.split(",")
+        if (
+            not vote_parts
+            or any(
+                vote not in {"0", "1", "2"}
+                for vote in vote_parts
+            )
+        ):
+            raise ImportConflict(
+                f"near-SA row {number} has an invalid vote vector"
+            )
         canonical = canonical_story_v1(story)
         candidates = conn.execute(
             """
-            SELECT candidate_id, source_sequence FROM candidates c
+            SELECT c.candidate_id, c.source_sequence, c.source, c.theme,
+                   c.verdict, c.overlap, c.category
+            FROM candidates c
             JOIN story_aliases a ON a.lineage_id = c.lineage_id
             WHERE a.canonical_version = ? AND a.canonical_story = ?
               AND c.story = ?
@@ -3348,19 +4055,37 @@ def import_near_sa_observations(conn, path):
             """,
             (CANONICAL_VERSION, canonical, story),
         ).fetchall()
-        unique = {(item["candidate_id"], item["source_sequence"]) for item in candidates}
+        unique = {
+            (item["candidate_id"], item["source_sequence"]): item
+            for item in candidates
+        }
         if len(unique) != 1:
             raise ImportConflict(
                 f"near-SA row {number} resolves to {len(unique)} candidates"
             )
-        candidate_id, source_sequence = next(iter(unique))
+        (candidate_id, source_sequence), candidate = next(
+            iter(unique.items())
+        )
+        if (
+            _theme != candidate["theme"]
+            or overlap != candidate["overlap"]
+            or category != candidate["category"]
+            or category
+            not in {"design-fixable", "evidence-incomplete"}
+            or candidate["source"] != "hunt"
+            or candidate["verdict"]
+            not in {"accept-w-rev", "reject"}
+        ):
+            raise ImportConflict(
+                f"near-SA row {number} contradicts its canonical row"
+            )
         observation_id = _sha(b"near-sa-v1\0" + raw_line)
         rows.append(
             (
                 observation_id,
                 candidate_id,
                 source_sequence,
-                sum(part == "2" for part in votes.split(",")),
+                sum(part == "2" for part in vote_parts),
                 votes,
                 overlap,
                 category,
@@ -3408,7 +4133,9 @@ def select_generation_parent(conn):
             )
             SELECT c.*
             FROM latest_observation o
-            JOIN candidates c ON c.candidate_id = o.candidate_id
+            JOIN candidates c
+              ON c.candidate_id = o.candidate_id
+             AND c.source_sequence = o.source_sequence
             WHERE o.sa_votes >= 1
               AND o.category IN ('design-fixable', 'evidence-incomplete')
               AND c.category = o.category
@@ -4066,6 +4793,28 @@ def validate_store(conn):
         issues.append(f"foreign_key_violations={len(foreign_keys)}")
     if cycle is not None:
         issues.append("lineage_cycle")
+    for candidate in conn.execute(
+        "SELECT * FROM candidates ORDER BY source_sequence"
+    ):
+        try:
+            _validate_candidate_record(conn, candidate)
+        except ImportConflict:
+            issues.append(
+                f"candidate_record_invalid:{candidate['candidate_id']}"
+            )
+    near_sa_identity_mismatch = conn.execute(
+        """
+        SELECT 1
+        FROM near_sa_observations observation
+        LEFT JOIN candidates candidate
+          ON candidate.candidate_id = observation.candidate_id
+         AND candidate.source_sequence = observation.source_sequence
+        WHERE candidate.candidate_id IS NULL
+        LIMIT 1
+        """
+    ).fetchone()
+    if near_sa_identity_mismatch is not None:
+        issues.append("near_sa_candidate_identity_mismatch")
     if _meta(conn, BOOTSTRAP_MARKER_KEY) is not None:
         try:
             validated_bootstrap_marker(conn)
@@ -4137,20 +4886,42 @@ def validate_store(conn):
         ).fetchall():
             plan_path = state_root / "import-plans" / f"{epoch['plan_sha256']}.json"
             try:
-                plan_body = json.loads(plan_path.read_text(encoding="utf-8"))
-                if _sha(_json_bytes(plan_body)) != epoch["plan_sha256"]:
+                plan_bytes = _read_content_addressed_file(
+                    plan_path,
+                    epoch["plan_sha256"],
+                    "sealed validation import plan",
+                )
+                plan_body = json.loads(plan_bytes)
+                if (
+                    not isinstance(plan_body, dict)
+                    or set(plan_body) != set(IMPORT_PLAN_FIELDS)
+                    or _json_bytes(plan_body) != plan_bytes
+                ):
                     raise ImportConflict("sealed import plan hash conflicts")
+                manifest_path = (
+                    state_root
+                    / "import-manifests"
+                    / f"{epoch['input_manifest_sha256']}.json"
+                )
                 plan = dict(plan_body)
                 plan.update(
                     {
                         "plan_sha256": epoch["plan_sha256"],
                         "plan_path": str(plan_path),
-                        "manifest_path": str(
-                            state_root
-                            / "import-manifests"
-                            / f"{epoch['input_manifest_sha256']}.json"
-                        ),
+                        "manifest_path": str(manifest_path),
                     }
+                )
+                if (
+                    plan["input_manifest_sha256"]
+                    != epoch["input_manifest_sha256"]
+                ):
+                    raise ImportConflict(
+                        "sealed plan input manifest conflicts with epoch"
+                    )
+                _validate_sealed_import_manifest(
+                    plan,
+                    manifest_path,
+                    state_root / "import-cas",
                 )
                 _verify_epoch_results(
                     conn,

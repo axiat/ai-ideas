@@ -183,6 +183,14 @@ class HistoryStoreSmoke(unittest.TestCase):
             "DROP TRIGGER IF EXISTS bootstrap_complete_v1_immutable_delete"
         )
 
+    def _drop_candidate_guards(self, conn):
+        for trigger in (
+            "candidates_insert_once",
+            "candidates_immutable_update",
+            "candidates_immutable_delete",
+        ):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+
     def test_import_export_preserves_legacy_and_current_rows(self):
         receipt = self._import()
         exported = self.root / "export.tsv"
@@ -988,6 +996,91 @@ class HistoryStoreSmoke(unittest.TestCase):
         finally:
             raw.close()
 
+    def test_near_sa_schema_binds_candidate_and_source_sequence(self):
+        self._import()
+        candidate = self.conn.execute(
+            "SELECT candidate_id, source_sequence FROM candidates "
+            "WHERE story = 'near sa proposition'"
+        ).fetchone()
+        self.assertNotEqual(candidate["source_sequence"], 1)
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO near_sa_observations(
+                  observation_id, candidate_id, source_sequence, sa_votes,
+                  vote_vector, overlap, category, reason, observed_at
+                ) VALUES(?, ?, 1, 1, '2,1,1', 'low',
+                         'design-fixable', 'run/I1', '2026-07-23')
+                """,
+                ("e" * 64, candidate["candidate_id"]),
+            )
+
+    def test_near_sa_queries_reject_legacy_candidate_sequence_mismatch(self):
+        self._import()
+        candidate = self.conn.execute(
+            "SELECT candidate_id FROM candidates "
+            "WHERE story = 'near sa proposition'"
+        ).fetchone()
+        self.conn.execute(
+            "DROP TRIGGER IF EXISTS near_sa_candidate_identity_guard"
+        )
+        self.conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO near_sa_observations(
+                  observation_id, candidate_id, source_sequence, sa_votes,
+                  vote_vector, overlap, category, reason, observed_at
+                ) VALUES(?, ?, 1, 1, '2,1,1', 'low',
+                         'design-fixable', 'run/I1', '2026-07-23')
+                """,
+                ("d" * 64, candidate["candidate_id"]),
+            )
+        finally:
+            self.conn.execute("PRAGMA foreign_keys = ON")
+
+        self.assertIsNone(
+            history_store.select_generation_parent(self.conn)
+        )
+        report = history_store.validate_store(self.conn)
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            "near_sa_candidate_identity_mismatch",
+            report["issues"],
+        )
+
+    def test_init_schema_adds_near_sa_identity_guard_without_data_loss(self):
+        self._import()
+        fixture = self._near_sa_snapshot("near-sa-schema-upgrade.tsv")
+        history_store.import_near_sa_observations(self.conn, fixture)
+        before = tuple(
+            self.conn.execute(
+                "SELECT * FROM near_sa_observations"
+            ).fetchone()
+        )
+        self.conn.execute(
+            "DROP TRIGGER IF EXISTS near_sa_candidate_identity_guard"
+        )
+
+        history_store.init_schema(self.conn)
+
+        self.assertEqual(
+            tuple(
+                self.conn.execute(
+                    "SELECT * FROM near_sa_observations"
+                ).fetchone()
+            ),
+            before,
+        )
+        self.assertIsNotNone(
+            self.conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'trigger' "
+                "AND name = 'near_sa_candidate_identity_guard'"
+            ).fetchone()
+        )
+
     def test_bootstrap_rejects_missing_symlink_and_special_near_sa_inputs(self):
         snapshot = self._near_sa_snapshot("near-sa-regular.tsv")
         symlink = self.root / "near-sa-symlink.tsv"
@@ -1294,6 +1387,26 @@ class HistoryStoreSmoke(unittest.TestCase):
             one, history_store.origin_stable_id("instance-a", 2, b"a\tb")
         )
 
+    def test_ledger_instance_id_rejects_none(self):
+        with self.assertRaises(history_store.ImportConflict):
+            history_store._read_instance_id(None)
+
+    def test_validate_store_fails_closed_without_ledger_instance_id(self):
+        self._import()
+        self.conn.execute(
+            "DELETE FROM schema_meta WHERE key = 'ledger_instance_id'"
+        )
+
+        report = history_store.validate_store(self.conn)
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(
+            any(
+                issue.startswith("candidate_record_invalid:")
+                for issue in report["issues"]
+            )
+        )
+
     def test_exact_duplicate_rows_are_distinct_candidates_in_one_lineage(self):
         duplicate = self.root / "duplicate.tsv"
         duplicate.write_bytes(
@@ -1315,6 +1428,120 @@ class HistoryStoreSmoke(unittest.TestCase):
         for sealed in plan["sealed_inputs"]:
             self.assertTrue(pathlib.Path(sealed["cas_path"]).is_file())
 
+    def test_import_plan_captures_ledger_instance_id_as_a_sealed_artifact(self):
+        plan = history_store.build_import_plan(
+            {"ledger": self.ledger}, self.state_root
+        )
+        instance = [
+            item
+            for item in plan["sealed_inputs"]
+            if item["role"] == "ledger-instance-id"
+        ]
+        self.assertEqual(len(instance), 1)
+        self.assertEqual(
+            instance[0]["sha256"],
+            hashlib.sha256(
+                (self.root / "ledger.instance-id").read_bytes()
+            ).hexdigest(),
+        )
+        manifest = json.loads(
+            pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            [
+                item["sha256"]
+                for item in manifest["artifacts"]
+                if item["role"] == "ledger-instance-id"
+            ],
+            [instance[0]["sha256"]],
+        )
+
+    def test_import_plan_rejects_symlinked_ledger_instance_id(self):
+        instance_link = self.root / "linked-ledger.instance-id"
+        instance_link.symlink_to(self.root / "ledger.instance-id")
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.build_import_plan(
+                {
+                    "ledger": self.ledger,
+                    "ledger_instance_id_path": instance_link,
+                },
+                self.state_root,
+            )
+
+    def test_reused_cas_object_rejects_a_content_matching_symlink(self):
+        digest = hashlib.sha256(self.ledger.read_bytes()).hexdigest()
+        cas_root = self.state_root / "import-cas"
+        cas_root.mkdir(parents=True)
+        (cas_root / digest).symlink_to(self.ledger)
+
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.build_import_plan(
+                {"ledger": self.ledger}, self.state_root
+            )
+
+    def test_immutable_install_does_not_overwrite_a_racing_object(self):
+        target = self.state_root / "objects" / ("a" * 64)
+        real_mkstemp = tempfile.mkstemp
+
+        def install_racer(*args, **kwargs):
+            descriptor, temporary = real_mkstemp(*args, **kwargs)
+            target.write_bytes(b"racing-content")
+            return descriptor, temporary
+
+        with mock.patch.object(
+            history_store.tempfile,
+            "mkstemp",
+            side_effect=install_racer,
+        ):
+            with self.assertRaises(history_store.ImportConflict):
+                history_store._write_immutable(target, b"expected-content")
+        self.assertEqual(target.read_bytes(), b"racing-content")
+
+    def test_import_plan_rejects_non_projection_equivalent_ledger_bytes(self):
+        ledger = self.root / "carriage-return-ledger.tsv"
+        ledger.write_bytes(
+            HEADER
+            + row("carriage return one")
+            + b"\r"
+            + row("carriage return two")
+            + b"\n"
+        )
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.build_import_plan(
+                {"ledger": ledger}, self.state_root
+            )
+
+    def test_plan_marker_and_restart_share_the_exact_ledger_digest(self):
+        plan = history_store.build_import_plan(
+            {"ledger": self.ledger}, self.state_root
+        )
+        ledger_sha256 = hashlib.sha256(self.ledger.read_bytes()).hexdigest()
+        self.assertEqual(plan["ledger_sha256"], ledger_sha256)
+        self.assertEqual(
+            json.loads(
+                pathlib.Path(plan["plan_path"]).read_text(encoding="utf-8")
+            )["ledger_sha256"],
+            ledger_sha256,
+        )
+
+        completed = history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            state_root=self.state_root,
+        )
+        self.assertEqual(
+            completed["bootstrap_marker"]["ledger_sha256"],
+            ledger_sha256,
+        )
+        self.assertEqual(completed["result_sha256"], ledger_sha256)
+        restarted = history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            state_root=self.state_root,
+        )
+        self.assertTrue(restarted["idempotent"])
+        self.assertEqual(restarted["result_sha256"], ledger_sha256)
+
     def test_commit_rejects_changed_sealed_manifest(self):
         plan = history_store.build_import_plan(
             {"ledger": self.ledger}, self.state_root
@@ -1329,12 +1556,156 @@ class HistoryStoreSmoke(unittest.TestCase):
             {"ledger": self.ledger}, self.state_root
         )
         history_store.commit_import_plan(self.conn, plan)
+        self._drop_candidate_guards(self.conn)
         self.conn.execute(
             "UPDATE candidates SET raw_row = ? WHERE source_sequence = 1",
             (b"tampered",),
         )
         with self.assertRaises(history_store.ImportConflict):
             history_store.commit_import_plan(self.conn, plan)
+
+    def test_commit_rejects_plan_fields_that_disagree_with_raw_row(self):
+        plan = history_store.build_import_plan(
+            {"ledger": self.ledger}, self.state_root
+        )
+        plan["rows"][0]["theme"] = "forged parsed theme"
+        plan_body = history_store._plan_body(plan)
+        plan_bytes = history_store._json_bytes(plan_body)
+        plan_sha256 = history_store._sha(plan_bytes)
+        plan_path = self.state_root / "import-plans" / f"{plan_sha256}.json"
+        plan_path.write_bytes(plan_bytes)
+        plan["plan_sha256"] = plan_sha256
+        plan["plan_path"] = str(plan_path)
+
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.commit_import_plan(self.conn, plan)
+        self.assertEqual(self._canonical_counts(), (0, 0, 0, 0))
+
+    def test_import_retry_rejects_changed_candidate_provenance(self):
+        plan = history_store.build_import_plan(
+            {"ledger": self.ledger}, self.state_root
+        )
+        history_store.commit_import_plan(self.conn, plan)
+        self._drop_candidate_guards(self.conn)
+        self.conn.execute(
+            "UPDATE candidates SET provenance_json = '{}' "
+            "WHERE source_sequence = 1"
+        )
+
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.commit_import_plan(self.conn, plan)
+
+    def test_validate_store_checks_candidate_parsed_fields_and_provenance(self):
+        self._import()
+        self._drop_candidate_guards(self.conn)
+        original = self.conn.execute(
+            "SELECT theme, provenance_json FROM candidates "
+            "WHERE source_sequence = 1"
+        ).fetchone()
+        cases = (
+            ("theme", "forged parsed theme"),
+            ("provenance_json", "[]"),
+        )
+        for column, forged in cases:
+            with self.subTest(column=column):
+                self.conn.execute(
+                    f"UPDATE candidates SET {column} = ? "
+                    "WHERE source_sequence = 1",
+                    (forged,),
+                )
+                report = history_store.validate_store(self.conn)
+                self.assertFalse(report["ok"])
+                self.assertTrue(
+                    any(
+                        issue.startswith("candidate_record_invalid:")
+                        for issue in report["issues"]
+                    )
+                )
+                self.conn.execute(
+                    f"UPDATE candidates SET {column} = ? "
+                    "WHERE source_sequence = 1",
+                    (original[column],),
+                )
+
+    def test_candidates_are_insert_once_and_immutable_on_raw_connection(self):
+        self._import()
+        expected = tuple(
+            self.conn.execute(
+                "SELECT * FROM candidates WHERE source_sequence = 1"
+            ).fetchone()
+        )
+        columns = (
+            "candidate_id, origin_stable_id, lineage_id, row_number, "
+            "raw_sha256, field_count, date, source, theme, story, verdict, "
+            "reason, overlap, category, source_sequence, raw_row, "
+            "row_terminator, provenance_json"
+        )
+        placeholders = ",".join("?" for _ in expected)
+        raw = sqlite3.connect(str(self.db), isolation_level=None)
+        try:
+            self.assertEqual(
+                raw.execute("PRAGMA recursive_triggers").fetchone()[0],
+                0,
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                raw.execute(
+                    "UPDATE candidates SET theme = 'forged' "
+                    "WHERE source_sequence = 1"
+                )
+            with self.assertRaises(sqlite3.IntegrityError):
+                raw.execute(
+                    "DELETE FROM candidates WHERE source_sequence = 1"
+                )
+            conflicting = list(expected)
+            conflicting[8] = "forged"
+            with self.assertRaises(sqlite3.IntegrityError):
+                raw.execute(
+                    f"INSERT OR REPLACE INTO candidates({columns}) "
+                    f"VALUES({placeholders})",
+                    conflicting,
+                )
+            changes = raw.total_changes
+            raw.execute(
+                f"INSERT OR REPLACE INTO candidates({columns}) "
+                f"VALUES({placeholders})",
+                expected,
+            )
+            self.assertEqual(raw.total_changes, changes)
+            self.assertEqual(
+                tuple(
+                    raw.execute(
+                        "SELECT * FROM candidates WHERE source_sequence = 1"
+                    ).fetchone()
+                ),
+                expected,
+            )
+        finally:
+            raw.close()
+
+    def test_init_schema_adds_candidate_guards_without_data_loss(self):
+        self._import()
+        self._drop_candidate_guards(self.conn)
+        before = [
+            tuple(item)
+            for item in self.conn.execute(
+                "SELECT * FROM candidates ORDER BY source_sequence"
+            )
+        ]
+
+        history_store.init_schema(self.conn)
+
+        after = [
+            tuple(item)
+            for item in self.conn.execute(
+                "SELECT * FROM candidates ORDER BY source_sequence"
+            )
+        ]
+        self.assertEqual(after, before)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "UPDATE candidates SET theme = 'forged' "
+                "WHERE source_sequence = 1"
+            )
 
     def test_import_retry_repairs_every_missing_sealed_union_result(self):
         ledger = self.root / "retry-union.tsv"
@@ -1395,6 +1766,247 @@ class HistoryStoreSmoke(unittest.TestCase):
             1,
         )
         self.assertTrue(history_store.validate_store(self.conn)["ok"])
+
+    def test_lineage_evidence_swap_to_matching_symlink_fails_closed(self):
+        ledger = self.root / "nofollow-evidence.tsv"
+        ledger.write_bytes(
+            HEADER
+            + row("nofollow parent")
+            + b"\n"
+            + row("nofollow child")
+            + b"\n"
+        )
+        evidence = self.root / "nofollow-evidence.json"
+        evidence.write_text('{"verified":true}\n', encoding="utf-8")
+        mapping = self.root / "nofollow-mapping.json"
+        mapping.write_text(
+            json.dumps(
+                {
+                    "version": "lineage-mapping-v1",
+                    "mappings": [
+                        {
+                            "parent_row": 1,
+                            "child_row": 2,
+                            "evidence_path": str(evidence),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        plan = history_store.build_import_plan(
+            {"ledger": ledger, "mapping_manifest": mapping},
+            self.state_root,
+        )
+        evidence_cas = pathlib.Path(
+            next(
+                item["cas_path"]
+                for item in plan["sealed_inputs"]
+                if item["role"].startswith("lineage-evidence:")
+            )
+        )
+        evidence_cas_resolved = evidence_cas.resolve()
+        real_safe_read = history_store._read_regular_file_nofollow
+        swapped = False
+
+        def swap_after_verified_read(path, description):
+            nonlocal swapped
+            data = real_safe_read(path, description)
+            if (
+                pathlib.Path(path).resolve() == evidence_cas_resolved
+                and not swapped
+            ):
+                swapped = True
+                evidence_cas.unlink()
+                evidence_cas.symlink_to(evidence)
+            return data
+
+        with mock.patch.object(
+            history_store,
+            "_read_regular_file_nofollow",
+            side_effect=swap_after_verified_read,
+        ):
+            with self.assertRaises(history_store.ImportConflict):
+                history_store.commit_import_plan(self.conn, plan)
+        self.assertTrue(swapped)
+        self.assertEqual(self._canonical_counts(), (0, 0, 0, 0))
+
+    def test_plan_edge_evidence_must_be_a_manifest_member(self):
+        ledger = self.root / "evidence-membership.tsv"
+        ledger.write_bytes(
+            HEADER
+            + row("membership parent")
+            + b"\n"
+            + row("membership child")
+            + b"\n"
+        )
+        evidence = self.root / "evidence-membership.json"
+        evidence.write_text('{"verified":true}\n', encoding="utf-8")
+        mapping = self.root / "evidence-membership-mapping.json"
+        mapping.write_text(
+            json.dumps(
+                {
+                    "version": "lineage-mapping-v1",
+                    "mappings": [
+                        {
+                            "parent_row": 1,
+                            "child_row": 2,
+                            "evidence_path": str(evidence),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        plan = history_store.build_import_plan(
+            {"ledger": ledger, "mapping_manifest": mapping},
+            self.state_root,
+        )
+        manifest = json.loads(
+            pathlib.Path(plan["manifest_path"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        manifest["artifacts"] = [
+            item
+            for item in manifest["artifacts"]
+            if not item["role"].startswith("lineage-evidence:")
+        ]
+        manifest_bytes = history_store._json_bytes(manifest)
+        manifest_sha256 = history_store._sha(manifest_bytes)
+        manifest_path = (
+            self.state_root
+            / "import-manifests"
+            / f"{manifest_sha256}.json"
+        )
+        manifest_path.write_bytes(manifest_bytes)
+        plan["input_manifest_sha256"] = manifest_sha256
+        plan_body = history_store._plan_body(plan)
+        plan_bytes = history_store._json_bytes(plan_body)
+        plan_sha256 = history_store._sha(plan_bytes)
+        plan_path = (
+            self.state_root
+            / "import-plans"
+            / f"{plan_sha256}.json"
+        )
+        plan_path.write_bytes(plan_bytes)
+        plan.update(
+            {
+                "manifest_path": str(manifest_path),
+                "plan_path": str(plan_path),
+                "plan_sha256": plan_sha256,
+            }
+        )
+
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.commit_import_plan(self.conn, plan)
+        self.assertEqual(self._canonical_counts(), (0, 0, 0, 0))
+
+    def test_repeated_evidence_bytes_keep_distinct_edge_manifest_roles(self):
+        ledger = self.root / "repeated-evidence.tsv"
+        ledger.write_bytes(
+            HEADER
+            + row("repeated evidence parent")
+            + b"\n"
+            + row("repeated evidence child one")
+            + b"\n"
+            + row("repeated evidence child two")
+            + b"\n"
+        )
+        evidence = self.root / "repeated-evidence.json"
+        evidence.write_text('{"verified":true}\n', encoding="utf-8")
+        mapping = self.root / "repeated-evidence-mapping.json"
+        mapping.write_text(
+            json.dumps(
+                {
+                    "version": "lineage-mapping-v1",
+                    "mappings": [
+                        {
+                            "parent_row": 1,
+                            "child_row": 2,
+                            "evidence_path": str(evidence),
+                        },
+                        {
+                            "parent_row": 1,
+                            "child_row": 3,
+                            "evidence_path": str(evidence),
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        plan = history_store.build_import_plan(
+            {"ledger": ledger, "mapping_manifest": mapping},
+            self.state_root,
+        )
+        manifest = json.loads(
+            pathlib.Path(plan["manifest_path"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        evidence_members = [
+            item
+            for item in manifest["artifacts"]
+            if item["role"].startswith("lineage-evidence:")
+        ]
+        self.assertEqual(
+            [item["role"] for item in evidence_members],
+            ["lineage-evidence:1:2", "lineage-evidence:1:3"],
+        )
+        self.assertEqual(
+            len({item["sha256"] for item in evidence_members}),
+            1,
+        )
+
+        history_store.commit_import_plan(self.conn, plan)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM lineage_edges"
+            ).fetchone()[0],
+            2,
+        )
+
+    def test_validate_store_rejects_matching_plan_and_manifest_symlinks(self):
+        self._import()
+        epoch = self.conn.execute(
+            "SELECT plan_sha256, input_manifest_sha256 FROM import_epochs"
+        ).fetchone()
+        paths = (
+            (
+                "plan",
+                self.state_root
+                / "import-plans"
+                / f"{epoch['plan_sha256']}.json",
+            ),
+            (
+                "manifest",
+                self.state_root
+                / "import-manifests"
+                / f"{epoch['input_manifest_sha256']}.json",
+            ),
+        )
+        for name, sealed in paths:
+            with self.subTest(kind=name):
+                data = sealed.read_bytes()
+                copy = self.root / f"{name}-matching-copy.json"
+                copy.write_bytes(data)
+                sealed.unlink()
+                sealed.symlink_to(copy)
+                try:
+                    report = history_store.validate_store(self.conn)
+                    self.assertFalse(report["ok"])
+                    self.assertTrue(
+                        any(
+                            issue.startswith(
+                                "import_epoch_inconsistent:"
+                            )
+                            for issue in report["issues"]
+                        )
+                    )
+                finally:
+                    sealed.unlink()
+                    sealed.write_bytes(data)
 
     def test_import_retry_rejects_conflicting_sealed_lineage_root(self):
         duplicate = self.root / "retry-root.tsv"
@@ -1810,6 +2422,108 @@ class HistoryStoreSmoke(unittest.TestCase):
         fixture.unlink()
         parent = history_store.select_generation_parent(self.conn)
         self.assertEqual(parent["candidate_id"], expected)
+
+    def test_near_sa_import_rejects_unsafe_inputs_without_writes(self):
+        self._import()
+        fixture = self._near_sa_snapshot("ordinary-near-sa-regular.tsv")
+        symlink = self.root / "ordinary-near-sa-symlink.tsv"
+        symlink.symlink_to(fixture)
+        for name, path in (
+            ("missing", self.root / "ordinary-near-sa-missing.tsv"),
+            ("symlink", symlink),
+            ("special", pathlib.Path(os.devnull)),
+        ):
+            with self.subTest(case=name):
+                with self.assertRaises(history_store.ImportConflict):
+                    history_store.import_near_sa_observations(
+                        self.conn, path
+                    )
+                self.assertEqual(
+                    self.conn.execute(
+                        "SELECT count(*) FROM near_sa_observations"
+                    ).fetchone()[0],
+                    0,
+                )
+
+    def test_near_sa_import_rejects_invalid_vote_vectors_without_writes(self):
+        self._import()
+        for name, votes in (
+            ("empty", ""),
+            ("unknown", "2,x,1"),
+            ("missing-seat", "2,,1"),
+        ):
+            with self.subTest(case=name):
+                fixture = self.root / f"ordinary-near-sa-votes-{name}.tsv"
+                fixture.write_text(
+                    "2026-07-23\trun/I1\tnear sa proposition\t"
+                    "Evaluation and Diagnostics\tlow\t"
+                    f"{votes}\tdesign-fixable\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(history_store.ImportConflict):
+                    history_store.import_near_sa_observations(
+                        self.conn, fixture
+                    )
+                self.assertEqual(
+                    self.conn.execute(
+                        "SELECT count(*) FROM near_sa_observations"
+                    ).fetchone()[0],
+                    0,
+                )
+
+    def test_near_sa_import_rejects_canonical_conflicts_without_writes(self):
+        self._import()
+        cases = (
+            (
+                "theme",
+                "near sa proposition",
+                "Wrong Theme",
+                "low",
+                "design-fixable",
+            ),
+            (
+                "overlap",
+                "near sa proposition",
+                "Evaluation and Diagnostics",
+                "high",
+                "design-fixable",
+            ),
+            (
+                "category",
+                "near sa proposition",
+                "Evaluation and Diagnostics",
+                "low",
+                "evidence-incomplete",
+            ),
+            (
+                "ineligible",
+                "terminal proposition",
+                "Evaluation and Diagnostics",
+                "high",
+                "novelty-capped",
+            ),
+        )
+        for name, story, theme, overlap, category in cases:
+            with self.subTest(case=name):
+                fixture = (
+                    self.root / f"ordinary-near-sa-conflict-{name}.tsv"
+                )
+                fixture.write_text(
+                    "2026-07-23\trun/I1\t"
+                    f"{story}\t{theme}\t{overlap}\t2,1,1\t"
+                    f"{category}\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(history_store.ImportConflict):
+                    history_store.import_near_sa_observations(
+                        self.conn, fixture
+                    )
+                self.assertEqual(
+                    self.conn.execute(
+                        "SELECT count(*) FROM near_sa_observations"
+                    ).fetchone()[0],
+                    0,
+                )
 
     def test_later_ledger_winner_invalidates_stale_near_sa_observation(self):
         self._import()
