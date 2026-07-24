@@ -3381,16 +3381,34 @@ def compare_selected_candidate(
                     "status": retrieval_status,
                 }
                 item["attempts"].append(failed_attempt)
-                item.update(
-                    {
-                        "retrieval_status":
-                            retrieval_status,
-                        "status": retrieval_status,
-                        "pack_path": resolved_expanded,
-                        "comparison_path": None,
-                        "receipt_path": None,
-                    }
-                )
+                # budget_exceeded on expansion cannot fit more evidence; keep
+                # the prior uncertain comparator result (design: expansion
+                # exhaust preserves uncertain). Other infrastructure failures
+                # remain visible as the terminal status.
+                if retrieval_status == "budget_exceeded":
+                    item.update(
+                        {
+                            "retrieval_status":
+                                pack["retrieval_status"],
+                            "status": "uncertain",
+                            "pack_path": resolved_pack,
+                            "comparison_path":
+                                resolved_comparison,
+                            "receipt_path":
+                                resolved_receipt,
+                        }
+                    )
+                else:
+                    item.update(
+                        {
+                            "retrieval_status":
+                                retrieval_status,
+                            "status": retrieval_status,
+                            "pack_path": resolved_expanded,
+                            "comparison_path": None,
+                            "receipt_path": None,
+                        }
+                    )
                 break
             pack = expanded_pack
             round_number = next_round

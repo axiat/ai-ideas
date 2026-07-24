@@ -6,6 +6,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import sys
 
@@ -245,6 +246,89 @@ class HistoryRetrievalSmoke(unittest.TestCase):
             build_pack(
                 self.conn, self.query, "duplicate_search", tiny
             )
+
+    def test_complete_pack_keeps_one_intent_facet_match_not_channel_fanout(self):
+        """Design step 1: complete packs retain intent facets once each.
+
+        Channel fan-out for the same facet is collapsed before budget sealing.
+        Complete packs must not rely on mid-budget matches.pop() stripping of
+        in-cutoff lineage evidence.
+        """
+        pack = self.complete_pack
+        self.assertEqual(pack["retrieval_status"], "complete")
+        self.assertLessEqual(
+            pack["estimated_input_tokens"],
+            self.policy["max_retrieval_tokens"],
+        )
+        relevant = {"problem_estimand", "claimed_delta"}
+        for lineage in pack["lineages"]:
+            facets = [match["facet"] for match in lineage["matches"]]
+            self.assertTrue(facets)
+            self.assertTrue(set(facets) <= relevant)
+            self.assertEqual(len(facets), len(set(facets)))
+
+    def test_budget_path_never_returns_complete_after_stripping_in_cutoff_matches(
+        self,
+    ):
+        """If the sealed intent-facet pack still exceeds the byte bound after
+        audit-only compression and below-cutoff lineage drops, status is
+        budget_exceeded — not complete with fewer in-cutoff matches.
+        """
+        seals = []
+        original_seal = retrieval._seal_pack
+
+        def record_seal(pack):
+            sealed = original_seal(pack)
+            seals.append(
+                (
+                    pack.get("retrieval_status"),
+                    sealed["estimated_input_tokens"],
+                    sum(
+                        len(lineage.get("matches") or [])
+                        for lineage in (pack.get("lineages") or [])
+                    ),
+                )
+            )
+            return sealed
+
+        history_store.append_rows(
+            self.conn,
+            [
+                row("shared budget marker %02d" % index)
+                for index in range(6)
+            ],
+            {"run_id": "budget-no-match-pop"},
+        )
+        projection.rebuild(self.conn, self.policy)
+        with mock.patch.object(
+            retrieval, "_seal_pack", side_effect=record_seal
+        ):
+            pack = build_pack(
+                self.conn,
+                dict(self.query, story="shared budget marker"),
+                "duplicate_search",
+                self.policy,
+            )
+        # No intermediate complete seal may have fewer matches than the prior
+        # complete seal for the same pack construction (no match-pop).
+        complete_match_counts = [
+            matches
+            for status, _tokens, matches in seals
+            if status == "complete"
+        ]
+        for earlier, later in zip(
+            complete_match_counts, complete_match_counts[1:]
+        ):
+            self.assertGreaterEqual(later, earlier)
+        if pack["retrieval_status"] == "complete":
+            self.assertLessEqual(
+                pack["estimated_input_tokens"],
+                self.policy["max_retrieval_tokens"],
+            )
+        else:
+            self.assertEqual(pack["retrieval_status"], "budget_exceeded")
+            self.assertEqual(pack["lineages"], [])
+
 
     def test_channel_payload_exposes_only_retained_lineages(self):
         history_store.append_rows(

@@ -76,11 +76,10 @@ if stage == "generate":
         "One-Sentence Story: Bounded Test Idea\n"
         "Theme: World Models - Architecture\n"
         "Form: new mechanism or new problem\n"
-        "Summary: Exercise the bounded stage contract.\n"
-        "Minimal Falsification Experiment: Compare against the strongest "
-        "fixture baseline on 128 episodes using one H100; kill the idea if "
-        "the expected bounded signal is absent.\n"
-        "Why It May Be Novel: Downstream research must test occupation.\n"
+        "Summary: Bounded stage contract.\n"
+        "Minimal Falsification Experiment: 128-episode one-H100 baseline "
+        "compare; kill if the signal is absent.\n"
+        "Why It May Be Novel: Research must test occupation.\n"
     )
     artifacts = [
         {

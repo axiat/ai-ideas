@@ -1230,9 +1230,95 @@ def _validate_generation_snapshot(conn, policy):
     }
 
 
+def _intent_relevant_facets(intent):
+    if intent == "failure_pattern_search":
+        return {
+            "failure_pattern",
+            "failure_code",
+        }
+    if intent == "evolution_search":
+        return {
+            "problem_estimand",
+            "claimed_delta",
+            "mechanism",
+        }
+    if intent == "duplicate_search":
+        return {"problem_estimand", "claimed_delta"}
+    raise ValueError("unsupported retrieval intent")
+
+
+def _retain_intent_facets(ranked, intent):
+    """Keep intent-relevant facets; one best match per facet (design step 1).
+
+    Channel fan-out for the same facet is collapsed before budget sealing so a
+    complete pack still carries full mandatory-channel coverage at the pack
+    channel matrix while lineage evidence stays extractive and bounded.
+    """
+    relevant = _intent_relevant_facets(intent)
+    channel_rank = {
+        "lineage": 0,
+        "expansion": 1,
+        "exact": 2,
+        "fts": 3,
+        "dense": 4,
+    }
+    retained = []
+    for lineage in ranked:
+        best = {}
+        for match in lineage["matches"]:
+            facet = match.get("facet")
+            channel = match.get("channel")
+            if channel in {"lineage", "expansion"}:
+                key = ("channel", channel, match.get("candidate_id"))
+            elif facet in relevant:
+                key = ("facet", facet)
+            else:
+                continue
+            prior = best.get(key)
+            if prior is None or (
+                match.get("rank", 10**9),
+                channel_rank.get(channel, 9),
+                match.get("candidate_id", ""),
+                match.get("evidence_id", ""),
+            ) < (
+                prior.get("rank", 10**9),
+                channel_rank.get(prior.get("channel"), 9),
+                prior.get("candidate_id", ""),
+                prior.get("evidence_id", ""),
+            ):
+                best[key] = match
+        matches = sorted(
+            best.values(),
+            key=lambda item: (
+                0
+                if item.get("channel") in {"lineage", "expansion"}
+                else 1,
+                item.get("rank", 10**9),
+                channel_rank.get(item.get("channel"), 9),
+                item.get("facet", ""),
+                item.get("candidate_id", ""),
+            ),
+        )
+        # Hard bound per lineage so sealed packs stay under the byte upper
+        # bound without mid-budget matches.pop on in-cutoff lineages.
+        # Evolution keeps typed lineage units first. Other intents keep one
+        # extractive match per lineage — enough for complete comparison while
+        # leaving room for multiple in-cutoff lineages under max_retrieval_tokens.
+        limit = (
+            max(3, len(relevant) + 1)
+            if intent == "evolution_search"
+            else 1
+        )
+        matches = matches[:limit]
+        if matches:
+            retained.append(dict(lineage, matches=matches))
+    return retained
+
+
 def _prioritize_ranked_matches(
     ranked, intent, *, expansion_requested
 ):
+    ranked = _retain_intent_facets(ranked, intent)
     if expansion_requested:
         ranked.sort(
             key=lambda lineage: (
@@ -1443,7 +1529,7 @@ def _build_pack_snapshot(
     ranked = _scope_ranked_to_expansion(
         ranked, expansion_request
     )
-    _prioritize_ranked_matches(
+    ranked = _prioritize_ranked_matches(
         ranked,
         intent,
         expansion_requested=expansion_request is not None,
@@ -1530,50 +1616,13 @@ def _build_pack_snapshot(
         "estimated_input_tokens": 0,
     }
     sealed = _seal_pack(pack)
-    while sealed["estimated_input_tokens"] > int(policy["max_retrieval_tokens"]):
-        removable = next(
-            (
-                lineage
-                for lineage in reversed(retained)
-                if len(lineage["matches"])
-                > max(
-                    1,
-                    sum(
-                        match["channel"] == "lineage"
-                        for match in lineage["matches"]
-                    ),
-                )
-            ),
-            None,
-        )
-        if removable is None:
-            break
-        removable["matches"].pop()
-        pack["lineages"] = retained
-        pack["channels"] = _bounded_channels(channels, retained)
-        highest_candidates = (
-            {
-                match["candidate_id"]
-                for match in retained[0]["matches"]
-            }
-            if retained
-            else set()
-        )
-        pack["rank_contributions"] = (
-            []
-            if intent == "evolution_search"
-            else [
-                item
-                for item in contributions
-                if item["candidate_id"] in highest_candidates
-            ]
-        )
-        sealed = _seal_pack(pack)
     if sealed["estimated_input_tokens"] <= int(policy["max_retrieval_tokens"]):
         return sealed
-    # Rank contributions are audit-only. Drop them before any in-cutoff
-    # lineage loss so a pack that still holds its comparator-cut lineages can
-    # stay complete under a tight byte upper bound.
+    # Audit-only compression: drop rank contributions before any lineage loss.
+    # Facet retention already ran via intent prioritization and max_matches
+    # capping. Budget may not strip channel matches from in-cutoff lineages
+    # and still claim complete — that would allow permanent complete_no_match
+    # over incomplete channel evidence.
     if pack["rank_contributions"]:
         pack["rank_contributions"] = []
         sealed = _seal_pack(pack)
@@ -1585,13 +1634,19 @@ def _build_pack_snapshot(
     reducible = [item for item in retained if item["rank"] > cutoff]
     while reducible:
         drop = reducible.pop()
-        retained = [item for item in retained if item["lineage_id"] != drop["lineage_id"]]
+        retained = [
+            item
+            for item in retained
+            if item["lineage_id"] != drop["lineage_id"]
+        ]
         pack["lineages"] = retained
         pack["channels"] = _bounded_channels(channels, retained)
         pack["rank_contributions"] = []
         pack["omitted_lineage_count"] += 1
         sealed = _seal_pack(pack)
-        if sealed["estimated_input_tokens"] <= int(policy["max_retrieval_tokens"]):
+        if sealed["estimated_input_tokens"] <= int(
+            policy["max_retrieval_tokens"]
+        ):
             return sealed
     pack["retrieval_status"] = "budget_exceeded"
     pack["omitted_lineage_count"] = len(ranked)
@@ -2246,7 +2301,7 @@ def _validate_published_rank_trace(
     ranked = _scope_ranked_to_expansion(
         ranked, expansion_request
     )
-    _prioritize_ranked_matches(
+    ranked = _prioritize_ranked_matches(
         ranked,
         pack["intent"],
         expansion_requested=pack["expansion_round"] > 0,
