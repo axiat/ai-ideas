@@ -194,13 +194,13 @@ profile_sha256 = hashlib.sha256(
     )
 ).hexdigest()
 capability_id = hashlib.sha256(
-    b"history-codex-capability-v2\0"
+    b"history-codex-capability-v3\0"
     + profile_sha256.encode("ascii")
 ).hexdigest()
 (repository / "history" / "codex-adapter-capabilities-v2.json").write_text(
     json.dumps(
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "capabilities": [
                 {
                     "capability_id": capability_id,

@@ -11,7 +11,8 @@ import sys
 
 
 RESOURCE_LIMITS = {
-    "RLIMIT_CPU": 30,
+    # Align with PROCESS_TIMEOUT_SECONDS for long contained stages.
+    "RLIMIT_CPU": 600,
     "RLIMIT_AS": (
         1024 * 1024 * 1024 * 1024
         if sys.platform == "darwin"

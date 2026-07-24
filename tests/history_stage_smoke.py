@@ -822,6 +822,180 @@ class HistoryStageSmoke(unittest.TestCase):
                 self.assertIn(f"CRITICAL: {critical}\n", review)
                 self.assertIn(f"MAJOR: {major}\n", review)
 
+    def test_resolve_backend_accepts_codex_realpath_basename_family(self):
+        """Homebrew realpath turns `codex` into `codex-*`; registration must accept."""
+        root = pathlib.Path(
+            tempfile.mkdtemp(prefix="codex-backend-register-")
+        )
+        self.addCleanup(shutil.rmtree, root, True)
+        spark_suffix = [
+            "-m",
+            "gpt-5.3-codex-spark",
+            "-c",
+            "model_reasoning_effort=xhigh",
+        ]
+        accept_names = ("codex", "codex-aarch64-apple-darwin", "codex-x")
+        reject_names = (
+            "grok-worker.sh",
+            "codexfoo",
+            "my-codex",
+            "claude",
+        )
+        for name in (*accept_names, *reject_names):
+            path = root / name
+            path.write_bytes(b"#!/bin/sh\nexit 0\n")
+            path.chmod(0o755)
+
+        manifest = {
+            "seat_id": "generate",
+            "registered_environment": {},
+            "registered_runtime_reads": [],
+        }
+        fake_capture = {
+            "path": str(root / "codex"),
+            "raw": b"x",
+            "sha256": "0" * 64,
+            "size": 1,
+            "mode": 0o755,
+            "identity": "fixture",
+        }
+
+        def resolve(name):
+            command = [str(root / name), *spark_suffix]
+            with mock.patch.object(
+                history_stage,
+                "_capture_regular_path",
+                return_value=fake_capture,
+            ):
+                with mock.patch.object(
+                    history_stage,
+                    "_capture_python_runtime",
+                    return_value=(None, []),
+                ):
+                    with mock.patch.object(
+                        history_stage,
+                        "_validated_codex_capability",
+                        return_value={"capability_id": "fixture"},
+                    ):
+                        with mock.patch.object(
+                            history_stage,
+                            "_capture_codex_auth",
+                            return_value={"access_token": "fixture"},
+                        ):
+                            with mock.patch.object(
+                                history_stage.platform,
+                                "system",
+                                return_value="Darwin",
+                            ):
+                                return history_stage._resolve_backend(
+                                    command,
+                                    manifest,
+                                    {},
+                                    {},
+                                )
+
+        for name in accept_names:
+            backend = resolve(name)
+            self.assertEqual(backend["type"], "codex", name)
+            self.assertEqual(
+                backend["codex_identity"]["model"],
+                "gpt-5.3-codex-spark",
+                name,
+            )
+        for name in reject_names:
+            with self.assertRaisesRegex(
+                history_stage.StageError,
+                r"backend is not registered",
+                msg=name,
+            ):
+                resolve(name)
+
+        self.assertTrue(
+            history_stage._is_codex_backend_basename(
+                "codex-aarch64-apple-darwin"
+            )
+        )
+        self.assertFalse(
+            history_stage._is_codex_backend_basename("grok-worker.sh")
+        )
+
+    def test_generation_fields_agree_tolerates_light_rephrase(self):
+        self.assertTrue(
+            history_stage._generation_fields_agree(
+                "A frozen VLA can be steered without online rewards.",
+                "A frozen VLA can be steered without online rewards",
+            )
+        )
+        self.assertTrue(
+            history_stage._generation_fields_agree(
+                "World Models - Architecture",
+                "world models - architecture",
+            )
+        )
+        # Longer shared core with a trailing clause on one side.
+        self.assertTrue(
+            history_stage._generation_fields_agree(
+                "Object-slot world models with explicit contact channels will extrapolate better.",
+                "Object-slot world models with explicit contact channels will extrapolate better on unseen objects.",
+            )
+        )
+        self.assertFalse(
+            history_stage._generation_fields_agree(
+                "World Models - Architecture",
+                "VLA - Training Paradigms",
+            )
+        )
+
+    def test_codex_cli_version_family_tolerates_patch_drift(self):
+        self.assertEqual(
+            history_stage._codex_cli_version_family("0.145.0"),
+            "0.145",
+        )
+        self.assertTrue(
+            history_stage._codex_cli_version_compatible(
+                "0.145.0", "0.145.1"
+            )
+        )
+        self.assertTrue(
+            history_stage._codex_cli_version_compatible("*", "9.9.9")
+        )
+        self.assertFalse(
+            history_stage._codex_cli_version_compatible(
+                "0.145.0", "0.146.0"
+            )
+        )
+        # Profile omits binary hash and uses version family only.
+        policy = {
+            "max_output_tokens": 2048,
+            "model_context_limit": 32768,
+            "safety_margin": 1024,
+        }
+        identity = {
+            "model": "gpt-5.3-codex-spark",
+            "reasoning_setting": "model_reasoning_effort=xhigh",
+        }
+        adapter = {
+            "executable": {"sha256": "a" * 64},
+            "canonicalizer": {"sha256": "b" * 64},
+        }
+        p0 = history_stage._codex_profile_bytes(
+            "deadbeef",
+            identity,
+            policy,
+            adapter,
+            codex_cli_version="0.145.0",
+        )
+        p1 = history_stage._codex_profile_bytes(
+            "cafebabe",
+            identity,
+            policy,
+            adapter,
+            codex_cli_version="0.145.9",
+        )
+        self.assertEqual(p0, p1)
+        self.assertNotIn(b"binary_sha256", p0)
+        self.assertIn(b"codex_cli_version_family", p0)
+
     def test_codex_command_grammar_allows_reasoning_without_tool_widening(self):
         prefix = [
             "/absolute/codex",
@@ -1024,6 +1198,57 @@ class HistoryStageSmoke(unittest.TestCase):
             "auth_refresh_required",
         ):
             history_stage._capture_codex_auth(loose)
+
+    def test_codex_auth_accepts_modern_extra_top_level_keys(self):
+        """Current Codex login may write OPENAI_API_KEY (often null)."""
+        root = pathlib.Path(tempfile.mkdtemp(prefix="codex-auth-extra-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        base = {
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": "fixture-id-token",
+                "access_token": "fixture-access-token",
+                "refresh_token": "fixture-refresh-token",
+                "account_id": "fixture-account",
+            },
+            "last_refresh": "2026-07-25T00:00:00Z",
+        }
+        for extra in (
+            {"OPENAI_API_KEY": None},
+            {"OPENAI_API_KEY": "sk-fixture-not-used"},
+            {"OPENAI_API_KEY": None, "future_field": 1},
+        ):
+            auth_path = root / f"auth-{len(extra)}.json"
+            payload = dict(base)
+            payload.update(extra)
+            auth_path.write_bytes(canonical(payload))
+            auth_path.chmod(0o600)
+            captured = history_stage._capture_codex_auth(auth_path)
+            self.assertEqual(captured["access_token"], "fixture-access-token")
+            self.assertEqual(captured["account_id"], "fixture-account")
+            self.assertNotIn("OPENAI_API_KEY", captured)
+            self.assertEqual(
+                set(captured),
+                {"access_token", "account_id", "source", "_path"},
+            )
+
+        missing = root / "missing-required.json"
+        missing.write_bytes(
+            canonical(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": base["tokens"],
+                    # no last_refresh
+                    "OPENAI_API_KEY": None,
+                }
+            )
+        )
+        missing.chmod(0o600)
+        with self.assertRaisesRegex(
+            history_stage.StageError,
+            "auth_refresh_required",
+        ):
+            history_stage._capture_codex_auth(missing)
 
     def test_manifest_rejects_unknown_fields_and_stage_drift(self):
         fixture = StageFixture(self, "generate")

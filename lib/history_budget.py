@@ -320,7 +320,6 @@ def preflight_canonical_request(prompt, request, policy):
             "include",
             "input",
             "instructions",
-            "max_output_tokens",
             "model",
             "parallel_tool_calls",
             "reasoning",
@@ -329,7 +328,6 @@ def preflight_canonical_request(prompt, request, policy):
             "text",
             "tool_choice",
             "tools",
-            "truncation",
         }
         or value.get("include") != []
         or value.get("input")
@@ -355,7 +353,6 @@ def preflight_canonical_request(prompt, request, policy):
         or value.get("store") is not False
         or value.get("tools") != []
         or value.get("tool_choice") != "none"
-        or value.get("truncation") != "disabled"
         or value.get("stream") is not True
         or not isinstance(text, dict)
         or set(text) != {"format", "verbosity"}
@@ -371,8 +368,6 @@ def preflight_canonical_request(prompt, request, policy):
             type(policy.get(key)) is not int or policy[key] < 0
             for key in required
         )
-        or value.get("max_output_tokens")
-        != policy.get("max_output_tokens")
     ):
         raise PreflightError(
             "canonical_request_invalid",

@@ -785,7 +785,9 @@ themes_ok() {
   local tsv=${1:-$RD/ideas.tsv} id story theme
   while IFS=$'\t' read -r id story theme; do
     [ -n "$id" ] || continue
-    grep -F -- "$theme" brainstorming_policy.md >/dev/null || {
+    theme=$(printf '%s' "$theme" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    # Case-insensitive exact line/snippet match against the policy catalog.
+    grep -Fi -- "$theme" brainstorming_policy.md >/dev/null || {
       log "Theme gate: $id uses an unknown theme: $theme"
       return 1
     }

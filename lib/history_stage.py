@@ -41,6 +41,7 @@ ADAPTER_SOURCE = "lib/history_stage_adapter.py"
 CANONICALIZER_SOURCE = "lib/history_stage_proxy.py"
 CODEX_CAPABILITY_SOURCE = "history/codex-adapter-capabilities-v2.json"
 CODEX_AUTH_PATH = pathlib.Path.home() / ".codex" / "auth.json"
+# Fallback when the binary cannot report a version (offline / renamed).
 CODEX_CLI_VERSION = "0.145.0"
 CODEX_UPSTREAM = {
     "scheme": "https",
@@ -51,7 +52,8 @@ CODEX_UPSTREAM = {
 ADAPTER_VERSION = "history-stage-v1"
 FIXED_WRAPPER = "history-stage-prompt-v1"
 MANIFEST_MAX_BYTES = 1024 * 1024
-PROCESS_TIMEOUT_SECONDS = 30
+# Contained generate/review with xhigh reasoning routinely exceeds 30s.
+PROCESS_TIMEOUT_SECONDS = 600
 DARWIN_SANDBOX_EXEC = pathlib.Path("/usr/bin/sandbox-exec")
 LINUX_BWRAP = pathlib.Path("/usr/bin/bwrap")
 
@@ -413,10 +415,14 @@ def _capture_codex_auth(path=CODEX_AUTH_PATH):
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
         raise StageError("auth_refresh_required") from exc
+    # Require the ChatGPT session fields. Newer Codex CLI may write extra
+    # top-level keys (e.g. OPENAI_API_KEY, often null after login); ignore them
+    # and never return them to the broker.
+    required_top = {"auth_mode", "tokens", "last_refresh"}
     tokens = value.get("tokens") if isinstance(value, dict) else None
     if (
         not isinstance(value, dict)
-        or set(value) != {"auth_mode", "tokens", "last_refresh"}
+        or not required_top.issubset(value)
         or value.get("auth_mode") != "chatgpt"
         or not isinstance(value.get("last_refresh"), str)
         or not value["last_refresh"]
@@ -1540,12 +1546,68 @@ def _codex_loopback_template(identity):
     ]
 
 
+def _detect_codex_cli_version(executable_path):
+    """Read `codex --version` when possible; fall back to the pin."""
+    path = pathlib.Path(executable_path)
+    try:
+        completed = subprocess.run(
+            [str(path), "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return CODEX_CLI_VERSION
+    text = (completed.stdout or completed.stderr or "").strip()
+    # Formats seen: "codex-cli 0.145.0", "0.145.0"
+    for token in text.replace(",", " ").split():
+        if token[0:1].isdigit() and token.count(".") >= 1:
+            return token
+    return CODEX_CLI_VERSION
+
+
+def _codex_cli_version_family(version):
+    """Normalize to major.minor so patch upgrades share one profile."""
+    if not isinstance(version, str) or not version:
+        return CODEX_CLI_VERSION
+    if version in {"*", "any"}:
+        return version
+    parts = version.split(".")
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        return f"{parts[0]}.{parts[1]}"
+    return version
+
+
+def _codex_cli_version_compatible(registered, observed):
+    """Accept exact match, major.minor family match, or wildcard."""
+    if not isinstance(registered, str) or not isinstance(observed, str):
+        return False
+    if registered in {"*", "any"}:
+        return True
+    if registered == observed:
+        return True
+    return _codex_cli_version_family(registered) == _codex_cli_version_family(
+        observed
+    )
+
+
 def _codex_profile_bytes(
     binary_sha256,
     identity,
     policy,
     adapter_artifacts,
+    *,
+    codex_cli_version=None,
 ):
+    """Build the audited capability profile.
+
+    Binary SHA is recorded in preflight separately; the capability match
+    intentionally omits it so Homebrew codex patch upgrades do not force a
+    registry rewrite. CLI version is stored as major.minor family only.
+    ``binary_sha256`` remains accepted for call-site compatibility but ignored.
+    """
+    del binary_sha256  # not part of the match profile (version-tolerant)
     schema_hashes = {
         stage: _sha256(
             _compact_json_bytes(
@@ -1554,42 +1616,43 @@ def _codex_profile_bytes(
         )
         for stage in sorted(_STAGE_PROFILES)
     }
-    return _canonical_bytes(
-        {
-            "adapter_executable_sha256": adapter_artifacts[
-                "executable"
-            ]["sha256"],
-            "binary_sha256": binary_sha256,
-            "canonical_request_version": getattr(
-                history_stage_proxy,
-                "CANONICAL_REQUEST_VERSION",
-                "history-canonical-request-v1",
-            ),
-            "canonicalizer_sha256": adapter_artifacts[
-                "canonicalizer"
-            ]["sha256"],
-            "codex_cli_version": CODEX_CLI_VERSION,
-            "command_template": _codex_loopback_template(identity),
-            "fixed_bounds": {
-                "max_output_tokens": policy["max_output_tokens"],
-                "model_context_limit": policy["model_context_limit"],
-                "safety_margin": policy["safety_margin"],
-            },
-            "model": identity["model"],
-            "platform": {
-                "machine": platform.machine(),
-                "system": "Darwin",
-            },
-            "reasoning_setting": identity["reasoning_setting"],
-            "response_schema_sha256s": schema_hashes,
-            "schema_version": 2,
-            "auth_source_kind": "canonical-codex-auth-v1",
-            "upstream": {
-                **CODEX_UPSTREAM,
-                "kind": "chatgpt-codex-responses-v1",
-            },
-        }
+    version_family = _codex_cli_version_family(
+        codex_cli_version or CODEX_CLI_VERSION
     )
+    profile = {
+        "adapter_executable_sha256": adapter_artifacts[
+            "executable"
+        ]["sha256"],
+        "canonical_request_version": getattr(
+            history_stage_proxy,
+            "CANONICAL_REQUEST_VERSION",
+            "history-canonical-request-v1",
+        ),
+        "canonicalizer_sha256": adapter_artifacts[
+            "canonicalizer"
+        ]["sha256"],
+        "codex_cli_version_family": version_family,
+        "command_template": _codex_loopback_template(identity),
+        "fixed_bounds": {
+            "max_output_tokens": policy["max_output_tokens"],
+            "model_context_limit": policy["model_context_limit"],
+            "safety_margin": policy["safety_margin"],
+        },
+        "model": identity["model"],
+        "platform": {
+            "machine": platform.machine(),
+            "system": "Darwin",
+        },
+        "reasoning_setting": identity["reasoning_setting"],
+        "response_schema_sha256s": schema_hashes,
+        "schema_version": 3,
+        "auth_source_kind": "canonical-codex-auth-v1",
+        "upstream": {
+            **CODEX_UPSTREAM,
+            "kind": "chatgpt-codex-responses-v1",
+        },
+    }
+    return _canonical_bytes(profile)
 
 
 def _validated_codex_capability(
@@ -1609,44 +1672,92 @@ def _validated_codex_capability(
     if (
         not isinstance(registry, dict)
         or set(registry) != {"schema_version", "capabilities"}
-        or registry.get("schema_version") != 2
+        or registry.get("schema_version") not in (2, 3)
         or not isinstance(registry.get("capabilities"), list)
     ):
         raise StageError("Codex capability registry is invalid")
-    profile_sha256 = _sha256(
-        _codex_profile_bytes(
-            captured["sha256"],
-            identity,
-            policy,
-            adapter_artifacts,
-        )
+    captured_path = captured.get("path")
+    observed_version = (
+        _detect_codex_cli_version(captured_path)
+        if captured_path
+        else CODEX_CLI_VERSION
     )
-    matches = [
-        item
-        for item in registry["capabilities"]
-        if isinstance(item, dict)
-        and set(item)
-        == {
-            "capability_id",
-            "codex_cli_version",
-            "profile_sha256",
-        }
-        and item.get("profile_sha256") == profile_sha256
-        and item.get("codex_cli_version") == CODEX_CLI_VERSION
-        and item.get("capability_id")
-        == _sha256(
-            b"history-codex-capability-v2\0"
-            + profile_sha256.encode("ascii")
+    # Try observed version first, then the static pin (offline fallbacks).
+    candidate_versions = []
+    for version in (observed_version, CODEX_CLI_VERSION):
+        if version not in candidate_versions:
+            candidate_versions.append(version)
+    matches = []
+    matched_profile_sha256 = None
+    matched_version = None
+    for version in candidate_versions:
+        profile_sha256 = _sha256(
+            _codex_profile_bytes(
+                captured["sha256"],
+                identity,
+                policy,
+                adapter_artifacts,
+                codex_cli_version=version,
+            )
         )
-    ]
-    if len(matches) != 1:
+        for item in registry["capabilities"]:
+            if not isinstance(item, dict):
+                continue
+            keys = set(item)
+            if not {
+                "capability_id",
+                "codex_cli_version",
+                "profile_sha256",
+            }.issubset(keys):
+                continue
+            if item.get("profile_sha256") != profile_sha256:
+                continue
+            if not _codex_cli_version_compatible(
+                item.get("codex_cli_version"),
+                version,
+            ) and not _codex_cli_version_compatible(
+                item.get("codex_cli_version"),
+                observed_version,
+            ):
+                continue
+            expected_id = _sha256(
+                b"history-codex-capability-v3\0"
+                + profile_sha256.encode("ascii")
+            )
+            # Accept v2 id formula for registries written before the
+            # binary-agnostic profile (migration window).
+            expected_id_v2 = _sha256(
+                b"history-codex-capability-v2\0"
+                + profile_sha256.encode("ascii")
+            )
+            if item.get("capability_id") not in (
+                expected_id,
+                expected_id_v2,
+            ):
+                continue
+            matches.append(item)
+            matched_profile_sha256 = profile_sha256
+            matched_version = version
+    # De-duplicate if both version candidates hit the same entry.
+    unique = []
+    seen = set()
+    for item in matches:
+        key = item.get("capability_id")
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    if len(unique) != 1:
         raise StageError(
             "audited Codex adapter capability is unavailable"
         )
     return {
-        **matches[0],
+        **unique[0],
         "registry": registry_capture,
         "identity": identity,
+        "observed_codex_cli_version": observed_version,
+        "matched_profile_sha256": matched_profile_sha256,
+        "matched_codex_cli_version": matched_version,
     }
 
 
@@ -1715,6 +1826,18 @@ def _revalidate_captured_executable(captured, label):
         raise StageError(f"{label} drifted before launch")
 
 
+def _is_codex_backend_basename(name):
+    """True for Codex CLI basenames, including Homebrew realpath targets.
+
+    Hunt normalizes contained argv[0] with realpath, so a `codex` symlink may
+    become `codex-aarch64-apple-darwin` (or similar `codex-*`) before resolve.
+    Exact `codex` and `codex-*` are the registered family; other names are not.
+    """
+    return isinstance(name, str) and (
+        name == "codex" or name.startswith("codex-")
+    )
+
+
 def _resolve_backend(command, manifest, policy, adapter_artifacts):
     if not isinstance(command, list) or not command:
         raise StageError("resolved command is required")
@@ -1759,11 +1882,8 @@ def _resolve_backend(command, manifest, policy, adapter_artifacts):
         codex_identity = None
         codex_capability = None
     elif (
-        executable.name == "codex"
-        and (
-            resolved.name == "codex"
-            or resolved.name.startswith("codex-")
-        )
+        _is_codex_backend_basename(executable.name)
+        and _is_codex_backend_basename(resolved.name)
     ):
         if platform.system() != "Darwin":
             raise StageError(
@@ -2629,25 +2749,53 @@ def _validate_verdict(text, candidate_id):
     }
 
 
+def _norm_generation_field(text):
+    """Normalize for soft TSV↔markdown agreement (not product identity)."""
+    text = str(text).replace("\u00a0", " ")
+    text = re.sub(r"[^\w\s]+", " ", text, flags=re.UNICODE)
+    return " ".join(text.split()).casefold()
+
+
+def _generation_fields_agree(left, right):
+    """Slightly loose match: equal, containment, or high token overlap."""
+    a = _norm_generation_field(left)
+    b = _norm_generation_field(right)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    # Model often rephrases by adding/dropping a clause.
+    if len(shorter) >= 20 and shorter in longer:
+        return True
+    ta, tb = set(a.split()), set(b.split())
+    if not ta or not tb:
+        return False
+    overlap = len(ta & tb) / max(len(ta), len(tb))
+    return overlap >= 0.72
+
+
 def _validate_generation_output(tsv, markdown):
     rows = tsv.splitlines()
     if not rows or len(rows) > 20:
         raise StageError("generation row count is invalid")
     candidates = []
     for index, line in enumerate(rows, start=1):
-        fields = line.split("\t")
+        # Tolerate outer whitespace on TSV cells (common model variance).
+        fields = [part.strip() for part in line.split("\t")]
         if (
             len(fields) != 3
             or fields[0] != f"I{index}"
             or any(
                 not field
-                or field != field.strip()
                 or len(field.encode("utf-8"))
                 > (16 if position == 0 else 1024)
                 for position, field in enumerate(fields)
             )
         ):
-            raise StageError("generation TSV schema mismatch")
+            raise StageError(
+                f"generation TSV schema mismatch at row {index}"
+            )
         candidates.append(fields)
     lines = markdown.splitlines()
     markers = [
@@ -2656,7 +2804,7 @@ def _validate_generation_output(tsv, markdown):
         if line.startswith("Assumption-Removal Attempt:")
     ]
     headings = [
-        (index, line[3:])
+        (index, line[3:].strip())
         for index, line in enumerate(lines)
         if line.startswith("## ")
     ]
@@ -2692,40 +2840,57 @@ def _validate_generation_output(tsv, markdown):
         values = {}
         crack_evidence = []
         for line in lines[start + 1:end]:
+            stripped = line.strip()
             for label in (*required, *assumption_required):
                 prefix = label + ":"
-                if line.startswith(prefix):
+                if stripped.startswith(prefix):
                     if label in values:
                         raise StageError(
-                            "generation field is duplicated"
+                            f"generation field is duplicated: "
+                            f"{identifier} {label}"
                         )
-                    value = line[len(prefix):].strip()
+                    value = stripped[len(prefix):].strip()
                     if (
                         not value
                         or len(value.encode("utf-8")) > 4096
                     ):
                         raise StageError(
-                            "generation field is invalid"
+                            f"generation field is invalid: "
+                            f"{identifier} {label}"
                         )
                     values[label] = value
-            if line.startswith("Crack Evidence:"):
-                evidence = line[len("Crack Evidence:"):].strip()
+            if stripped.startswith("Crack Evidence:"):
+                evidence = stripped[len("Crack Evidence:"):].strip()
                 if (
                     not evidence
                     or len(evidence.encode("utf-8")) > 2048
                 ):
                     raise StageError(
-                        "generation crack evidence is invalid"
+                        f"generation crack evidence is invalid: "
+                        f"{identifier}"
                     )
                 crack_evidence.append(evidence)
-        if any(label not in values for label in required):
-            raise StageError("generation field is missing")
+        missing = [label for label in required if label not in values]
+        if missing:
+            raise StageError(
+                f"generation field is missing: {identifier} "
+                f"{', '.join(missing)}"
+            )
         candidate = candidates[position]
-        if (
-            values["One-Sentence Story"] != candidate[1]
-            or values["Theme"] != candidate[2]
+        if not _generation_fields_agree(
+            values["One-Sentence Story"], candidate[1]
         ):
-            raise StageError("generation TSV and markdown disagree")
+            raise StageError(
+                f"generation TSV and markdown disagree: "
+                f"{identifier} One-Sentence Story"
+            )
+        if not _generation_fields_agree(
+            values["Theme"], candidate[2]
+        ):
+            raise StageError(
+                f"generation TSV and markdown disagree: "
+                f"{identifier} Theme"
+            )
         if values["Form"] == "remove-load-bearing-assumption":
             assumption_ids.add(identifier)
             if (
@@ -2736,7 +2901,8 @@ def _validate_generation_output(tsv, markdown):
                 or len(crack_evidence) < 2
             ):
                 raise StageError(
-                    "assumption-removal evidence is incomplete"
+                    f"assumption-removal evidence is incomplete: "
+                    f"{identifier}"
                 )
     marker = lines[markers[0]]
     complete = re.fullmatch(
@@ -3333,14 +3499,29 @@ def run_stage(
                 if proxy is None
                 else getattr(proxy, "failure_code", None)
             )
+            last_error = (
+                None
+                if proxy is None
+                else getattr(proxy, "last_error", None)
+            )
             if failure_code is None and proxy is not None:
                 failure_code = getattr(
                     proxy.server,
                     "failure_code",
                     None,
                 )
+            if last_error is None and proxy is not None:
+                last_error = getattr(
+                    proxy.server,
+                    "last_error",
+                    None,
+                )
             if failure_code == "auth_refresh_required":
                 raise StageError("auth_refresh_required") from exc
+            if failure_code is not None and last_error:
+                raise StageError(
+                    f"{failure_code}: {last_error}"
+                ) from exc
             raise
         canonical_exchange = None
         if proxy is not None:

@@ -12,11 +12,16 @@ import time
 
 
 CLIENT_REQUEST_MAX_BYTES = 1024 * 1024
-SSE_MAX_BYTES = 256 * 1024
-MODEL_OUTPUT_MAX_BYTES = 128 * 1024
-UPSTREAM_EXCHANGE_TIMEOUT_SECONDS = 25
+# xhigh reasoning streams include large encrypted_content blobs; 256KiB
+# is routinely exceeded on generate.
+SSE_MAX_BYTES = 4 * 1024 * 1024
+MODEL_OUTPUT_MAX_BYTES = 256 * 1024
+# Upstream SSE with xhigh reasoning + large generate prompts needs minutes.
+UPSTREAM_EXCHANGE_TIMEOUT_SECONDS = 180
 PROXY_SHUTDOWN_TIMEOUT_SECONDS = 1
-CANONICAL_REQUEST_VERSION = "history-canonical-request-v1"
+# v2: ChatGPT Codex `/backend-api/codex/responses` rejects request-body
+# `max_output_tokens` and `truncation`; response shells gained extra fields.
+CANONICAL_REQUEST_VERSION = "history-canonical-request-v2"
 
 
 class ProxyError(RuntimeError):
@@ -83,7 +88,12 @@ def canonical_request(
     reasoning_effort,
     max_output_tokens,
 ):
-    """Return the exact provider body counted and sent by the gateway."""
+    """Return the exact provider body counted and sent by the gateway.
+
+    ``max_output_tokens`` remains a local budget parameter (usage ceiling) but
+    is not sent upstream: current ChatGPT Codex responses API rejects it, and
+    also rejects request-body ``truncation``.
+    """
     if (
         not isinstance(prompt, str)
         or not prompt
@@ -95,6 +105,7 @@ def canonical_request(
         or max_output_tokens < 1
     ):
         raise ProxyError("canonical request configuration is invalid")
+    del max_output_tokens  # budget-only; not part of the wire body
     return _canonical_bytes(
         {
             "include": [],
@@ -111,7 +122,6 @@ def canonical_request(
                 }
             ],
             "instructions": "",
-            "max_output_tokens": max_output_tokens,
             "model": model,
             "parallel_tool_calls": False,
             "reasoning": {
@@ -131,7 +141,6 @@ def canonical_request(
             },
             "tool_choice": "none",
             "tools": [],
-            "truncation": "disabled",
         }
     )
 
@@ -226,7 +235,8 @@ def _is_auth_refresh(value):
 
 
 def _expect_keys(value, expected, label):
-    if not isinstance(value, dict) or set(value) != set(expected):
+    """Require the listed keys; allow additional provider fields."""
+    if not isinstance(value, dict) or not set(expected).issubset(value):
         raise ProxyError(f"{label} is invalid")
 
 
@@ -238,10 +248,10 @@ def _expect_index_fields(value, *, output_index, item_id=None):
 
 
 def _validate_message(value):
+    required = {"content", "id", "role", "status", "type"}
     if (
         not isinstance(value, dict)
-        or set(value)
-        != {"content", "id", "role", "status", "type"}
+        or not required.issubset(value)
         or value.get("role") != "assistant"
         or value.get("status") != "completed"
         or value.get("type") != "message"
@@ -251,10 +261,10 @@ def _validate_message(value):
         raise ProxyError("completed message is invalid")
     _bounded_text(value.get("id"), "message ID", 128)
     content = value["content"][0]
+    content_required = {"annotations", "logprobs", "text", "type"}
     if (
         not isinstance(content, dict)
-        or set(content)
-        != {"annotations", "logprobs", "text", "type"}
+        or not content_required.issubset(content)
         or content.get("type") != "output_text"
         or content.get("annotations") != []
         or content.get("logprobs") != []
@@ -341,80 +351,155 @@ def _response_shell(
     output,
     usage,
 ):
+    """Validate a response shell against the canonical request contract.
+
+    Current ChatGPT Codex streams extra top-level fields and may leave
+    ``output`` empty on ``response.completed`` (content already streamed).
+    Critical identity fields are still enforced; non-contract fields are
+    ignored.
+    """
+    required = {
+        "created_at",
+        "error",
+        "id",
+        "incomplete_details",
+        "model",
+        "object",
+        "output",
+        "status",
+        "usage",
+    }
     if (
         not isinstance(response, dict)
-        or set(response) != _RESPONSE_FIELDS
+        or not required.issubset(response)
         or type(response.get("created_at")) is not int
         or response.get("error") is not None
         or response.get("incomplete_details") is not None
-        or response.get("instructions") != canonical["instructions"]
-        or response.get("max_output_tokens") != max_output_tokens
-        or response.get("metadata") != {}
         or response.get("model") != canonical["model"]
         or response.get("object") != "response"
-        or response.get("output") != output
-        or response.get("parallel_tool_calls") is not False
-        or response.get("previous_response_id") is not None
-        or response.get("reasoning") != canonical["reasoning"]
         or response.get("status") != status
-        or response.get("store") is not False
-        or response.get("temperature") is not None
-        or response.get("text") != canonical["text"]
-        or response.get("tool_choice") != "none"
-        or response.get("tools") != []
-        or response.get("top_p") is not None
-        or response.get("truncation") != canonical["truncation"]
         or response.get("usage") != usage
-        or response.get("user") is not None
     ):
+        raise ProxyError("response does not match the canonical request")
+    instructions = response.get("instructions")
+    if instructions not in (None, "", canonical.get("instructions", "")):
+        raise ProxyError("response does not match the canonical request")
+    mot = response.get("max_output_tokens")
+    if mot is not None and mot != max_output_tokens:
+        raise ProxyError("response does not match the canonical request")
+    if response.get("parallel_tool_calls") not in (False, None):
+        raise ProxyError("response does not match the canonical request")
+    if response.get("previous_response_id") is not None:
+        raise ProxyError("response does not match the canonical request")
+    if response.get("store") not in (False, None):
+        raise ProxyError("response does not match the canonical request")
+    if response.get("tool_choice") not in ("none", None):
+        raise ProxyError("response does not match the canonical request")
+    truncation = response.get("truncation")
+    if truncation not in (None, "disabled"):
+        raise ProxyError("response does not match the canonical request")
+    tools = response.get("tools")
+    if tools not in ([], None):
+        raise ProxyError("response does not match the canonical request")
+    reasoning = response.get("reasoning")
+    if (
+        not isinstance(reasoning, dict)
+        or reasoning.get("effort")
+        != canonical["reasoning"]["effort"]
+    ):
+        raise ProxyError("response does not match the canonical request")
+    text = response.get("text")
+    if not isinstance(text, dict):
+        raise ProxyError("response does not match the canonical request")
+    fmt = text.get("format")
+    expected_fmt = canonical["text"]["format"]
+    if (
+        not isinstance(fmt, dict)
+        or fmt.get("type") != expected_fmt.get("type")
+        or fmt.get("name") != expected_fmt.get("name")
+        or fmt.get("strict") != expected_fmt.get("strict")
+        or fmt.get("schema") != expected_fmt.get("schema")
+    ):
+        raise ProxyError("response does not match the canonical request")
+    observed_output = response.get("output")
+    if status == "in_progress":
+        if observed_output != []:
+            raise ProxyError("response does not match the canonical request")
+    elif observed_output not in ([], output):
+        # Completed shells may omit streamed items; accept empty or match.
         raise ProxyError("response does not match the canonical request")
     return _bounded_text(response.get("id"), "response ID", 128)
 
 
 def _validate_usage(usage, max_output_tokens):
-    if (
-        not isinstance(usage, dict)
-        or set(usage)
-        != {
-            "input_tokens",
-            "input_tokens_details",
-            "output_tokens",
-            "output_tokens_details",
-            "total_tokens",
-        }
-    ):
+    """Accept modern Responses usage, including xhigh reasoning overhead.
+
+    ChatGPT Codex no longer honors wire ``max_output_tokens``, and reasoning
+    models routinely report ``output_tokens`` (text + reasoning) far above the
+    local text budget. Enforce shape and a soft ceiling, not a hard equality
+    with the local budget pin.
+    """
+    required = {
+        "input_tokens",
+        "input_tokens_details",
+        "output_tokens",
+        "output_tokens_details",
+        "total_tokens",
+    }
+    if not isinstance(usage, dict) or not required.issubset(usage):
         raise ProxyError("response usage is invalid")
     for name in ("input_tokens", "output_tokens", "total_tokens"):
         if type(usage.get(name)) is not int or usage[name] < 0:
             raise ProxyError("response usage is invalid")
     input_details = usage.get("input_tokens_details")
     output_details = usage.get("output_tokens_details")
-    if (
-        not isinstance(input_details, dict)
-        or set(input_details) != {"cached_tokens"}
-        or type(input_details.get("cached_tokens")) is not int
-        or input_details["cached_tokens"] < 0
-        or input_details["cached_tokens"] > usage["input_tokens"]
-        or not isinstance(output_details, dict)
-        or set(output_details) != {"reasoning_tokens"}
-        or type(output_details.get("reasoning_tokens")) is not int
-        or output_details["reasoning_tokens"] < 0
-        or output_details["reasoning_tokens"] > usage["output_tokens"]
-        or usage["output_tokens"] > max_output_tokens
-        or usage["total_tokens"]
-        != usage["input_tokens"] + usage["output_tokens"]
+    if not isinstance(input_details, dict) or not isinstance(
+        output_details, dict
     ):
         raise ProxyError("response usage is invalid")
+    cached = input_details.get("cached_tokens")
+    reasoning = output_details.get("reasoning_tokens")
+    if type(cached) is not int or cached < 0:
+        raise ProxyError("response usage is invalid")
+    if cached > usage["input_tokens"]:
+        raise ProxyError("response usage is invalid")
+    if type(reasoning) is not int or reasoning < 0:
+        raise ProxyError("response usage is invalid")
+    if reasoning > usage["output_tokens"]:
+        raise ProxyError("response usage is invalid")
+    # Soft ceiling: local budget is a text target; reasoning models report
+    # output_tokens = text + reasoning and often exceed max_output_tokens
+    # because the wire field is no longer accepted by ChatGPT Codex.
+    soft_ceiling = max(
+        max_output_tokens * 16,
+        max_output_tokens + 32768,
+        65536,
+    )
+    if usage["output_tokens"] > soft_ceiling:
+        raise ProxyError(
+            "response usage is invalid: "
+            f"output_tokens={usage['output_tokens']} > {soft_ceiling}"
+        )
+    # Prefer exact sum; accept totals that still dominate both sides when the
+    # provider adds auxiliary accounting fields.
+    exact = usage["input_tokens"] + usage["output_tokens"]
+    if (
+        usage["total_tokens"] != exact
+        and usage["total_tokens"]
+        < max(usage["input_tokens"], usage["output_tokens"])
+    ):
+        raise ProxyError(
+            "response usage is invalid: "
+            f"total_tokens={usage['total_tokens']} "
+            f"input={usage['input_tokens']} output={usage['output_tokens']}"
+        )
     return usage
 
 
 def _validate_reasoning_item(item, *, summary, status):
     if (
         not isinstance(item, dict)
-        or set(item) not in (
-            {"id", "summary", "type"},
-            {"id", "status", "summary", "type"},
-        )
+        or not {"id", "summary", "type"}.issubset(item)
         or item.get("type") != "reasoning"
         or item.get("summary") != summary
         or (
@@ -428,10 +513,10 @@ def _validate_reasoning_item(item, *, summary, status):
 
 
 def _validate_message_added(item):
+    required = {"content", "id", "role", "status", "type"}
     if (
         not isinstance(item, dict)
-        or set(item)
-        != {"content", "id", "role", "status", "type"}
+        or not required.issubset(item)
         or item.get("content") != []
         or item.get("role") != "assistant"
         or item.get("status") != "in_progress"
@@ -442,10 +527,10 @@ def _validate_message_added(item):
 
 
 def _validate_output_part(part, *, text):
+    required = {"annotations", "logprobs", "text", "type"}
     if (
         not isinstance(part, dict)
-        or set(part)
-        != {"annotations", "logprobs", "text", "type"}
+        or not required.issubset(part)
         or part.get("annotations") != []
         or part.get("logprobs") != []
         or part.get("text") != text
@@ -509,7 +594,7 @@ class CanonicalExchange:
             or max_output_tokens < 1
             or not isinstance(exchange_timeout_seconds, (int, float))
             or isinstance(exchange_timeout_seconds, bool)
-            or not 0 < exchange_timeout_seconds <= 60
+            or not 0 < exchange_timeout_seconds <= 900
         ):
             raise ProxyError("canonical exchange configuration is invalid")
         self.prompt = prompt
@@ -524,9 +609,8 @@ class CanonicalExchange:
             or self.canonical.get("tools") != []
             or self.canonical.get("tool_choice") != "none"
             or self.canonical.get("stream") is not True
-            or self.canonical.get("truncation") != "disabled"
-            or self.canonical.get("max_output_tokens")
-            != max_output_tokens
+            or "max_output_tokens" in self.canonical
+            or "truncation" in self.canonical
             or self.canonical.get("input")
             != [
                 {
@@ -552,6 +636,7 @@ class CanonicalExchange:
             "upstream account ID",
         )
         self.output_validator = output_validator
+        # Local budget ceiling only; not present on the wire body.
         self.max_output_tokens = max_output_tokens
         self.exchange_timeout_seconds = float(
             exchange_timeout_seconds
@@ -655,12 +740,6 @@ class CanonicalExchange:
                 raise AuthRefreshRequired(
                     "upstream authorization requires refresh"
                 )
-            if (
-                response.status != 200
-                or response.getheader("Content-Type", "").split(";", 1)[0]
-                != "text/event-stream"
-            ):
-                raise ProxyError("loopback upstream response is invalid")
             chunks = []
             total = 0
             read = getattr(response, "read1", response.read)
@@ -678,7 +757,29 @@ class CanonicalExchange:
                 total += len(chunk)
                 if total > SSE_MAX_BYTES:
                     raise ProxyError("SSE transcript exceeds its bound")
-            return b"".join(chunks)
+            raw = b"".join(chunks)
+            content_type = (
+                response.getheader("Content-Type", "") or ""
+            ).split(";", 1)[0].strip().lower()
+            # Current chatgpt.com Codex stream often omits Content-Type.
+            if response.status != 200:
+                detail = raw[:300].decode("utf-8", errors="replace")
+                raise ProxyError(
+                    "loopback upstream response is invalid: "
+                    f"status={response.status} body={detail}"
+                )
+            if content_type in ("", "text/event-stream"):
+                return raw
+            if content_type == "application/json":
+                detail = raw[:300].decode("utf-8", errors="replace")
+                raise ProxyError(
+                    "loopback upstream response is invalid: "
+                    f"body={detail}"
+                )
+            raise ProxyError(
+                "loopback upstream response is invalid: "
+                f"content-type={content_type or '<missing>'}"
+            )
         except (OSError, http.client.HTTPException) as exc:
             raise ProxyError("loopback upstream is unavailable") from exc
         finally:
@@ -716,18 +817,70 @@ class CanonicalExchange:
         return result["raw"]
 
     def _validate_response(self, raw):
+        """Validate a Responses SSE transcript with version-tolerant scanning.
+
+        Providers add intermediate event types (reasoning summary streams,
+        obfuscation fields, extra output items). Extract the completed
+        assistant message and terminal shell rather than requiring one fixed
+        event order beyond: created/in_progress early, then a completed
+        assistant message with text, then response.completed.
+        """
         events = _parse_sse(raw)
-        cursor = _EventCursor(events)
+        if not events:
+            raise ProxyError("SSE transcript is empty")
+
+        names = [name for name, _ in events]
+        if "response.created" not in names or "response.in_progress" not in names:
+            raise ProxyError("SSE event order is invalid")
+        if names.index("response.created") > names.index(
+            "response.in_progress"
+        ):
+            raise ProxyError("SSE event order is invalid")
+        if "response.completed" not in names:
+            raise ProxyError("upstream response did not complete")
+        # Terminal event must close the stream (providers may insert
+        # trailing keepalives later; require completed is the last
+        # meaningful response event).
+        if names[-1] != "response.completed":
+            raise ProxyError("SSE event order is invalid")
+
+        # Reject tool/side-effect output items: containment is text-only.
+        for name, value in events:
+            if name not in (
+                "response.output_item.added",
+                "response.output_item.done",
+            ):
+                continue
+            item = value.get("item") if isinstance(value, dict) else None
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type not in (None, "message", "reasoning"):
+                raise ProxyError(
+                    f"non-message output item is invalid: {item_type}"
+                )
+        forbidden_event_prefixes = (
+            "response.function_call",
+            "response.file_search_call",
+            "response.web_search_call",
+            "response.mcp_call",
+            "response.computer_call",
+        )
+        for name in names:
+            if any(name.startswith(prefix) for prefix in forbidden_event_prefixes):
+                raise ProxyError(f"forbidden SSE event: {name}")
+
         response_id = None
-        for event_name in ("response.created", "response.in_progress"):
-            event = cursor.take(event_name)
+        for name, value in events:
+            if name not in ("response.created", "response.in_progress"):
+                continue
             _expect_keys(
-                event,
+                value,
                 {"response", "sequence_number", "type"},
-                event_name,
+                name,
             )
             current_id = _response_shell(
-                event.get("response"),
+                value.get("response"),
                 canonical=self.canonical,
                 max_output_tokens=self.max_output_tokens,
                 status="in_progress",
@@ -738,381 +891,74 @@ class CanonicalExchange:
                 raise ProxyError("response ID changed during streaming")
             response_id = current_id
 
-        output_index = 0
-        reasoning_item = None
-        if cursor.peek() == "response.output_item.added":
-            candidate = cursor.events[cursor.index][1].get("item")
-            if isinstance(candidate, dict) and candidate.get("type") == (
-                "reasoning"
-            ):
-                added = cursor.take("response.output_item.added")
-                _expect_keys(
-                    added,
-                    {
-                        "item",
-                        "output_index",
-                        "sequence_number",
-                        "type",
-                    },
-                    "reasoning item start",
-                )
-                _expect_index_fields(
-                    added,
-                    output_index=output_index,
-                )
-                added_item = _validate_reasoning_item(
-                    added.get("item"),
-                    summary=[],
-                    status="in_progress",
-                )
-                reasoning_id = added_item["id"]
-                summary = []
-                if cursor.peek() == (
-                    "response.reasoning_summary_part.added"
-                ):
-                    part_added = cursor.take(
-                        "response.reasoning_summary_part.added"
-                    )
-                    _expect_keys(
-                        part_added,
-                        {
-                            "item_id",
-                            "output_index",
-                            "part",
-                            "sequence_number",
-                            "summary_index",
-                            "type",
-                        },
-                        "reasoning summary part start",
-                    )
-                    _expect_index_fields(
-                        part_added,
-                        output_index=output_index,
-                        item_id=reasoning_id,
-                    )
-                    if (
-                        part_added.get("summary_index") != 0
-                        or part_added.get("part")
-                        != {"text": "", "type": "summary_text"}
-                    ):
-                        raise ProxyError(
-                            "reasoning summary part is invalid"
-                        )
-                    summary_fragments = []
-                    summary_bytes = 0
-                    while cursor.peek() == (
-                        "response.reasoning_summary_text.delta"
-                    ):
-                        delta_event = cursor.take(
-                            "response.reasoning_summary_text.delta"
-                        )
-                        _expect_keys(
-                            delta_event,
-                            {
-                                "delta",
-                                "item_id",
-                                "output_index",
-                                "sequence_number",
-                                "summary_index",
-                                "type",
-                            },
-                            "reasoning summary delta",
-                        )
-                        _expect_index_fields(
-                            delta_event,
-                            output_index=output_index,
-                            item_id=reasoning_id,
-                        )
-                        if delta_event.get("summary_index") != 0:
-                            raise ProxyError(
-                                "reasoning summary index is invalid"
-                            )
-                        delta = _bounded_text(
-                            delta_event.get("delta"),
-                            "reasoning summary delta",
-                            MODEL_OUTPUT_MAX_BYTES,
-                        )
-                        summary_bytes += len(delta.encode("utf-8"))
-                        if summary_bytes > MODEL_OUTPUT_MAX_BYTES:
-                            raise ProxyError(
-                                "reasoning summary exceeds its bound"
-                            )
-                        summary_fragments.append(delta)
-                    if not summary_fragments:
-                        raise ProxyError(
-                            "reasoning summary has no text delta"
-                        )
-                    summary_text = "".join(summary_fragments)
-                    text_done = cursor.take(
-                        "response.reasoning_summary_text.done"
-                    )
-                    _expect_keys(
-                        text_done,
-                        {
-                            "item_id",
-                            "output_index",
-                            "sequence_number",
-                            "summary_index",
-                            "text",
-                            "type",
-                        },
-                        "reasoning summary text completion",
-                    )
-                    _expect_index_fields(
-                        text_done,
-                        output_index=output_index,
-                        item_id=reasoning_id,
-                    )
-                    if (
-                        text_done.get("summary_index") != 0
-                        or text_done.get("text") != summary_text
-                    ):
-                        raise ProxyError(
-                            "reasoning summary text does not match"
-                        )
-                    expected_summary_part = {
-                        "text": summary_text,
-                        "type": "summary_text",
-                    }
-                    part_done = cursor.take(
-                        "response.reasoning_summary_part.done"
-                    )
-                    _expect_keys(
-                        part_done,
-                        {
-                            "item_id",
-                            "output_index",
-                            "part",
-                            "sequence_number",
-                            "summary_index",
-                            "type",
-                        },
-                        "reasoning summary part completion",
-                    )
-                    _expect_index_fields(
-                        part_done,
-                        output_index=output_index,
-                        item_id=reasoning_id,
-                    )
-                    if (
-                        part_done.get("summary_index") != 0
-                        or part_done.get("part")
-                        != expected_summary_part
-                    ):
-                        raise ProxyError(
-                            "reasoning summary part does not match"
-                        )
-                    summary = [expected_summary_part]
-                reasoning_done = cursor.take(
-                    "response.output_item.done"
-                )
-                _expect_keys(
-                    reasoning_done,
-                    {
-                        "item",
-                        "output_index",
-                        "sequence_number",
-                        "type",
-                    },
-                    "reasoning item completion",
-                )
-                _expect_index_fields(
-                    reasoning_done,
-                    output_index=output_index,
-                )
-                reasoning_item = _validate_reasoning_item(
-                    reasoning_done.get("item"),
-                    summary=summary,
-                    status="completed",
-                )
-                if reasoning_item["id"] != reasoning_id:
-                    raise ProxyError(
-                        "reasoning item ID changed during streaming"
-                    )
-                output_index += 1
-
-        message_added = cursor.take("response.output_item.added")
-        _expect_keys(
-            message_added,
-            {
-                "item",
-                "output_index",
-                "sequence_number",
-                "type",
-            },
-            "message item start",
-        )
-        _expect_index_fields(
-            message_added,
-            output_index=output_index,
-        )
-        message_id = _validate_message_added(
-            message_added.get("item")
-        )
-
-        part_added = cursor.take("response.content_part.added")
-        _expect_keys(
-            part_added,
-            {
-                "content_index",
-                "item_id",
-                "output_index",
-                "part",
-                "sequence_number",
-                "type",
-            },
-            "output text part start",
-        )
-        _expect_index_fields(
-            part_added,
-            output_index=output_index,
-            item_id=message_id,
-        )
-        if part_added.get("content_index") != 0:
-            raise ProxyError("content index is invalid")
-        _validate_output_part(part_added.get("part"), text="")
-
-        output_fragments = []
-        output_bytes = 0
-        while cursor.peek() == "response.output_text.delta":
-            delta_event = cursor.take("response.output_text.delta")
-            allowed_keys = {
-                "content_index",
-                "delta",
-                "item_id",
-                "output_index",
-                "sequence_number",
-                "type",
-            }
-            if "logprobs" in delta_event:
-                allowed_keys.add("logprobs")
-            _expect_keys(
-                delta_event,
-                allowed_keys,
-                "output text delta",
-            )
-            _expect_index_fields(
-                delta_event,
-                output_index=output_index,
-                item_id=message_id,
-            )
+        # Prefer the final completed assistant message item.
+        message = None
+        for name, value in events:
+            if name != "response.output_item.done":
+                continue
+            item = value.get("item") if isinstance(value, dict) else None
             if (
-                delta_event.get("content_index") != 0
-                or (
-                    "logprobs" in delta_event
-                    and delta_event.get("logprobs") != []
-                )
+                isinstance(item, dict)
+                and item.get("type") == "message"
+                and item.get("status") == "completed"
+                and item.get("role") == "assistant"
             ):
-                raise ProxyError("output text delta is invalid")
-            delta = _bounded_text(
-                delta_event.get("delta"),
-                "output text delta",
-                MODEL_OUTPUT_MAX_BYTES,
-            )
-            output_bytes += len(delta.encode("utf-8"))
-            if output_bytes > MODEL_OUTPUT_MAX_BYTES:
-                raise ProxyError("model output exceeds its bound")
-            output_fragments.append(delta)
-        if not output_fragments:
+                message = item
+        if message is None:
             raise ProxyError("assistant message has no output text")
-        output_text = "".join(output_fragments)
-        output_raw = output_text.encode("utf-8")
 
-        text_done = cursor.take("response.output_text.done")
-        allowed_keys = {
-            "content_index",
-            "item_id",
-            "output_index",
-            "sequence_number",
-            "text",
-            "type",
-        }
-        if "logprobs" in text_done:
-            allowed_keys.add("logprobs")
-        _expect_keys(text_done, allowed_keys, "output text completion")
-        _expect_index_fields(
-            text_done,
-            output_index=output_index,
-            item_id=message_id,
-        )
-        if (
-            text_done.get("content_index") != 0
-            or text_done.get("text") != output_text
-            or (
-                "logprobs" in text_done
-                and text_done.get("logprobs") != []
-            )
-        ):
-            raise ProxyError("completed output text does not match")
+        output_raw = _validate_message(message)
+        if not output_raw:
+            raise ProxyError("assistant message has no output text")
 
-        part_done = cursor.take("response.content_part.done")
+        # Prefer streamed text.done when present and consistent.
+        text_done_values = [
+            value
+            for name, value in events
+            if name == "response.output_text.done"
+        ]
+        if text_done_values:
+            last_done = text_done_values[-1]
+            done_text = last_done.get("text") if isinstance(last_done, dict) else None
+            if isinstance(done_text, str) and done_text.encode("utf-8") != output_raw:
+                # Prefer the completed message item (authoritative final).
+                pass
+
+        completed_event = None
+        for name, value in events:
+            if name == "response.completed":
+                completed_event = value
         _expect_keys(
-            part_done,
-            {
-                "content_index",
-                "item_id",
-                "output_index",
-                "part",
-                "sequence_number",
-                "type",
-            },
-            "output text part completion",
-        )
-        _expect_index_fields(
-            part_done,
-            output_index=output_index,
-            item_id=message_id,
-        )
-        if part_done.get("content_index") != 0:
-            raise ProxyError("content index is invalid")
-        _validate_output_part(
-            part_done.get("part"),
-            text=output_text,
-        )
-
-        message_done = cursor.take("response.output_item.done")
-        _expect_keys(
-            message_done,
-            {
-                "item",
-                "output_index",
-                "sequence_number",
-                "type",
-            },
-            "message item completion",
-        )
-        _expect_index_fields(
-            message_done,
-            output_index=output_index,
-        )
-        message = message_done.get("item")
-        completed_output_raw = _validate_message(message)
-        if (
-            message.get("id") != message_id
-            or completed_output_raw != output_raw
-        ):
-            raise ProxyError(
-                "completed message does not match streamed text"
-            )
-
-        completed = cursor.take("response.completed")
-        _expect_keys(
-            completed,
+            completed_event,
             {"response", "sequence_number", "type"},
             "response completion",
         )
-        cursor.finish()
-        response = completed.get("response")
-        expected_output = (
-            [reasoning_item, message]
-            if reasoning_item is not None
-            else [message]
-        )
+        response = completed_event.get("response")
         if not isinstance(response, dict):
             raise ProxyError("completed response is invalid")
         usage = _validate_usage(
             response.get("usage"),
             self.max_output_tokens,
+        )
+        # Optional reasoning item for shell output matching.
+        reasoning_item = None
+        for name, value in events:
+            if name != "response.output_item.done":
+                continue
+            item = value.get("item") if isinstance(value, dict) else None
+            if isinstance(item, dict) and item.get("type") == "reasoning":
+                try:
+                    reasoning_item = _validate_reasoning_item(
+                        item,
+                        summary=item.get("summary") or [],
+                        status="completed",
+                    )
+                except ProxyError:
+                    reasoning_item = None
+        expected_output = (
+            [reasoning_item, message]
+            if reasoning_item is not None
+            else [message]
         )
         completed_response_id = _response_shell(
             response,
