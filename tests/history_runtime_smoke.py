@@ -549,24 +549,9 @@ class CapabilityContract(RuntimeFixture):
             "algorithm": "test-hmac-sha256",
             "hmac_sha256_key": "11" * 32,
         }
-        commitment = {
-            "schema_version": 1,
-            "scope": "synthetic_contract_only",
-            "policy_version": policy["retrieval_policy_version"],
-            "policy_sha256": history_runtime.sha256(canonical(policy)),
-            "split_sha256": "12" * 32,
-            "calibration_query_ids_sha256": "13" * 32,
-            "heldout_query_ids_sha256": "14" * 32,
-            "benchmark_input_sha256s": {
-                "corpus": "15" * 32,
-                "folds": "16" * 32,
-            },
-            "selected_thresholds": {
-                "duplicate": 0.8,
-                "lineage": 0.8,
-                "failure": 0.8,
-            },
-        }
+        commitment = history_runtime.synthetic_policy_commitment(
+            policy
+        )
         receipt = history_runtime.seal_test_preheldout_receipt(
             {
                 "schema_version": 1,
@@ -583,30 +568,12 @@ class CapabilityContract(RuntimeFixture):
             root,
         )
         capability = history_runtime.seal_test_calibration_capability(
-            {
-                "schema_version": 1,
-                "scope": "synthetic_contract_only",
-                "trust_root_id": root["trust_root_id"],
-                "policy_commitment_sha256": history_runtime.sha256(
-                    canonical(commitment)
-                ),
-                "preheldout_receipt_sha256": history_runtime.sha256(
-                    canonical(receipt)
-                ),
-                "policy_version": policy["retrieval_policy_version"],
-                "policy_sha256": history_runtime.sha256(canonical(policy)),
-                "benchmark_snapshot_sha256": "22" * 32,
-                "qrels_sha256": "23" * 32,
-                "adjudications_sha256": "24" * 32,
-                "relation_heldout_counts": {
-                    relation: {"positive": 30, "hard_negative": 30}
-                    for relation in ("duplicate", "lineage", "failure")
-                },
-                "unresolved_adjudications": 0,
-                "heldout_output_sha256": "25" * 32,
-                "heldout_run_nonce": receipt["run_nonce"],
-                "heldout_started_at": "2026-07-24T00:00:01Z",
-            },
+            history_runtime.synthetic_calibration_capability_body(
+                policy=policy,
+                trust_root_id=root["trust_root_id"],
+                commitment=commitment,
+                receipt=receipt,
+            ),
             root,
         )
         bundle = {

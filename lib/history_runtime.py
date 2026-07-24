@@ -20,6 +20,7 @@ import weakref
 try:
     from lib import history_archive
     from lib import history_budget
+    from lib import history_eval
     from lib import history_projection
     from lib import history_retrieval
     from lib import history_store
@@ -27,6 +28,7 @@ try:
 except ImportError:
     import history_archive
     import history_budget
+    import history_eval
     import history_projection
     import history_retrieval
     import history_store
@@ -720,6 +722,175 @@ def seal_test_preheldout_receipt(value, trust_root):
     return result
 
 
+def _synthetic_relation_heldout_counts(*, advisory=False):
+    positive = 10 if advisory else 30
+    hard_negative = 10 if advisory else 30
+    return {
+        relation: {
+            "positive": positive,
+            "hard_negative": hard_negative,
+            "advisory": advisory,
+        }
+        for relation in history_eval.POSITIVE_RELATIONS
+    }
+
+
+def _synthetic_evaluation_evidence(*, all_gates_passed=True):
+    def metric_gate(minimum=0.8):
+        observed = 0.9 if all_gates_passed else 0.1
+        lower = 0.85 if all_gates_passed else 0.05
+        return {
+            "arm": "end-to-end",
+            "metric": "ndcg@10",
+            "observed": observed,
+            "ci95_lower": lower,
+            "minimum": minimum,
+            "passed": lower >= minimum,
+        }
+
+    def budget_gate(maximum=0.2):
+        observed = 0.05 if all_gates_passed else 0.9
+        upper = 0.1 if all_gates_passed else 0.95
+        return {
+            "arm": "end-to-end",
+            "metric": "false_rate",
+            "observed": observed,
+            "ci95_upper": upper,
+            "maximum": maximum,
+            "passed": upper <= maximum,
+        }
+
+    def resource_gate(maximum):
+        observed = maximum / 2 if all_gates_passed else maximum + 1
+        return {
+            "arm": "end-to-end",
+            "metric": "resource",
+            "observed": observed,
+            "maximum": maximum,
+            "passed": observed <= maximum,
+        }
+
+    evidence = {
+        "schema_version": 1,
+        "primary_metrics": {
+            name: metric_gate()
+            for name in history_eval.RELATION_GAINS
+        },
+        "error_budgets": {
+            "max_false_duplicate_rate": budget_gate(),
+            "max_false_internal_no_match_rate": budget_gate(),
+        },
+        "resource_limits": {
+            "latency_target_ms_p95": resource_gate(1000),
+            "token_budget": resource_gate(4096),
+        },
+        "selected_depths": {
+            name: {
+                "observed": 10 if all_gates_passed else 99,
+                "maximum": 50,
+                "passed": all_gates_passed,
+            }
+            for name in (
+                "per_channel_depth",
+                "comparator_cutoff",
+                "final_lineage_count",
+            )
+        },
+        "confidence_intervals_sha256": "ab" * 32,
+        "all_gates_passed": all_gates_passed,
+    }
+    # Keep all_gates_passed consistent with nested gates.
+    evidence["all_gates_passed"] = all(
+        item["passed"]
+        for group in (
+            evidence["primary_metrics"].values(),
+            evidence["error_budgets"].values(),
+            evidence["resource_limits"].values(),
+            evidence["selected_depths"].values(),
+        )
+        for item in group
+    )
+    return evidence
+
+
+def synthetic_policy_commitment(policy, *, digests=None):
+    digests = digests or {}
+    return {
+        "schema_version": 1,
+        "scope": SYNTHETIC_SCOPE,
+        "policy_version": policy["retrieval_policy_version"],
+        "policy_sha256": sha256(canonical_bytes(policy)),
+        "split_sha256": digests.get("split", "12" * 32),
+        "calibration_query_ids_sha256": digests.get(
+            "calibration_queries", "13" * 32
+        ),
+        "heldout_query_ids_sha256": digests.get(
+            "heldout_queries", "14" * 32
+        ),
+        "benchmark_input_sha256s": {
+            name: digests.get(name, f"{index:02d}" * 32)
+            for index, name in enumerate(
+                history_eval.COMMITMENT_INPUTS, start=15
+            )
+        },
+        "selected_thresholds": {
+            name: 0.8 for name in history_eval.RELATION_GAINS
+        },
+        "error_budgets": {
+            "false_duplicate": 0.2,
+            "false_internal_no_match": 0.2,
+        },
+        "selected_depths": {
+            "per_channel_depth": int(policy["per_channel_depth"]),
+            "final_lineage_count": int(policy["final_lineage_count"]),
+            "comparator_cutoff": int(policy["comparator_cutoff"]),
+        },
+        "latency_target_ms_p95": 1000,
+        "token_budget": int(policy["max_retrieval_tokens"]),
+        "sealed_at": "2026-07-23T23:59:59Z",
+    }
+
+
+def synthetic_calibration_capability_body(
+    *,
+    policy,
+    trust_root_id,
+    commitment,
+    receipt,
+    digests=None,
+):
+    digests = digests or {}
+    return {
+        "schema_version": 1,
+        "scope": SYNTHETIC_SCOPE,
+        "trust_root_id": trust_root_id,
+        "policy_commitment_sha256": sha256(
+            canonical_bytes(commitment)
+        ),
+        "preheldout_receipt_sha256": sha256(
+            canonical_bytes(receipt)
+        ),
+        "policy_version": policy["retrieval_policy_version"],
+        "policy_sha256": sha256(canonical_bytes(policy)),
+        "benchmark_snapshot_sha256": digests.get(
+            "snapshot", "22" * 32
+        ),
+        "qrels_sha256": digests.get("qrels", "23" * 32),
+        "adjudications_sha256": digests.get(
+            "adjudications", "24" * 32
+        ),
+        "relation_heldout_counts":
+            _synthetic_relation_heldout_counts(),
+        "unresolved_adjudications": 0,
+        "heldout_output_sha256": digests.get(
+            "heldout_output", "25" * 32
+        ),
+        "heldout_run_nonce": receipt["run_nonce"],
+        "heldout_started_at": "2026-07-24T00:00:01Z",
+        "evaluation_evidence": _synthetic_evaluation_evidence(),
+    }
+
+
 def _capability_seal_material(value):
     result = dict(value)
     result.pop("canonical_seal_sha256", None)
@@ -753,17 +924,7 @@ def seal_test_calibration_capability(value, trust_root):
 def _validate_commitment(commitment, policy):
     _require_fields(
         commitment,
-        {
-            "schema_version",
-            "scope",
-            "policy_version",
-            "policy_sha256",
-            "split_sha256",
-            "calibration_query_ids_sha256",
-            "heldout_query_ids_sha256",
-            "benchmark_input_sha256s",
-            "selected_thresholds",
-        },
+        set(history_eval.COMMITMENT_FIELDS),
         "policy commitment",
     )
     if (
@@ -792,20 +953,14 @@ def _validate_commitment(commitment, policy):
     inputs = commitment["benchmark_input_sha256s"]
     if (
         not isinstance(inputs, dict)
-        or not inputs
-        or any(
-            not isinstance(name, str)
-            or not name
-            or not _valid_sha256(digest)
-            for name, digest in inputs.items()
-        )
+        or set(inputs) != set(history_eval.COMMITMENT_INPUTS)
+        or any(not _valid_sha256(digest) for digest in inputs.values())
     ):
         raise CalibrationError("benchmark input commitment is invalid")
     thresholds = commitment["selected_thresholds"]
     if (
         not isinstance(thresholds, dict)
-        or set(thresholds)
-        != {"duplicate", "lineage", "failure"}
+        or set(thresholds) != set(history_eval.RELATION_GAINS)
         or any(
             isinstance(value, bool)
             or not isinstance(value, (int, float))
@@ -814,6 +969,38 @@ def _validate_commitment(commitment, policy):
         )
     ):
         raise CalibrationError("selected thresholds are invalid")
+    budgets = commitment["error_budgets"]
+    if (
+        not isinstance(budgets, dict)
+        or set(budgets)
+        != {"false_duplicate", "false_internal_no_match"}
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not 0 <= float(value) <= 1
+            for value in budgets.values()
+        )
+    ):
+        raise CalibrationError("error budgets are invalid")
+    depths = commitment["selected_depths"]
+    if (
+        not isinstance(depths, dict)
+        or set(depths)
+        != {"per_channel_depth", "final_lineage_count", "comparator_cutoff"}
+        or any(
+            type(value) is not int or value < 1
+            for value in depths.values()
+        )
+    ):
+        raise CalibrationError("selected depths are invalid")
+    if (
+        type(commitment["latency_target_ms_p95"]) is not int
+        or commitment["latency_target_ms_p95"] < 1
+        or type(commitment["token_budget"]) is not int
+        or commitment["token_budget"] < 1
+    ):
+        raise CalibrationError("resource targets are invalid")
+    _parse_utc(commitment["sealed_at"], "commitment seal time")
 
 
 def _validate_preheldout_receipt(
@@ -903,34 +1090,19 @@ def _validate_capability(
     required_scope,
     production_witness,
 ):
+    try:
+        history_eval.validate_capability_artifact(
+            capability, required_scope=required_scope
+        )
+    except history_eval.BenchmarkError as exc:
+        raise CalibrationError(str(exc)) from exc
     _require_fields(
         capability,
-        {
-            "schema_version",
-            "scope",
-            "trust_root_id",
-            "policy_commitment_sha256",
-            "preheldout_receipt_sha256",
-            "policy_version",
-            "policy_sha256",
-            "benchmark_snapshot_sha256",
-            "qrels_sha256",
-            "adjudications_sha256",
-            "relation_heldout_counts",
-            "unresolved_adjudications",
-            "heldout_output_sha256",
-            "heldout_run_nonce",
-            "heldout_started_at",
-            "canonical_seal_sha256",
-            "signature",
-        },
+        set(history_eval.CAPABILITY_FIELDS),
         "calibration capability",
     )
     if (
-        type(capability["schema_version"]) is not int
-        or capability["schema_version"] != 1
-        or capability["scope"] != required_scope
-        or capability["trust_root_id"] != receipt["trust_root_id"]
+        capability["trust_root_id"] != receipt["trust_root_id"]
         or capability["policy_commitment_sha256"]
         != sha256(canonical_bytes(commitment))
         or capability["preheldout_receipt_sha256"]
@@ -943,34 +1115,9 @@ def _validate_capability(
         or capability["unresolved_adjudications"] != 0
     ):
         raise CalibrationError("calibration capability binding is invalid")
-    _require_hashes(
-        capability,
-        {
-            "policy_commitment_sha256",
-            "preheldout_receipt_sha256",
-            "policy_sha256",
-            "benchmark_snapshot_sha256",
-            "qrels_sha256",
-            "adjudications_sha256",
-            "heldout_output_sha256",
-            "canonical_seal_sha256",
-            "signature",
-        },
-        "calibration capability",
-    )
     counts = capability["relation_heldout_counts"]
-    if (
-        not isinstance(counts, dict)
-        or set(counts) != {"duplicate", "lineage", "failure"}
-        or any(
-            not isinstance(value, dict)
-            or set(value) != {"positive", "hard_negative"}
-            or type(value["positive"]) is not int
-            or type(value["hard_negative"]) is not int
-            or value["positive"] < 30
-            or value["hard_negative"] < 30
-            for value in counts.values()
-        )
+    if required_scope == PRODUCTION_SCOPE and any(
+        item["advisory"] for item in counts.values()
     ):
         raise CalibrationError(
             "calibration held-out counts are insufficient"

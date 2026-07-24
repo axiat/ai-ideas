@@ -1270,12 +1270,32 @@ while :; do
     review_attempt_number=$((review_attempt_number + 1))
   done
   mkdir -p "$review_attempt"
+  review_prior_work=$RD/priorwork.md
+  if [ -s "$RD/history/resume-state.json" ]; then
+    sealed_prior=$(python3 - "$RD/history/resume-state.json" <<'PY'
+import json
+import pathlib
+import sys
+
+resume = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+prior = resume.get("prior_work") if isinstance(resume, dict) else None
+path = prior.get("path") if isinstance(prior, dict) else None
+if not isinstance(path, str) or not path:
+    raise SystemExit("resume state is missing sealed prior work")
+print(path)
+PY
+) || {
+      fail_round resume-prior-work || exit 1
+      continue
+    }
+    review_prior_work=$sealed_prior
+  fi
   if ! history_seal_review_plan \
     "$RD/history/batch/batch.json" \
     "$RD/history/selection.json" \
     "$RD/history/observations" \
     "$RD/history/observations/comparison-index.json" \
-    "$RD/priorwork.md" \
+    "$review_prior_work" \
     "$review_attempt/review-plan.json" \
     "${reviewer_args[@]}" \
     > "$review_attempt/seal-review-plan.json"; then
