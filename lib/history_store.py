@@ -11,6 +11,7 @@ import os
 import pathlib
 import secrets
 import sqlite3
+import stat
 import tempfile
 import time
 import unicodedata
@@ -28,6 +29,43 @@ BOOTSTRAP_MARKER_FIELDS = frozenset(
         "near_sa_sha256",
         "schema_version",
     }
+)
+BOOTSTRAP_PROVENANCE_FIELDS = frozenset(
+    {
+        "import_epoch",
+        "ledger_sha256",
+        "marker_key",
+        "marker_sha256",
+        "near_sa_observation_count",
+        "near_sa_observations",
+        "near_sa_observations_sha256",
+        "near_sa_sha256",
+        "schema_version",
+    }
+)
+BOOTSTRAP_EPOCH_FIELDS = (
+    "epoch_id",
+    "input_manifest_sha256",
+    "plan_sha256",
+    "state",
+    "row_count",
+    "result_sha256",
+    "projection_sequence",
+    "committed_at",
+)
+BOOTSTRAP_OBSERVATION_FIELDS = (
+    "observation_id",
+    "candidate_id",
+    "source_sequence",
+    "sa_votes",
+    "vote_vector",
+    "overlap",
+    "category",
+    "reason",
+    "observed_at",
+    "candidate_theme",
+    "candidate_source",
+    "candidate_verdict",
 )
 HEADER = b"date\tsource\ttheme\tidea\tverdict\treason\toverlap\tcategory\n"
 ALLOWED_RELATIONS = ("evolved_from", "recheck_of", "supersedes")
@@ -65,11 +103,26 @@ CREATE TABLE IF NOT EXISTS schema_meta(
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TRIGGER IF NOT EXISTS bootstrap_complete_v1_immutable_insert
+BEFORE INSERT ON schema_meta
+WHEN NEW.key = 'bootstrap_complete_v1'
+  AND EXISTS(
+    SELECT 1 FROM schema_meta WHERE key = 'bootstrap_complete_v1'
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'bootstrap marker is insert-once');
+END;
 CREATE TRIGGER IF NOT EXISTS bootstrap_complete_v1_immutable_update
 BEFORE UPDATE ON schema_meta
 WHEN OLD.key = 'bootstrap_complete_v1'
 BEGIN
   SELECT RAISE(ABORT, 'bootstrap marker is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS bootstrap_complete_v1_immutable_update_key
+BEFORE UPDATE ON schema_meta
+WHEN NEW.key = 'bootstrap_complete_v1'
+BEGIN
+  SELECT RAISE(ABORT, 'bootstrap marker key is reserved');
 END;
 CREATE TRIGGER IF NOT EXISTS bootstrap_complete_v1_immutable_delete
 BEFORE DELETE ON schema_meta
@@ -87,6 +140,32 @@ CREATE TABLE IF NOT EXISTS import_epochs(
   projection_sequence INTEGER NOT NULL CHECK(projection_sequence >= 1),
   committed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS bootstrap_provenance(
+  marker_key TEXT PRIMARY KEY
+    CHECK(marker_key = 'bootstrap_complete_v1'),
+  provenance_sha256 TEXT NOT NULL UNIQUE,
+  provenance_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS bootstrap_provenance_insert_once
+BEFORE INSERT ON bootstrap_provenance
+WHEN EXISTS(
+  SELECT 1 FROM bootstrap_provenance
+  WHERE marker_key = 'bootstrap_complete_v1'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'bootstrap provenance is insert-once');
+END;
+CREATE TRIGGER IF NOT EXISTS bootstrap_provenance_immutable_update
+BEFORE UPDATE ON bootstrap_provenance
+BEGIN
+  SELECT RAISE(ABORT, 'bootstrap provenance is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS bootstrap_provenance_immutable_delete
+BEFORE DELETE ON bootstrap_provenance
+BEGIN
+  SELECT RAISE(ABORT, 'bootstrap provenance is immutable');
+END;
 CREATE TABLE IF NOT EXISTS lineages(
   lineage_id TEXT PRIMARY KEY,
   root_candidate_id TEXT NOT NULL UNIQUE,
@@ -197,6 +276,16 @@ CREATE TABLE IF NOT EXISTS near_sa_observations(
   observed_at TEXT NOT NULL,
   UNIQUE(candidate_id, source_sequence)
 );
+CREATE TRIGGER IF NOT EXISTS near_sa_observations_immutable_update
+BEFORE UPDATE ON near_sa_observations
+BEGIN
+  SELECT RAISE(ABORT, 'near-SA observation is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS near_sa_observations_immutable_delete
+BEFORE DELETE ON near_sa_observations
+BEGIN
+  SELECT RAISE(ABORT, 'near-SA observation is immutable');
+END;
 CREATE TABLE IF NOT EXISTS history_receipts(
   receipt_id TEXT PRIMARY KEY,
   query_candidate_id TEXT NOT NULL,
@@ -382,6 +471,7 @@ def connect(path):
     conn = sqlite3.connect(str(db), isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA recursive_triggers = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = FULL")
     return conn
@@ -720,9 +810,53 @@ def _parse_row(raw, row_number, terminator=b"\n"):
     }
 
 
+def _read_regular_file_nofollow(path, description):
+    source = pathlib.Path(path)
+    try:
+        before = os.lstat(str(source))
+    except OSError as exc:
+        raise ImportConflict(f"{description} is unavailable") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise ImportConflict(f"{description} is not a regular file")
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(str(source), flags)
+    except OSError as exc:
+        raise ImportConflict(f"{description} cannot be opened safely") from exc
+    try:
+        opened = os.fstat(descriptor)
+        current = os.lstat(str(source))
+        identities = {
+            (before.st_dev, before.st_ino),
+            (opened.st_dev, opened.st_ino),
+            (current.st_dev, current.st_ino),
+        }
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or stat.S_ISLNK(current.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or len(identities) != 1
+        ):
+            raise ImportConflict(f"{description} changed during safe open")
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    except OSError as exc:
+        raise ImportConflict(f"{description} cannot be read safely") from exc
+    finally:
+        os.close(descriptor)
+
+
 def _seal_object(path, cas_root):
     source = pathlib.Path(path)
-    data = source.read_bytes()
+    data = _read_regular_file_nofollow(source, "import input")
     digest = _sha(data)
     _durable_mkdir(cas_root)
     destination = cas_root / digest
@@ -733,7 +867,7 @@ def _seal_object(path, cas_root):
     else:
         _write_immutable(destination, data)
     return {
-        "source_path": str(source.resolve()),
+        "source_path": str(source.absolute()),
         "sha256": digest,
         "byte_count": len(data),
         "cas_path": str(destination.resolve()),
@@ -1859,40 +1993,329 @@ def _validate_bootstrap_marker(stored, expected=None):
     return marker
 
 
-def validated_bootstrap_marker(conn):
-    """Return the durable closed bootstrap marker after read-only validation."""
+def _bootstrap_epoch_record(epoch):
+    return {field: epoch[field] for field in BOOTSTRAP_EPOCH_FIELDS}
+
+
+def _bootstrap_observation_record(item):
+    stored = {
+        key: item[key]
+        for key in BOOTSTRAP_OBSERVATION_FIELDS[:9]
+    }
+    stored.update(
+        {
+            "candidate_theme": item["expected_theme"],
+            "candidate_source": item["expected_source"],
+            "candidate_verdict": item["expected_verdict"],
+        }
+    )
+    return stored
+
+
+def _bootstrap_provenance_payload(epoch, marker, observations):
+    observation_records = sorted(
+        (
+            _bootstrap_observation_record(item)
+            for item in observations
+        ),
+        key=lambda item: item["observation_id"],
+    )
+    observation_bytes = _json_bytes(observation_records)
+    return {
+        "import_epoch": _bootstrap_epoch_record(epoch),
+        "ledger_sha256": marker["ledger_sha256"],
+        "marker_key": BOOTSTRAP_MARKER_KEY,
+        "marker_sha256": marker["marker_sha256"],
+        "near_sa_observation_count": len(observation_records),
+        "near_sa_observations": observation_records,
+        "near_sa_observations_sha256": _sha(
+            b"bootstrap-near-sa-membership-v1\0" + observation_bytes
+        ),
+        "near_sa_sha256": marker["near_sa_sha256"],
+        "schema_version": SCHEMA_VERSION,
+    }
+
+
+def _install_bootstrap_provenance(conn, epoch, marker, observations):
+    payload = _bootstrap_provenance_payload(
+        epoch, marker, observations
+    )
+    raw = _json_bytes(payload).decode("utf-8")
+    digest = _sha(
+        b"bootstrap-provenance-v1\0" + raw.encode("utf-8")
+    )
+    existing = conn.execute(
+        """
+        SELECT provenance_sha256, provenance_json
+        FROM bootstrap_provenance WHERE marker_key = ?
+        """,
+        (BOOTSTRAP_MARKER_KEY,),
+    ).fetchone()
+    if existing is not None:
+        if tuple(existing) != (digest, raw):
+            raise ImportConflict(
+                "bootstrap provenance conflicts with existing state"
+            )
+        return payload
+    conn.execute(
+        """
+        INSERT INTO bootstrap_provenance(
+          marker_key, provenance_sha256, provenance_json, created_at
+        ) VALUES(?, ?, ?, ?)
+        """,
+        (BOOTSTRAP_MARKER_KEY, digest, raw, _utc_now()),
+    )
+    return payload
+
+
+def _validated_bootstrap_provenance(conn, marker):
+    row = conn.execute(
+        """
+        SELECT provenance_sha256, provenance_json
+        FROM bootstrap_provenance WHERE marker_key = ?
+        """,
+        (BOOTSTRAP_MARKER_KEY,),
+    ).fetchone()
+    if row is None:
+        raise ImportConflict("bootstrap provenance is missing")
     try:
-        stored = _meta(conn, BOOTSTRAP_MARKER_KEY)
-    except sqlite3.OperationalError as exc:
-        raise ImportConflict("bootstrap completion marker is missing") from exc
-    if stored is None:
-        raise ImportConflict("bootstrap completion marker is missing")
-    marker = _validate_bootstrap_marker(stored)
-    if _meta(conn, "schema_version") != str(marker["schema_version"]):
-        raise ImportConflict("bootstrap marker schema version is not installed")
+        provenance = json.loads(row["provenance_json"])
+    except (TypeError, ValueError) as exc:
+        raise ImportConflict("bootstrap provenance is malformed") from exc
+    if (
+        not isinstance(provenance, dict)
+        or set(provenance) != BOOTSTRAP_PROVENANCE_FIELDS
+    ):
+        raise ImportConflict("bootstrap provenance schema is not closed")
+    canonical = _json_bytes(provenance).decode("utf-8")
+    if canonical != row["provenance_json"]:
+        raise ImportConflict("bootstrap provenance is not canonical JSON")
+    if (
+        not _is_sha256_text(row["provenance_sha256"])
+        or row["provenance_sha256"]
+        != _sha(
+            b"bootstrap-provenance-v1\0"
+            + canonical.encode("utf-8")
+        )
+    ):
+        raise ImportConflict("bootstrap provenance hash is invalid")
+    if (
+        provenance["marker_key"] != BOOTSTRAP_MARKER_KEY
+        or type(provenance["schema_version"]) is not int
+        or provenance["schema_version"] != SCHEMA_VERSION
+        or provenance["marker_sha256"] != marker["marker_sha256"]
+        or provenance["ledger_sha256"] != marker["ledger_sha256"]
+        or provenance["near_sa_sha256"] != marker["near_sa_sha256"]
+    ):
+        raise ImportConflict(
+            "bootstrap marker conflicts with durable provenance"
+        )
+    epoch_record = provenance["import_epoch"]
+    if (
+        not isinstance(epoch_record, dict)
+        or set(epoch_record) != set(BOOTSTRAP_EPOCH_FIELDS)
+        or epoch_record["state"] != "done"
+        or type(epoch_record["row_count"]) is not int
+        or epoch_record["row_count"] < 0
+        or type(epoch_record["projection_sequence"]) is not int
+        or epoch_record["projection_sequence"] < 1
+        or not _is_sha256_text(epoch_record["epoch_id"])
+        or not _is_sha256_text(
+            epoch_record["input_manifest_sha256"]
+        )
+        or not _is_sha256_text(epoch_record["plan_sha256"])
+        or not _is_sha256_text(epoch_record["result_sha256"])
+        or not isinstance(epoch_record["committed_at"], str)
+        or not epoch_record["committed_at"]
+    ):
+        raise ImportConflict("bootstrap import epoch provenance is invalid")
+    if (
+        epoch_record["epoch_id"] != marker["import_epoch_id"]
+        or epoch_record["row_count"] != marker["ledger_row_count"]
+        or epoch_record["epoch_id"]
+        != _sha(
+            b"import-epoch-v1\0"
+            + epoch_record["input_manifest_sha256"].encode("ascii")
+        )
+    ):
+        raise ImportConflict(
+            "bootstrap marker import epoch binding is invalid"
+        )
     epoch = conn.execute(
-        "SELECT row_count FROM import_epochs WHERE epoch_id = ?",
+        "SELECT * FROM import_epochs WHERE epoch_id = ?",
         (marker["import_epoch_id"],),
     ).fetchone()
-    if epoch is None or epoch["row_count"] != marker["ledger_row_count"]:
+    if (
+        epoch is None
+        or _bootstrap_epoch_record(epoch) != epoch_record
+    ):
         raise ImportConflict(
-            "bootstrap marker import epoch is missing or conflicting"
+            "bootstrap import epoch conflicts with durable provenance"
         )
-    return dict(marker)
+    projection = conn.execute(
+        """
+        SELECT snapshot_sha256, row_count
+        FROM ledger_projection_outbox
+        WHERE projection_sequence = ?
+        """,
+        (epoch_record["projection_sequence"],),
+    ).fetchone()
+    if (
+        projection is None
+        or tuple(projection)
+        != (epoch_record["result_sha256"], epoch_record["row_count"])
+    ):
+        raise ImportConflict(
+            "bootstrap ledger projection conflicts with import epoch"
+        )
+    observations = provenance["near_sa_observations"]
+    count = provenance["near_sa_observation_count"]
+    if (
+        not isinstance(observations, list)
+        or type(count) is not int
+        or count < 0
+        or count != len(observations)
+        or (
+            provenance["near_sa_sha256"] is None
+            and count != 0
+        )
+        or not _is_sha256_text(
+            provenance["near_sa_observations_sha256"]
+        )
+        or provenance["near_sa_observations_sha256"]
+        != _sha(
+            b"bootstrap-near-sa-membership-v1\0"
+            + _json_bytes(observations)
+        )
+    ):
+        raise ImportConflict(
+            "bootstrap near-SA provenance digest is invalid"
+        )
+    if observations != sorted(
+        observations, key=lambda item: item.get("observation_id", "")
+    ):
+        raise ImportConflict(
+            "bootstrap near-SA provenance order is invalid"
+        )
+    seen = set()
+    for observation in observations:
+        if (
+            not isinstance(observation, dict)
+            or set(observation) != set(BOOTSTRAP_OBSERVATION_FIELDS)
+            or not _is_sha256_text(observation["observation_id"])
+            or not _is_sha256_text(observation["candidate_id"])
+            or type(observation["source_sequence"]) is not int
+            or observation["source_sequence"] < 1
+            or type(observation["sa_votes"]) is not int
+            or observation["sa_votes"] < 0
+            or any(
+                not isinstance(observation[field], str)
+                for field in BOOTSTRAP_OBSERVATION_FIELDS[4:]
+            )
+            or observation["observation_id"] in seen
+        ):
+            raise ImportConflict(
+                "bootstrap near-SA provenance row is invalid"
+            )
+        vote_parts = observation["vote_vector"].split(",")
+        if (
+            not vote_parts
+            or any(vote not in {"0", "1", "2"} for vote in vote_parts)
+            or observation["sa_votes"]
+            != sum(vote == "2" for vote in vote_parts)
+            or observation["category"]
+            not in {"design-fixable", "evidence-incomplete"}
+        ):
+            raise ImportConflict(
+                "bootstrap near-SA provenance eligibility is invalid"
+            )
+        seen.add(observation["observation_id"])
+        stored = conn.execute(
+            """
+            SELECT observation_id, candidate_id, source_sequence, sa_votes,
+                   vote_vector, overlap, category, reason, observed_at
+            FROM near_sa_observations WHERE observation_id = ?
+            """,
+            (observation["observation_id"],),
+        ).fetchone()
+        if (
+            stored is None
+            or tuple(stored)
+            != tuple(
+                observation[field]
+                for field in BOOTSTRAP_OBSERVATION_FIELDS[:9]
+            )
+        ):
+            raise ImportConflict(
+                "bootstrap near-SA membership content changed"
+            )
+        candidate = conn.execute(
+            """
+            SELECT source_sequence, theme, source, verdict, overlap, category
+            FROM candidates WHERE candidate_id = ?
+            """,
+            (observation["candidate_id"],),
+        ).fetchone()
+        if (
+            candidate is None
+            or tuple(candidate)
+            != (
+                observation["source_sequence"],
+                observation["candidate_theme"],
+                observation["candidate_source"],
+                observation["candidate_verdict"],
+                observation["overlap"],
+                observation["category"],
+            )
+            or observation["candidate_source"] != "hunt"
+            or observation["candidate_verdict"]
+            not in {"accept-w-rev", "reject"}
+        ):
+            raise ImportConflict(
+                "bootstrap near-SA canonical membership changed"
+            )
+    return provenance
+
+
+def validated_bootstrap_marker(conn):
+    """Return the durable closed bootstrap marker after read-only validation."""
+    started = not conn.in_transaction
+    if started:
+        conn.execute("BEGIN")
+    try:
+        stored = _meta(conn, BOOTSTRAP_MARKER_KEY)
+        if stored is None:
+            raise ImportConflict("bootstrap completion marker is missing")
+        marker = _validate_bootstrap_marker(stored)
+        if _meta(conn, "schema_version") != str(
+            marker["schema_version"]
+        ):
+            raise ImportConflict(
+                "bootstrap marker schema version is not installed"
+            )
+        _validated_bootstrap_provenance(conn, marker)
+        if started:
+            conn.execute("COMMIT")
+        return dict(marker)
+    except sqlite3.OperationalError as exc:
+        if started and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise ImportConflict(
+            "bootstrap completion provenance is unavailable"
+        ) from exc
+    except Exception:
+        if started and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 
 def _prepare_bootstrap_near_sa(path, plan):
     if path is None:
         return None, []
     source = pathlib.Path(path)
-    try:
-        data = source.read_bytes()
-    except FileNotFoundError:
-        return None, []
-    except OSError as exc:
-        raise ImportConflict("near-SA bootstrap snapshot is unavailable") from exc
-    if not data:
-        return None, []
+    data = _read_regular_file_nofollow(
+        source, "near-SA bootstrap snapshot"
+    )
     rows = []
     seen_observations = set()
     seen_candidates = set()
@@ -1920,17 +2343,31 @@ def _prepare_bootstrap_near_sa(path, plan):
                 f"near-SA row {number} has an invalid vote vector"
             )
         canonical = canonical_story_v1(story)
-        matches = {
-            (item["candidate_id"], item["row_number"])
+        matches = [
+            item
             for item in plan["rows"]
             if item["canonical_story"] == canonical
             and item["story"] == story
-        }
+        ]
         if len(matches) != 1:
             raise ImportConflict(
                 f"near-SA row {number} resolves to {len(matches)} candidates"
             )
-        candidate_id, source_sequence = next(iter(matches))
+        candidate = matches[0]
+        if (
+            _theme != candidate["theme"]
+            or overlap != candidate["overlap"]
+            or category != candidate["category"]
+            or category
+            not in {"design-fixable", "evidence-incomplete"}
+            or candidate["source"] != "hunt"
+            or candidate["verdict"] not in {"accept-w-rev", "reject"}
+        ):
+            raise ImportConflict(
+                f"near-SA row {number} contradicts its canonical row"
+            )
+        candidate_id = candidate["candidate_id"]
+        source_sequence = candidate["row_number"]
         observation_id = _sha(b"near-sa-v1\0" + raw_line)
         candidate_key = (candidate_id, source_sequence)
         if (
@@ -1951,6 +2388,9 @@ def _prepare_bootstrap_near_sa(path, plan):
                 "category": category,
                 "reason": origin,
                 "observed_at": date,
+                "expected_theme": _theme,
+                "expected_source": candidate["source"],
+                "expected_verdict": candidate["verdict"],
             }
         )
     return _sha(data), rows
@@ -2004,7 +2444,8 @@ def _install_bootstrap_observations(conn, observations):
     for item in observations:
         candidate = conn.execute(
             """
-            SELECT source_sequence FROM candidates
+            SELECT source_sequence, source, theme, verdict, overlap, category
+            FROM candidates
             WHERE candidate_id = ?
             """,
             (item["candidate_id"],),
@@ -2012,6 +2453,11 @@ def _install_bootstrap_observations(conn, observations):
         if (
             candidate is None
             or candidate["source_sequence"] != item["source_sequence"]
+            or candidate["source"] != item["expected_source"]
+            or candidate["theme"] != item["expected_theme"]
+            or candidate["verdict"] != item["expected_verdict"]
+            or candidate["overlap"] != item["overlap"]
+            or candidate["category"] != item["category"]
         ):
             raise ImportConflict(
                 "near-SA bootstrap candidate is missing or conflicting"
@@ -2076,6 +2522,7 @@ def bootstrap_import_epoch(
             "bootstrap import requires a connection outside a transaction"
         )
     ledger = pathlib.Path(ledger_path)
+    _read_regular_file_nofollow(ledger, "bootstrap ledger")
     state = (
         ledger.parent / ".ai-ideas"
         if state_root is None
@@ -2100,7 +2547,8 @@ def bootstrap_import_epoch(
                 )
             stored_marker = _meta(conn, BOOTSTRAP_MARKER_KEY)
             if stored_marker is not None:
-                marker = _validate_bootstrap_marker(
+                marker = validated_bootstrap_marker(conn)
+                _validate_bootstrap_marker(
                     stored_marker, expected_marker
                 )
                 epoch = conn.execute(
@@ -2167,6 +2615,9 @@ def bootstrap_import_epoch(
                 raise ImportConflict(
                     "bootstrap store has foreign-key violations"
                 )
+            _install_bootstrap_provenance(
+                conn, epoch, expected_marker, observations
+            )
             conn.execute(
                 "INSERT INTO schema_meta(key, value) VALUES(?, ?)",
                 (BOOTSTRAP_MARKER_KEY, expected_marker_json),

@@ -88,11 +88,18 @@ class HistoryStoreSmoke(unittest.TestCase):
             for table in ("lineages", "candidates", "story_aliases", "lineage_edges")
         )
 
-    def _near_sa_snapshot(self, name="bootstrap-near-sa.tsv"):
+    def _near_sa_snapshot(
+        self,
+        name="bootstrap-near-sa.tsv",
+        *,
+        theme="Evaluation and Diagnostics",
+        overlap="low",
+        category="design-fixable",
+    ):
         snapshot = self.root / name
         snapshot.write_text(
             "2026-07-23\trun/I1\tnear sa proposition\t"
-            "Evaluation and Diagnostics\tlow\t2,1,1\tdesign-fixable\n",
+            f"{theme}\t{overlap}\t2,1,1\t{category}\n",
             encoding="utf-8",
         )
         return snapshot
@@ -102,6 +109,7 @@ class HistoryStoreSmoke(unittest.TestCase):
         return {
             table: active.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
             for table in (
+                "bootstrap_provenance",
                 "import_epochs",
                 "lineages",
                 "candidates",
@@ -133,6 +141,47 @@ class HistoryStoreSmoke(unittest.TestCase):
             ).encode("utf-8")
         ).hexdigest()
         return marker
+
+    def _marker_json(self, marker):
+        body = dict(marker)
+        body.pop("marker_sha256", None)
+        marker = dict(marker)
+        marker["marker_sha256"] = hashlib.sha256(
+            b"bootstrap-complete-v1\0"
+            + (
+                json.dumps(
+                    body,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            ).encode("utf-8")
+        ).hexdigest()
+        return (
+            json.dumps(
+                marker,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
+    def _drop_bootstrap_marker_guards(self, conn):
+        conn.execute(
+            "DROP TRIGGER IF EXISTS bootstrap_complete_v1_immutable_insert"
+        )
+        conn.execute(
+            "DROP TRIGGER IF EXISTS bootstrap_complete_v1_immutable_update"
+        )
+        conn.execute(
+            "DROP TRIGGER IF EXISTS "
+            "bootstrap_complete_v1_immutable_update_key"
+        )
+        conn.execute(
+            "DROP TRIGGER IF EXISTS bootstrap_complete_v1_immutable_delete"
+        )
 
     def test_import_export_preserves_legacy_and_current_rows(self):
         receipt = self._import()
@@ -229,6 +278,7 @@ class HistoryStoreSmoke(unittest.TestCase):
         self.assertEqual(
             self._bootstrap_counts(),
             {
+                "bootstrap_provenance": 1,
                 "import_epochs": 1,
                 "lineages": 3,
                 "candidates": 3,
@@ -249,13 +299,50 @@ class HistoryStoreSmoke(unittest.TestCase):
                 "DELETE FROM schema_meta WHERE key = 'bootstrap_complete_v1'"
             )
 
+    def test_bootstrap_marker_rejects_replace_and_rename_into_key(self):
+        completed = history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            state_root=self.state_root,
+        )
+        marker_before = self.conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'bootstrap_complete_v1'"
+        ).fetchone()[0]
+        forged = dict(completed["bootstrap_marker"])
+        forged["ledger_sha256"] = "f" * 64
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES(?, ?)",
+                ("bootstrap_complete_v1", self._marker_json(forged)),
+            )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT value FROM schema_meta "
+                "WHERE key = 'bootstrap_complete_v1'"
+            ).fetchone()[0],
+            marker_before,
+        )
+
+        conn = history_store.connect(self.root / "marker-rename.sqlite3")
+        history_store.init_schema(conn)
+        try:
+            conn.execute(
+                "INSERT INTO schema_meta(key, value) VALUES('other', 'value')"
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE schema_meta SET key = 'bootstrap_complete_v1' "
+                    "WHERE key = 'other'"
+                )
+        finally:
+            conn.close()
+
     def test_bootstrap_import_epoch_initializes_an_empty_database(self):
         conn = history_store.connect(self.root / "empty-history.sqlite3")
         try:
             receipt = history_store.bootstrap_import_epoch(
                 conn,
                 self.ledger,
-                self.root / "missing-near-sa.tsv",
                 state_root=self.state_root,
             )
             self.assertFalse(receipt["idempotent"])
@@ -288,11 +375,21 @@ class HistoryStoreSmoke(unittest.TestCase):
         self.conn.set_trace_callback(None)
         self.assertEqual(marker, completed["bootstrap_marker"])
         self.assertTrue(statements)
+        self.assertEqual(statements[0].strip().upper(), "BEGIN")
+        self.assertEqual(statements[-1].strip().upper(), "COMMIT")
         self.assertTrue(
             all(
-                statement.lstrip().upper().startswith(("SELECT", "PRAGMA"))
+                statement.lstrip().upper().startswith(
+                    ("BEGIN", "COMMIT", "SELECT", "PRAGMA")
+                )
                 for statement in statements
             )
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM bootstrap_provenance"
+            ).fetchone()[0],
+            1,
         )
 
     def test_validated_bootstrap_marker_rejects_missing_marker(self):
@@ -349,6 +446,66 @@ class HistoryStoreSmoke(unittest.TestCase):
                         history_store.validated_bootstrap_marker(conn)
                 finally:
                     conn.close()
+
+    def test_validated_bootstrap_marker_binds_ledger_and_near_sa_digests(self):
+        for field in ("ledger_sha256", "near_sa_sha256"):
+            with self.subTest(field=field):
+                conn = history_store.connect(
+                    self.root / f"forged-{field}.sqlite3"
+                )
+                history_store.init_schema(conn)
+                snapshot = self._near_sa_snapshot(
+                    f"forged-{field}-near-sa.tsv"
+                )
+                try:
+                    completed = history_store.bootstrap_import_epoch(
+                        conn,
+                        self.ledger,
+                        snapshot,
+                        state_root=self.state_root,
+                    )
+                    forged = dict(completed["bootstrap_marker"])
+                    forged[field] = "f" * 64
+                    self._drop_bootstrap_marker_guards(conn)
+                    conn.execute(
+                        "UPDATE schema_meta SET value = ? "
+                        "WHERE key = 'bootstrap_complete_v1'",
+                        (self._marker_json(forged),),
+                    )
+                    with self.assertRaises(history_store.ImportConflict):
+                        history_store.validated_bootstrap_marker(conn)
+                finally:
+                    conn.close()
+
+    def test_validated_bootstrap_marker_binds_full_import_epoch(self):
+        history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            state_root=self.state_root,
+        )
+        self.conn.execute(
+            "UPDATE import_epochs SET result_sha256 = ?",
+            ("f" * 64,),
+        )
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.validated_bootstrap_marker(self.conn)
+
+    def test_validated_bootstrap_marker_binds_near_sa_membership_content(self):
+        snapshot = self._near_sa_snapshot()
+        history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            snapshot,
+            state_root=self.state_root,
+        )
+        self.conn.execute(
+            "DROP TRIGGER IF EXISTS near_sa_observations_immutable_update"
+        )
+        self.conn.execute(
+            "UPDATE near_sa_observations SET reason = 'tampered'"
+        )
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.validated_bootstrap_marker(self.conn)
 
     def test_bootstrap_exact_replay_is_idempotent_without_duplicate_work(self):
         snapshot = self._near_sa_snapshot()
@@ -453,6 +610,204 @@ class HistoryStoreSmoke(unittest.TestCase):
             before["ledger_projection_outbox"],
         )
         self.assertEqual(after["near_sa_observations"], 1)
+
+    def test_bootstrap_near_sa_must_match_canonical_row_and_eligibility(self):
+        cases = (
+            {
+                "name": "theme",
+                "source": "hunt",
+                "verdict": "accept-w-rev",
+                "theme": "Wrong Theme",
+                "overlap": "low",
+                "category": "design-fixable",
+            },
+            {
+                "name": "overlap",
+                "source": "hunt",
+                "verdict": "accept-w-rev",
+                "theme": "Evaluation and Diagnostics",
+                "overlap": "high",
+                "category": "design-fixable",
+            },
+            {
+                "name": "category",
+                "source": "hunt",
+                "verdict": "accept-w-rev",
+                "theme": "Evaluation and Diagnostics",
+                "overlap": "low",
+                "category": "evidence-incomplete",
+            },
+            {
+                "name": "source",
+                "source": "manual",
+                "verdict": "accept-w-rev",
+                "theme": "Evaluation and Diagnostics",
+                "overlap": "low",
+                "category": "design-fixable",
+            },
+            {
+                "name": "verdict",
+                "source": "hunt",
+                "verdict": "pending",
+                "theme": "Evaluation and Diagnostics",
+                "overlap": "low",
+                "category": "design-fixable",
+            },
+        )
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                root = self.root / f"near-sa-{case['name']}"
+                root.mkdir()
+                (root / "ledger.instance-id").write_text(
+                    f"near-sa-{case['name']}\n",
+                    encoding="utf-8",
+                )
+                ledger = root / "ledger.tsv"
+                ledger.write_bytes(
+                    HEADER
+                    + (
+                        "2026-07-23\t"
+                        + case["source"]
+                        + "\tEvaluation and Diagnostics\tnear sa proposition\t"
+                        + case["verdict"]
+                        + "\treason\tlow\tdesign-fixable\n"
+                    ).encode("utf-8")
+                )
+                snapshot = root / "near-sa.tsv"
+                snapshot.write_text(
+                    "2026-07-23\trun/I1\tnear sa proposition\t"
+                    + case["theme"]
+                    + "\t"
+                    + case["overlap"]
+                    + "\t2,1,1\t"
+                    + case["category"]
+                    + "\n",
+                    encoding="utf-8",
+                )
+                conn = history_store.connect(root / "history.sqlite3")
+                history_store.init_schema(conn)
+                try:
+                    with self.assertRaises(history_store.ImportConflict):
+                        history_store.bootstrap_import_epoch(
+                            conn,
+                            ledger,
+                            snapshot,
+                            state_root=root / ".ai-ideas",
+                        )
+                    self.assertEqual(
+                        conn.execute(
+                            "SELECT count(*) FROM candidates"
+                        ).fetchone()[0],
+                        0,
+                    )
+                finally:
+                    conn.close()
+
+    def test_near_sa_observations_are_immutable(self):
+        for operation in ("update", "delete", "replace"):
+            with self.subTest(operation=operation):
+                conn = history_store.connect(
+                    self.root / f"near-sa-{operation}.sqlite3"
+                )
+                history_store.init_schema(conn)
+                snapshot = self._near_sa_snapshot(
+                    f"near-sa-{operation}-snapshot.tsv"
+                )
+                try:
+                    history_store.bootstrap_import_epoch(
+                        conn,
+                        self.ledger,
+                        snapshot,
+                        state_root=self.state_root,
+                    )
+                    existing = conn.execute(
+                        "SELECT * FROM near_sa_observations"
+                    ).fetchone()
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        if operation == "update":
+                            conn.execute(
+                                "UPDATE near_sa_observations "
+                                "SET reason = 'changed'"
+                            )
+                        elif operation == "delete":
+                            conn.execute(
+                                "DELETE FROM near_sa_observations"
+                            )
+                        else:
+                            values = list(existing)
+                            values[7] = "changed"
+                            conn.execute(
+                                """
+                                INSERT OR REPLACE INTO near_sa_observations(
+                                  observation_id, candidate_id,
+                                  source_sequence, sa_votes, vote_vector,
+                                  overlap, category, reason, observed_at
+                                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                values,
+                            )
+                finally:
+                    conn.close()
+
+    def test_bootstrap_rejects_missing_symlink_and_special_near_sa_inputs(self):
+        snapshot = self._near_sa_snapshot("near-sa-regular.tsv")
+        symlink = self.root / "near-sa-symlink.tsv"
+        symlink.symlink_to(snapshot)
+        cases = (
+            ("missing", self.root / "near-sa-missing.tsv"),
+            ("symlink", symlink),
+            ("special", pathlib.Path(os.devnull)),
+        )
+        for name, path in cases:
+            with self.subTest(case=name):
+                conn = history_store.connect(
+                    self.root / f"near-sa-input-{name}.sqlite3"
+                )
+                history_store.init_schema(conn)
+                try:
+                    with self.assertRaises(history_store.ImportConflict):
+                        history_store.bootstrap_import_epoch(
+                            conn,
+                            self.ledger,
+                            path,
+                            state_root=self.state_root,
+                        )
+                    self.assertEqual(
+                        conn.execute(
+                            "SELECT count(*) FROM candidates"
+                        ).fetchone()[0],
+                        0,
+                    )
+                finally:
+                    conn.close()
+
+    def test_bootstrap_rejects_symlink_and_special_ledger_inputs(self):
+        symlink = self.root / "ledger-symlink.tsv"
+        symlink.symlink_to(self.ledger)
+        for name, path in (
+            ("symlink", symlink),
+            ("special", pathlib.Path(os.devnull)),
+        ):
+            with self.subTest(case=name):
+                conn = history_store.connect(
+                    self.root / f"ledger-input-{name}.sqlite3"
+                )
+                history_store.init_schema(conn)
+                try:
+                    with self.assertRaises(history_store.ImportConflict):
+                        history_store.bootstrap_import_epoch(
+                            conn,
+                            path,
+                            state_root=self.state_root,
+                        )
+                    self.assertEqual(
+                        conn.execute(
+                            "SELECT count(*) FROM candidates"
+                        ).fetchone()[0],
+                        0,
+                    )
+                finally:
+                    conn.close()
 
     def test_bootstrap_validation_and_faults_leave_no_business_state(self):
         invalid = self.root / "invalid-near-sa.tsv"
