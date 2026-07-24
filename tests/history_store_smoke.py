@@ -88,6 +88,52 @@ class HistoryStoreSmoke(unittest.TestCase):
             for table in ("lineages", "candidates", "story_aliases", "lineage_edges")
         )
 
+    def _near_sa_snapshot(self, name="bootstrap-near-sa.tsv"):
+        snapshot = self.root / name
+        snapshot.write_text(
+            "2026-07-23\trun/I1\tnear sa proposition\t"
+            "Evaluation and Diagnostics\tlow\t2,1,1\tdesign-fixable\n",
+            encoding="utf-8",
+        )
+        return snapshot
+
+    def _bootstrap_counts(self, conn=None):
+        active = self.conn if conn is None else conn
+        return {
+            table: active.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in (
+                "import_epochs",
+                "lineages",
+                "candidates",
+                "story_aliases",
+                "near_sa_observations",
+                "search_projection_outbox",
+                "ledger_projection_outbox",
+            )
+        }
+
+    def _synthetic_bootstrap_marker(self):
+        body = {
+            "import_epoch_id": "0" * 64,
+            "ledger_row_count": 0,
+            "ledger_sha256": "1" * 64,
+            "near_sa_sha256": None,
+            "schema_version": 1,
+        }
+        marker = dict(body)
+        marker["marker_sha256"] = hashlib.sha256(
+            b"bootstrap-complete-v1\0"
+            + (
+                json.dumps(
+                    body,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+        ).hexdigest()
+        return marker
+
     def test_import_export_preserves_legacy_and_current_rows(self):
         receipt = self._import()
         exported = self.root / "export.tsv"
@@ -110,6 +156,406 @@ class HistoryStoreSmoke(unittest.TestCase):
             "materialization_outbox",
         ):
             self.assertNotIn(name, names)
+
+    def test_bootstrap_import_epoch_recovers_schema_without_marker(self):
+        snapshot = self._near_sa_snapshot()
+        statements = []
+        self.conn.set_trace_callback(statements.append)
+        receipt = history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            snapshot,
+            state_root=self.state_root,
+        )
+        self.conn.set_trace_callback(None)
+
+        marker_row = self.conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'bootstrap_complete_v1'"
+        ).fetchone()
+        self.assertIsNotNone(marker_row)
+        marker = json.loads(marker_row[0])
+        self.assertEqual(
+            set(marker),
+            {
+                "import_epoch_id",
+                "ledger_row_count",
+                "ledger_sha256",
+                "marker_sha256",
+                "near_sa_sha256",
+                "schema_version",
+            },
+        )
+        self.assertEqual(marker["schema_version"], 1)
+        self.assertEqual(marker["import_epoch_id"], receipt["epoch_id"])
+        self.assertEqual(marker["ledger_row_count"], 3)
+        self.assertEqual(
+            marker["ledger_sha256"],
+            hashlib.sha256(self.ledger.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            marker["near_sa_sha256"],
+            hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+        )
+        marker_body = dict(marker)
+        marker_sha = marker_body.pop("marker_sha256")
+        marker_material = (
+            json.dumps(
+                marker_body,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+        self.assertEqual(
+            marker_sha,
+            hashlib.sha256(
+                b"bootstrap-complete-v1\0" + marker_material
+            ).hexdigest(),
+        )
+        self.assertFalse(receipt["idempotent"])
+        self.assertEqual(receipt["near_sa_observations"], 1)
+        self.assertEqual(
+            sum(
+                statement.strip().upper() == "BEGIN IMMEDIATE"
+                for statement in statements
+            ),
+            1,
+        )
+        self.assertEqual(
+            sum(statement.strip().upper() == "COMMIT" for statement in statements),
+            1,
+        )
+        self.assertEqual(
+            self._bootstrap_counts(),
+            {
+                "import_epochs": 1,
+                "lineages": 3,
+                "candidates": 3,
+                "story_aliases": 3,
+                "near_sa_observations": 1,
+                "search_projection_outbox": 3,
+                "ledger_projection_outbox": 1,
+            },
+        )
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "UPDATE schema_meta SET value = '{}' "
+                "WHERE key = 'bootstrap_complete_v1'"
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "DELETE FROM schema_meta WHERE key = 'bootstrap_complete_v1'"
+            )
+
+    def test_bootstrap_import_epoch_initializes_an_empty_database(self):
+        conn = history_store.connect(self.root / "empty-history.sqlite3")
+        try:
+            receipt = history_store.bootstrap_import_epoch(
+                conn,
+                self.ledger,
+                self.root / "missing-near-sa.tsv",
+                state_root=self.state_root,
+            )
+            self.assertFalse(receipt["idempotent"])
+            self.assertEqual(receipt["near_sa_observations"], 0)
+            self.assertEqual(
+                self._bootstrap_counts(conn)["candidates"],
+                3,
+            )
+            marker = json.loads(
+                conn.execute(
+                    "SELECT value FROM schema_meta "
+                    "WHERE key = 'bootstrap_complete_v1'"
+                ).fetchone()[0]
+            )
+            self.assertIsNone(marker["near_sa_sha256"])
+        finally:
+            conn.close()
+
+    def test_validated_bootstrap_marker_reads_completed_marker_without_writes(self):
+        completed = history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            state_root=self.state_root,
+        )
+        statements = []
+        self.conn.set_trace_callback(statements.append)
+
+        marker = history_store.validated_bootstrap_marker(self.conn)
+
+        self.conn.set_trace_callback(None)
+        self.assertEqual(marker, completed["bootstrap_marker"])
+        self.assertTrue(statements)
+        self.assertTrue(
+            all(
+                statement.lstrip().upper().startswith(("SELECT", "PRAGMA"))
+                for statement in statements
+            )
+        )
+
+    def test_validated_bootstrap_marker_rejects_missing_marker(self):
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.validated_bootstrap_marker(self.conn)
+
+    def test_validated_bootstrap_marker_rejects_extra_field(self):
+        marker = self._synthetic_bootstrap_marker()
+        marker["extra"] = "not closed"
+        self.conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES(?, ?)",
+            (
+                "bootstrap_complete_v1",
+                json.dumps(
+                    marker,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+            ),
+        )
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.validated_bootstrap_marker(self.conn)
+        report = history_store.validate_store(self.conn)
+        self.assertFalse(report["ok"])
+        self.assertIn("bootstrap_marker_invalid", report["issues"])
+
+    def test_validated_bootstrap_marker_rejects_bad_hash_and_noncanonical_json(self):
+        for case in ("bad_hash", "noncanonical"):
+            with self.subTest(case=case):
+                conn = history_store.connect(
+                    self.root / f"invalid-marker-{case}.sqlite3"
+                )
+                history_store.init_schema(conn)
+                try:
+                    marker = self._synthetic_bootstrap_marker()
+                    if case == "bad_hash":
+                        marker["marker_sha256"] = "f" * 64
+                        raw = (
+                            json.dumps(
+                                marker,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                            + "\n"
+                        )
+                    else:
+                        raw = json.dumps(marker, indent=2) + "\n"
+                    conn.execute(
+                        "INSERT INTO schema_meta(key, value) VALUES(?, ?)",
+                        ("bootstrap_complete_v1", raw),
+                    )
+                    with self.assertRaises(history_store.ImportConflict):
+                        history_store.validated_bootstrap_marker(conn)
+                finally:
+                    conn.close()
+
+    def test_bootstrap_exact_replay_is_idempotent_without_duplicate_work(self):
+        snapshot = self._near_sa_snapshot()
+        first = history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            snapshot,
+            state_root=self.state_root,
+        )
+        before = self._bootstrap_counts()
+        marker_before = self.conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'bootstrap_complete_v1'"
+        ).fetchone()[0]
+
+        replay = history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            snapshot,
+            state_root=self.state_root,
+        )
+
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual(replay["epoch_id"], first["epoch_id"])
+        self.assertEqual(replay["near_sa_observations"], 1)
+        self.assertEqual(self._bootstrap_counts(), before)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT value FROM schema_meta "
+                "WHERE key = 'bootstrap_complete_v1'"
+            ).fetchone()[0],
+            marker_before,
+        )
+
+    def test_bootstrap_rejects_changed_ledger_or_near_sa_after_completion(self):
+        snapshot = self._near_sa_snapshot()
+        history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            snapshot,
+            state_root=self.state_root,
+        )
+        before = self._bootstrap_counts()
+
+        snapshot.write_text(
+            snapshot.read_text(encoding="utf-8").replace("run/I1", "run/I2"),
+            encoding="utf-8",
+        )
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.bootstrap_import_epoch(
+                self.conn,
+                self.ledger,
+                snapshot,
+                state_root=self.state_root,
+            )
+        self.assertEqual(self._bootstrap_counts(), before)
+
+        snapshot = self._near_sa_snapshot()
+        changed_ledger = self.root / "changed-ledger.tsv"
+        changed_ledger.write_bytes(
+            self.ledger.read_bytes().replace(
+                b"terminal proposition", b"changed proposition"
+            )
+        )
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.bootstrap_import_epoch(
+                self.conn,
+                changed_ledger,
+                snapshot,
+                state_root=self.state_root,
+            )
+        self.assertEqual(self._bootstrap_counts(), before)
+
+    def test_bootstrap_completes_matching_preimport_without_duplicates(self):
+        imported = history_store.import_tsv_epoch(self.conn, self.ledger)
+        before = self._bootstrap_counts()
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT value FROM schema_meta "
+                "WHERE key = 'bootstrap_complete_v1'"
+            ).fetchone()
+        )
+        snapshot = self._near_sa_snapshot()
+
+        completed = history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            snapshot,
+            state_root=self.state_root,
+        )
+
+        self.assertFalse(completed["idempotent"])
+        self.assertTrue(completed["import_idempotent"])
+        self.assertEqual(completed["epoch_id"], imported["epoch_id"])
+        after = self._bootstrap_counts()
+        self.assertEqual(after["candidates"], before["candidates"])
+        self.assertEqual(
+            after["search_projection_outbox"],
+            before["search_projection_outbox"],
+        )
+        self.assertEqual(
+            after["ledger_projection_outbox"],
+            before["ledger_projection_outbox"],
+        )
+        self.assertEqual(after["near_sa_observations"], 1)
+
+    def test_bootstrap_validation_and_faults_leave_no_business_state(self):
+        invalid = self.root / "invalid-near-sa.tsv"
+        invalid.write_text(
+            "2026-07-23\trun/I1\tmissing proposition\t"
+            "Evaluation and Diagnostics\tlow\t2,1,1\tdesign-fixable\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.bootstrap_import_epoch(
+                self.conn,
+                self.ledger,
+                invalid,
+                state_root=self.state_root,
+            )
+        self.assertEqual(
+            self._bootstrap_counts(),
+            dict.fromkeys(self._bootstrap_counts(), 0),
+        )
+
+        corrupt_marker_conn = history_store.connect(
+            self.root / "corrupt-bootstrap-marker.sqlite3"
+        )
+        history_store.init_schema(corrupt_marker_conn)
+        try:
+            corrupt_marker = {
+                "import_epoch_id": "0" * 64,
+                "ledger_row_count": 3,
+                "ledger_sha256": "0" * 64,
+                "marker_sha256": "f" * 64,
+                "near_sa_sha256": None,
+                "schema_version": 1,
+            }
+            corrupt_marker_conn.execute(
+                "INSERT INTO schema_meta(key, value) VALUES(?, ?)",
+                (
+                    "bootstrap_complete_v1",
+                    json.dumps(
+                        corrupt_marker,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n",
+                ),
+            )
+            with self.assertRaises(history_store.ImportConflict):
+                history_store.bootstrap_import_epoch(
+                    corrupt_marker_conn,
+                    self.ledger,
+                    state_root=self.state_root,
+                )
+            self.assertEqual(
+                self._bootstrap_counts(corrupt_marker_conn),
+                dict.fromkeys(self._bootstrap_counts(corrupt_marker_conn), 0),
+            )
+        finally:
+            corrupt_marker_conn.close()
+
+        snapshot = self._near_sa_snapshot()
+        for fault_after in ("after_ledger", "after_near_sa"):
+            with self.subTest(fault_after=fault_after):
+                conn = history_store.connect(
+                    self.root / f"bootstrap-{fault_after}.sqlite3"
+                )
+                history_store.init_schema(conn)
+                try:
+                    with self.assertRaises(history_store.InjectedCrash):
+                        history_store.bootstrap_import_epoch(
+                            conn,
+                            self.ledger,
+                            snapshot,
+                            state_root=self.state_root,
+                            _fault_after=fault_after,
+                        )
+                    counts = self._bootstrap_counts(conn)
+                    self.assertEqual(counts, dict.fromkeys(counts, 0))
+                    self.assertEqual(
+                        conn.execute(
+                            "SELECT value FROM schema_meta "
+                            "WHERE key = 'projection_sequence'"
+                        ).fetchone()[0],
+                        "0",
+                    )
+                    self.assertIsNone(
+                        conn.execute(
+                            "SELECT value FROM schema_meta "
+                            "WHERE key = 'bootstrap_complete_v1'"
+                        ).fetchone()
+                    )
+
+                    recovered = history_store.bootstrap_import_epoch(
+                        conn,
+                        self.ledger,
+                        snapshot,
+                        state_root=self.state_root,
+                    )
+                    self.assertFalse(recovered["idempotent"])
+                    self.assertEqual(
+                        self._bootstrap_counts(conn)["candidates"],
+                        3,
+                    )
+                finally:
+                    conn.close()
 
     def test_append_keeps_existing_candidate_ids_stable(self):
         self._import()
