@@ -337,6 +337,38 @@ class HistoryStoreSmoke(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_bootstrap_marker_rejects_replace_on_raw_connection(self):
+        completed = history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            state_root=self.state_root,
+        )
+        marker_before = self.conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'bootstrap_complete_v1'"
+        ).fetchone()[0]
+        forged = dict(completed["bootstrap_marker"])
+        forged["ledger_sha256"] = "f" * 64
+        raw = sqlite3.connect(str(self.db), isolation_level=None)
+        try:
+            self.assertEqual(
+                raw.execute("PRAGMA recursive_triggers").fetchone()[0],
+                0,
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                raw.execute(
+                    "INSERT OR REPLACE INTO schema_meta(key, value) VALUES(?, ?)",
+                    ("bootstrap_complete_v1", self._marker_json(forged)),
+                )
+            self.assertEqual(
+                raw.execute(
+                    "SELECT value FROM schema_meta "
+                    "WHERE key = 'bootstrap_complete_v1'"
+                ).fetchone()[0],
+                marker_before,
+            )
+        finally:
+            raw.close()
+
     def test_bootstrap_import_epoch_initializes_an_empty_database(self):
         conn = history_store.connect(self.root / "empty-history.sqlite3")
         try:
@@ -476,6 +508,59 @@ class HistoryStoreSmoke(unittest.TestCase):
                         history_store.validated_bootstrap_marker(conn)
                 finally:
                     conn.close()
+
+    def test_validated_bootstrap_marker_binds_ledger_digest_to_epoch_result(self):
+        completed = history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            state_root=self.state_root,
+        )
+        forged_marker = dict(completed["bootstrap_marker"])
+        forged_marker["ledger_sha256"] = "f" * 64
+        forged_marker_json = self._marker_json(forged_marker)
+        forged_marker = json.loads(forged_marker_json)
+
+        provenance = json.loads(
+            self.conn.execute(
+                "SELECT provenance_json FROM bootstrap_provenance "
+                "WHERE marker_key = 'bootstrap_complete_v1'"
+            ).fetchone()[0]
+        )
+        provenance["ledger_sha256"] = forged_marker["ledger_sha256"]
+        provenance["marker_sha256"] = forged_marker["marker_sha256"]
+        provenance_json = (
+            json.dumps(
+                provenance,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        provenance_sha256 = hashlib.sha256(
+            b"bootstrap-provenance-v1\0" + provenance_json.encode("utf-8")
+        ).hexdigest()
+
+        self._drop_bootstrap_marker_guards(self.conn)
+        self.conn.execute(
+            "DROP TRIGGER IF EXISTS bootstrap_provenance_immutable_update"
+        )
+        self.conn.execute(
+            "UPDATE schema_meta SET value = ? "
+            "WHERE key = 'bootstrap_complete_v1'",
+            (forged_marker_json,),
+        )
+        self.conn.execute(
+            """
+            UPDATE bootstrap_provenance
+            SET provenance_sha256 = ?, provenance_json = ?
+            WHERE marker_key = 'bootstrap_complete_v1'
+            """,
+            (provenance_sha256, provenance_json),
+        )
+
+        with self.assertRaises(history_store.ImportConflict):
+            history_store.validated_bootstrap_marker(self.conn)
 
     def test_validated_bootstrap_marker_binds_full_import_epoch(self):
         history_store.bootstrap_import_epoch(
@@ -749,6 +834,160 @@ class HistoryStoreSmoke(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_near_sa_replace_is_blocked_on_raw_connection(self):
+        snapshot = self._near_sa_snapshot("near-sa-raw-replace.tsv")
+        history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            snapshot,
+            state_root=self.state_root,
+        )
+        statement = """
+            INSERT OR REPLACE INTO near_sa_observations(
+              observation_id, candidate_id, source_sequence, sa_votes,
+              vote_vector, overlap, category, reason, observed_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        expected = tuple(
+            self.conn.execute(
+                """
+                SELECT observation_id, candidate_id, source_sequence, sa_votes,
+                       vote_vector, overlap, category, reason, observed_at
+                FROM near_sa_observations
+                """
+            ).fetchone()
+        )
+        conflicting = list(expected)
+        conflicting[3] = 3
+        conflicting[4] = "2,2,2"
+
+        raw = sqlite3.connect(str(self.db), isolation_level=None)
+        try:
+            self.assertEqual(
+                raw.execute("PRAGMA recursive_triggers").fetchone()[0],
+                0,
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                raw.execute(statement, conflicting)
+            self.assertEqual(
+                tuple(
+                    raw.execute(
+                        """
+                        SELECT observation_id, candidate_id, source_sequence,
+                               sa_votes, vote_vector, overlap, category,
+                               reason, observed_at
+                        FROM near_sa_observations
+                        """
+                    ).fetchone()
+                ),
+                expected,
+            )
+        finally:
+            raw.close()
+
+    def test_near_sa_candidate_sequence_identity_is_insert_once(self):
+        snapshot = self._near_sa_snapshot("near-sa-raw-identity.tsv")
+        history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            snapshot,
+            state_root=self.state_root,
+        )
+        expected = tuple(
+            self.conn.execute(
+                """
+                SELECT observation_id, candidate_id, source_sequence, sa_votes,
+                       vote_vector, overlap, category, reason, observed_at
+                FROM near_sa_observations
+                """
+            ).fetchone()
+        )
+        conflicting = list(expected)
+        conflicting[0] = "f" * 64
+
+        raw = sqlite3.connect(str(self.db), isolation_level=None)
+        try:
+            self.assertEqual(
+                raw.execute("PRAGMA recursive_triggers").fetchone()[0],
+                0,
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                raw.execute(
+                    """
+                    INSERT OR REPLACE INTO near_sa_observations(
+                      observation_id, candidate_id, source_sequence, sa_votes,
+                      vote_vector, overlap, category, reason, observed_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    conflicting,
+                )
+            self.assertEqual(
+                tuple(
+                    raw.execute(
+                        """
+                        SELECT observation_id, candidate_id, source_sequence,
+                               sa_votes, vote_vector, overlap, category,
+                               reason, observed_at
+                        FROM near_sa_observations
+                        """
+                    ).fetchone()
+                ),
+                expected,
+            )
+        finally:
+            raw.close()
+
+    def test_near_sa_exact_reinsert_is_idempotent_on_raw_connection(self):
+        snapshot = self._near_sa_snapshot("near-sa-raw-idempotent.tsv")
+        history_store.bootstrap_import_epoch(
+            self.conn,
+            self.ledger,
+            snapshot,
+            state_root=self.state_root,
+        )
+        expected = tuple(
+            self.conn.execute(
+                """
+                SELECT observation_id, candidate_id, source_sequence, sa_votes,
+                       vote_vector, overlap, category, reason, observed_at
+                FROM near_sa_observations
+                """
+            ).fetchone()
+        )
+
+        raw = sqlite3.connect(str(self.db), isolation_level=None)
+        try:
+            self.assertEqual(
+                raw.execute("PRAGMA recursive_triggers").fetchone()[0],
+                0,
+            )
+            self.assertEqual(raw.total_changes, 0)
+            raw.execute(
+                """
+                INSERT OR REPLACE INTO near_sa_observations(
+                  observation_id, candidate_id, source_sequence, sa_votes,
+                  vote_vector, overlap, category, reason, observed_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                expected,
+            )
+            self.assertEqual(raw.total_changes, 0)
+            self.assertEqual(
+                tuple(
+                    raw.execute(
+                        """
+                        SELECT observation_id, candidate_id, source_sequence,
+                               sa_votes, vote_vector, overlap, category,
+                               reason, observed_at
+                        FROM near_sa_observations
+                        """
+                    ).fetchone()
+                ),
+                expected,
+            )
+        finally:
+            raw.close()
+
     def test_bootstrap_rejects_missing_symlink_and_special_near_sa_inputs(self):
         snapshot = self._near_sa_snapshot("near-sa-regular.tsv")
         symlink = self.root / "near-sa-symlink.tsv"
@@ -808,6 +1047,41 @@ class HistoryStoreSmoke(unittest.TestCase):
                     )
                 finally:
                     conn.close()
+
+    def test_safe_regular_file_read_rejects_in_place_mutation(self):
+        original = self.ledger.read_bytes()
+        before = self.ledger.stat()
+        real_read = history_store.os.read
+        mutated = False
+
+        def mutate_after_first_read(descriptor, byte_count):
+            nonlocal mutated
+            data = real_read(descriptor, byte_count)
+            if data and not mutated:
+                mutated = True
+                replacement = bytearray(original)
+                replacement[-1] ^= 1
+                self.ledger.write_bytes(bytes(replacement))
+                os.utime(
+                    self.ledger,
+                    ns=(
+                        before.st_atime_ns,
+                        before.st_mtime_ns + 1_000_000_000,
+                    ),
+                )
+            return data
+
+        with mock.patch.object(
+            history_store.os,
+            "read",
+            side_effect=mutate_after_first_read,
+        ):
+            with self.assertRaises(history_store.ImportConflict):
+                history_store._read_regular_file_nofollow(
+                    self.ledger,
+                    "racing bootstrap ledger",
+                )
+        self.assertTrue(mutated)
 
     def test_bootstrap_validation_and_faults_leave_no_business_state(self):
         invalid = self.root / "invalid-near-sa.tsv"

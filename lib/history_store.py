@@ -276,6 +276,34 @@ CREATE TABLE IF NOT EXISTS near_sa_observations(
   observed_at TEXT NOT NULL,
   UNIQUE(candidate_id, source_sequence)
 );
+CREATE TRIGGER IF NOT EXISTS near_sa_observations_insert_once
+BEFORE INSERT ON near_sa_observations
+WHEN EXISTS(
+  SELECT 1 FROM near_sa_observations
+  WHERE observation_id = NEW.observation_id
+     OR (
+       candidate_id = NEW.candidate_id
+       AND source_sequence = NEW.source_sequence
+     )
+)
+BEGIN
+  SELECT CASE
+    WHEN EXISTS(
+      SELECT 1 FROM near_sa_observations
+      WHERE observation_id = NEW.observation_id
+        AND candidate_id = NEW.candidate_id
+        AND source_sequence = NEW.source_sequence
+        AND sa_votes = NEW.sa_votes
+        AND vote_vector = NEW.vote_vector
+        AND overlap = NEW.overlap
+        AND category = NEW.category
+        AND reason = NEW.reason
+        AND observed_at = NEW.observed_at
+    )
+    THEN RAISE(IGNORE)
+    ELSE RAISE(ABORT, 'near-SA observation identity is immutable')
+  END;
+END;
 CREATE TRIGGER IF NOT EXISTS near_sa_observations_immutable_update
 BEFORE UPDATE ON near_sa_observations
 BEGIN
@@ -829,16 +857,21 @@ def _read_regular_file_nofollow(path, description):
     try:
         opened = os.fstat(descriptor)
         current = os.lstat(str(source))
-        identities = {
-            (before.st_dev, before.st_ino),
-            (opened.st_dev, opened.st_ino),
-            (current.st_dev, current.st_ino),
+        snapshots = {
+            (
+                item.st_dev,
+                item.st_ino,
+                item.st_size,
+                item.st_mtime_ns,
+                item.st_ctime_ns,
+            )
+            for item in (before, opened, current)
         }
         if (
             not stat.S_ISREG(opened.st_mode)
             or stat.S_ISLNK(current.st_mode)
             or not stat.S_ISREG(current.st_mode)
-            or len(identities) != 1
+            or len(snapshots) != 1
         ):
             raise ImportConflict(f"{description} changed during safe open")
         chunks = []
@@ -847,6 +880,25 @@ def _read_regular_file_nofollow(path, description):
             if not chunk:
                 break
             chunks.append(chunk)
+        finished = os.fstat(descriptor)
+        after = os.lstat(str(source))
+        snapshots.update(
+            (
+                item.st_dev,
+                item.st_ino,
+                item.st_size,
+                item.st_mtime_ns,
+                item.st_ctime_ns,
+            )
+            for item in (finished, after)
+        )
+        if (
+            not stat.S_ISREG(finished.st_mode)
+            or stat.S_ISLNK(after.st_mode)
+            or not stat.S_ISREG(after.st_mode)
+            or len(snapshots) != 1
+        ):
+            raise ImportConflict(f"{description} changed during safe read")
         return b"".join(chunks)
     except OSError as exc:
         raise ImportConflict(f"{description} cannot be read safely") from exc
@@ -2132,6 +2184,7 @@ def _validated_bootstrap_provenance(conn, marker):
     if (
         epoch_record["epoch_id"] != marker["import_epoch_id"]
         or epoch_record["row_count"] != marker["ledger_row_count"]
+        or epoch_record["result_sha256"] != marker["ledger_sha256"]
         or epoch_record["epoch_id"]
         != _sha(
             b"import-epoch-v1\0"
