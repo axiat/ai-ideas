@@ -837,8 +837,8 @@ def synthetic_policy_commitment(policy, *, digests=None):
             name: 0.8 for name in history_eval.RELATION_GAINS
         },
         "error_budgets": {
-            "false_duplicate": 0.2,
-            "false_internal_no_match": 0.2,
+            "max_false_duplicate_rate": 0.2,
+            "max_false_internal_no_match_rate": 0.2,
         },
         "selected_depths": {
             "per_channel_depth": int(policy["per_channel_depth"]),
@@ -973,7 +973,10 @@ def _validate_commitment(commitment, policy):
     if (
         not isinstance(budgets, dict)
         or set(budgets)
-        != {"false_duplicate", "false_internal_no_match"}
+        != {
+            "max_false_duplicate_rate",
+            "max_false_internal_no_match_rate",
+        }
         or any(
             isinstance(value, bool)
             or not isinstance(value, (int, float))
@@ -986,10 +989,16 @@ def _validate_commitment(commitment, policy):
     if (
         not isinstance(depths, dict)
         or set(depths)
-        != {"per_channel_depth", "final_lineage_count", "comparator_cutoff"}
+        != {
+            "per_channel_depth",
+            "final_lineage_count",
+            "comparator_cutoff",
+        }
         or any(
-            type(value) is not int or value < 1
-            for value in depths.values()
+            type(value) is not int
+            or value < 1
+            or value != policy.get(name)
+            for name, value in depths.items()
         )
     ):
         raise CalibrationError("selected depths are invalid")
@@ -997,7 +1006,8 @@ def _validate_commitment(commitment, policy):
         type(commitment["latency_target_ms_p95"]) is not int
         or commitment["latency_target_ms_p95"] < 1
         or type(commitment["token_budget"]) is not int
-        or commitment["token_budget"] < 1
+        or commitment["token_budget"]
+        != policy.get("max_retrieval_tokens")
     ):
         raise CalibrationError("resource targets are invalid")
     _parse_utc(commitment["sealed_at"], "commitment seal time")
