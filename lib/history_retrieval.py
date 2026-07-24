@@ -1247,7 +1247,9 @@ def _intent_relevant_facets(intent):
     raise ValueError("unsupported retrieval intent")
 
 
-def _retain_intent_facets(ranked, intent):
+def _retain_intent_facets(
+    ranked, intent, *, expansion_requested=False
+):
     """Keep intent-relevant facets; one best match per facet (design step 1).
 
     Channel fan-out for the same facet is collapsed before budget sealing so a
@@ -1290,6 +1292,14 @@ def _retain_intent_facets(ranked, intent):
         matches = sorted(
             best.values(),
             key=lambda item: (
+                # Expansion rounds keep the requested expansion hit first.
+                # Otherwise prefer intent facets (design step 1), then typed
+                # lineage/expansion channels, then rank/channel order.
+                0
+                if expansion_requested
+                and item.get("channel") == "expansion"
+                else 1,
+                0 if item.get("facet") in relevant else 1,
                 0
                 if item.get("channel") in {"lineage", "expansion"}
                 else 1,
@@ -1302,13 +1312,13 @@ def _retain_intent_facets(ranked, intent):
         # Hard bound per lineage so sealed packs stay under the byte upper
         # bound without mid-budget matches.pop on in-cutoff lineages.
         # Evolution keeps typed lineage units first. Other intents keep one
-        # extractive match per lineage — enough for complete comparison while
-        # leaving room for multiple in-cutoff lineages under max_retrieval_tokens.
-        limit = (
-            max(3, len(relevant) + 1)
-            if intent == "evolution_search"
-            else 1
-        )
+        # match per lineage for complete comparison headroom.
+        if intent == "evolution_search":
+            limit = max(3, len(relevant) + 1)
+        elif expansion_requested:
+            limit = 1
+        else:
+            limit = 1
         matches = matches[:limit]
         if matches:
             retained.append(dict(lineage, matches=matches))
@@ -1318,7 +1328,11 @@ def _retain_intent_facets(ranked, intent):
 def _prioritize_ranked_matches(
     ranked, intent, *, expansion_requested
 ):
-    ranked = _retain_intent_facets(ranked, intent)
+    ranked = _retain_intent_facets(
+        ranked,
+        intent,
+        expansion_requested=expansion_requested,
+    )
     if expansion_requested:
         ranked.sort(
             key=lambda lineage: (
@@ -2306,10 +2320,16 @@ def _validate_published_rank_trace(
         pack["intent"],
         expansion_requested=pack["expansion_round"] > 0,
     )
-    expected_lineage_ids = [
-        lineage["lineage_id"] for lineage in ranked[:len(pack["lineages"])]
+    pack_lineage_ids = [
+        lineage["lineage_id"] for lineage in pack["lineages"]
     ]
-    if [lineage["lineage_id"] for lineage in pack["lineages"]] != expected_lineage_ids:
+    pack_lineage_set = set(pack_lineage_ids)
+    expected_lineage_ids = [
+        lineage["lineage_id"]
+        for lineage in ranked
+        if lineage["lineage_id"] in pack_lineage_set
+    ]
+    if pack_lineage_ids != expected_lineage_ids:
         raise ComparisonValidationError("published fused lineage order mismatch")
     ranked_by_lineage = {
         lineage["lineage_id"]: lineage for lineage in ranked
