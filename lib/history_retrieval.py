@@ -1050,11 +1050,17 @@ def _evolution_unit(lineage):
 
 def _cap_matches(lineages, limit, intent="duplicate_search"):
     if intent == "evolution_search":
-        result = [
-            dict(lineage, matches=_evolution_unit(lineage))
-            for lineage in lineages
-            if lineage["matches"]
-        ]
+        result = []
+        for lineage in lineages:
+            if not lineage["matches"]:
+                continue
+            try:
+                unit = _evolution_unit(lineage)
+            except RetrievalError:
+                # Incomplete sibling lineage units do not abort the pack or
+                # mislabel as budget_exceeded; omit only that lineage.
+                continue
+            result.append(dict(lineage, matches=unit))
         if sum(len(lineage["matches"]) for lineage in result) > limit:
             raise RetrievalError(
                 "complete lineage evidence units exceed match bound"
@@ -1293,13 +1299,21 @@ def _retain_intent_facets(
             best.values(),
             key=lambda item: (
                 # Expansion rounds keep the requested expansion hit first.
-                # Otherwise prefer intent facets (design step 1), then typed
-                # lineage/expansion channels, then rank/channel order.
                 0
                 if expansion_requested
                 and item.get("channel") == "expansion"
                 else 1,
-                0 if item.get("facet") in relevant else 1,
+                # Evolution keeps typed lineage channel units ahead of facets
+                # so highest/current path evidence is never displaced.
+                0
+                if intent == "evolution_search"
+                and item.get("channel") == "lineage"
+                else 1,
+                # Non-evolution prefers intent facets (design step 1).
+                0
+                if intent != "evolution_search"
+                and item.get("facet") in relevant
+                else 1,
                 0
                 if item.get("channel") in {"lineage", "expansion"}
                 else 1,
@@ -1311,12 +1325,10 @@ def _retain_intent_facets(
         )
         # Hard bound per lineage so sealed packs stay under the byte upper
         # bound without mid-budget matches.pop on in-cutoff lineages.
-        # Evolution keeps typed lineage units first. Other intents keep one
-        # match per lineage for complete comparison headroom.
+        # Evolution: lineage channel pairs + intent facets. Other intents:
+        # one extractive match per lineage for multi-lineage headroom.
         if intent == "evolution_search":
-            limit = max(3, len(relevant) + 1)
-        elif expansion_requested:
-            limit = 1
+            limit = max(4, len(relevant) + 2)
         else:
             limit = 1
         matches = matches[:limit]
