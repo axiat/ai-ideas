@@ -1051,16 +1051,23 @@ def _evolution_unit(lineage):
 def _cap_matches(lineages, limit, intent="duplicate_search"):
     if intent == "evolution_search":
         result = []
+        saw_candidate = False
         for lineage in lineages:
             if not lineage["matches"]:
                 continue
+            saw_candidate = True
             try:
                 unit = _evolution_unit(lineage)
             except RetrievalError:
-                # Incomplete sibling lineage units do not abort the pack or
-                # mislabel as budget_exceeded; omit only that lineage.
+                # Incomplete sibling unit is omitted only when another complete
+                # unit remains. If none remain, fail closed — never seal an
+                # empty complete pack that could mint complete_no_match.
                 continue
             result.append(dict(lineage, matches=unit))
+        if saw_candidate and not result:
+            raise RetrievalError(
+                "evolution pack lacks a complete highest/current unit"
+            )
         if sum(len(lineage["matches"]) for lineage in result) > limit:
             raise RetrievalError(
                 "complete lineage evidence units exceed match bound"
@@ -1325,13 +1332,23 @@ def _retain_intent_facets(
         )
         # Hard bound per lineage so sealed packs stay under the byte upper
         # bound without mid-budget matches.pop on in-cutoff lineages.
-        # Evolution: lineage channel pairs + intent facets. Other intents:
-        # one extractive match per lineage for multi-lineage headroom.
+        # Evolution never truncates lineage-channel path evidence (highest
+        # through current). Other intents keep one extractive match per
+        # lineage for multi-lineage headroom under max_retrieval_tokens.
         if intent == "evolution_search":
-            limit = max(4, len(relevant) + 2)
+            lineage_channel = [
+                item
+                for item in matches
+                if item.get("channel") == "lineage"
+            ]
+            facets = [
+                item
+                for item in matches
+                if item.get("channel") != "lineage"
+            ][: len(relevant)]
+            matches = lineage_channel + facets
         else:
-            limit = 1
-        matches = matches[:limit]
+            matches = matches[:1]
         if matches:
             retained.append(dict(lineage, matches=matches))
     return retained
