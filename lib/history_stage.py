@@ -22,12 +22,14 @@ try:
     from lib import history_budget
     from lib import history_projection
     from lib import history_retrieval
+    from lib import history_runtime
     from lib import history_stage_adapter
     from lib import history_stage_proxy
 except ImportError:
     import history_budget
     import history_projection
     import history_retrieval
+    import history_runtime
     import history_stage_adapter
     import history_stage_proxy
 
@@ -111,7 +113,7 @@ _OUTPUT_PROFILES = {
 
 _STAGE_PROFILES = {
     "generate": {
-        "role": "roles/bounded-generate.md",
+        "role": "roles/generate.md",
         "required_inputs": {
             "generation_brief.json",
             "generation_policy.md",
@@ -126,7 +128,7 @@ _STAGE_PROFILES = {
         "message": "Compare the candidate.",
     },
     "review": {
-        "role": "roles/bounded-review.md",
+        "role": "roles/review.md",
         "required_inputs": {
             "candidate.json",
             "prior_work.md",
@@ -136,7 +138,7 @@ _STAGE_PROFILES = {
         "message": "Review the bounded candidate.",
     },
     "meta": {
-        "role": "roles/bounded-meta.md",
+        "role": "roles/meta.md",
         "required_inputs": {"failure_batch.json"},
         "optional_inputs": set(),
         "message": "Distill the bounded failure batch.",
@@ -172,6 +174,8 @@ _INVOCATION_FIELDS = {
 }
 _TEST_ENVIRONMENT_FIELDS = {
     "HISTORY_STAGE_ATTACK_MODE",
+    "HISTORY_STAGE_COMPARATOR_STATUS",
+    "HISTORY_STAGE_REVIEW_VERDICT",
     "HISTORY_STAGE_INPUT_PATH",
     "HISTORY_STAGE_OUTSIDE_WRITE",
     "HISTORY_STAGE_SEAT_ID",
@@ -674,6 +678,72 @@ def _repo_artifact(descriptor, expected_source, label):
     return captured
 
 
+def _stage_policy_artifact(descriptor, command_argv):
+    if (
+        isinstance(descriptor, dict)
+        and set(descriptor) == {"source", "sha256"}
+        and descriptor.get("source") == POLICY_SOURCE
+    ):
+        return _repo_artifact(
+            descriptor, POLICY_SOURCE, "policy"
+        )
+    fields = {
+        "source",
+        "host_path",
+        "sha256",
+        "authority_scope",
+    }
+    test_backends = {
+        (ROOT / "tests" / "fake_stage_agent.py").resolve(),
+        (ROOT / "tests" / "malicious_history_agent.py").resolve(),
+    }
+    try:
+        resolved_backend = pathlib.Path(command_argv[0]).resolve(
+            strict=True
+        )
+    except (IndexError, OSError) as exc:
+        raise StageError("synthetic policy backend is unavailable") from exc
+    if (
+        not isinstance(descriptor, dict)
+        or set(descriptor) != fields
+        or descriptor.get("source") != "synthetic_contract_only"
+        or descriptor.get("authority_scope")
+        != "synthetic_contract_only"
+        or not isinstance(descriptor.get("host_path"), str)
+        or not pathlib.Path(descriptor["host_path"]).is_absolute()
+        or not _valid_sha256(descriptor.get("sha256"))
+        or len(command_argv) != 1
+        or resolved_backend not in test_backends
+    ):
+        raise StageError("policy authority mismatch")
+    captured = _capture_regular_path(
+        descriptor["host_path"], MANIFEST_MAX_BYTES
+    )
+    if captured["sha256"] != descriptor["sha256"]:
+        raise StageError("policy input hash mismatch")
+    registered = _load_json_bytes(
+        _capture_regular_path(
+            ROOT / POLICY_SOURCE, MANIFEST_MAX_BYTES
+        )["raw"],
+        "registered stage policy",
+        require_canonical=False,
+    )
+    synthetic = _load_json_bytes(
+        captured["raw"],
+        "synthetic stage policy",
+        require_canonical=False,
+    )
+    expected = dict(registered)
+    expected["mode"] = "enforcement"
+    if synthetic != expected:
+        raise StageError(
+            "synthetic policy differs beyond enforcement mode"
+        )
+    captured["source"] = descriptor["host_path"]
+    captured["external_policy"] = True
+    return captured
+
+
 def _validate_adapter(manifest, policy):
     descriptor = manifest.get("adapter")
     if (
@@ -921,7 +991,7 @@ def _validate_outputs(manifest, stage):
         raise
 
 
-def _parse_stage_inputs(stage, captured):
+def _parse_stage_inputs(stage, captured, policy):
     parsed = {}
     for name in (
         "generation_brief.json",
@@ -944,6 +1014,7 @@ def _parse_stage_inputs(stage, captured):
                 "index_generation",
                 "theme_counts",
                 "failure_code_counts",
+                "divergence_lens",
                 "parent",
                 "research_context",
                 "estimated_tokens",
@@ -985,27 +1056,34 @@ def _parse_stage_inputs(stage, captured):
         if captured["review_contract.md"]["raw"] != contract["raw"]:
             raise StageError("review contract is not the registered version")
         summary = parsed.get("history_summary.json")
+        if (
+            summary is not None
+            and policy.get("mode") != "enforcement"
+        ):
+            raise StageError(
+                "shadow review cannot mount history evidence"
+            )
         if summary is not None and (
             not isinstance(summary, dict)
             or set(summary)
             != {
                 "schema_version",
-                "receipt_id",
-                "status",
-                "candidate",
-                "candidate_sha256",
-                "relations",
-                "provenance",
+                "candidate_id",
+                "candidate_content_sha256",
+                "adapter_version",
+                "receipts",
+                "aggregate_sha256",
             }
             or summary.get("schema_version") != 1
-            or not isinstance(summary.get("receipt_id"), str)
-            or not _valid_sha256(summary["receipt_id"])
-            or summary.get("status")
-            not in history_retrieval.PERMANENT_STATUSES
-            or not isinstance(summary.get("candidate"), dict)
-            or not _valid_sha256(summary.get("candidate_sha256"))
-            or not isinstance(summary.get("relations"), list)
-            or not isinstance(summary.get("provenance"), dict)
+            or summary.get("candidate_id")
+            != candidate["candidate_id"]
+            or not _valid_sha256(
+                summary.get("candidate_content_sha256")
+            )
+            or not isinstance(summary.get("adapter_version"), str)
+            or not isinstance(summary.get("receipts"), list)
+            or not 2 <= len(summary["receipts"]) <= 3
+            or not _valid_sha256(summary.get("aggregate_sha256"))
         ):
             raise StageError("history summary is not receipt-bound")
     elif stage == "meta":
@@ -1059,47 +1137,6 @@ def _parse_stage_inputs(stage, captured):
         if len(source_ids) != len(set(source_ids)):
             raise StageError("failure batch source IDs are duplicated")
     return parsed
-
-
-def _history_summary_from_receipt(
-    candidate_raw,
-    candidate,
-    pack,
-    receipt,
-):
-    provenance_fields = (
-        "intent",
-        "pack_publication_id",
-        "pack_sha256",
-        "retrieval_policy_version",
-        "policy_sha256",
-        "source_watermark",
-        "index_generation",
-        "generation_manifest_sha256",
-        "rank_trace_sha256",
-        "comparator_invocation_sha256",
-        "comparator_preflight_sha256",
-        "comparator_version",
-        "comparison_sha256",
-    )
-    if (
-        candidate != pack.get("query")
-        or receipt.get("status")
-        not in history_retrieval.PERMANENT_STATUSES
-        or any(field not in receipt for field in provenance_fields)
-    ):
-        raise StageError("history receipt does not bind the review candidate")
-    return {
-        "schema_version": 1,
-        "receipt_id": receipt["receipt_id"],
-        "status": receipt["status"],
-        "candidate": candidate,
-        "candidate_sha256": _sha256(candidate_raw),
-        "relations": receipt["relations"],
-        "provenance": {
-            field: receipt[field] for field in provenance_fields
-        },
-    }
 
 
 def _validate_history_authority(stage, reference, parsed_inputs, policy):
@@ -1157,6 +1194,9 @@ def _validate_history_authority(stage, reference, parsed_inputs, policy):
                 history_projection._build_generation_brief_snapshot(
                     connection,
                     policy,
+                    divergence_lens=parsed_inputs[
+                        "generation_brief.json"
+                    ]["divergence_lens"],
                 )
             )
             if parsed_inputs["generation_brief.json"] != expected:
@@ -1172,62 +1212,19 @@ def _validate_history_authority(stage, reference, parsed_inputs, policy):
                 require_complete=True,
             )
         else:
-            receipt_row = connection.execute(
-                "SELECT receipt_json FROM history_receipts "
-                "WHERE receipt_id = ?",
-                (summary["receipt_id"],),
-            ).fetchone()
-            if receipt_row is None:
-                raise StageError(
-                    "history summary receipt is not durably recorded"
-                )
-            try:
-                receipt = json.loads(receipt_row["receipt_json"])
-            except (TypeError, ValueError) as exc:
-                raise StageError(
-                    "history summary receipt is corrupt"
-                ) from exc
-            publication = connection.execute(
-                "SELECT pack_bytes FROM history_pack_publications "
-                "WHERE publication_id = ?",
-                (receipt.get("pack_publication_id"),),
-            ).fetchone()
-            if publication is None:
-                raise StageError(
-                    "history summary pack is not durably recorded"
-                )
-            try:
-                pack_raw = bytes(publication["pack_bytes"])
-                pack = _load_json_bytes(
-                    pack_raw,
-                    "history summary pack",
-                )
-            except (TypeError, ValueError) as exc:
-                raise StageError(
-                    "history summary pack is corrupt"
-                ) from exc
-            history_retrieval.replay_receipt(
+            history_runtime.verify_history_summary(
                 connection,
-                pack,
-                receipt,
+                parsed_inputs["candidate.json"],
+                summary,
                 policy,
             )
-            expected = _history_summary_from_receipt(
-                _canonical_bytes(parsed_inputs["candidate.json"]),
-                parsed_inputs["candidate.json"],
-                pack,
-                receipt,
-            )
-            if summary != expected:
-                raise StageError(
-                    "history summary differs from the durable receipt"
-                )
         connection.execute("ROLLBACK")
     except (
         OSError,
         sqlite3.Error,
         history_projection.ProjectionError,
         history_retrieval.RetrievalError,
+        history_runtime.RuntimeContractError,
     ) as exc:
         raise StageError("history authority validation failed") from exc
     finally:
@@ -1269,7 +1266,7 @@ def build_stage_invocation(profile, manifest, captured_inputs, role, policy):
     if not isinstance(invocation, dict) or set(invocation) != _INVOCATION_FIELDS:
         raise StageError("closed invocation manifest mismatch")
     stage = manifest["stage"]
-    parsed = _parse_stage_inputs(stage, captured_inputs)
+    parsed = _parse_stage_inputs(stage, captured_inputs, policy)
     mounted = {
         name: value["raw"] for name, value in captured_inputs.items()
     }
@@ -1358,6 +1355,19 @@ def _validate_test_environment(value, seat_id):
         raise StageError("test adapter seat mismatch")
     if value.get("HISTORY_STAGE_ATTACK_MODE") not in _TEST_ATTACK_MODES:
         raise StageError("unknown test adapter mode")
+    if value.get("HISTORY_STAGE_COMPARATOR_STATUS") not in {
+        "complete_match",
+        "complete_no_match",
+        "uncertain",
+        "conflicting_evidence",
+    }:
+        raise StageError("unknown test comparator status")
+    if value.get("HISTORY_STAGE_REVIEW_VERDICT") not in {
+        "strong-accept",
+        "accept-w-rev",
+        "reject",
+    }:
+        raise StageError("unknown test review verdict")
     try:
         sentinels = json.loads(value["HISTORY_STAGE_SENTINELS_JSON"])
     except (TypeError, ValueError) as exc:
@@ -2334,7 +2344,6 @@ def _revalidate_sources(
     try:
         for label, value in (
             ("role", role),
-            ("policy", policy),
             ("adapter", adapter_artifacts["executable"]),
             (
                 "canonicalizer",
@@ -2354,6 +2363,31 @@ def _revalidate_sources(
                 raise StageError(f"{label} drifted before launch")
     finally:
         os.close(repo_fd)
+    if policy.get("external_policy") is True:
+        current_policy = _capture_regular_path(
+            policy["path"], MANIFEST_MAX_BYTES
+        )
+        if (
+            current_policy["raw"] != policy["raw"]
+            or current_policy["identity"] != policy["identity"]
+        ):
+            raise StageError("policy drifted before launch")
+    else:
+        repo_fd = os.open(ROOT, flags)
+        try:
+            current_policy = capture_regular_input(
+                repo_fd,
+                policy["source"],
+                policy["sha256"],
+                MANIFEST_MAX_BYTES,
+            )
+            if (
+                current_policy["raw"] != policy["raw"]
+                or current_policy["identity"] != policy["identity"]
+            ):
+                raise StageError("policy drifted before launch")
+        finally:
+            os.close(repo_fd)
     root_fd = os.open(input_root["path"], flags)
     try:
         for value in inputs.values():
@@ -2983,8 +3017,8 @@ def run_stage(
         manifest = load_manifest(manifest_path, stage)
         profile = _STAGE_PROFILES[stage]
         role = _repo_artifact(manifest["role"], profile["role"], "role")
-        policy_capture = _repo_artifact(
-            manifest["policy"], POLICY_SOURCE, "policy"
+        policy_capture = _stage_policy_artifact(
+            manifest["policy"], command_argv
         )
         policy = _load_json_bytes(
             policy_capture["raw"],

@@ -38,12 +38,29 @@ if stage == "generate":
     )
 elif stage == "history-compare":
     pack = payload["retrieval_payload"]
+    status = os.environ.get(
+        "HISTORY_STAGE_COMPARATOR_STATUS",
+        "complete_no_match",
+    )
     relations = []
-    for lineage in pack["lineages"]:
+    for index, lineage in enumerate(pack["lineages"]):
         match = lineage["matches"][0]
+        if status == "uncertain":
+            relation = "uncertain"
+        elif status in {
+            "complete_match",
+            "conflicting_evidence",
+        } and index == 0:
+            relation = {
+                "duplicate_search": "same_core_idea",
+                "evolution_search": "same_lineage_revision",
+                "failure_pattern_search": "same_failure_mechanism",
+            }[pack["intent"]]
+        else:
+            relation = "distinct"
         relations.append(
             {
-                "relation": "distinct",
+                "relation": relation,
                 "candidate_id": match["candidate_id"],
                 "lineage_id": match["lineage_id"],
                 "facet": match["facet"],
@@ -53,10 +70,25 @@ elif stage == "history-compare":
             }
         )
     response = {
-        "status": "complete_no_match",
+        "status": status,
         "comparator_version": "history-comparator-v1",
         "relations": relations,
-        "expansion_request": None,
+        "expansion_request": (
+            {
+                "record_ids": [
+                    pack["lineages"][0]["matches"][0][
+                        "candidate_id"
+                    ]
+                ]
+            }
+            if (
+                status == "uncertain"
+                and pack["lineages"]
+                and pack["expansion_round"]
+                < pack["hard_limits"]["max_expansion_rounds"]
+            )
+            else None
+        ),
     }
     (output / "history-comparison.json").write_text(
         json.dumps(
@@ -70,20 +102,50 @@ elif stage == "history-compare":
     )
 elif stage == "review":
     candidate_id = payload["candidate"]["candidate_id"]
-    reason = "The bounded fixture leaves one major issue."
+    verdict = os.environ.get(
+        "HISTORY_STAGE_REVIEW_VERDICT",
+        "accept-w-rev",
+    )
+    ballot = {
+        "strong-accept": {
+            "critical": 0,
+            "major": 0,
+            "headline": "The bounded candidate clears the review gates.",
+            "occupation": "The supplied prior work leaves the claim open.",
+            "experiment": "The bounded falsification is decisive.",
+            "reason": "The bounded fixture supports strong acceptance.",
+        },
+        "accept-w-rev": {
+            "critical": 0,
+            "major": 1,
+            "headline": "The bounded candidate remains plausible.",
+            "occupation": "The supplied prior work leaves one gap.",
+            "experiment": "The falsification is bounded but incomplete.",
+            "reason": "The bounded fixture leaves one major issue.",
+        },
+        "reject": {
+            "critical": 1,
+            "major": 1,
+            "headline": "The bounded candidate fails a critical gate.",
+            "occupation": "The supplied prior work occupies the claim.",
+            "experiment": "The falsification cannot resolve the conflict.",
+            "reason": "The bounded fixture contains a critical issue.",
+        },
+    }[verdict]
+    reason = ballot["reason"]
     (output / "verdict.tsv").write_text(
-        f"{candidate_id}\taccept-w-rev\t1\t"
+        f"{candidate_id}\t{verdict}\t{ballot['major']}\t"
         f"{reason}\n",
         encoding="utf-8",
     )
     (output / "review.md").write_text(
         f"# {candidate_id}\n"
-        "Verdict: accept-w-rev\n"
-        "CRITICAL: 0\n"
-        "MAJOR: 1\n"
-        "Headline: The bounded candidate remains plausible.\n"
-        "Occupation: The supplied prior work leaves one gap.\n"
-        "Experiment: The falsification is bounded but incomplete.\n"
+        f"Verdict: {verdict}\n"
+        f"CRITICAL: {ballot['critical']}\n"
+        f"MAJOR: {ballot['major']}\n"
+        f"Headline: {ballot['headline']}\n"
+        f"Occupation: {ballot['occupation']}\n"
+        f"Experiment: {ballot['experiment']}\n"
         "Estimand: The supplied estimand is aligned.\n"
         "Payoff: One attributable payoff remains possible.\n"
         "Feasibility: One researcher and one H100 suffice.\n"

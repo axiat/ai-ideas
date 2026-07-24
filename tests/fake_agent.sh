@@ -1,6 +1,285 @@
 #!/usr/bin/env bash
 set -eu
 
+fake_codex_protocol() {
+  local mirror= output_schema= output_last_message=
+  local provider_config= prompt=
+  while [ "$#" -gt 0 ]; do
+    prompt=$1
+    case "$1" in
+      -C)
+        shift
+        [ "$#" -gt 0 ] || exit 64
+        mirror=$1
+        ;;
+      --output-schema)
+        shift
+        [ "$#" -gt 0 ] || exit 64
+        output_schema=$1
+        ;;
+      --output-last-message)
+        shift
+        [ "$#" -gt 0 ] || exit 64
+        output_last_message=$1
+        ;;
+      model_providers.history_loopback=*)
+        provider_config=$1
+        ;;
+    esac
+    shift
+  done
+  [ -n "$mirror" ] \
+    && [ -n "$output_schema" ] \
+    && [ -n "$output_last_message" ] \
+    || exit 64
+
+  fake_python=/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3
+  [ -x "$fake_python" ] || fake_python=/usr/bin/python3
+  exec "$fake_python" -c '
+import json
+import pathlib
+import re
+import socket
+import sys
+
+mirror = pathlib.Path(sys.argv[1]).resolve()
+schema_path = pathlib.Path(sys.argv[2]).resolve()
+output_path = pathlib.Path(sys.argv[3]).resolve()
+provider_config = sys.argv[4]
+prompt = sys.argv[5]
+if pathlib.Path.cwd().resolve() != mirror:
+    raise SystemExit(64)
+for path in (schema_path, output_path):
+    try:
+        path.relative_to(mirror)
+    except ValueError:
+        raise SystemExit(64)
+if output_path.exists():
+    raise SystemExit(74)
+
+schema = json.loads(schema_path.read_text(encoding="utf-8"))
+stage_values = schema["properties"]["stage"]["enum"]
+if not isinstance(stage_values, list) or len(stage_values) != 1:
+    raise SystemExit(65)
+stage = stage_values[0]
+inputs = mirror / "input"
+
+if stage == "generate":
+    ideas_tsv = (
+        "I1\tBounded Test Idea\t"
+        "World Models - Architecture\n"
+    )
+    ideas_md = (
+        "Assumption-Removal Attempt: incomplete — fixture; "
+        "blocked by: evidence\n\n"
+        "## I1\n"
+        "One-Sentence Story: Bounded Test Idea\n"
+        "Theme: World Models - Architecture\n"
+        "Form: new mechanism or new problem\n"
+        "Summary: Exercise the bounded stage contract.\n"
+        "Minimal Falsification Experiment: Compare against the strongest "
+        "fixture baseline on 128 episodes using one H100; kill the idea if "
+        "the expected bounded signal is absent.\n"
+        "Why It May Be Novel: Downstream research must test occupation.\n"
+    )
+    artifacts = [
+        {
+            "artifact_kind": "generation-ideas-markdown",
+            "content": ideas_md,
+        },
+        {
+            "artifact_kind": "generation-ideas-tsv",
+            "content": ideas_tsv,
+        },
+    ]
+elif stage == "history-compare":
+    pack = json.loads(
+        (inputs / "retrieval_pack.json").read_text(encoding="utf-8")
+    )
+    relations = []
+    for lineage in pack["lineages"]:
+        match = lineage["matches"][0]
+        relations.append(
+            {
+                "relation": "distinct",
+                "candidate_id": match["candidate_id"],
+                "lineage_id": match["lineage_id"],
+                "facet": match["facet"],
+                "evidence_id": match["evidence_id"],
+                "material_difference": (
+                    "The supplied propositions differ."
+                ),
+                "confidence": 0.8,
+            }
+        )
+    comparison = {
+        "status": "complete_no_match",
+        "comparator_version": "history-comparator-v1",
+        "relations": relations,
+        "expansion_request": None,
+    }
+    artifacts = [
+        {
+            "artifact_kind": "history-comparison-json",
+            "content": json.dumps(
+                comparison,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+        }
+    ]
+elif stage == "review":
+    candidate = json.loads(
+        (inputs / "candidate.json").read_text(encoding="utf-8")
+    )
+    candidate_id = candidate["candidate_id"]
+    reason = "The bounded fixture leaves one major issue."
+    review = (
+        f"# {candidate_id}\n"
+        "Verdict: accept-w-rev\n"
+        "CRITICAL: 0\n"
+        "MAJOR: 1\n"
+        "Headline: The bounded candidate remains plausible.\n"
+        "Occupation: The supplied prior work leaves one gap.\n"
+        "Experiment: The falsification is bounded but incomplete.\n"
+        "Estimand: The supplied estimand is aligned.\n"
+        "Payoff: One attributable payoff remains possible.\n"
+        "Feasibility: One researcher and one H100 suffice.\n"
+        "History: unavailable\n"
+        f"Reason: {reason}\n"
+    )
+    verdict = f"{candidate_id}\taccept-w-rev\t1\t{reason}\n"
+    artifacts = [
+        {"artifact_kind": "review-markdown", "content": review},
+        {"artifact_kind": "review-verdict-tsv", "content": verdict},
+    ]
+elif stage == "meta":
+    batch = json.loads(
+        (inputs / "failure_batch.json").read_text(encoding="utf-8")
+    )
+    distilled = {
+        "schema_version": 1,
+        "mappings": [
+            {
+                "source_id": item["source_id"],
+                "failure_code": "unmapped",
+                "theme": "unmapped",
+            }
+            for item in batch["items"]
+        ],
+    }
+    artifacts = [
+        {
+            "artifact_kind": "failure-distillation-json",
+            "content": json.dumps(
+                distilled,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+        }
+    ]
+else:
+    raise SystemExit(65)
+
+envelope = {
+    "schema_version": 1,
+    "stage": stage,
+    "artifacts": artifacts,
+}
+output_raw = (
+    json.dumps(envelope, sort_keys=True, separators=(",", ":")) + "\n"
+)
+if provider_config:
+    match = re.search(
+        r'\''base_url="http://127[.]0[.]0[.]1:([0-9]+)/v1"'\'',
+        provider_config,
+    )
+    if match is None:
+        print("fake codex: loopback provider is missing", file=sys.stderr)
+        raise SystemExit(65)
+    request = {
+        "input": [
+            {
+                "content": [{"text": prompt, "type": "input_text"}],
+                "role": "user",
+                "type": "message",
+            }
+        ]
+    }
+    request_raw = json.dumps(
+        request,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    header = (
+        b"POST /v1/responses HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(request_raw)}\r\n".encode("ascii")
+        + b"Connection: close\r\n\r\n"
+    )
+    connection = socket.create_connection(
+        ("127.0.0.1", int(match.group(1))),
+        timeout=10,
+    )
+    connection.sendall(header + request_raw)
+    chunks = []
+    while True:
+        chunk = connection.recv(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    connection.close()
+    response_header, response_raw = b"".join(chunks).split(
+        b"\r\n\r\n",
+        1,
+    )
+    if not response_header.startswith(b"HTTP/1.1 200 "):
+        raise SystemExit(69)
+    completed = []
+    for record in response_raw.split(b"\n\n"):
+        if not record:
+            continue
+        lines = record.split(b"\n")
+        if len(lines) != 2:
+            continue
+        value = json.loads(lines[1].removeprefix(b"data: "))
+        if lines[0] == b"event: response.output_text.done":
+            completed.append(value["text"])
+        elif (
+            lines[0] == b"event: response.output_item.done"
+            and value.get("item", {}).get("type") == "message"
+        ):
+            completed.append(value["item"]["content"][0]["text"])
+    completed = list(dict.fromkeys(completed))
+    if len(completed) != 1:
+        print(
+            "fake codex: expected one completed output event, got "
+            f"{len(completed)}; response={response_raw[:512]!r}",
+            file=sys.stderr,
+        )
+        raise SystemExit(65)
+    upstream = json.loads(completed[0])
+    if (
+        not isinstance(upstream, dict)
+        or upstream.get("schema_version") != 1
+        or upstream.get("stage") != stage
+    ):
+        print("fake codex: upstream envelope identity drifted", file=sys.stderr)
+        raise SystemExit(65)
+    output_raw = completed[0]
+output_path.write_text(output_raw, encoding="utf-8")
+' "$mirror" "$output_schema" "$output_last_message" \
+    "$provider_config" "$prompt"
+}
+
+for fake_arg in "$@"; do
+  if [ "$fake_arg" = "--output-last-message" ]; then
+    fake_codex_protocol "$@"
+  fi
+done
+
 [ "$#" -eq 1 ] || {
   printf 'usage: fake_agent.sh <prompt>\n' >&2
   exit 64
@@ -190,6 +469,21 @@ case "$prompt" in
     ;;
   *roles/research.md*)
     record_call research
+    summary_path=tmp/round/history/research-view/history-summaries/I1.json
+    case "$FAKE_AGENT_MODE" in
+      history-summary-required)
+        [ -s "$summary_path" ] || {
+          printf 'fake_agent.sh: required history summary is missing\n' >&2
+          exit 65
+        }
+        ;;
+      history-summary-forbidden)
+        [ ! -e "$summary_path" ] || {
+          printf 'fake_agent.sh: unexpected history summary is present\n' >&2
+          exit 65
+        }
+        ;;
+    esac
     overlap_line='Overlap: low — None of the five nearest works occupies confidence-gated latent updates for closed-loop world-model control.'
     if [ "$FAKE_AGENT_MODE" = "overlap-commentary" ]; then
       # Intentionally invalid token: commentary must not supply an overlap value.

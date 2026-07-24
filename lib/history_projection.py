@@ -4,7 +4,9 @@
 import hashlib
 import json
 import math
+import os
 import re
+import stat
 import struct
 
 try:
@@ -34,6 +36,7 @@ VECTOR_REVISION = "1"
 PREPROCESSING_VERSION = "search-text-v1"
 PROJECTION_SCHEMA_VERSION = "history-projection-v4"
 FTS_TOKENIZER = "unicode61"
+DIVERGENCE_LENS_MAX_BYTES = 2048
 
 
 class ProjectionError(RuntimeError):
@@ -82,7 +85,6 @@ CREATE TABLE IF NOT EXISTS search_index_generations(
 
 _POLICY_FIXED = {
     "retrieval_policy_version": "retrieval-policy-v1",
-    "mode": "shadow",
     "per_channel_depth": 50,
     "final_lineage_count": 10,
     "comparator_cutoff": 10,
@@ -109,17 +111,75 @@ _POLICY_PROJECTION = {
     "metric": "cosine",
 }
 _POLICY_KEYS = set(_POLICY_FIXED) | {
-    "mandatory_channels", "projection", "tested_adapter_allowances",
+    "mode", "mandatory_channels", "projection", "tested_adapter_allowances",
 }
 
 
 def load_policy(path):
-    with open(path, "r", encoding="utf-8") as stream:
-        policy = json.load(stream)
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise ValueError("retrieval policy is unavailable") from exc
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_size < 1
+        or before.st_size > 1024 * 1024
+    ):
+        raise ValueError(
+            "retrieval policy must be a bounded single-link file"
+        )
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError("retrieval policy is unavailable") from exc
+    try:
+        opened = os.fstat(descriptor)
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    if (
+        identity
+        != (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+        )
+        or identity
+        != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        )
+    ):
+        raise ValueError("retrieval policy changed during capture")
+    try:
+        policy = json.loads(b"".join(chunks).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("retrieval policy is invalid JSON") from exc
     if set(policy) != _POLICY_KEYS:
         raise ValueError("retrieval policy keys do not match v1")
     if any(policy.get(key) != value for key, value in _POLICY_FIXED.items()):
         raise ValueError("retrieval policy fixed values do not match v1")
+    if policy.get("mode") not in {"shadow", "enforcement"}:
+        raise ValueError("retrieval policy mode is invalid")
     if policy.get("mandatory_channels") != _POLICY_CHANNELS:
         raise ValueError("retrieval policy channels do not match v1")
     if policy.get("projection") != _POLICY_PROJECTION:
@@ -851,7 +911,15 @@ def _build_generation_brief_snapshot(
     conn,
     policy,
     research_context=None,
+    divergence_lens="",
 ):
+    if (
+        not isinstance(divergence_lens, str)
+        or "\x00" in divergence_lens
+        or len(divergence_lens.encode("utf-8"))
+        > DIVERGENCE_LENS_MAX_BYTES
+    ):
+        raise ValueError("divergence lens exceeds its bound")
     pending = conn.execute(
         "SELECT count(*) FROM search_projection_outbox WHERE state != 'done'"
     ).fetchone()[0]
@@ -889,6 +957,7 @@ def _build_generation_brief_snapshot(
         "index_generation": generation["generation"],
         "theme_counts": theme_counts,
         "failure_code_counts": dict(sorted(failure_counts.items())),
+        "divergence_lens": divergence_lens,
         "parent": parent_value,
         "research_context": research_context,
     }
@@ -903,10 +972,16 @@ def _build_generation_brief_snapshot(
     return brief
 
 
-def build_generation_brief(conn, policy, research_context=None):
+def build_generation_brief(
+    conn,
+    policy,
+    research_context=None,
+    divergence_lens="",
+):
     _init(conn)
     return _build_generation_brief_snapshot(
         conn,
         policy,
         research_context,
+        divergence_lens,
     )

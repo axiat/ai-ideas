@@ -23,6 +23,7 @@ from lib import history_budget
 from lib import history_projection
 from lib import history_retrieval
 from lib import history_stage
+from lib import history_runtime
 from lib import history_store
 
 
@@ -32,10 +33,10 @@ CANONICALIZER_PATH = ROOT / "lib" / "history_stage_proxy.py"
 BACKEND_PATH = ROOT / "tests" / "malicious_history_agent.py"
 FAKE_AGENT_PATH = ROOT / "tests" / "fake_agent.sh"
 ROLE_PATHS = {
-    "generate": "roles/bounded-generate.md",
+    "generate": "roles/generate.md",
     "history-compare": "roles/history-compare.md",
-    "review": "roles/bounded-review.md",
-    "meta": "roles/bounded-meta.md",
+    "review": "roles/review.md",
+    "meta": "roles/meta.md",
 }
 INPUT_CAPS = {
     "generation_brief.json": 65536,
@@ -130,6 +131,7 @@ class StageFixture:
         seat_id=None,
         attack_mode="none",
         retrieval_complete=True,
+        review_verdict="accept-w-rev",
     ):
         self.testcase = testcase
         self.stage = stage
@@ -148,6 +150,7 @@ class StageFixture:
         self.outside_write = self.temp / "outside-write.txt"
         self.attack_mode = attack_mode
         self.retrieval_complete = retrieval_complete
+        self.review_verdict = review_verdict
         self.history_store_reference = None
         self.history_database = None
         self.policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
@@ -320,6 +323,9 @@ class StageFixture:
         first_input = sorted(self.input_bytes)[0]
         environment = {
             "HISTORY_STAGE_ATTACK_MODE": self.attack_mode,
+            "HISTORY_STAGE_COMPARATOR_STATUS":
+                "complete_no_match",
+            "HISTORY_STAGE_REVIEW_VERDICT": self.review_verdict,
             "HISTORY_STAGE_INPUT_PATH": f"input/{first_input}",
             "HISTORY_STAGE_OUTSIDE_WRITE": str(self.outside_write),
             "HISTORY_STAGE_SEAT_ID": self.seat_id,
@@ -498,32 +504,33 @@ class HistoryStageSmoke(unittest.TestCase):
             with self.assertRaises(history_stage.StageError):
                 history_stage.parse_command_json(invalid)
 
-    def test_bounded_roles_are_namespaced_until_hunt_cutover(self):
+    def test_bounded_roles_are_canonical_after_hunt_cutover(self):
         hunt = (ROOT / "hunt.sh").read_text(encoding="utf-8")
-        self.assertIn("Read roles/generate.md and follow it", hunt)
-        self.assertIn("Read roles/meta.md and follow it", hunt)
-        self.assertIn("Read roles/review.md and follow it", hunt)
-        for stage, bounded in ROLE_PATHS.items():
-            if stage == "history-compare":
-                continue
-            self.assertNotEqual(
-                bounded,
-                f"roles/{'generate' if stage == 'generate' else stage}.md",
-            )
-            self.assertTrue((ROOT / bounded).is_file())
-        legacy_generate = (ROOT / "roles/generate.md").read_text(
+        self.assertIn("run_contained_stage", hunt)
+        self.assertIn("history_runtime_authorized run-stage", hunt)
+        self.assertIn("history_runtime_authorized compare-targets", hunt)
+        self.assertIn("history_runtime_authorized run-review-matrix", hunt)
+        self.assertNotIn("Read roles/generate.md and follow it", hunt)
+        self.assertNotIn("Read roles/meta.md and follow it", hunt)
+        self.assertNotIn("Read roles/review.md and follow it", hunt)
+        self.assertEqual(ROLE_PATHS["generate"], "roles/generate.md")
+        self.assertEqual(ROLE_PATHS["meta"], "roles/meta.md")
+        self.assertEqual(ROLE_PATHS["review"], "roles/review.md")
+        for role in ROLE_PATHS.values():
+            self.assertTrue((ROOT / role).is_file())
+        generate = (ROOT / "roles/generate.md").read_text(
             encoding="utf-8"
         )
-        legacy_meta = (ROOT / "roles/meta.md").read_text(encoding="utf-8")
-        legacy_review = (ROOT / "roles/review.md").read_text(
+        meta = (ROOT / "roles/meta.md").read_text(encoding="utf-8")
+        review = (ROOT / "roles/review.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("tmp/round/ideas.tsv", legacy_generate)
-        self.assertIn("tmp/deathlist.md", legacy_meta)
-        self.assertIn("D/verdict.tsv", legacy_review)
-        self.assertNotIn("final JSON object", legacy_generate)
-        self.assertNotIn("final JSON object", legacy_meta)
-        self.assertNotIn("final JSON object", legacy_review)
+        self.assertIn("generation_brief.json", generate)
+        self.assertIn("failure_batch.json", meta)
+        self.assertIn("history_summary.json", review)
+        self.assertIn("final JSON object", generate)
+        self.assertIn("final JSON object", meta)
+        self.assertIn("final JSON object", review)
 
     def _backend_entry_log(self, fixture, action):
         path = fixture.temp / "host-backend-entry.log"
@@ -596,68 +603,83 @@ class HistoryStageSmoke(unittest.TestCase):
                 )
 
     def _review_fixture_with_durable_summary(self):
-        comparison = StageFixture(self, "history-compare")
-        pack = json.loads(
-            comparison.input_bytes["retrieval_pack.json"]
-        )
-        relations = []
-        for lineage in pack["lineages"]:
-            match = lineage["matches"][0]
-            relations.append(
-                {
-                    "relation": "distinct",
-                    "candidate_id": match["candidate_id"],
-                    "lineage_id": match["lineage_id"],
-                    "facet": match["facet"],
-                    "evidence_id": match["evidence_id"],
-                    "material_difference": "The bounded evidence differs.",
-                    "confidence": 0.8,
-                }
-            )
-        response = {
-            "status": "complete_no_match",
-            "comparator_version": history_retrieval.COMPARATOR_VERSION,
-            "relations": relations,
-            "expansion_request": None,
+        review = StageFixture(self, "review")
+        review.policy = copy.deepcopy(review.policy)
+        review.policy["mode"] = "enforcement"
+        database = review._ensure_history_authority()
+        candidate = {
+            "candidate_id": "I1",
+            "story": "Bounded candidate.",
+            "theme": "World Models",
+            "candidate_markdown": (
+                "## I1\n"
+                "One-Sentence Story: Bounded candidate.\n"
+                "Theme: World Models\n"
+            ),
         }
-        connection = history_store.connect(comparison.history_database)
+        candidate["content_sha256"] = (
+            history_runtime.candidate_content_sha256(candidate)
+        )
+        candidate_raw = canonical(candidate)
+        bindings = []
+        connection = history_store.connect(database)
         try:
-            receipt = history_retrieval.finalize_comparison(
+            for intent in (
+                "duplicate_search",
+                "failure_pattern_search",
+            ):
+                pack = history_retrieval.build_pack(
+                    connection,
+                    history_runtime._retrieval_query(
+                        candidate, intent
+                    ),
+                    intent,
+                    review.policy,
+                    comparator_role_bytes=(
+                        ROOT / "roles" / "history-compare.md"
+                    ).read_bytes(),
+                    comparator_role_identity=(
+                        "roles/history-compare.md"
+                    ),
+                )
+                relations = []
+                for lineage in pack["lineages"]:
+                    match = lineage["matches"][0]
+                    relations.append(
+                        {
+                            "relation": "distinct",
+                            "candidate_id": match["candidate_id"],
+                            "lineage_id": match["lineage_id"],
+                            "facet": match["facet"],
+                            "evidence_id": match["evidence_id"],
+                            "material_difference": (
+                                "The bounded evidence differs."
+                            ),
+                            "confidence": 0.8,
+                        }
+                    )
+                receipt = history_retrieval.finalize_comparison(
+                    connection,
+                    pack,
+                    {
+                        "status": "complete_no_match",
+                        "comparator_version": (
+                            history_retrieval.COMPARATOR_VERSION
+                        ),
+                        "relations": relations,
+                        "expansion_request": None,
+                    },
+                    review.policy,
+                )
+                bindings.append((pack, receipt))
+            summary = history_runtime.build_history_summary(
                 connection,
-                pack,
-                response,
-                comparison.policy,
+                candidate,
+                bindings,
+                review.policy,
             )
         finally:
             connection.close()
-        review = StageFixture(self, "review")
-        candidate_raw = canonical(pack["query"])
-        provenance_fields = (
-            "intent",
-            "pack_publication_id",
-            "pack_sha256",
-            "retrieval_policy_version",
-            "policy_sha256",
-            "source_watermark",
-            "index_generation",
-            "generation_manifest_sha256",
-            "rank_trace_sha256",
-            "comparator_invocation_sha256",
-            "comparator_preflight_sha256",
-            "comparator_version",
-            "comparison_sha256",
-        )
-        summary = {
-            "schema_version": 1,
-            "receipt_id": receipt["receipt_id"],
-            "status": receipt["status"],
-            "candidate": pack["query"],
-            "candidate_sha256": sha256(candidate_raw),
-            "relations": receipt["relations"],
-            "provenance": {
-                field: receipt[field] for field in provenance_fields
-            },
-        }
         review.input_bytes = {
             "candidate.json": candidate_raw,
             "prior_work.md": review.input_bytes["prior_work.md"],
@@ -669,9 +691,19 @@ class HistoryStageSmoke(unittest.TestCase):
         for name, raw in review.input_bytes.items():
             (review.inputs / name).write_bytes(raw)
         review.history_store_reference = dict(
-            comparison.history_store_reference
+            review.history_store_reference
         )
         review.manifest = review._manifest()
+        synthetic_policy = (
+            review.temp / "synthetic-enforcement-policy.json"
+        )
+        synthetic_policy.write_bytes(canonical(review.policy))
+        review.manifest["policy"] = {
+            "source": "synthetic_contract_only",
+            "host_path": str(synthetic_policy),
+            "sha256": sha256(canonical(review.policy)),
+            "authority_scope": "synthetic_contract_only",
+        }
         review.write_manifest()
         return review, summary
 
@@ -679,23 +711,30 @@ class HistoryStageSmoke(unittest.TestCase):
         valid, _ = self._review_fixture_with_durable_summary()
         valid.run()
         mutations = {
-            "forged-receipt": lambda value: value.update(
+            "forged-receipt": lambda value: value["receipts"][0].update(
                 {"receipt_id": "f" * 64}
             ),
-            "status-drift": lambda value: value.update(
+            "status-drift": lambda value: value["receipts"][0].update(
                 {"status": "complete_match"}
             ),
-            "candidate-drift": lambda value: value["candidate"].update(
-                {"story": "Forged candidate story."}
+            "candidate-drift": lambda value: value.update(
+                {"candidate_id": "I2"}
             ),
             "candidate-hash-drift": lambda value: value.update(
-                {"candidate_sha256": "e" * 64}
+                {"candidate_content_sha256": "e" * 64}
             ),
-            "evidence-drift": lambda value: value["relations"][0].update(
+            "evidence-drift": lambda value: value["receipts"][0][
+                "relations"
+            ][0].update(
                 {"evidence_id": "forged-evidence"}
             ),
-            "provenance-drift": lambda value: value["provenance"].update(
+            "provenance-drift": lambda value: value["receipts"][0][
+                "provenance"
+            ].update(
                 {"pack_sha256": "d" * 64}
+            ),
+            "aggregate-drift": lambda value: value.update(
+                {"aggregate_sha256": "c" * 64}
             ),
             "open-schema": lambda value: value.update(
                 {"unregistered": True}
@@ -744,6 +783,44 @@ class HistoryStageSmoke(unittest.TestCase):
             ),
             b"",
         )
+
+    def test_registered_fake_review_verdicts_are_valid(self):
+        cases = (
+            ("strong-accept", "strong-accept", "0", "0"),
+            (None, "accept-w-rev", "0", "1"),
+            ("reject", "reject", "1", "1"),
+        )
+        for configured, verdict, critical, major in cases:
+            with self.subTest(configured=configured):
+                fixture_options = {}
+                if configured is not None:
+                    fixture_options["review_verdict"] = configured
+                fixture = StageFixture(
+                    self,
+                    "review",
+                    **fixture_options,
+                )
+                self.assertEqual(
+                    fixture.manifest["registered_environment"][
+                        "HISTORY_STAGE_REVIEW_VERDICT"
+                    ],
+                    verdict,
+                )
+                history_stage.run_stage(
+                    "review",
+                    fixture.manifest_path,
+                    [str(ROOT / "tests" / "fake_stage_agent.py")],
+                )
+                fields = (
+                    fixture.destinations / "verdict.tsv"
+                ).read_text(encoding="utf-8").strip().split("\t")
+                self.assertEqual(fields[1:3], [verdict, major])
+                review = (
+                    fixture.destinations / "review.md"
+                ).read_text(encoding="utf-8")
+                self.assertIn(f"Verdict: {verdict}\n", review)
+                self.assertIn(f"CRITICAL: {critical}\n", review)
+                self.assertIn(f"MAJOR: {major}\n", review)
 
     def test_codex_command_grammar_allows_reasoning_without_tool_widening(self):
         prefix = [

@@ -254,499 +254,83 @@ run_awr_legacy_partial_case() {
   printf 'ok: AwR upgrades partial legacy state without reusing invalid caches\n'
 }
 
-run_hunt_ballot_reject_case() {
-  local fixture=$1
-  rm -rf "$REPO/tmp/round" "$REPO/tmp/hunt.lock" "$REPO/tmp/ledger.good"
-  rm -f "$REPO/tmp/fake-agent.calls" "$REPO/tmp/hunt.metrics.tsv"
-  cp "$BEFORE_LEDGER" "$REPO/ledger.tsv"
-  if (
-    cd "$REPO"
-    AGENT_CMD=tests/fake_agent.sh FRONT_CMD=tests/fake_agent.sh BACK_CMD=tests/fake_agent.sh \
-    REV_CMD_1=tests/fake_agent.sh FAKE_AGENT_MODE="$fixture" REVIEWERS=1 RESUME_FRONT=0 \
-    META_EVERY=1 META_MIN_REJECTS=0 THEME_MIN_LOW=0 RESEARCH_RETRY=0 \
-    FAIL_SLEEP_MIN=0 NO_HIT_SLEEP_MIN_LO=0 NO_HIT_SLEEP_MIN_HI=0 \
-    ALLOW_ZERO_NO_HIT_SLEEP=1 EMPTY_MAX=1 MAX_FAILS=1 SA_TARGET=1 \
-    RUNS_DIR="$SANDBOX_ROOT/runs-$fixture" bash ./hunt.sh
-  ); then
-    printf 'hunt unexpectedly accepted malformed ballot fixture: %s\n' "$fixture" >&2
-    return 1
-  fi
-  cmp -s "$BEFORE_LEDGER" "$REPO/ledger.tsv"
-  printf 'ok: hunt rejects %s ballot ABI violation\n' "$fixture"
+run_compact_review_contract_case() {
+  python3 - "$REPO" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root))
+from lib import history_runtime
+
+ballot = {
+    "candidate_id": "I1",
+    "verdict": "strong-accept",
+    "major_count": 0,
+    "reason": "Independent evidence supports a clear-accept contribution.",
+}
+valid = "\n".join(
+    [
+        "# I1",
+        "Verdict: strong-accept",
+        "CRITICAL: 0",
+        "MAJOR: 0",
+        "Headline: Bounded sparse control remains decisive.",
+        "Occupation: No single occupant covers the full claim.",
+        "Experiment: 128-episode one-H100 comparison with kill thresholds.",
+        "Estimand: Control success and latency under sparse updates.",
+        "Payoff: Lower inference cost without control collapse.",
+        "Feasibility: One researcher and one H100.",
+        "History: complete_no_match within the sealed watermark.",
+        "Reason: Independent evidence supports a clear-accept contribution.",
+        "",
+    ]
+).encode("utf-8")
+history_runtime._validate_compact_review(valid, ballot)
+
+invalid_cases = [
+    valid.replace(b"# I1\n", b"# I2\n"),
+    valid.replace(b"MAJOR: 0\n", b"MAJOR: 2\n"),
+    valid.replace(b"Verdict: strong-accept\n", b"Verdict: reject\n"),
+    b"# I1\nVerdict: strong-accept\n",
+]
+for raw in invalid_cases:
+    try:
+        history_runtime._validate_compact_review(raw, ballot)
+    except history_runtime.RuntimeContractError:
+        continue
+    raise SystemExit("compact review accepted an invalid artifact")
+print("ok: Strong Accept compact review contract")
+PY
 }
 
-run_sa_review_contract_case() {
-  local gate="$SANDBOX_ROOT/review-gate" contract
-  mkdir -p "$gate/rev/1"
-  printf '%s\n' '## I1' 'Papers Read: 5' > "$gate/priorwork.md"
-  printf '%s\n' \
-    '## I1' \
-    'Minimal Falsification Experiment: Run a controlled comparison with fixed seeds and explicit kill thresholds.' \
-    > "$gate/ideas.md"
-  grep -q '^review_block_complete()' "$REPO/hunt.sh" || {
-    printf 'hunt review-section validator is missing\n' >&2
+assert_history_cutover_surface() {
+  grep -q '^history_sync()' "$REPO/hunt.sh"
+  grep -q '^run_contained_stage()' "$REPO/hunt.sh"
+  grep -q '^history_compare_targets()' "$REPO/hunt.sh"
+  grep -q '^history_seal_resume_attempt()' "$REPO/hunt.sh"
+  grep -q '^history_materialize_ledger()' "$REPO/hunt.sh"
+  grep -q 'lib/history_runtime.py' "$REPO/hunt.sh"
+  grep -q 'lib/history_archive.py' "$REPO/hunt.sh"
+  if grep -Eq 'META_EVERY|META_MIN_REJECTS|Read roles/meta\.md and follow it|Read roles/generate\.md and follow it' \
+    "$REPO/hunt.sh"; then
+    printf 'legacy meta/generate external path remains in hunt.sh\n' >&2
     return 1
-  }
-  contract=$(awk '
-    /^(review_block_complete|sa_gate_ok)\(\)/ {copy=1}
-    copy {print}
-    copy && /^}/ {copy=0}
-  ' "$REPO/hunt.sh")
-  (
-    eval "$contract"
-    is_axiom_idea() { return 1; }
-    RD="$gate" MIN_READ=5 REVIEWERS=1 AXIOM_MIN_CRACKS=2
-    write_review_sections() {
-      printf '%s\n' \
-        '### 1. First impression' 'section 1 evidence' \
-        '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
-        '### 3. Lifecycle and capability match' 'section 3 evidence' \
-        '### 4. Five-dimension radar' 'section 4 evidence' \
-        '### 5. Paradigm-shift probe' 'section 5 evidence' \
-        '### 6. Feasibility' 'section 6 evidence' \
-        '### 7. Integrity gate result' 'section 7 evidence' \
-        '### 8. Verdict' 'section 8 evidence'
-    }
-
-    printf '%s\n' '## I1' > "$gate/rev/1/review.md"
-    if sa_gate_ok I1; then
-      printf 'Strong Accept gate accepted a heading-only review\n' >&2
-      exit 1
-    fi
-
-    printf '%s\n' \
-      '## I1' \
-      '### 1. First impression' \
-      '### 2. Fatal-flaws audit (early gate)' \
-      '### 3. Lifecycle and capability match' \
-      '### 4. Five-dimension radar' \
-      '### 5. Paradigm-shift probe' \
-      '### 6. Feasibility' \
-      '### 7. Integrity gate result' \
-      '### 8. Verdict' \
-      > "$gate/rev/1/review.md"
-    if sa_gate_ok I1; then
-      printf 'Strong Accept gate accepted empty review sections\n' >&2
-      exit 1
-    fi
-
-    printf '%s\n' \
-      '## I1' \
-      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
-      '### 1. First impression' 'section 1 evidence' \
-      '### 3. Lifecycle and capability match' 'section 3 evidence' \
-      '### 4. Five-dimension radar' 'section 4 evidence' \
-      '### 5. Paradigm-shift probe' 'section 5 evidence' \
-      '### 6. Feasibility' 'section 6 evidence' \
-      '### 7. Integrity gate result' 'section 7 evidence' \
-      '### 8. Verdict' 'section 8 evidence' \
-      > "$gate/rev/1/review.md"
-    if sa_gate_ok I1; then
-      printf 'Strong Accept gate accepted out-of-order review sections\n' >&2
-      exit 1
-    fi
-
-    printf '%s\n' \
-      '## I1' \
-      '### 1. First impression' 'section 1 evidence' \
-      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
-      '### 2. Fatal-flaws audit (early gate)' 'duplicate section evidence' \
-      '### 3. Lifecycle and capability match' 'section 3 evidence' \
-      '### 4. Five-dimension radar' 'section 4 evidence' \
-      '### 5. Paradigm-shift probe' 'section 5 evidence' \
-      '### 6. Feasibility' 'section 6 evidence' \
-      '### 7. Integrity gate result' 'section 7 evidence' \
-      '### 8. Verdict' 'section 8 evidence' \
-      > "$gate/rev/1/review.md"
-    if sa_gate_ok I1; then
-      printf 'Strong Accept gate accepted a duplicate required section\n' >&2
-      exit 1
-    fi
-
-    { printf '%s\n' '## I1 extra'; write_review_sections; } > "$gate/rev/1/review.md"
-    if sa_gate_ok I1; then
-      printf 'Strong Accept gate accepted a nonexact candidate heading\n' >&2
-      exit 1
-    fi
-
-    {
-      printf '%s\n' '## I1' '```markdown'
-      write_review_sections
-      printf '%s\n' '```'
-    } > "$gate/rev/1/review.md"
-    if sa_gate_ok I1; then
-      printf 'Strong Accept gate accepted fenced review sections\n' >&2
-      exit 1
-    fi
-
-    {
-      printf '%s\n' '## I1' '````markdown' '```'
-      write_review_sections
-    } > "$gate/rev/1/review.md"
-    if sa_gate_ok I1; then
-      printf 'Strong Accept gate accepted a short backtick fence closer\n' >&2
-      exit 1
-    fi
-
-    {
-      printf '%s\n' '## I1' '```markdown' '```not-a-close'
-      write_review_sections
-    } > "$gate/rev/1/review.md"
-    if sa_gate_ok I1; then
-      printf 'Strong Accept gate accepted a backtick fence closer with text\n' >&2
-      exit 1
-    fi
-
-    {
-      printf '%s\n' '## I1' '~~~~markdown' '~~~'
-      write_review_sections
-    } > "$gate/rev/1/review.md"
-    if sa_gate_ok I1; then
-      printf 'Strong Accept gate accepted a short tilde fence closer\n' >&2
-      exit 1
-    fi
-
-    printf '%s\n' \
-      '## I1' \
-      '### 1. First impression' '## Notes' \
-      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
-      '### 3. Lifecycle and capability match' 'section 3 evidence' \
-      '### 4. Five-dimension radar' 'section 4 evidence' \
-      '### 5. Paradigm-shift probe' 'section 5 evidence' \
-      '### 6. Feasibility' 'section 6 evidence' \
-      '### 7. Integrity gate result' 'section 7 evidence' \
-      '### 8. Verdict' 'section 8 evidence' \
-      > "$gate/rev/1/review.md"
-    if sa_gate_ok I1; then
-      printf 'Strong Accept gate counted an arbitrary heading as section content\n' >&2
-      exit 1
-    fi
-
-    {
-      printf '%s\n' '## I1'
-      write_review_sections
-      printf '%s\n' '### 9. Extra' 'extra section content'
-    } > "$gate/rev/1/review.md"
-    if sa_gate_ok I1; then
-      printf 'Strong Accept gate accepted an extra review section\n' >&2
-      exit 1
-    fi
-
-    printf '%s\n' \
-      '## I1' \
-      '### 1. First impression' '    ```not-a-fence' \
-      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
-      '### 3. Lifecycle and capability match' 'section 3 evidence' \
-      '### 4. Five-dimension radar' 'section 4 evidence' \
-      '### 5. Paradigm-shift probe' 'section 5 evidence' \
-      '### 6. Feasibility' 'section 6 evidence' \
-      '### 7. Integrity gate result' 'section 7 evidence' \
-      '### 8. Verdict' 'section 8 evidence' \
-      > "$gate/rev/1/review.md"
-    if ! sa_gate_ok I1; then
-      printf 'Strong Accept gate treated four-space indented code as a fence\n' >&2
-      exit 1
-    fi
-
-    printf '%s\n' \
-      '## I1' \
-      '### 1. First impression' 'section 1 evidence' '```text' 'fenced example' '```' \
-      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
-      '### 3. Lifecycle and capability match' 'section 3 evidence' \
-      '### 4. Five-dimension radar' 'section 4 evidence' \
-      '### 5. Paradigm-shift probe' 'section 5 evidence' \
-      '### 6. Feasibility' 'section 6 evidence' \
-      '### 7. Integrity gate result' 'section 7 evidence' \
-      '### 8. Verdict' 'section 8 evidence' \
-      > "$gate/rev/1/review.md"
-    if ! sa_gate_ok I1; then
-      printf 'Strong Accept gate rejected a valid equal-length fence closer\n' >&2
-      exit 1
-    fi
-
-    printf '%s\n' \
-      '## I1' \
-      '### 1. First impression' 'section 1 evidence' '~~~~text' 'fenced example' '~~~~~' \
-      '### 2. Fatal-flaws audit (early gate)' 'section 2 evidence' \
-      '### 3. Lifecycle and capability match' 'section 3 evidence' \
-      '### 4. Five-dimension radar' 'section 4 evidence' \
-      '### 5. Paradigm-shift probe' 'section 5 evidence' \
-      '### 6. Feasibility' 'section 6 evidence' \
-      '### 7. Integrity gate result' 'section 7 evidence' \
-      '### 8. Verdict' 'section 8 evidence' \
-      > "$gate/rev/1/review.md"
-    if ! sa_gate_ok I1; then
-      printf 'Strong Accept gate rejected a valid longer fence closer\n' >&2
-      exit 1
-    fi
-
-    { printf '%s\n' '## I1'; write_review_sections; } > "$gate/rev/1/review.md"
-    sa_gate_ok I1
-  )
-  printf 'ok: Strong Accept review-section contract\n'
+  fi
+  test ! -e "$REPO/roles/bounded-generate.md"
+  test ! -e "$REPO/roles/bounded-meta.md"
+  test ! -e "$REPO/roles/bounded-review.md"
+  printf 'ok: history cutover surface\n'
 }
 
 cp "$REPO/ledger.tsv" "$BEFORE_LEDGER"
-run_sa_review_contract_case
-BEFORE_LINES=$(wc -l < "$BEFORE_LEDGER" | tr -d ' ')
-TODAY=$(date +%F)
-EXISTING_SA=$(awk -F'\t' -v d="$TODAY" '$1==d && $2=="hunt" && $5=="strong-accept"{n++} END{print n+0}' "$REPO/ledger.tsv")
-SA_TARGET=$((EXISTING_SA + 1))
-REPORTS_BEFORE=0
-for report in "$REPO/ideas/${TODAY}"_hunt*.md; do
-  [ -e "$report" ] || continue
-  REPORTS_BEFORE=$((REPORTS_BEFORE + 1))
-done
+run_compact_review_contract_case
+assert_history_cutover_surface
 
-(
-  cd "$REPO"
-  AGENT_CMD=tests/fake_agent.sh \
-  FRONT_CMD=tests/fake_agent.sh \
-  BACK_CMD=tests/fake_agent.sh \
-  REV_CMD_1=tests/fake_agent.sh \
-  FAKE_AGENT_MODE="$MODE" \
-  REVIEWERS=1 \
-  RESUME_FRONT=0 \
-  META_EVERY=1 \
-  META_MIN_REJECTS=0 \
-  THEME_MIN_LOW=0 \
-  RESEARCH_RETRY=0 \
-  FAIL_SLEEP_MIN=0 \
-  NO_HIT_SLEEP_MIN_LO=0 \
-  NO_HIT_SLEEP_MIN_HI=0 \
-  ALLOW_ZERO_NO_HIT_SLEEP=1 \
-  EMPTY_MAX=1 \
-  MAX_FAILS=1 \
-  SA_TARGET="$SA_TARGET" \
-  RUNS_DIR="$SANDBOX_ROOT/runs" \
-  bash ./hunt.sh
-)
-
-[ -s "$REPO/tmp/round/ideas.tsv" ]
-grep -q '^Summary: ' "$REPO/tmp/round/ideas.md"
-grep -q '^Why It May Be Novel: ' "$REPO/tmp/round/ideas.md"
-awk -F'\t' 'NF==6 && $1=="I1" && $2==1{ok++} END{exit !(ok==1)}' "$REPO/tmp/round/select.tsv"
-grep -q '^Papers Read: 5$' "$REPO/tmp/round/priorwork.md"
-EXPECTED_VERDICT=$(printf 'I1\tstrong-accept\t0\tIndependent evidence supports a clear-accept contribution under the stated experiment.')
-grep -qxF "$EXPECTED_VERDICT" "$REPO/tmp/round/rev/1/verdict.tsv"
-REVIEW_PATH="$REPO/tmp/round/rev/1/review.md"
-while IFS= read -r required_review_line; do
-  grep -qxF -- "$required_review_line" "$REVIEW_PATH"
-done <<'REVIEW_CONTRACT'
-### 1. First impression
-### 2. Fatal-flaws audit (early gate)
-| # | Flaw | Severity | Defense |
-| - | None identified in the supplied evidence. | - | No defense required. |
-### 3. Lifecycle and capability match
-| Aspect | User's input | Assessment |
-| Idea category | Innovative Technique | Matches a bounded method contribution. |
-| Lifecycle | 3 months | Fits the pilot and first-paper scope. |
-| Weekly effective hours | 20 | Sufficient for the stated experiment. |
-| Fit | One researcher and one H100 | Green |
-### 4. Five-dimension radar
-| Dimension | Score 1-10 | Evidence | Lift suggestion |
-| Higher | 6 | The kill threshold bounds control-success loss at two points. | Report success confidence intervals. |
-| Faster | 9 | The decisive experiment requires at least 30 percent lower latency. | Profile each control stage. |
-| Stronger | 6 | Two crack-evidence checks support stable control under skipped updates. | Add drift stress tests. |
-| Cheaper | 8 | Skipped latent updates directly reduce inference demand. | Report energy per episode. |
-| Broader | 5 | Evidence covers one manipulation setting. | Defer broader claims until cross-task evidence exists. |
-### 5. Paradigm-shift probe
-| Probe | Yes or No | Rationale |
-| First Principles | Yes | It tests whether fixed-rate latent updates are necessary. |
-| Elephant in the Room | No | The evidence does not establish a field-wide avoidance pattern. |
-| Technology Cycle | Yes | Confidence estimates make event-triggered updates executable. |
-| Hamming's Rule | Yes | Reliable sparse updates would materially reduce deployment cost. |
-Disruptive potential: possible.
-### 6. Feasibility
-| Risk | Level | Mitigation |
-| Compute | Low | Run the 128-episode comparison on the stated one H100. |
-| Data | Low | Use the stated held-out manipulation episodes. |
-| Engineering | Low | Limit the first paper to the confidence gate and dense baseline. |
-| Timeline | Low | Kill the idea when either explicit threshold fails. |
-### 7. Integrity gate result
-- Gate 1 through 8: pass
-### 8. Verdict
-**Strong Accept**
-Top three actions to take first:
-1. Implement the confidence gate and dense baseline under one profiler.
-2. Run the 128-episode falsification experiment with fixed seeds.
-3. Report success, latency, and energy against the stated kill thresholds.
-REVIEW_CONTRACT
-awk -F'|' '
-  function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
-  $0 == "### 3. Lifecycle and capability match" { section=3; next }
-  $0 == "### 4. Five-dimension radar" { section=4; next }
-  $0 == "### 5. Paradigm-shift probe" { section=5; next }
-  $0 == "### 6. Feasibility" { section=6; next }
-  $0 ~ /^### [1-8]\./ { section=0; next }
-  section == 3 && /^\|/ {
-    key=trim($2)
-    if (key == "Idea category" || key == "Lifecycle" || key == "Weekly effective hours" || key == "Fit") {
-      lifecycle[key]++
-      lifecycle_order[++lifecycle_count]=key
-    }
-  }
-  section == 4 && /^\|/ {
-    key=trim($2); score=trim($3)
-    if (key == "Higher" || key == "Faster" || key == "Stronger" || key == "Cheaper" || key == "Broader") {
-      if (score !~ /^([1-9]|10)$/) exit 1
-      dimensions[key]++
-      dimension_order[++dimension_count]=key
-    }
-  }
-  section == 5 && /^\|/ {
-    key=trim($2); answer=trim($3)
-    if (key == "First Principles" || key == "Elephant in the Room" || key == "Technology Cycle" || key == "Hamming\047s Rule") {
-      if (answer != "Yes" && answer != "No") exit 1
-      probes[key]++
-      probe_order[++probe_count]=key
-    }
-  }
-  section == 6 && /^\|/ {
-    key=trim($2)
-    if (key == "Compute" || key == "Data" || key == "Engineering" || key == "Timeline") {
-      risks[key]++
-      risk_order[++risk_count]=key
-    }
-  }
-  END {
-    if (lifecycle["Idea category"] != 1 || lifecycle["Lifecycle"] != 1 || lifecycle["Weekly effective hours"] != 1 || lifecycle["Fit"] != 1) exit 1
-    if (lifecycle_order[1] != "Idea category" || lifecycle_order[2] != "Lifecycle" || lifecycle_order[3] != "Weekly effective hours" || lifecycle_order[4] != "Fit") exit 1
-    if (dimensions["Higher"] != 1 || dimensions["Faster"] != 1 || dimensions["Stronger"] != 1 || dimensions["Cheaper"] != 1 || dimensions["Broader"] != 1) exit 1
-    if (dimension_order[1] != "Higher" || dimension_order[2] != "Faster" || dimension_order[3] != "Stronger" || dimension_order[4] != "Cheaper" || dimension_order[5] != "Broader") exit 1
-    if (probes["First Principles"] != 1 || probes["Elephant in the Room"] != 1 || probes["Technology Cycle"] != 1 || probes["Hamming\047s Rule"] != 1) exit 1
-    if (probe_order[1] != "First Principles" || probe_order[2] != "Elephant in the Room" || probe_order[3] != "Technology Cycle" || probe_order[4] != "Hamming\047s Rule") exit 1
-    if (risks["Compute"] != 1 || risks["Data"] != 1 || risks["Engineering"] != 1 || risks["Timeline"] != 1) exit 1
-    if (risk_order[1] != "Compute" || risk_order[2] != "Data" || risk_order[3] != "Engineering" || risk_order[4] != "Timeline") exit 1
-  }
-' "$REVIEW_PATH"
-awk '
-  $0 == "Top three actions to take first:" { actions=1; next }
-  actions && /^[1-3]\. / {
-    count++
-    if (substr($0, 1, 1) != count) exit 1
-  }
-  END { exit !(count == 3) }
-' "$REVIEW_PATH"
-
-EXPECTED_OVERLAP=low
-if [ "$MODE" = "overlap-commentary" ]; then
-  EXPECTED_OVERLAP=unknown
-  grep -qxF 'Overlap: unknown; high appears only in commentary' "$REPO/tmp/round/priorwork.md"
-fi
-if [ "$MODE" = "missing-occupant" ]; then
-  grep -qxF 'Decision: kill' "$REPO/tmp/round/prescreen.md"
-  if grep -q '^Occupant:' "$REPO/tmp/round/prescreen.md"; then
-    printf 'invalid missing-occupant fixture unexpectedly contained Occupant evidence\n' >&2
-    exit 1
-  fi
-  [ ! -s "$REPO/tmp/round/kills.tsv" ]
-  awk -F'\t' '$3=="failopen" && $4=="prescreen"{ok++} END{exit !(ok>=1)}' "$REPO/tmp/hunt.metrics.tsv"
-fi
-
-AFTER_LINES=$(wc -l < "$REPO/ledger.tsv" | tr -d ' ')
-[ "$AFTER_LINES" -eq $((BEFORE_LINES + 1)) ]
-cmp -s "$BEFORE_LEDGER" <(head -n "$BEFORE_LINES" "$REPO/ledger.tsv")
-awk -F'\t' '
-  END {
-    if (NF != 8) exit 1
-    if ($2 != "hunt") exit 1
-    if ($3 != "World Models - Architecture") exit 1
-    if ($5 != "strong-accept") exit 1
-    if ($7 != expected_overlap) exit 1
-    if ($8 != "-") exit 1
-  }
-' expected_overlap="$EXPECTED_OVERLAP" "$REPO/ledger.tsv"
-EXPECTED_LEDGER_ROW=$(printf '%s\thunt\tWorld Models - Architecture\tConstraint-Driven Sparse World Models\tstrong-accept\tIndependent evidence supports a clear-accept contribution under the stated experiment.\t%s\t-' "$TODAY" "$EXPECTED_OVERLAP")
-[ "$(tail -n 1 "$REPO/ledger.tsv")" = "$EXPECTED_LEDGER_ROW" ]
-
-CALLS=$(tr '\n' ' ' < "$REPO/tmp/fake-agent.calls")
-[ "$CALLS" = 'meta generate select prescreen research review report ' ]
-
-[ -s "$REPO/tmp/fake-report.path" ]
-REPORT_REL=$(sed -n '1p' "$REPO/tmp/fake-report.path")
-case "$REPORT_REL" in ideas/"$TODAY"_hunt*.md) ;; *) exit 1 ;; esac
-[ -s "$REPO/$REPORT_REL" ]
-REPORTS_AFTER=0
-for report in "$REPO/ideas/${TODAY}"_hunt*.md; do
-  [ -e "$report" ] || continue
-  REPORTS_AFTER=$((REPORTS_AFTER + 1))
-done
-[ "$REPORTS_AFTER" -eq $((REPORTS_BEFORE + 1)) ]
-if rg -n --pcre2 '\p{Script=Han}' "$REPO/$REPORT_REL"; then
-  exit 1
-fi
-grep -qxF 'The single independent reviewer returned Strong Accept.' "$REPO/$REPORT_REL"
-
-IDEA_SOURCE="$SANDBOX_ROOT/idea.source"
-IDEA_REPORT="$SANDBOX_ROOT/idea.report"
-awk '
-  $0 == "## I1" { copy=1; next }
-  copy && /^## I[0-9]+$/ { exit }
-  copy { print }
-' "$REPO/tmp/round/ideas.md" > "$IDEA_SOURCE"
-awk '
-  $0 == "### I1" { copy=1; next }
-  copy && $0 == "The single independent reviewer returned Strong Accept." { exit }
-  copy { print }
-' "$REPO/$REPORT_REL" > "$IDEA_REPORT"
-cmp -s "$IDEA_SOURCE" "$IDEA_REPORT"
-
-REVIEW_SOURCE="$SANDBOX_ROOT/review.source"
-REVIEW_REPORT="$SANDBOX_ROOT/review.report"
-awk '
-  $0 == "## I1" { copy=1; next }
-  copy && /^## I[0-9]+$/ { exit }
-  copy { print }
-' "$REPO/tmp/round/rev/1/review.md" > "$REVIEW_SOURCE"
-awk '
-  $0 == "### Reviewer 1 Full Review" { copy=1; next }
-  copy && $0 == "### Directed Prior Work" {
-    if (have && held != "") print held
-    exit
-  }
-  copy {
-    if (have) print held
-    held=$0
-    have=1
-  }
-' "$REPO/$REPORT_REL" > "$REVIEW_REPORT"
-cmp -s "$REVIEW_SOURCE" "$REVIEW_REPORT"
-
-PRIORWORK_SOURCE="$SANDBOX_ROOT/priorwork.source"
-PRIORWORK_REPORT="$SANDBOX_ROOT/priorwork.report"
-awk '
-  $0 == "## I1" { copy=1 }
-  copy && $0 != "## I1" && /^## I[0-9]+$/ { exit }
-  copy { print }
-' "$REPO/tmp/round/priorwork.md" > "$PRIORWORK_SOURCE"
-awk '
-  $0 == "### Directed Prior Work" { copy=1; next }
-  copy && $0 == "## Rejected Ideas" {
-    if (have && held != "") print held
-    exit
-  }
-  copy {
-    if (have) print held
-    held=$0
-    have=1
-  }
-' "$REPO/$REPORT_REL" > "$PRIORWORK_REPORT"
-cmp -s "$PRIORWORK_SOURCE" "$PRIORWORK_REPORT"
-
-METADATA_SOURCE="$SANDBOX_ROOT/metadata.source"
-METADATA_REPORT="$SANDBOX_ROOT/metadata.report"
-awk '/^(Rounds Attempted|Review Date): / { print }' "$REPO/tmp/round/meta.txt" > "$METADATA_SOURCE"
-awk '$0 == "## Metadata" { copy=1; next } copy { print }' "$REPO/$REPORT_REL" > "$METADATA_REPORT"
-cmp -s "$METADATA_SOURCE" "$METADATA_REPORT"
-
-grep -q '^publication-no-op$' "$REPO/tmp/publication.noop"
+# Full contained hunt path with fake backends lives in
+# tests/history_runtime_smoke.sh. This smoke keeps AwR ABI coverage and the
+# compact review/cutover surface checks above.
 if [ "$MODE" = default ]; then
-  run_hunt_ballot_reject_case ballot-short
-  run_hunt_ballot_reject_case ballot-extra
-  run_hunt_ballot_reject_case ballot-nonnumeric-major
-  run_hunt_ballot_reject_case ballot-empty-reason
-  run_hunt_ballot_reject_case ballot-duplicate
   run_awr_case ready
   run_awr_case ready awr-no-crack
   run_awr_case not-ready

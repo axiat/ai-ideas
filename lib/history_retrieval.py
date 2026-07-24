@@ -63,9 +63,12 @@ COMPARATOR_ID_LIMIT = 4096
 COMPARATOR_FACET_LIMIT = 256
 EVIDENCE_SPAN_LIMIT = 48
 QUERY_TEXT_LIMIT = 4096
-QUERY_BYTES_LIMIT = 16384
+QUERY_CANDIDATE_MARKDOWN_LIMIT = 16384
+QUERY_BYTES_LIMIT = 32768
 QUERY_FIELDS = {
-    "candidate_id", "story", "theme", "verdict", "reason", "category", "facets"
+    "candidate_id", "story", "theme", "verdict", "reason", "category",
+    "facets", "declared_parent_candidate_id", "candidate_content_sha256",
+    "candidate_markdown",
 }
 class RetrievalError(RuntimeError):
     pass
@@ -172,10 +175,24 @@ def _normalize_query(query):
     normalized = {}
     for field in QUERY_FIELDS - {"facets"}:
         value = query.get(field, "")
-        if not isinstance(value, str) or len(value.encode("utf-8")) > QUERY_TEXT_LIMIT:
+        limit = (
+            QUERY_CANDIDATE_MARKDOWN_LIMIT
+            if field == "candidate_markdown"
+            else QUERY_TEXT_LIMIT
+        )
+        if not isinstance(value, str) or len(value.encode("utf-8")) > limit:
             raise ValueError("query text field exceeds its bound")
         if value or field in {"candidate_id", "story"}:
             normalized[field] = value
+    content_sha = normalized.get("candidate_content_sha256")
+    if content_sha and (
+        len(content_sha) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in content_sha
+        )
+    ):
+        raise ValueError("query candidate content hash is invalid")
     facets = query.get("facets", {})
     if not isinstance(facets, dict) or set(facets) - set(history_projection.FACETS):
         raise ValueError("query facets are not closed")
@@ -338,6 +355,24 @@ def _rank_facet(values, depth):
 
 def _exact_channel(conn, query, intent, depth):
     rows = []
+    if intent == "evolution_search":
+        parent_id = query.get("declared_parent_candidate_id")
+        if parent_id:
+            parent = _candidate_row(conn, parent_id)
+            if parent is None:
+                raise ValueError(
+                    "declared evolution parent is not indexed"
+                )
+            rows.append(
+                _evidence(
+                    parent,
+                    "exact",
+                    "problem_estimand",
+                    1.0,
+                    1,
+                    parent["story"],
+                )
+            )
     if intent in ("duplicate_search", "evolution_search"):
         canonical = history_store.canonical_story_v1(
             _query_value(query, "story")
@@ -356,7 +391,10 @@ def _exact_channel(conn, query, intent, depth):
                 (history_store.CANONICAL_VERSION, canonical, depth),
             )
         ]
-        for rank, candidate_id in enumerate(candidate_ids, 1):
+        existing = {item["candidate_id"] for item in rows}
+        for candidate_id in candidate_ids:
+            if candidate_id in existing or len(rows) >= depth:
+                continue
             row = _candidate_row(conn, candidate_id)
             if row is not None:
                 rows.append(
@@ -365,7 +403,7 @@ def _exact_channel(conn, query, intent, depth):
                         "exact",
                         "problem_estimand",
                         1.0,
-                        rank,
+                        len(rows) + 1,
                         row["story"],
                     )
                 )
@@ -614,36 +652,69 @@ def _lineage_channel(conn, seed_ids, depth):
 def _expansion_channel(conn, request, depth):
     if request is None:
         return []
-    lineage_ids = request["lineage_ids"]
-    if not isinstance(lineage_ids, list) or not lineage_ids:
-        raise ValueError("expansion request must name lineage IDs")
-    if len(lineage_ids) > depth or any(not isinstance(item, str) for item in lineage_ids):
+    selector_fields = {
+        field
+        for field in ("lineage_ids", "record_ids")
+        if field in request
+    }
+    if len(selector_fields) != 1:
+        raise ValueError(
+            "expansion request must name records or lineages"
+        )
+    selector = selector_fields.pop()
+    identifiers = request[selector]
+    if (
+        not isinstance(identifiers, list)
+        or not identifiers
+        or len(identifiers) > depth
+        or any(not isinstance(item, str) for item in identifiers)
+    ):
         raise ValueError("expansion request exceeds its bound")
-    placeholders = ",".join("?" for _ in lineage_ids)
+    placeholders = ",".join("?" for _ in identifiers)
+    column = (
+        "c.lineage_id"
+        if selector == "lineage_ids"
+        else "c.candidate_id"
+    )
     rows = conn.execute(
-        """
+        (
+            """
         SELECT c.*
         FROM candidates c
         JOIN search_index_entries e ON e.candidate_id = c.candidate_id
-        WHERE c.lineage_id IN (%s) AND e.active = 1
+        WHERE %s IN (%s) AND e.active = 1
         ORDER BY c.source_sequence DESC, c.candidate_id
         LIMIT ?
         """
-        % placeholders,
-        (*lineage_ids, depth),
+            % (column, placeholders)
+        ),
+        (*identifiers, depth),
     ).fetchall()
+    facet = (
+        "lineage"
+        if selector == "lineage_ids"
+        else "record"
+    )
     return [
-        _evidence(row, "expansion", "lineage", 1.0, rank, row["story"])
+        _evidence(
+            row,
+            "expansion",
+            facet,
+            1.0,
+            rank,
+            row["story"],
+        )
         for rank, row in enumerate(rows, 1)
     ]
 
 
 def _empty_pack(
-    query, intent, policy, status, generation=None, expansion_requested=False
+    query, intent, policy, status, generation=None, expansion_request=None
 ):
     watermark = 0 if generation is None else generation["source_watermark"]
     generation_id = 0 if generation is None else generation["generation"]
     manifest_sha256 = "0" * 64 if generation is None else generation["manifest_sha256"]
+    expansion_requested = expansion_request is not None
     pack = {
         "schema_version": 1,
         "query": query,
@@ -672,9 +743,21 @@ def _empty_pack(
             "mandatory": list(policy["mandatory_channels"]),
             "expansion": "conditional",
         },
-        "expansion_round": 0,
-        "prior_pack_publication_id": None,
-        "prior_comparison_receipt_id": None,
+        "expansion_round": (
+            0
+            if expansion_request is None
+            else expansion_request["round"]
+        ),
+        "prior_pack_publication_id": (
+            None
+            if expansion_request is None
+            else expansion_request["prior_pack_publication_id"]
+        ),
+        "prior_comparison_receipt_id": (
+            None
+            if expansion_request is None
+            else expansion_request["comparison_receipt_id"]
+        ),
         "retrieval_status": status,
         "channels": {
             name: {
@@ -708,18 +791,10 @@ def _budget_exceeded_audit_pack(
         policy,
         "budget_exceeded",
         generation,
-        expansion_request is not None,
+        expansion_request,
     )
     pack["channels"] = _bounded_channels(channels, [])
     pack["omitted_lineage_count"] = len(ranked)
-    if expansion_request is not None:
-        pack["expansion_round"] = expansion_request["round"]
-        pack["prior_pack_publication_id"] = expansion_request[
-            "prior_pack_publication_id"
-        ]
-        pack["prior_comparison_receipt_id"] = expansion_request[
-            "comparison_receipt_id"
-        ]
     return _seal_pack(pack)
 
 
@@ -1009,6 +1084,7 @@ def _validate_runtime_policy(policy):
             policy.get(key) != value
             for key, value in history_projection._POLICY_FIXED.items()
         )
+        or policy.get("mode") not in {"shadow", "enforcement"}
         or policy.get("mandatory_channels")
         != history_projection._POLICY_CHANNELS
         or policy.get("projection") != history_projection._POLICY_PROJECTION
@@ -1021,13 +1097,22 @@ def _validate_runtime_policy(policy):
 def _validate_expansion_request(conn, request, query, intent, policy):
     if request is None:
         return None
-    fields = {
-        "lineage_ids",
+    provenance_fields = {
         "round",
         "prior_pack_publication_id",
         "comparison_receipt_id",
     }
-    if not isinstance(request, dict) or set(request) != fields:
+    selector_fields = {
+        field
+        for field in ("lineage_ids", "record_ids")
+        if isinstance(request, dict) and field in request
+    }
+    if (
+        not isinstance(request, dict)
+        or len(selector_fields) != 1
+        or set(request)
+        != provenance_fields | selector_fields
+    ):
         raise RetrievalError("expansion provenance is incomplete")
     round_number = request["round"]
     if (
@@ -1055,19 +1140,37 @@ def _validate_expansion_request(conn, request, query, intent, policy):
         verified = replay_receipt(conn, prior_pack, receipt, policy)
     except ReceiptReplayError as exc:
         raise RetrievalError("expansion receipt replay failed") from exc
-    lineage_ids = request["lineage_ids"]
-    allowed = {item["lineage_id"] for item in prior_pack["lineages"]}
+    selector = selector_fields.pop()
+    identifiers = request[selector]
+    allowed = (
+        {
+            item["lineage_id"]
+            for item in prior_pack["lineages"]
+        }
+        if selector == "lineage_ids"
+        else {
+            match["candidate_id"]
+            for item in prior_pack["lineages"]
+            for match in item["matches"]
+        }
+    )
+    response_request = {selector: identifiers}
     if (
-        not isinstance(lineage_ids, list)
-        or not lineage_ids
-        or any(not isinstance(item, str) for item in lineage_ids)
-        or not set(lineage_ids).issubset(allowed)
+        not isinstance(identifiers, list)
+        or not identifiers
+        or any(
+            not isinstance(item, str)
+            for item in identifiers
+        )
+        or len(identifiers) != len(set(identifiers))
+        or not set(identifiers).issubset(allowed)
         or verified.get("verified") is not True
         or receipt.get("receipt_id") != request["comparison_receipt_id"]
         or receipt.get("status") != "uncertain"
         or receipt.get("pack_publication_id")
         != request["prior_pack_publication_id"]
-        or receipt.get("expansion_request") != {"lineage_ids": lineage_ids}
+        or receipt.get("expansion_request")
+        != response_request
         or prior_pack.get("query") != query
         or prior_pack.get("intent") != intent
         or round_number != prior_pack.get("expansion_round", -1) + 1
@@ -1127,6 +1230,71 @@ def _validate_generation_snapshot(conn, policy):
     }
 
 
+def _prioritize_ranked_matches(
+    ranked, intent, *, expansion_requested
+):
+    if expansion_requested:
+        ranked.sort(
+            key=lambda lineage: (
+                0
+                if any(
+                    item["channel"] == "expansion"
+                    for item in lineage["matches"]
+                )
+                else 1,
+                lineage["rank"],
+                lineage["lineage_id"],
+            )
+        )
+        for lineage in ranked:
+            lineage["matches"].sort(
+                key=lambda item: (
+                    0
+                    if item["channel"] == "expansion"
+                    else 1,
+                    item["rank"],
+                    item["channel"],
+                    item["candidate_id"],
+                )
+            )
+    elif intent == "evolution_search":
+        for lineage in ranked:
+            lineage["matches"].sort(
+                key=lambda item: (
+                    0
+                    if item["channel"] == "lineage"
+                    else 1,
+                    item["rank"],
+                    item["channel"],
+                    item["candidate_id"],
+                )
+            )
+    return ranked
+
+
+def _scope_ranked_to_expansion(ranked, expansion_request):
+    if expansion_request is None:
+        return ranked
+    if "lineage_ids" in expansion_request:
+        allowed = set(expansion_request["lineage_ids"])
+        return [
+            lineage
+            for lineage in ranked
+            if lineage["lineage_id"] in allowed
+        ]
+    allowed = set(expansion_request["record_ids"])
+    scoped = []
+    for lineage in ranked:
+        matches = [
+            match
+            for match in lineage["matches"]
+            if match["candidate_id"] in allowed
+        ]
+        if matches:
+            scoped.append(dict(lineage, matches=matches))
+    return scoped
+
+
 def _build_pack_snapshot(
     conn,
     query,
@@ -1160,7 +1328,7 @@ def _build_pack_snapshot(
             policy,
             status,
             generation,
-            expansion_request is not None,
+            expansion_request,
         )
     watermark = conn.execute(
         "SELECT COALESCE(MAX(source_sequence), 0) FROM candidates"
@@ -1172,7 +1340,7 @@ def _build_pack_snapshot(
             policy,
             "backend_failed",
             generation,
-            expansion_request is not None,
+            expansion_request,
         )
     depth = int(policy["per_channel_depth"])
     results = {}
@@ -1272,16 +1440,14 @@ def _build_pack_snapshot(
             "fusion": _fusion_summary(ranked, contributions),
         }
     )
-    if intent == "evolution_search":
-        for lineage in ranked:
-            lineage["matches"].sort(
-                key=lambda item: (
-                    0 if item["channel"] == "lineage" else 1,
-                    item["rank"],
-                    item["channel"],
-                    item["candidate_id"],
-                )
-            )
+    ranked = _scope_ranked_to_expansion(
+        ranked, expansion_request
+    )
+    _prioritize_ranked_matches(
+        ranked,
+        intent,
+        expansion_requested=expansion_request is not None,
+    )
     retained_count = int(policy["final_lineage_count"])
     try:
         retained = _cap_matches(
@@ -1405,6 +1571,16 @@ def _build_pack_snapshot(
         sealed = _seal_pack(pack)
     if sealed["estimated_input_tokens"] <= int(policy["max_retrieval_tokens"]):
         return sealed
+    # Rank contributions are audit-only. Drop them before any in-cutoff
+    # lineage loss so a pack that still holds its comparator-cut lineages can
+    # stay complete under a tight byte upper bound.
+    if pack["rank_contributions"]:
+        pack["rank_contributions"] = []
+        sealed = _seal_pack(pack)
+        if sealed["estimated_input_tokens"] <= int(
+            policy["max_retrieval_tokens"]
+        ):
+            return sealed
     cutoff = int(policy["comparator_cutoff"])
     reducible = [item for item in retained if item["rank"] > cutoff]
     while reducible:
@@ -1412,19 +1588,7 @@ def _build_pack_snapshot(
         retained = [item for item in retained if item["lineage_id"] != drop["lineage_id"]]
         pack["lineages"] = retained
         pack["channels"] = _bounded_channels(channels, retained)
-        highest_candidates = (
-            {match["candidate_id"] for match in retained[0]["matches"]}
-            if retained
-            else set()
-        )
-        pack["rank_contributions"] = (
-            []
-            if intent == "evolution_search"
-            else [
-                item for item in contributions
-                if item["candidate_id"] in highest_candidates
-            ]
-        )
+        pack["rank_contributions"] = []
         pack["omitted_lineage_count"] += 1
         sealed = _seal_pack(pack)
         if sealed["estimated_input_tokens"] <= int(policy["max_retrieval_tokens"]):
@@ -1482,8 +1646,18 @@ def comparator_output_schema(pack, policy):
         lineage.get("lineage_id")
         for lineage in lineages
     ]
-    expansion_limit = min(
+    record_ids = list(
+        dict.fromkeys(
+            match.get("candidate_id") for match in matches
+        )
+    )
+    lineage_expansion_limit = min(
         len(lineage_ids),
+        int(policy["per_channel_depth"]),
+        int(policy["max_matches"]),
+    )
+    record_expansion_limit = min(
+        len(record_ids),
         int(policy["per_channel_depth"]),
         int(policy["max_matches"]),
     )
@@ -1527,29 +1701,40 @@ def comparator_output_schema(pack, policy):
             },
         },
     }
-    expansion_schema = {"type": "null"}
-    if expansion_limit:
-        expansion_schema = {
-            "anyOf": [
-                {"type": "null"},
+    expansion_variants = [{"type": "null"}]
+    can_expand = (
+        type(pack.get("expansion_round")) is int
+        and pack["expansion_round"]
+        < int(policy["max_expansion_rounds"])
+    )
+    for field, identifiers, limit in (
+        (
+            "lineage_ids",
+            lineage_ids,
+            lineage_expansion_limit,
+        ),
+        ("record_ids", record_ids, record_expansion_limit),
+    ):
+        if limit and can_expand:
+            expansion_variants.append(
                 {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["lineage_ids"],
+                    "required": [field],
                     "properties": {
-                        "lineage_ids": {
+                        field: {
                             "type": "array",
                             "minItems": 1,
-                            "maxItems": expansion_limit,
+                            "maxItems": limit,
                             "uniqueItems": True,
                             "items": _schema_string(
-                                COMPARATOR_ID_LIMIT, lineage_ids
+                                COMPARATOR_ID_LIMIT, identifiers
                             ),
                         }
                     },
-                },
-            ]
-        }
+                }
+            )
+    expansion_schema = {"anyOf": expansion_variants}
     return {
         "type": "object",
         "additionalProperties": False,
@@ -1761,6 +1946,13 @@ def build_pack(
         comparator_role_bytes, comparator_role_identity
     )
     normalized_query = _normalize_query(query)
+    declared_parent = normalized_query.get(
+        "declared_parent_candidate_id"
+    )
+    if declared_parent and intent != "evolution_search":
+        raise ValueError(
+            "declared parent is allowed only for evolution retrieval"
+        )
     normalized_expansion = _validate_expansion_request(
         conn, expansion_request, normalized_query, intent, policy
     )
@@ -1852,7 +2044,7 @@ def _validate_trace_evidence(conn, channel, item):
         "fts": set(history_projection.SEARCH_FACETS),
         "dense": set(history_projection.SEARCH_FACETS),
         "lineage": {"lineage"},
-        "expansion": {"lineage"},
+        "expansion": {"lineage", "record"},
     }
     if (
         not isinstance(item, dict)
@@ -1942,7 +2134,75 @@ def _validate_trace_evidence(conn, channel, item):
         raise ComparisonValidationError("published typed-edge delta mismatch")
 
 
-def _validate_published_rank_trace(conn, publication, pack, policy):
+def _validated_pack_expansion_request(conn, pack, policy):
+    round_number = pack.get("expansion_round")
+    if (
+        type(round_number) is not int
+        or round_number < 0
+        or round_number > int(policy["max_expansion_rounds"])
+    ):
+        raise ComparisonValidationError(
+            "published expansion round is invalid"
+        )
+    if round_number == 0:
+        if (
+            pack.get("prior_pack_publication_id") is not None
+            or pack.get("prior_comparison_receipt_id") is not None
+        ):
+            raise ComparisonValidationError(
+                "initial pack has expansion provenance"
+            )
+        return None
+    receipt_row = conn.execute(
+        "SELECT receipt_json FROM history_receipts WHERE receipt_id = ?",
+        (pack.get("prior_comparison_receipt_id"),),
+    ).fetchone()
+    if receipt_row is None:
+        raise ComparisonValidationError(
+            "published expansion receipt is unavailable"
+        )
+    try:
+        receipt = json.loads(receipt_row["receipt_json"])
+    except (TypeError, ValueError) as exc:
+        raise ComparisonValidationError(
+            "published expansion receipt is corrupt"
+        ) from exc
+    selector = receipt.get("expansion_request")
+    if (
+        not isinstance(selector, dict)
+        or len(selector) != 1
+        or next(iter(selector), None)
+        not in {"lineage_ids", "record_ids"}
+    ):
+        raise ComparisonValidationError(
+            "published expansion selector is invalid"
+        )
+    request = {
+        "round": round_number,
+        "prior_pack_publication_id":
+            pack.get("prior_pack_publication_id"),
+        "comparison_receipt_id":
+            pack.get("prior_comparison_receipt_id"),
+        **selector,
+    }
+    try:
+        _validate_expansion_request(
+            conn,
+            request,
+            pack["query"],
+            pack["intent"],
+            policy,
+        )
+    except RetrievalError as exc:
+        raise ComparisonValidationError(
+            "published expansion provenance is invalid"
+        ) from exc
+    return selector
+
+
+def _validate_published_rank_trace(
+    conn, publication, pack, policy, expansion_request
+):
     try:
         trace_bytes = publication["rank_trace_json"].encode("utf-8")
         trace = json.loads(trace_bytes)
@@ -1983,6 +2243,14 @@ def _validate_published_rank_trace(conn, publication, pack, policy):
         raise ComparisonValidationError("published fusion contributions mismatch")
     if trace["fusion"] != _fusion_summary(ranked, contributions):
         raise ComparisonValidationError("published fusion ordering mismatch")
+    ranked = _scope_ranked_to_expansion(
+        ranked, expansion_request
+    )
+    _prioritize_ranked_matches(
+        ranked,
+        pack["intent"],
+        expansion_requested=pack["expansion_round"] > 0,
+    )
     expected_lineage_ids = [
         lineage["lineage_id"] for lineage in ranked[:len(pack["lineages"])]
     ]
@@ -2030,7 +2298,9 @@ def _validate_published_rank_trace(conn, publication, pack, policy):
             if contribution["candidate_id"] in highest_candidates
         ]
     )
-    if pack["rank_contributions"] != expected_bounded:
+    # Empty rank_contributions are a deterministic budget reduction. When
+    # present they must equal the highest-lineage fusion slice.
+    if pack["rank_contributions"] not in (expected_bounded, []):
         raise ComparisonValidationError("published bounded fusion mismatch")
     bounded = [
         dict(rank, candidate_id=contribution["candidate_id"])
@@ -2130,6 +2400,9 @@ def _validate_pack(conn, pack, policy, require_complete=False):
         }
     ):
         raise ComparisonValidationError("hard retrieval contract mismatch")
+    expansion_request = _validated_pack_expansion_request(
+        conn, pack, policy
+    )
     expected_estimate = (
         len(canonical_bytes(pack)) + policy["adapter_wrapper_allowance"]
     )
@@ -2236,7 +2509,13 @@ def _validate_pack(conn, pack, policy, require_complete=False):
         or publication["retrieval_status"] != pack["retrieval_status"]
     ):
         raise ComparisonValidationError("pack is not host-published")
-    _validate_published_rank_trace(conn, publication, pack, policy)
+    _validate_published_rank_trace(
+        conn,
+        publication,
+        pack,
+        policy,
+        expansion_request,
+    )
     provenance = conn.execute(
         "SELECT * FROM history_generation_provenance WHERE generation = ?",
         (pack["index_generation"],),
@@ -2550,31 +2829,58 @@ def _validate_response(pack, response):
                 "expansion requires uncertain status"
             )
         if (
+            type(pack.get("expansion_round")) is not int
+            or pack["expansion_round"]
+            >= int(
+                pack.get("hard_limits", {}).get(
+                    "max_expansion_rounds", 0
+                )
+            )
+        ):
+            raise ComparisonValidationError(
+                "expansion request exceeds the sealed bound"
+            )
+        if (
             not isinstance(request, dict)
-            or set(request) != {"lineage_ids"}
-            or not isinstance(request["lineage_ids"], list)
-            or not request["lineage_ids"]
+            or len(set(request)) != 1
+            or not set(request).issubset(
+                {"lineage_ids", "record_ids"}
+            )
         ):
             raise ComparisonValidationError("invalid expansion request")
-        lineage_ids = request["lineage_ids"]
-        pack_lineages = {item["lineage_id"] for item in pack["lineages"]}
+        selector = next(iter(request))
+        identifiers = request[selector]
+        allowed = (
+            {
+                item["lineage_id"]
+                for item in pack["lineages"]
+            }
+            if selector == "lineage_ids"
+            else {
+                match["candidate_id"]
+                for item in pack["lineages"]
+                for match in item["matches"]
+            }
+        )
         expansion_limit = min(
-            len(pack_lineages),
-            int(pack.get("configured_depth", len(pack_lineages))),
+            len(allowed),
+            int(pack.get("configured_depth", len(allowed))),
             int(
                 pack.get("hard_limits", {}).get(
-                    "max_matches", len(pack_lineages)
+                    "max_matches", len(allowed)
                 )
             ),
         )
         if (
-            len(lineage_ids) > expansion_limit
+            not isinstance(identifiers, list)
+            or not identifiers
+            or len(identifiers) > expansion_limit
             or any(
                 not _bounded_text(item, COMPARATOR_ID_LIMIT)
-                for item in lineage_ids
+                for item in identifiers
             )
-            or len(lineage_ids) != len(set(lineage_ids))
-            or not set(lineage_ids).issubset(pack_lineages)
+            or len(identifiers) != len(set(identifiers))
+            or not set(identifiers).issubset(allowed)
         ):
             raise ComparisonValidationError("expansion request is outside pack")
 

@@ -7,7 +7,7 @@ Allowed relations depend on the pack intent:
 - duplicate or evolution: `same_core_idea`, `same_lineage_revision`, `related_component`, `distinct`, or `uncertain`;
 - failure pattern: `same_failure_mechanism`, `related_failure_pattern`, `distinct`, or `uncertain`.
 
-Use `complete_match` when at least one material relation is supported, `complete_no_match` when every retained lineage is `distinct`, `uncertain` when bounded evidence cannot resolve at least one lineage, and `conflicting_evidence` when retained evidence materially disagrees. A non-null expansion request is allowed only with `uncertain`, may name only unique retained lineage IDs, and must remain inside the supplied bound.
+Use `complete_match` when at least one material relation is supported, `complete_no_match` when every retained lineage is `distinct`, `uncertain` when bounded evidence cannot resolve at least one lineage, and `conflicting_evidence` when retained evidence materially disagrees. A non-null expansion request is allowed only with `uncertain`, must contain exactly one selector, and must remain inside the supplied bound. The selector is either unique retained `lineage_ids` or unique retained `record_ids`.
 
 Return one final JSON object matching the supplied strict response schema.
 Its sole `history-comparison-json` artifact contains the closed comparison

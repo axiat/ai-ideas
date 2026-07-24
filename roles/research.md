@@ -6,6 +6,15 @@ Try to prove that each idea has already been done. Do not review or issue verdic
 
 Read `tmp/round/ideas.md`, the shortlist that survived prescreening. It usually contains 2–3 candidates. Budget 5–8 close works per idea and favor depth over speed.
 
+In enforcement mode, the orchestrator may also mount
+`tmp/round/history/research-view/history-summaries/<id>.json` for a
+candidate.
+This is a receipt-verified summary of internal idea history. Use referenced
+relations and failure evidence as additional search leads. It is not evidence
+of academic novelty and does not replace any external search, API-query,
+paper-reading, or occupation check below. When no summary is mounted, use only
+the candidate and external sources.
+
 ## Do
 
 For each idea, begin with a **direct-hit search**. Use exact problem wording and mechanism keywords to find a single work that covers the headline. Record `Overlap: high` when one exists; a prescreen keep does not relax this standard. Then search multiple query families with WebSearch and WebFetch, including at least one query from each category:
@@ -61,3 +70,6 @@ Include `## Crack Evidence Verification` only for assumption-removal ideas, and 
 - Every arXiv id must resolve to the claimed work. Open each URL and verify the title; memory is insufficient. Mark uncertain ids explicitly so reviewers can treat novelty as unverified.
 - Failure to find a close work does not establish that none exists. Use `Overlap: low`, state the search boundary, and leave the decision to reviewers.
 - Report incomplete research honestly when APIs remain unavailable, too few works were read, or a block is incomplete. Do not label a shallowly read neighbor as low overlap to meet the threshold. The orchestrator returns an incomplete artifact for a directed rerun on the same shortlist without discarding the generated round. Incomplete research does not enter grading.
+- Treat internal-history relations as scoped repository evidence. Any use names
+  the relation and evidence IDs from the mounted summary; never convert
+  `complete_no_match` into a novelty claim.

@@ -4,7 +4,12 @@
 
 Keep runtime producers, parsers, prompts, fixtures, and tests on one artifact contract. Stable machine tokens such as `strong-accept`, `accept-w-rev`, `reject`, overlap values, category values, IDs, and TSV field order require coordinated changes rather than prose-only edits.
 
-`ledger.tsv` is append-only operational history. Preserve row order, historical seven- and eight-column shapes, dates, sources, verdicts, evidence classifications, URLs, numeric claims, and category semantics. [`PROGRAM.md`](PROGRAM.md) is the canonical loop and schema contract.
+`.ai-ideas/history.sqlite3` is canonical operational history. `ledger.tsv` and
+`tmp/ledger.good` are replayable projections of one immutable database
+snapshot. Preserve row order, historical seven- and eight-column shapes,
+dates, sources, verdicts, evidence classifications, URLs, numeric claims, and
+category semantics. [`PROGRAM.md`](PROGRAM.md) is the canonical loop and
+schema contract.
 
 Backend work must retain explicit provider selection. No default, fallback, hook, test, worker, or orchestration path may start Claude unless the current command explicitly selects it.
 
@@ -18,6 +23,8 @@ python3 tests/history_projection_smoke.py
 python3 tests/history_budget_smoke.py
 python3 tests/history_retrieval_smoke.py
 python3 tests/history_retrieval_adversarial.py
+python3 tests/history_runtime_smoke.py
+bash tests/history_runtime_smoke.sh
 python3 tests/verify_product_contract.py runtime
 python3 tests/verify_product_contract.py fixtures
 bash tests/runtime_abi_smoke.sh
@@ -36,6 +43,20 @@ Recover both ledger projections from the canonical database before an offline ru
 ```bash
 python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 reconcile-ledger
 ```
+
+Fresh bootstrap treats `ledger.tsv` as the operator baseline and does not read
+the legacy near-SA queue by default. Import a validated snapshot explicitly:
+
+```bash
+HISTORY_NEAR_SA=tmp/near-sa-queue.tsv ./hunt.sh
+```
+
+The bootstrap transaction rejects a missing, symlinked, special, ambiguous, or
+semantically mismatched queue before any agent starts. A stale queue whose
+stories no longer resolve against the current ledger must remain untouched;
+retry with `HISTORY_NEAR_SA` unset to migrate the ledger alone. The database
+then owns canonical near-SA observations, and later startup validates the
+sealed bootstrap provenance rather than rereading the legacy file.
 
 Build and resolve a bounded internal-history comparison from JSON artifacts:
 
@@ -83,11 +104,26 @@ are untrusted without the completion receipt, and the completion receipt is
 published only after every declared output passes no-follow, type, size,
 schema, and prompt-attestation checks.
 
-The legacy `hunt.sh` protocol continues to use `roles/generate.md`,
-`roles/meta.md`, and `roles/review.md` until the orchestrator cutover lands.
-Contained staging uses `roles/bounded-generate.md`,
-`roles/bounded-meta.md`, and `roles/bounded-review.md`; changing the legacy
-role paths without the matching `hunt.sh` ABI is invalid.
+`hunt.sh` consumes the same five-argument registered Codex prefix through
+`CONTAINED_AGENT_CMD_JSON`. The stage adapter owns the fixed noninteractive
+`exec` tail, network-disabled mirror, response schema, output paths, and
+completion receipt. Per-seat overrides use
+`CONTAINED_REV_CMD_<N>_JSON`. Selector, prescreen, external prior-work
+research, and report assembly run from disposable mirrors and return only
+their declared bounded artifacts.
+
+The canonical contained roles are `roles/generate.md`, `roles/meta.md`, and
+`roles/review.md`. Routine hunt rounds do not invoke the optional meta stage;
+structured failure counts enter generation through the database-backed brief.
+
+Shadow mode is the default and never mounts internal-history evidence into
+research or review. Enforcement requires both
+`HISTORY_CALIBRATION_CAPABILITY` and
+`HISTORY_PRODUCTION_TRUST_ROOT`; production entrypoints reject synthetic test
+authorities and repository fixture backends. Nonpermanent enforcement
+statuses remain sealed abstentions and create no research task or ledger row.
+`materialize-research` is the sole producer of the external research
+`ideas.tsv`/`ideas.md` view and its eligible enforcement summaries.
 
 Only `complete_match` and `complete_no_match` receipts permit a permanent
 internal-history conclusion. Receipt replay is bound to the policy, projection
@@ -95,7 +131,11 @@ generation, source watermark, comparator version, pack hash, evidence IDs, and
 the SHA-256 values of the host-owned canonical rank trace and exact comparator
 preflight. Pack publications are append-only.
 
-Shell changes also require `bash -n` on every touched script. Litwatch behavior is covered by `bash litwatch_test.sh`; its live-network probe may report an intentional skip when network access is unavailable.
+Shell changes also require `bash -n` on every touched script. `hunt.sh` must
+not append `ledger.tsv`, copy either TSV projection over the other, or add a
+test-mode production escape. Litwatch behavior is covered by
+`bash litwatch_test.sh`; its live-network probe may report an intentional skip
+when network access is unavailable.
 
 Documentation changes must keep relative links valid and human-readable tracked content free of Han characters. The product hero path is `assets/ai-ideas-hero.png`.
 

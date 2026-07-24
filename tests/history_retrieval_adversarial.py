@@ -533,6 +533,13 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
             expanded["prior_pack_publication_id"],
             self.pack["pack_publication_id"],
         )
+        self.assertEqual(
+            {
+                item["lineage_id"]
+                for item in expanded["lineages"]
+            },
+            {lineage_id},
+        )
         with self.assertRaises(retrieval.RetrievalError):
             build_pack(
                 self.conn,
@@ -540,6 +547,64 @@ class HistoryRetrievalAdversarial(unittest.TestCase):
                 "duplicate_search",
                 self.policy,
                 expansion_request=dict(request, round=2),
+            )
+
+    def test_record_expansion_is_closed_and_receipt_bound(self):
+        match = self.pack["lineages"][0]["matches"][0]
+        record_id = match["candidate_id"]
+        uncertain = copy.deepcopy(self.response)
+        uncertain["status"] = "uncertain"
+        uncertain["relations"][0]["relation"] = "uncertain"
+        uncertain["expansion_request"] = {
+            "record_ids": [record_id]
+        }
+        receipt = retrieval.finalize_comparison(
+            self.conn, self.pack, uncertain, self.policy
+        )
+        expanded = build_pack(
+            self.conn,
+            self.query,
+            "duplicate_search",
+            self.policy,
+            expansion_request={
+                "record_ids": [record_id],
+                "round": 1,
+                "prior_pack_publication_id":
+                    self.pack["pack_publication_id"],
+                "comparison_receipt_id":
+                    receipt["receipt_id"],
+            },
+        )
+        self.assertEqual(expanded["expansion_round"], 1)
+        self.assertTrue(
+            any(
+                candidate["candidate_id"] == record_id
+                and candidate["channel"] == "expansion"
+                and candidate["facet"] == "record"
+                for lineage in expanded["lineages"]
+                for candidate in lineage["matches"]
+            )
+        )
+        self.assertEqual(
+            {
+                candidate["candidate_id"]
+                for lineage in expanded["lineages"]
+                for candidate in lineage["matches"]
+            },
+            {record_id},
+        )
+        invalid = copy.deepcopy(uncertain)
+        invalid["expansion_request"] = {
+            "record_ids": [record_id],
+            "lineage_ids": [
+                self.pack["lineages"][0]["lineage_id"]
+            ],
+        }
+        with self.assertRaises(
+            retrieval.ComparisonValidationError
+        ):
+            retrieval.finalize_comparison(
+                self.conn, self.pack, invalid, self.policy
             )
 
     def test_expansion_replays_prior_receipt_before_use(self):
