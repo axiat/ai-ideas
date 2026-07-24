@@ -1,0 +1,16 @@
+{"gain":2,"hard_negative":false,"query_id":"q-cal-dup","record_id":"r-cal-dup","relation":"blocking","schema_version":1}
+{"gain":0,"hard_negative":true,"query_id":"q-cal-dup","record_id":"r-dup-neg","relation":"unrelated","schema_version":1}
+{"gain":2,"hard_negative":false,"query_id":"q-dup-hit","record_id":"r-dup-block","relation":"blocking","schema_version":1}
+{"gain":0,"hard_negative":true,"query_id":"q-dup-hit","record_id":"r-dup-neg","relation":"unrelated","schema_version":1}
+{"gain":0,"hard_negative":true,"query_id":"q-dup-none","record_id":"r-dup-neg2","relation":"unrelated","schema_version":1}
+{"gain":0,"hard_negative":true,"query_id":"q-fail-hit","record_id":"r-fail-neg","relation":"unrelated","schema_version":1}
+{"gain":1,"hard_negative":false,"query_id":"q-fail-hit","record_id":"r-fail-related","relation":"related-defect","schema_version":1}
+{"gain":2,"hard_negative":false,"query_id":"q-fail-hit","record_id":"r-fail-same","relation":"same-mechanism","schema_version":1}
+{"gain":0,"hard_negative":true,"query_id":"q-fail-none","record_id":"r-fail-neg2","relation":"unrelated","schema_version":1}
+{"gain":2,"hard_negative":false,"query_id":"q-lin-hit","record_id":"r-lin-ancestor","relation":"ancestor-or-descendant","schema_version":1}
+{"gain":0,"hard_negative":true,"query_id":"q-lin-hit","record_id":"r-lin-neg","relation":"unrelated","schema_version":1}
+{"gain":3,"hard_negative":false,"query_id":"q-lin-hit","record_id":"r-lin-parent","relation":"direct-parent","schema_version":1}
+{"gain":1,"hard_negative":false,"query_id":"q-lin-hit","record_id":"r-lin-sibling","relation":"sibling","schema_version":1}
+{"gain":0,"hard_negative":true,"query_id":"q-lin-none","record_id":"r-lin-neg","relation":"unrelated","schema_version":1}
+{"gain":0,"hard_negative":true,"query_id":"q-train-fail","record_id":"r-fail-neg","relation":"unrelated","schema_version":1}
+{"gain":2,"hard_negative":false,"query_id":"q-train-fail","record_id":"r-train-fail","relation":"same-mechanism","schema_version":1}
