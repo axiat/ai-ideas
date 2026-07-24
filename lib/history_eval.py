@@ -10,6 +10,7 @@ import math
 import os
 import pathlib
 import random
+import stat
 import statistics
 import tempfile
 
@@ -19,6 +20,12 @@ DEFAULT_POLICY = ROOT / "history/retrieval-policy-v1.json"
 SYNTHETIC_SCOPE = "synthetic_contract_only"
 PRODUCTION_SCOPE = "production"
 OUTPUT_SCHEMA_VERSION = "history-eval-output-v1"
+MAX_JSON_BYTES = 8 * 1024 * 1024
+MAX_JSONL_BYTES = 16 * 1024 * 1024
+MAX_POLICY_BYTES = 256 * 1024
+MAX_SCHEMA_BYTES = 512 * 1024
+BOOTSTRAP_SEED = 20260723
+BOOTSTRAP_SAMPLES = 2000
 ARMS = (
     "retrieval-only",
     "comparator-only",
@@ -49,6 +56,12 @@ POSITIVE_RELATIONS = tuple(
     for relation, gain in RELATION_GAINS[relation_set].items()
     if gain > 0
 )
+RELATION_SET_BY_LABEL = {
+    relation: relation_set
+    for relation_set, gains in RELATION_GAINS.items()
+    for relation, gain in gains.items()
+    if gain > 0
+}
 BENCHMARK_FILES = (
     "queries.jsonl",
     "qrels.jsonl",
@@ -140,6 +153,7 @@ CAPABILITY_FIELDS = {
     "heldout_output_sha256",
     "heldout_run_nonce",
     "heldout_started_at",
+    "evaluation_evidence",
     "canonical_seal_sha256",
     "signature",
 }
@@ -199,13 +213,117 @@ def _parse_utc(value, label):
     return parsed
 
 
-def _read_canonical_json(path, label):
+def _read_bounded_bytes(
+    path, label, maximum, *, boundary=None
+):
+    candidate = pathlib.Path(path)
+    components = [candidate]
+    if boundary is not None:
+        boundary_path = pathlib.Path(boundary)
+        try:
+            candidate.relative_to(boundary_path)
+        except ValueError as exc:
+            raise BenchmarkError(
+                f"{label} escapes its input root"
+            ) from exc
+        current = candidate.parent
+        while current != boundary_path:
+            components.append(current)
+            if current == current.parent:
+                raise BenchmarkError(
+                    f"{label} escapes its input root"
+                )
+            current = current.parent
+    for current in components:
+        if current.is_symlink():
+            raise BenchmarkError(f"{label} cannot use a symlink")
     try:
-        raw = pathlib.Path(path).read_bytes()
+        path_before = candidate.lstat()
     except OSError as exc:
         raise BenchmarkError(f"{label} is unavailable") from exc
-    if len(raw) > 8 * 1024 * 1024:
-        raise BenchmarkError(f"{label} exceeds its byte bound")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(str(candidate), flags)
+    except OSError as exc:
+        raise BenchmarkError(f"{label} is unavailable") from exc
+    try:
+        metadata_before = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata_before.st_mode):
+            raise BenchmarkError(f"{label} is not a regular file")
+        if metadata_before.st_size > maximum:
+            raise BenchmarkError(f"{label} exceeds its byte bound")
+        chunks = []
+        remaining = maximum + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > maximum:
+            raise BenchmarkError(f"{label} exceeds its byte bound")
+        if os.read(descriptor, 1):
+            raise BenchmarkError(f"{label} exceeds its byte bound")
+        metadata_after = os.fstat(descriptor)
+        try:
+            path_after = candidate.lstat()
+        except OSError as exc:
+            raise BenchmarkError(
+                f"{label} changed while it was read"
+            ) from exc
+        stable_fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if (
+            any(
+                getattr(metadata_before, field)
+                != getattr(metadata_after, field)
+                for field in stable_fields
+            )
+            or any(
+                getattr(path_before, field)
+                != getattr(path_after, field)
+                for field in stable_fields
+            )
+            or (
+                path_after.st_dev,
+                path_after.st_ino,
+            )
+            != (
+                metadata_after.st_dev,
+                metadata_after.st_ino,
+            )
+            or len(raw) != metadata_after.st_size
+        ):
+            raise BenchmarkError(
+                f"{label} changed while it was read"
+            )
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def _read_canonical_json(
+    path,
+    label,
+    *,
+    maximum=MAX_JSON_BYTES,
+    boundary=None,
+):
+    raw = _read_bounded_bytes(
+        path, label, maximum, boundary=boundary
+    )
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
@@ -215,13 +333,16 @@ def _read_canonical_json(path, label):
     return value, raw
 
 
-def _read_canonical_jsonl(path, label):
-    try:
-        raw = pathlib.Path(path).read_bytes()
-    except OSError as exc:
-        raise BenchmarkError(f"{label} is unavailable") from exc
-    if len(raw) > 16 * 1024 * 1024:
-        raise BenchmarkError(f"{label} exceeds its byte bound")
+def _read_canonical_jsonl(
+    path,
+    label,
+    *,
+    maximum=MAX_JSONL_BYTES,
+    boundary=None,
+):
+    raw = _read_bounded_bytes(
+        path, label, maximum, boundary=boundary
+    )
     if not raw or not raw.endswith(b"\n") or b"\n\n" in raw:
         raise BenchmarkError(f"{label} is not canonical JSONL")
     rows = []
@@ -240,18 +361,23 @@ def _read_canonical_jsonl(path, label):
     return rows, raw
 
 
-def load_policy(path=DEFAULT_POLICY):
-    try:
-        raw = pathlib.Path(path).read_bytes()
-        value = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
-        raise BenchmarkError("retrieval policy is unavailable") from exc
+def _load_policy_snapshot(path=DEFAULT_POLICY):
+    value, raw = _read_canonical_json(
+        path,
+        "retrieval policy",
+        maximum=MAX_POLICY_BYTES,
+    )
     if (
         not isinstance(value, dict)
         or value.get("retrieval_policy_version")
         != "retrieval-policy-v1"
     ):
         raise BenchmarkError("retrieval policy version is invalid")
+    return value, raw
+
+
+def load_policy(path=DEFAULT_POLICY):
+    value, _ = _load_policy_snapshot(path)
     return value
 
 
@@ -259,13 +385,6 @@ def _load_inputs(benchmark):
     root = pathlib.Path(benchmark)
     if root.is_symlink() or not root.is_dir():
         raise BenchmarkError("benchmark root is unavailable")
-    missing = [
-        name for name in BENCHMARK_FILES if not (root / name).is_file()
-    ]
-    if missing:
-        raise BenchmarkError(
-            "benchmark files are missing: " + ", ".join(missing)
-        )
     values = {}
     raw = {}
     for name in (
@@ -276,22 +395,38 @@ def _load_inputs(benchmark):
         "oracle-packs.jsonl",
     ):
         values[name], raw[name] = _read_canonical_jsonl(
-            root / name, name
+            root / name, name, boundary=root
         )
     for arm in ARMS:
         name = f"outputs/{arm}.jsonl"
         values[name], raw[name] = _read_canonical_jsonl(
-            root / name, name
+            root / name, name, boundary=root
         )
     for name in (
         "folds.json",
         "policy-commitment.json",
         "pre-heldout-receipt.json",
-        "test-witness-key.json",
         "expected-metrics.json",
     ):
         values[name], raw[name] = _read_canonical_json(
-            root / name, name
+            root / name, name, boundary=root
+        )
+    scope = values["policy-commitment.json"].get("scope")
+    test_root_path = root / "test-witness-key.json"
+    if scope == SYNTHETIC_SCOPE:
+        (
+            values["test-witness-key.json"],
+            raw["test-witness-key.json"],
+        ) = _read_canonical_json(
+            test_root_path,
+            "test-witness-key.json",
+            boundary=root,
+        )
+    elif scope == PRODUCTION_SCOPE and (
+        test_root_path.exists() or test_root_path.is_symlink()
+    ):
+        raise BenchmarkError(
+            "production benchmark contains a synthetic test root"
         )
     return root, values, raw
 
@@ -369,12 +504,21 @@ def _validate_queries(rows, corpus):
     queries = _index_unique(rows, "query_id", "queries")
     if list(queries) != sorted(queries):
         raise BenchmarkError("queries require stable query_id ordering")
-    leak_values = []
-    for record in corpus.values():
-        leak_values.extend(
+    corpus_times = {
+        record_id: _parse_utc(
+            record["committed_at"],
+            f"corpus record {record_id} commit time",
+        )
+        for record_id, record in corpus.items()
+    }
+    protected_metadata = [
+        value
+        for record in corpus.values()
+        for value in (
             [record["verdict"], record["reason"]]
             + list(record["citations"])
         )
+    ]
     for row in rows:
         _require_closed(row, fields, "query")
         if (
@@ -399,25 +543,31 @@ def _validate_queries(rows, corpus):
         as_of = _parse_utc(
             row["as_of"], f"query {row['query_id']} as-of time"
         )
+        query_watermark = _parse_utc(
+            row["corpus_watermark"],
+            f"query {row['query_id']} corpus watermark",
+        )
         visible = [
             record
-            for record in corpus.values()
-            if _parse_utc(
-                record["committed_at"], "corpus commit time"
-            )
-            < as_of
+            for record_id, record in corpus.items()
+            if corpus_times[record_id] < as_of
         ]
         if not visible:
             raise BenchmarkError("query has an empty as-of corpus")
         watermark = max(
-            record["committed_at"] for record in visible
+            corpus_times[record["record_id"]] for record in visible
         )
-        if row["corpus_watermark"] != watermark:
+        if query_watermark != watermark:
             raise BenchmarkError(
                 f"query {row['query_id']} corpus watermark is invalid"
             )
         folded = row["text"].casefold()
-        for leaked in leak_values:
+        future_revision_text = [
+            record["text"]
+            for record_id, record in corpus.items()
+            if corpus_times[record_id] >= as_of
+        ]
+        for leaked in protected_metadata + future_revision_text:
             if (
                 isinstance(leaked, str)
                 and len(leaked.strip()) >= 4
@@ -847,16 +997,36 @@ def _validate_output_row(
     ) | {"", "no_match"}
     if row["relation"] not in allowed_relation:
         raise BenchmarkError(f"{arm} output relation is invalid")
-    if row["abstained"]:
+    if arm == "retrieval-only":
+        if (
+            row["relation"] != ""
+            or row["abstained"]
+            or row["evidence_ids"]
+            or row["pair_relations"]
+            or row["comparator_pairs"] != 0
+            or row["status"] != "complete"
+        ):
+            raise BenchmarkError(
+                "retrieval-only output unused fields must be empty"
+            )
+    elif row["abstained"]:
         if row["relation"] or row["status"] != "abstained":
             raise BenchmarkError(
                 f"{arm} abstention fields are inconsistent"
             )
-    elif row["status"] not in {
-        "complete",
-        "complete_no_match",
-        "uncertain",
-    }:
+    elif row["relation"] == "no_match":
+        if row["status"] != "complete_no_match":
+            raise BenchmarkError(
+                "no_match relation requires complete_no_match status"
+            )
+    elif row["status"] == "complete_no_match":
+        raise BenchmarkError(
+            "complete_no_match status requires no_match relation"
+        )
+    elif (
+        not row["relation"]
+        or row["status"] not in {"complete", "uncertain"}
+    ):
         raise BenchmarkError(f"{arm} output status is invalid")
     if (
         len(row["evidence_ids"])
@@ -1240,6 +1410,18 @@ def _validate_receipt(
                 "pre-held-out receipt signature is invalid"
             )
     else:
+        if (
+            not isinstance(trust_root, dict)
+            or trust_root.get("scope") != PRODUCTION_SCOPE
+            or receipt["trust_root_id"]
+            != trust_root.get("trust_root_id")
+            or "hmac_sha256_key" in trust_root
+            or trust_root.get("algorithm") == "test-hmac-sha256"
+        ):
+            raise BenchmarkError(
+                "synthetic test root cannot verify production "
+                "calibration"
+            )
         if not callable(witness_verifier):
             raise BenchmarkError(
                 "production trusted-runner witness verifier "
@@ -1309,19 +1491,30 @@ def _rank_metrics(rows, query_ids, queries, qrels):
             "recall_at": {
                 str(k): None for k in (1, 3, 5, 10)
             },
+            "judged_ranked_pairs": 0,
             "unjudged_ranked_pairs": 0,
+            "incomplete_judgment_queries": 0,
         }
     hits = {k: [] for k in (1, 3, 5, 10)}
     recalls = {k: [] for k in (1, 3, 5, 10)}
     reciprocal_ranks = []
     ndcgs = []
     unjudged = 0
+    judged = 0
+    incomplete = 0
     for query_id in positive_query_ids:
-        ranked = rows[query_id]["row"]["ranked_record_ids"]
+        raw_ranked = rows[query_id]["row"]["ranked_record_ids"]
+        ranked = [
+            record_id
+            for record_id in raw_ranked
+            if (query_id, record_id) in qrels
+        ]
         gold = _gold_ids(qrels, query_id)
-        for record_id in ranked:
-            if (query_id, record_id) not in qrels:
-                unjudged += 1
+        unjudged_for_query = len(raw_ranked) - len(ranked)
+        unjudged += unjudged_for_query
+        judged += len(ranked)
+        if unjudged_for_query:
+            incomplete += 1
         for cutoff in (1, 3, 5, 10):
             selected = set(ranked[:cutoff])
             found = len(gold & selected)
@@ -1339,7 +1532,7 @@ def _rank_metrics(rows, query_ids, queries, qrels):
         )
         reciprocal_ranks.append(0.0 if first is None else 1 / first)
         gains = [
-            qrels.get((query_id, record_id), {"gain": 0})["gain"]
+            qrels[(query_id, record_id)]["gain"]
             for record_id in ranked[:10]
         ]
         dcg = sum(
@@ -1371,7 +1564,265 @@ def _rank_metrics(rows, query_ids, queries, qrels):
             str(cutoff): _rounded(statistics.mean(values))
             for cutoff, values in recalls.items()
         },
+        "judged_ranked_pairs": judged,
         "unjudged_ranked_pairs": unjudged,
+        "incomplete_judgment_queries": incomplete,
+    }
+
+
+def _judged_ranked_ids(output, query_id, qrels, cutoff=None):
+    ranked = [
+        record_id
+        for record_id in output[query_id]["row"][
+            "ranked_record_ids"
+        ]
+        if (query_id, record_id) in qrels
+    ]
+    return ranked if cutoff is None else ranked[:cutoff]
+
+
+def _retrieval_alert_metrics(
+    output, query_ids, queries, qrels, *, classified
+):
+    duplicate_ids = [
+        query_id
+        for query_id in query_ids
+        if queries[query_id]["relation_set"] == "duplicate"
+    ]
+    alerts = []
+    actual = []
+    for query_id in duplicate_ids:
+        if classified:
+            predicted = output[query_id]["row"]["relation"] in {
+                "blocking",
+                "substantive",
+            }
+        else:
+            predicted = bool(
+                _judged_ranked_ids(
+                    output, query_id, qrels, cutoff=10
+                )
+            )
+        alerts.append(predicted)
+        actual.append(bool(_gold_ids(qrels, query_id)))
+    true_alerts = sum(
+        1
+        for predicted, positive in zip(alerts, actual)
+        if predicted and positive
+    )
+    alert_count = sum(alerts)
+    no_hit_count = sum(not positive for positive in actual)
+    no_hit_alerts = sum(
+        1
+        for predicted, positive in zip(alerts, actual)
+        if predicted and not positive
+    )
+    return {
+        "alert_precision": _safe_ratio(
+            true_alerts, alert_count
+        ),
+        "no_hit_false_positive_rate": _safe_ratio(
+            no_hit_alerts, no_hit_count
+        ),
+    }
+
+
+def _lineage_required_metrics(output, query_ids, queries, qrels):
+    lineage_ids = [
+        query_id
+        for query_id in query_ids
+        if queries[query_id]["relation_set"] == "lineage"
+    ]
+    ranking = _rank_metrics(
+        output, lineage_ids, queries, qrels
+    )
+    direct_parent_queries = [
+        query_id
+        for query_id in lineage_ids
+        if any(
+            qrel["relation"] == "direct-parent"
+            for (candidate_query_id, _), qrel in qrels.items()
+            if candidate_query_id == query_id
+        )
+    ]
+    direct_parent_correct = 0
+    for query_id in direct_parent_queries:
+        ranked = _judged_ranked_ids(
+            output, query_id, qrels, cutoff=1
+        )
+        if (
+            ranked
+            and qrels[(query_id, ranked[0])]["relation"]
+            == "direct-parent"
+        ):
+            direct_parent_correct += 1
+    ancestor_queries = [
+        query_id
+        for query_id in lineage_ids
+        if any(
+            qrel["relation"]
+            in {"direct-parent", "ancestor-or-descendant"}
+            for (candidate_query_id, _), qrel in qrels.items()
+            if candidate_query_id == query_id
+        )
+    ]
+    ancestor_recall = {}
+    for cutoff in (5, 10):
+        values = []
+        for query_id in ancestor_queries:
+            gold = {
+                record_id
+                for (candidate_query_id, record_id), qrel
+                in qrels.items()
+                if candidate_query_id == query_id
+                and qrel["relation"]
+                in {"direct-parent", "ancestor-or-descendant"}
+            }
+            selected = set(
+                _judged_ranked_ids(
+                    output, query_id, qrels, cutoff=cutoff
+                )
+            )
+            values.append(len(gold & selected) / len(gold))
+        ancestor_recall[str(cutoff)] = (
+            _rounded(statistics.mean(values)) if values else None
+        )
+    return {
+        "ndcg_at_10": ranking["ndcg_at_10"],
+        "direct_parent_accuracy_at_1": _safe_ratio(
+            direct_parent_correct, len(direct_parent_queries)
+        ),
+        "ancestor_recall_at": ancestor_recall,
+    }
+
+
+def _retrieval_failure_relations(
+    output, query_ids, queries, qrels
+):
+    failure_ids = {
+        query_id
+        for query_id in query_ids
+        if queries[query_id]["relation_set"] == "failure"
+    }
+    selected = {
+        (query_id, record_id)
+        for query_id in failure_ids
+        for record_id in _judged_ranked_ids(
+            output, query_id, qrels, cutoff=10
+        )
+    }
+    precision = {}
+    recall = {}
+    for relation in ("same-mechanism", "related-defect"):
+        gold = {
+            key
+            for key, qrel in qrels.items()
+            if key[0] in failure_ids
+            and qrel["relation"] == relation
+        }
+        true_positive = len(gold & selected)
+        precision[relation] = _safe_ratio(
+            true_positive, len(selected)
+        )
+        recall[relation] = _safe_ratio(
+            true_positive, len(gold)
+        )
+    return precision, recall
+
+
+def _required_metrics(
+    arm, output, query_ids, queries, qrels, classification
+):
+    ranked = arm in {"retrieval-only", "end-to-end"}
+    classified = arm != "retrieval-only"
+    duplicate_ids = [
+        query_id
+        for query_id in query_ids
+        if queries[query_id]["relation_set"] == "duplicate"
+    ]
+    failure_ids = [
+        query_id
+        for query_id in query_ids
+        if queries[query_id]["relation_set"] == "failure"
+    ]
+    duplicate_ranking = (
+        _rank_metrics(
+            output, duplicate_ids, queries, qrels
+        )
+        if ranked
+        else None
+    )
+    failure_ranking = (
+        _rank_metrics(output, failure_ids, queries, qrels)
+        if ranked
+        else None
+    )
+    alerts = _retrieval_alert_metrics(
+        output,
+        query_ids,
+        queries,
+        qrels,
+        classified=classified,
+    )
+    if classification is not None:
+        failure_precision = {
+            relation: classification["relation_precision"][
+                relation
+            ]
+            for relation in (
+                "same-mechanism",
+                "related-defect",
+            )
+        }
+        failure_recall = {
+            relation: classification["relation_recall"][
+                relation
+            ]
+            for relation in (
+                "same-mechanism",
+                "related-defect",
+            )
+        }
+    elif ranked:
+        failure_precision, failure_recall = (
+            _retrieval_failure_relations(
+                output, query_ids, queries, qrels
+            )
+        )
+    else:
+        failure_precision = {
+            "same-mechanism": None,
+            "related-defect": None,
+        }
+        failure_recall = dict(failure_precision)
+    return {
+        "duplicate": {
+            "hit_at": duplicate_ranking["hit_at"]
+            if duplicate_ranking is not None
+            else {str(k): None for k in (1, 3, 5, 10)},
+            "mrr_at_10": duplicate_ranking["mrr_at_10"]
+            if duplicate_ranking is not None
+            else None,
+            **alerts,
+        },
+        "lineage": (
+            _lineage_required_metrics(
+                output, query_ids, queries, qrels
+            )
+            if ranked
+            else {
+                "ndcg_at_10": None,
+                "direct_parent_accuracy_at_1": None,
+                "ancestor_recall_at": {"5": None, "10": None},
+            }
+        ),
+        "failure": {
+            "recall_at": failure_ranking["recall_at"]
+            if failure_ranking is not None
+            else {str(k): None for k in (1, 3, 5, 10)},
+            "relation_precision": failure_precision,
+            "relation_recall": failure_recall,
+        },
     }
 
 
@@ -1582,14 +2033,21 @@ def _operations_metrics(output, query_ids):
     return {
         "latency_ms_p50": _percentile(latencies, 0.50),
         "latency_ms_p95": _percentile(latencies, 0.95),
+        "input_tokens_p50": _percentile(tokens, 0.50),
+        "input_tokens_p95": _percentile(tokens, 0.95),
+        "max_input_tokens": max(tokens) if tokens else None,
         "tokens_per_query": _rounded(statistics.mean(tokens)),
         "comparator_pairs_per_query": _rounded(
             statistics.mean(pairs)
         ),
+        "max_comparator_pairs": max(pairs) if pairs else None,
+        "cost_per_query": None,
     }
 
 
-def _slice_metrics(output, query_ids, queries, qrels, ranked):
+def _slice_metrics(output, query_ids, queries, qrels, arm):
+    ranked = arm in {"retrieval-only", "end-to-end"}
+    classified = arm != "retrieval-only"
     result = {}
     dimensions = {
         "theme": "theme",
@@ -1617,7 +2075,7 @@ def _slice_metrics(output, query_ids, queries, qrels, ranked):
             )
             classification = _classification_metrics(
                 output, selected, queries, qrels
-            )
+            ) if classified else None
             buckets[value] = {
                 "query_count": len(selected),
                 "hit_at_10": (
@@ -1625,9 +2083,19 @@ def _slice_metrics(output, query_ids, queries, qrels, ranked):
                     if ranking is not None
                     else None
                 ),
-                "relation_accuracy": classification[
-                    "relation_accuracy"
-                ],
+                "relation_accuracy": (
+                    classification["relation_accuracy"]
+                    if classification is not None
+                    else None
+                ),
+                "required_metrics": _required_metrics(
+                    arm,
+                    output,
+                    selected,
+                    queries,
+                    qrels,
+                    classification,
+                ),
             }
         result[output_name] = buckets
     return result
@@ -1637,6 +2105,13 @@ def _arm_metrics(arm, output, queries, qrels):
     query_ids = sorted(output)
     ranked = arm in {"retrieval-only", "end-to-end"}
     classified = arm != "retrieval-only"
+    classification = (
+        _classification_metrics(
+            output, query_ids, queries, qrels
+        )
+        if classified
+        else None
+    )
     return {
         "query_count": len(query_ids),
         "ranking": (
@@ -1644,13 +2119,7 @@ def _arm_metrics(arm, output, queries, qrels):
             if ranked
             else None
         ),
-        "classification": (
-            _classification_metrics(
-                output, query_ids, queries, qrels
-            )
-            if classified
-            else None
-        ),
+        "classification": classification,
         "evidence": (
             _evidence_metrics(
                 output, query_ids, queries, qrels
@@ -1659,101 +2128,489 @@ def _arm_metrics(arm, output, queries, qrels):
             else None
         ),
         "operations": _operations_metrics(output, query_ids),
-        "slices": (
-            _slice_metrics(
-                output,
-                query_ids,
-                queries,
-                qrels,
-                ranked,
-            )
-            if classified
-            else {
-                dimension: {
-                    value: {
-                        "query_count": len(
-                            [
-                                query_id
-                                for query_id in query_ids
-                                if queries[query_id][field] == value
-                            ]
-                        ),
-                        "hit_at_10": _rank_metrics(
-                            output,
-                            [
-                                query_id
-                                for query_id in query_ids
-                                if queries[query_id][field] == value
-                            ],
-                            queries,
-                            qrels,
-                        )["hit_at"]["10"],
-                        "relation_accuracy": None,
-                    }
-                    for value in sorted(
-                        {
-                            queries[query_id][field]
-                            for query_id in query_ids
-                        }
-                    )
-                }
-                for dimension, field in {
-                    "theme": "theme",
-                    "lexical_overlap_bucket":
-                        "lexical_overlap_bucket",
-                    "relation_type": "relation_set",
-                    "history_age_bucket": "history_age_bucket",
-                }.items()
-            }
+        "required_metrics": _required_metrics(
+            arm,
+            output,
+            query_ids,
+            queries,
+            qrels,
+            classification,
+        ),
+        "slices": _slice_metrics(
+            output,
+            query_ids,
+            queries,
+            qrels,
+            arm,
         ),
     }
 
 
-def _paired_bootstrap(outputs, queries, qrels):
-    query_ids = sorted(outputs["end-to-end"])
-    baseline = [
-        _query_relation_correct(
-            query_id, outputs["closed-book"], queries, qrels
+PRIMARY_METRICS = (
+    "duplicate_hit_at_10",
+    "duplicate_alert_precision",
+    "lineage_ndcg_at_10",
+    "failure_recall_at_10",
+    "relation_accuracy",
+    "false_duplicate_rate",
+    "false_internal_no_match_rate",
+)
+
+
+def _metric_estimate(
+    metric, output, query_ids, queries, qrels
+):
+    arm = next(
+        (
+            value["row"]["arm"]
+            for value in output.values()
+        ),
+        None,
+    )
+    ranked = arm in {"retrieval-only", "end-to-end"}
+    classified = arm != "retrieval-only"
+    if metric == "duplicate_hit_at_10":
+        if not ranked:
+            return None
+        values = []
+        for query_id in query_ids:
+            if (
+                queries[query_id]["relation_set"] != "duplicate"
+                or not _gold_ids(qrels, query_id)
+            ):
+                continue
+            selected = set(
+                _judged_ranked_ids(
+                    output, query_id, qrels, cutoff=10
+                )
+            )
+            values.append(
+                1.0
+                if selected & _gold_ids(qrels, query_id)
+                else 0.0
+            )
+        return (
+            _rounded(statistics.mean(values)) if values else None
         )
-        for query_id in query_ids
-    ]
-    candidate = [
-        _query_relation_correct(
-            query_id, outputs["end-to-end"], queries, qrels
-        )
-        for query_id in query_ids
-    ]
-    deltas = [
-        candidate[index] - baseline[index]
-        for index in range(len(query_ids))
-    ]
-    seed = 20260723
-    samples = 2000
-    generator = random.Random(seed)
-    bootstrapped = []
-    for _ in range(samples):
+    if metric == "duplicate_alert_precision":
+        duplicate_ids = [
+            query_id
+            for query_id in query_ids
+            if queries[query_id]["relation_set"] == "duplicate"
+        ]
+        true_alerts = 0
+        alerts = 0
+        for query_id in duplicate_ids:
+            if classified:
+                predicted = output[query_id]["row"]["relation"] in {
+                    "blocking",
+                    "substantive",
+                }
+            else:
+                predicted = bool(
+                    _judged_ranked_ids(
+                        output, query_id, qrels, cutoff=10
+                    )
+                )
+            if predicted:
+                alerts += 1
+                if _gold_ids(qrels, query_id):
+                    true_alerts += 1
+        return _safe_ratio(true_alerts, alerts)
+    if metric == "lineage_ndcg_at_10":
+        if not ranked:
+            return None
         selected = [
-            generator.randrange(len(query_ids))
+            query_id
+            for query_id in query_ids
+            if queries[query_id]["relation_set"] == "lineage"
+            and _gold_ids(qrels, query_id)
+        ]
+        return _rank_metrics(
+            output, selected, queries, qrels
+        )["ndcg_at_10"]
+    if metric == "failure_recall_at_10":
+        if not ranked:
+            return None
+        selected = [
+            query_id
+            for query_id in query_ids
+            if queries[query_id]["relation_set"] == "failure"
+            and _gold_ids(qrels, query_id)
+        ]
+        return _rank_metrics(
+            output, selected, queries, qrels
+        )["recall_at"]["10"]
+    if metric == "relation_accuracy":
+        if not classified:
+            return None
+        values = [
+            _query_relation_correct(
+                query_id, output, queries, qrels
+            )
+            for query_id in query_ids
+        ]
+        return (
+            _rounded(statistics.mean(values)) if values else None
+        )
+    if metric == "false_duplicate_rate":
+        if not classified:
+            return None
+        false = 0
+        negatives = 0
+        for query_id in query_ids:
+            if queries[query_id]["relation_set"] != "duplicate":
+                continue
+            for (candidate_query_id, record_id), qrel in qrels.items():
+                if (
+                    candidate_query_id != query_id
+                    or qrel["relation"] != "unrelated"
+                ):
+                    continue
+                negatives += 1
+                predicted = output[query_id][
+                    "pair_predictions"
+                ].get(record_id)
+                if predicted in {"blocking", "substantive"}:
+                    false += 1
+        return _safe_ratio(false, negatives)
+    if metric == "false_internal_no_match_rate":
+        if not classified:
+            return None
+        positives = [
+            query_id
+            for query_id in query_ids
+            if _gold_ids(qrels, query_id)
+        ]
+        false = sum(
+            1
+            for query_id in positives
+            if (
+                output[query_id]["row"]["relation"] == "no_match"
+                or output[query_id]["row"]["status"]
+                == "complete_no_match"
+            )
+        )
+        return _safe_ratio(false, len(positives))
+    raise AssertionError(metric)
+
+
+def _bootstrap_interval(values):
+    if not values:
+        return {"lower": None, "upper": None}
+    ordered = sorted(values)
+    lower_index = math.floor(0.025 * (len(ordered) - 1))
+    upper_index = math.ceil(0.975 * (len(ordered) - 1))
+    return {
+        "lower": _rounded(ordered[lower_index]),
+        "upper": _rounded(ordered[upper_index]),
+    }
+
+
+def _confidence_intervals(outputs, queries, qrels):
+    query_ids = sorted(outputs["end-to-end"])
+    generator = random.Random(BOOTSTRAP_SEED)
+    samples = [
+        [
+            query_ids[generator.randrange(len(query_ids))]
             for _ in query_ids
         ]
-        bootstrapped.append(
-            statistics.mean(deltas[index] for index in selected)
-        )
-    bootstrapped.sort()
-    lower_index = math.floor(0.025 * (samples - 1))
-    upper_index = math.ceil(0.975 * (samples - 1))
+        for _ in range(BOOTSTRAP_SAMPLES)
+    ]
+    arm_values = {}
+    for arm in ARMS:
+        metrics = {}
+        for metric in PRIMARY_METRICS:
+            estimate = _metric_estimate(
+                metric,
+                outputs[arm],
+                query_ids,
+                queries,
+                qrels,
+            )
+            if estimate is None:
+                continue
+            bootstrapped = [
+                value
+                for selected in samples
+                for value in [
+                    _metric_estimate(
+                        metric,
+                        outputs[arm],
+                        selected,
+                        queries,
+                        qrels,
+                    )
+                ]
+                if value is not None
+            ]
+            metrics[metric] = {
+                "estimate": estimate,
+                "ci95": _bootstrap_interval(bootstrapped),
+            }
+        arm_values[arm] = metrics
+    comparisons = (
+        ("end-to-end", "retrieval-only"),
+        ("end-to-end", "comparator-only"),
+        ("end-to-end", "closed-book"),
+    )
+    differences = {}
+    for candidate, baseline in comparisons:
+        metrics = {}
+        for metric in PRIMARY_METRICS:
+            candidate_value = _metric_estimate(
+                metric,
+                outputs[candidate],
+                query_ids,
+                queries,
+                qrels,
+            )
+            baseline_value = _metric_estimate(
+                metric,
+                outputs[baseline],
+                query_ids,
+                queries,
+                qrels,
+            )
+            if candidate_value is None or baseline_value is None:
+                continue
+            bootstrapped = []
+            for selected in samples:
+                candidate_sample = _metric_estimate(
+                    metric,
+                    outputs[candidate],
+                    selected,
+                    queries,
+                    qrels,
+                )
+                baseline_sample = _metric_estimate(
+                    metric,
+                    outputs[baseline],
+                    selected,
+                    queries,
+                    qrels,
+                )
+                if (
+                    candidate_sample is not None
+                    and baseline_sample is not None
+                ):
+                    bootstrapped.append(
+                        candidate_sample - baseline_sample
+                    )
+            metrics[metric] = {
+                "estimate": _rounded(
+                    candidate_value - baseline_value
+                ),
+                "ci95": _bootstrap_interval(bootstrapped),
+            }
+        differences[f"{candidate}_minus_{baseline}"] = metrics
     return {
         "schema_version": 1,
-        "seed": seed,
-        "samples": samples,
-        "candidate_arm": "end-to-end",
-        "baseline_arm": "closed-book",
-        "metric": "relation_accuracy",
-        "observed_delta": _rounded(statistics.mean(deltas)),
-        "ci95": {
-            "lower": _rounded(bootstrapped[lower_index]),
-            "upper": _rounded(bootstrapped[upper_index]),
+        "seed": BOOTSTRAP_SEED,
+        "samples": BOOTSTRAP_SAMPLES,
+        "arms": arm_values,
+        "system_differences": differences,
+    }
+
+
+def _derive_relation_heldout_counts(queries, qrels):
+    heldout = {
+        query_id
+        for query_id, query in queries.items()
+        if query["fold"] == "test"
+    }
+    result = {}
+    for relation in POSITIVE_RELATIONS:
+        relation_set = RELATION_SET_BY_LABEL[relation]
+        positive_queries = {
+            query_id
+            for (query_id, _), qrel in qrels.items()
+            if query_id in heldout
+            and queries[query_id]["relation_set"] == relation_set
+            and qrel["relation"] == relation
+        }
+        hard_negative_queries = {
+            query_id
+            for (query_id, _), qrel in qrels.items()
+            if query_id in heldout
+            and queries[query_id]["relation_set"] == relation_set
+            and qrel["hard_negative"]
+        }
+        positive = len(positive_queries)
+        hard_negative = len(hard_negative_queries)
+        result[relation] = {
+            "positive": positive,
+            "hard_negative": hard_negative,
+            "advisory": positive < 30 or hard_negative < 30,
+        }
+    return result
+
+
+def _gate_evidence(context, metrics, confidence_intervals):
+    commitment = context["commitment"]
+    end_to_end = metrics["end-to-end"]
+    primary_sources = {
+        "duplicate": (
+            "duplicate_alert_precision",
+            end_to_end["required_metrics"]["duplicate"][
+                "alert_precision"
+            ],
+        ),
+        "lineage": (
+            "lineage_ndcg_at_10",
+            end_to_end["required_metrics"]["lineage"][
+                "ndcg_at_10"
+            ],
+        ),
+        "failure": (
+            "failure_recall_at_10",
+            end_to_end["required_metrics"]["failure"][
+                "recall_at"
+            ]["10"],
+        ),
+    }
+    primary = {}
+    for relation_set, (metric, observed) in primary_sources.items():
+        interval = confidence_intervals["arms"]["end-to-end"].get(
+            metric
+        )
+        lower = (
+            interval["ci95"]["lower"]
+            if interval is not None
+            else None
+        )
+        minimum = commitment["selected_thresholds"][
+            relation_set
+        ]
+        primary[relation_set] = {
+            "arm": "end-to-end",
+            "metric": metric,
+            "observed": observed,
+            "ci95_lower": lower,
+            "minimum": minimum,
+            "passed": (
+                observed is not None
+                and lower is not None
+                and lower >= minimum
+            ),
+        }
+    error_metrics = {
+        "max_false_duplicate_rate": "false_duplicate_rate",
+        "max_false_internal_no_match_rate":
+            "false_internal_no_match_rate",
+    }
+    errors = {}
+    for budget_name, metric in error_metrics.items():
+        observed = end_to_end["classification"][metric]
+        interval = confidence_intervals["arms"]["end-to-end"].get(
+            metric
+        )
+        upper = (
+            interval["ci95"]["upper"]
+            if interval is not None
+            else None
+        )
+        maximum = commitment["error_budgets"][budget_name]
+        errors[budget_name] = {
+            "arm": "end-to-end",
+            "metric": metric,
+            "observed": observed,
+            "ci95_upper": upper,
+            "maximum": maximum,
+            "passed": (
+                observed is not None
+                and upper is not None
+                and upper <= maximum
+            ),
+        }
+    operations = end_to_end["operations"]
+    resources = {
+        "latency_target_ms_p95": {
+            "arm": "end-to-end",
+            "metric": "latency_ms_p95",
+            "observed": operations["latency_ms_p95"],
+            "maximum": commitment["latency_target_ms_p95"],
+            "passed": (
+                operations["latency_ms_p95"] is not None
+                and operations["latency_ms_p95"]
+                <= commitment["latency_target_ms_p95"]
+            ),
         },
+        "token_budget": {
+            "arm": "end-to-end",
+            "metric": "max_input_tokens",
+            "observed": operations["max_input_tokens"],
+            "maximum": commitment["token_budget"],
+            "passed": (
+                operations["max_input_tokens"] is not None
+                and operations["max_input_tokens"]
+                <= commitment["token_budget"]
+            ),
+        },
+    }
+    output = context["outputs"]["end-to-end"]
+    corpus = context["corpus"]
+    observed_depths = {
+        "per_channel_depth": max(
+            len(value["row"]["ranked_record_ids"])
+            for value in output.values()
+        ),
+        "comparator_cutoff": max(
+            value["row"]["comparator_pairs"]
+            for value in output.values()
+        ),
+        "final_lineage_count": max(
+            len(
+                {
+                    corpus[record_id]["lineage_id"]
+                    for record_id in value["row"][
+                        "ranked_record_ids"
+                    ]
+                }
+            )
+            for value in output.values()
+        ),
+    }
+    depths = {}
+    for name, observed in observed_depths.items():
+        maximum = commitment["selected_depths"][name]
+        depths[name] = {
+            "observed": observed,
+            "maximum": maximum,
+            "passed": observed <= maximum,
+        }
+    coverage = _derive_relation_heldout_counts(
+        context["queries"], context["qrels"]
+    )
+    all_gates = (
+        all(not value["advisory"] for value in coverage.values())
+        and context["agreement_rate"] is not None
+        and all(value["passed"] for value in primary.values())
+        and all(value["passed"] for value in errors.values())
+        and all(value["passed"] for value in resources.values())
+        and all(value["passed"] for value in depths.values())
+    )
+    return {
+        "schema_version": 1,
+        "primary_metrics": primary,
+        "error_budgets": errors,
+        "resource_limits": resources,
+        "selected_depths": depths,
+        "confidence_intervals_sha256": sha256(
+            canonical_bytes(confidence_intervals)
+        ),
+        "all_gates_passed": all_gates,
+    }
+
+
+def _paired_bootstrap(confidence_intervals):
+    return {
+        "schema_version": 1,
+        "seed": BOOTSTRAP_SEED,
+        "samples": BOOTSTRAP_SAMPLES,
+        "confidence_intervals_sha256": sha256(
+            canonical_bytes(confidence_intervals)
+        ),
     }
 
 
@@ -1791,7 +2648,10 @@ def _validate_schema_contracts(benchmark_root):
     hashes = {}
     for name, fields in contracts:
         value, raw = _read_canonical_json(
-            schema_root / name, name
+            schema_root / name,
+            name,
+            maximum=MAX_SCHEMA_BYTES,
+            boundary=schema_root,
         )
         if (
             not isinstance(value, dict)
@@ -1892,13 +2752,7 @@ def _prepare_benchmark(
     root, values, raw = _load_inputs(benchmark)
     schema_hashes = _validate_schema_contracts(root)
     if policy_override is None:
-        try:
-            policy_raw = pathlib.Path(policy_path).read_bytes()
-        except OSError as exc:
-            raise BenchmarkError(
-                "retrieval policy is unavailable"
-            ) from exc
-        policy = load_policy(policy_path)
+        policy, policy_raw = _load_policy_snapshot(policy_path)
     else:
         if not isinstance(policy_override, dict):
             raise BenchmarkError(
@@ -1944,7 +2798,7 @@ def _prepare_benchmark(
             "held-out run"
         )
     trust_root = (
-        values["test-witness-key.json"]
+        values.get("test-witness-key.json")
         if trust_root_override is None
         else trust_root_override
     )
@@ -1981,7 +2835,8 @@ def _prepare_benchmark(
             "held-out output run nonce is invalid"
         )
     input_hashes = {
-        name: sha256(raw[name]) for name in BENCHMARK_FILES
+        name: sha256(content)
+        for name, content in raw.items()
     }
     input_hashes["history/retrieval-policy-v1.json"] = sha256(
         policy_raw
@@ -2035,38 +2890,46 @@ def evaluate_benchmark(
         )
         for arm in ARMS
     }
-    paired = _paired_bootstrap(
+    confidence_intervals = _confidence_intervals(
         context["outputs"],
         context["queries"],
         context["qrels"],
     )
+    paired = _paired_bootstrap(confidence_intervals)
     expected = context["values"]["expected-metrics.json"]
-    _require_closed(
-        expected,
-        {
-            "schema_version",
-            "scope",
-            "tolerance",
-            "metrics",
-            "paired_bootstrap",
-        },
-        "expected metrics",
-    )
-    if (
-        expected["schema_version"] != 1
-        or expected["scope"] != context["scope"]
-    ):
-        raise BenchmarkError("expected metrics scope is invalid")
-    _validate_number(
-        expected["tolerance"],
-        "expected metric tolerance",
-        minimum=0.0,
-    )
     if verify_expected:
+        _require_closed(
+            expected,
+            {
+                "schema_version",
+                "scope",
+                "tolerance",
+                "metrics",
+                "confidence_intervals",
+                "paired_bootstrap",
+            },
+            "expected metrics",
+        )
+        if (
+            expected["schema_version"] != 1
+            or expected["scope"] != context["scope"]
+        ):
+            raise BenchmarkError("expected metrics scope is invalid")
+        _validate_number(
+            expected["tolerance"],
+            "expected metric tolerance",
+            minimum=0.0,
+        )
         _compare_expected(
             metrics,
             expected["metrics"],
             float(expected["tolerance"]),
+        )
+        _compare_expected(
+            confidence_intervals,
+            expected["confidence_intervals"],
+            float(expected["tolerance"]),
+            "confidence_intervals",
         )
         _compare_expected(
             paired,
@@ -2101,6 +2964,7 @@ def evaluate_benchmark(
         "input_sha256s": context["input_sha256s"],
         "arms": list(ARMS),
         "metrics": metrics,
+        "confidence_intervals": confidence_intervals,
         "paired_bootstrap": paired,
     }
 
@@ -2126,6 +2990,20 @@ def build_synthetic_capability_for_test(
             "synthetic capability builder requires synthetic scope"
         )
     trust_root = context["values"]["test-witness-key.json"]
+    metrics = {
+        arm: _arm_metrics(
+            arm,
+            context["outputs"][arm],
+            context["queries"],
+            context["qrels"],
+        )
+        for arm in ARMS
+    }
+    confidence_intervals = _confidence_intervals(
+        context["outputs"],
+        context["queries"],
+        context["qrels"],
+    )
     capability = {
         "schema_version": 1,
         "scope": SYNTHETIC_SCOPE,
@@ -2150,12 +3028,9 @@ def build_synthetic_capability_for_test(
             context["raw"]["adjudications.jsonl"]
         ),
         "relation_heldout_counts": {
-            relation: {
-                "positive": 30,
-                "hard_negative": 30,
-                "advisory": False,
-            }
-            for relation in ("duplicate", "lineage", "failure")
+            **_derive_relation_heldout_counts(
+                context["queries"], context["qrels"]
+            )
         },
         "unresolved_adjudications": 0,
         "heldout_output_sha256": context[
@@ -2165,6 +3040,9 @@ def build_synthetic_capability_for_test(
             "run_nonce"
         ],
         "heldout_started_at": context["heldout_started_at"],
+        "evaluation_evidence": _gate_evidence(
+            context, metrics, confidence_intervals
+        ),
     }
     capability["canonical_seal_sha256"] = sha256(
         b"history-calibration-capability-v1\0"
@@ -2187,7 +3065,372 @@ def _load_value(value, label):
     if isinstance(value, (str, pathlib.Path)):
         parsed, _ = _read_canonical_json(value, label)
         return parsed
+    if isinstance(value, bytes):
+        if len(value) > MAX_JSON_BYTES:
+            raise BenchmarkError(f"{label} exceeds its byte bound")
+        try:
+            parsed = json.loads(value.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise BenchmarkError(f"{label} is invalid JSON") from exc
+        if value != canonical_bytes(parsed):
+            raise BenchmarkError(f"{label} is not canonical JSON")
+        return parsed
     return value
+
+
+def _optional_number(value, label):
+    if value is None:
+        return
+    _validate_number(value, label)
+
+
+def _validate_evaluation_evidence(evidence, counts):
+    _require_closed(
+        evidence,
+        {
+            "schema_version",
+            "primary_metrics",
+            "error_budgets",
+            "resource_limits",
+            "selected_depths",
+            "confidence_intervals_sha256",
+            "all_gates_passed",
+        },
+        "calibration evaluation evidence",
+    )
+    if (
+        evidence["schema_version"] != 1
+        or type(evidence["all_gates_passed"]) is not bool
+    ):
+        raise BenchmarkError(
+            "calibration evaluation evidence is invalid"
+        )
+    _require_sha(
+        evidence["confidence_intervals_sha256"],
+        "calibration confidence intervals SHA",
+    )
+    primary = evidence["primary_metrics"]
+    if (
+        not isinstance(primary, dict)
+        or set(primary) != set(RELATION_GAINS)
+    ):
+        raise BenchmarkError(
+            "calibration primary metric evidence is invalid"
+        )
+    primary_passed = []
+    for relation_set, value in primary.items():
+        _require_closed(
+            value,
+            {
+                "arm",
+                "metric",
+                "observed",
+                "ci95_lower",
+                "minimum",
+                "passed",
+            },
+            f"{relation_set} primary metric evidence",
+        )
+        if (
+            value["arm"] != "end-to-end"
+            or not isinstance(value["metric"], str)
+            or not value["metric"]
+            or type(value["passed"]) is not bool
+        ):
+            raise BenchmarkError(
+                "calibration primary metric evidence is invalid"
+            )
+        _optional_number(
+            value["observed"],
+            f"{relation_set} primary metric observation",
+        )
+        _optional_number(
+            value["ci95_lower"],
+            f"{relation_set} primary metric lower bound",
+        )
+        _validate_number(
+            value["minimum"],
+            f"{relation_set} primary metric minimum",
+            maximum=1.0,
+        )
+        expected = (
+            value["observed"] is not None
+            and value["ci95_lower"] is not None
+            and value["ci95_lower"] >= value["minimum"]
+        )
+        if value["passed"] != expected:
+            raise BenchmarkError(
+                "calibration primary metric gate is inconsistent"
+            )
+        primary_passed.append(expected)
+    budgets = evidence["error_budgets"]
+    if (
+        not isinstance(budgets, dict)
+        or set(budgets)
+        != {
+            "max_false_duplicate_rate",
+            "max_false_internal_no_match_rate",
+        }
+    ):
+        raise BenchmarkError(
+            "calibration error-budget evidence is invalid"
+        )
+    budget_passed = []
+    for name, value in budgets.items():
+        _require_closed(
+            value,
+            {
+                "arm",
+                "metric",
+                "observed",
+                "ci95_upper",
+                "maximum",
+                "passed",
+            },
+            f"{name} evidence",
+        )
+        if (
+            value["arm"] != "end-to-end"
+            or not isinstance(value["metric"], str)
+            or not value["metric"]
+            or type(value["passed"]) is not bool
+        ):
+            raise BenchmarkError(
+                "calibration error-budget evidence is invalid"
+            )
+        for field in ("observed", "ci95_upper", "maximum"):
+            _optional_number(
+                value[field],
+                f"{name} {field.replace('_', ' ')}",
+            )
+        expected = (
+            value["observed"] is not None
+            and value["ci95_upper"] is not None
+            and value["ci95_upper"] <= value["maximum"]
+        )
+        if value["passed"] != expected:
+            raise BenchmarkError(
+                "calibration error-budget gate is inconsistent"
+            )
+        budget_passed.append(expected)
+    resources = evidence["resource_limits"]
+    if (
+        not isinstance(resources, dict)
+        or set(resources)
+        != {"latency_target_ms_p95", "token_budget"}
+    ):
+        raise BenchmarkError(
+            "calibration resource evidence is invalid"
+        )
+    resource_passed = []
+    for name, value in resources.items():
+        _require_closed(
+            value,
+            {
+                "arm",
+                "metric",
+                "observed",
+                "maximum",
+                "passed",
+            },
+            f"{name} evidence",
+        )
+        if (
+            value["arm"] != "end-to-end"
+            or not isinstance(value["metric"], str)
+            or not value["metric"]
+            or type(value["passed"]) is not bool
+        ):
+            raise BenchmarkError(
+                "calibration resource evidence is invalid"
+            )
+        _optional_number(value["observed"], f"{name} observed")
+        _validate_number(
+            value["maximum"], f"{name} maximum", minimum=0.000001
+        )
+        expected = (
+            value["observed"] is not None
+            and value["observed"] <= value["maximum"]
+        )
+        if value["passed"] != expected:
+            raise BenchmarkError(
+                "calibration resource gate is inconsistent"
+            )
+        resource_passed.append(expected)
+    depths = evidence["selected_depths"]
+    if (
+        not isinstance(depths, dict)
+        or set(depths)
+        != {
+            "per_channel_depth",
+            "comparator_cutoff",
+            "final_lineage_count",
+        }
+    ):
+        raise BenchmarkError(
+            "calibration depth evidence is invalid"
+        )
+    depth_passed = []
+    for name, value in depths.items():
+        _require_closed(
+            value,
+            {"observed", "maximum", "passed"},
+            f"{name} depth evidence",
+        )
+        if (
+            type(value["observed"]) is not int
+            or value["observed"] < 0
+            or type(value["maximum"]) is not int
+            or value["maximum"] < 1
+            or type(value["passed"]) is not bool
+        ):
+            raise BenchmarkError(
+                "calibration depth evidence is invalid"
+            )
+        expected = value["observed"] <= value["maximum"]
+        if value["passed"] != expected:
+            raise BenchmarkError(
+                "calibration depth gate is inconsistent"
+            )
+        depth_passed.append(expected)
+    expected_all = (
+        all(not value["advisory"] for value in counts.values())
+        and all(primary_passed)
+        and all(budget_passed)
+        and all(resource_passed)
+        and all(depth_passed)
+    )
+    if evidence["all_gates_passed"] != expected_all:
+        raise BenchmarkError(
+            "calibration all-gates evidence is inconsistent"
+        )
+
+
+def validate_capability_artifact(
+    capability, *, required_scope=PRODUCTION_SCOPE
+):
+    """Validate one sealed capability's public, trust-agnostic contract."""
+    if required_scope not in {SYNTHETIC_SCOPE, PRODUCTION_SCOPE}:
+        raise BenchmarkError("calibration scope is invalid")
+    value = _load_value(capability, "calibration capability")
+    _require_closed(
+        value, CAPABILITY_FIELDS, "calibration capability"
+    )
+    if (
+        value["schema_version"] != 1
+        or value["scope"] not in {
+            SYNTHETIC_SCOPE,
+            PRODUCTION_SCOPE,
+        }
+    ):
+        raise BenchmarkError(
+            "calibration capability schema is invalid"
+        )
+    if (
+        value["scope"] == SYNTHETIC_SCOPE
+        and required_scope == PRODUCTION_SCOPE
+    ):
+        raise BenchmarkError(
+            "synthetic_contract_only capability cannot enable "
+            "production"
+        )
+    if value["scope"] != required_scope:
+        raise BenchmarkError("calibration capability scope is invalid")
+    if (
+        not isinstance(value["trust_root_id"], str)
+        or not value["trust_root_id"]
+        or not isinstance(value["policy_version"], str)
+        or not value["policy_version"]
+        or type(value["heldout_run_nonce"]) is not int
+        or value["heldout_run_nonce"] < 1
+        or type(value["unresolved_adjudications"]) is not int
+        or value["unresolved_adjudications"] != 0
+    ):
+        raise BenchmarkError(
+            "calibration capability binding is invalid"
+        )
+    _parse_utc(
+        value["heldout_started_at"],
+        "calibration capability held-out start",
+    )
+    for field in (
+        "policy_commitment_sha256",
+        "preheldout_receipt_sha256",
+        "policy_sha256",
+        "benchmark_snapshot_sha256",
+        "qrels_sha256",
+        "adjudications_sha256",
+        "heldout_output_sha256",
+        "canonical_seal_sha256",
+        "signature",
+    ):
+        _require_sha(
+            value[field],
+            "calibration capability " + field.replace("_", " "),
+        )
+    counts = value["relation_heldout_counts"]
+    if (
+        not isinstance(counts, dict)
+        or set(counts) != set(POSITIVE_RELATIONS)
+    ):
+        raise BenchmarkError(
+            "calibration relation held-out counts are invalid"
+        )
+    for relation, relation_counts in counts.items():
+        _require_closed(
+            relation_counts,
+            {"positive", "hard_negative", "advisory"},
+            f"{relation} held-out counts",
+        )
+        if (
+            type(relation_counts["positive"]) is not int
+            or relation_counts["positive"] < 0
+            or type(relation_counts["hard_negative"]) is not int
+            or relation_counts["hard_negative"] < 0
+            or type(relation_counts["advisory"]) is not bool
+            or relation_counts["advisory"]
+            != (
+                relation_counts["positive"] < 30
+                or relation_counts["hard_negative"] < 30
+            )
+        ):
+            raise BenchmarkError(
+                "calibration relation held-out counts are invalid"
+            )
+    _validate_evaluation_evidence(
+        value["evaluation_evidence"], counts
+    )
+    if required_scope == PRODUCTION_SCOPE and (
+        any(item["advisory"] for item in counts.values())
+        or not value["evaluation_evidence"]["all_gates_passed"]
+    ):
+        raise BenchmarkError(
+            "production calibration evidence is advisory or failed"
+        )
+    expected_seal = sha256(
+        b"history-calibration-capability-v1\0"
+        + canonical_bytes(_capability_seal_material(value))
+    )
+    if value["canonical_seal_sha256"] != expected_seal:
+        raise BenchmarkError(
+            "calibration capability canonical seal is invalid"
+        )
+    normalized = json.loads(canonical_bytes(value))
+    return {
+        "scope": required_scope,
+        "enforcement_eligible": (
+            required_scope == PRODUCTION_SCOPE
+        ),
+        "relation_heldout_counts": normalized[
+            "relation_heldout_counts"
+        ],
+        "evaluation_evidence": normalized[
+            "evaluation_evidence"
+        ],
+        "canonical_seal_sha256": normalized[
+            "canonical_seal_sha256"
+        ],
+    }
 
 
 def validate_calibration_capability(
@@ -2273,6 +3516,9 @@ def validate_calibration_capability(
         CAPABILITY_FIELDS,
         "calibration capability",
     )
+    artifact_evidence = validate_capability_artifact(
+        capability, required_scope=required_scope
+    )
     if (
         capability["schema_version"] != 1
         or capability["scope"] != required_scope
@@ -2303,54 +3549,35 @@ def validate_calibration_capability(
         raise BenchmarkError(
             "calibration capability binding is invalid"
         )
-    for field in (
-        "policy_commitment_sha256",
-        "preheldout_receipt_sha256",
-        "policy_sha256",
-        "benchmark_snapshot_sha256",
-        "qrels_sha256",
-        "adjudications_sha256",
-        "heldout_output_sha256",
-        "canonical_seal_sha256",
-        "signature",
-    ):
-        _require_sha(
-            capability[field],
-            "calibration capability " + field.replace("_", " "),
-        )
-    counts = capability["relation_heldout_counts"]
-    if (
-        not isinstance(counts, dict)
-        or set(counts) != {"duplicate", "lineage", "failure"}
-    ):
-        raise BenchmarkError(
-            "calibration relation held-out counts are invalid"
-        )
-    for relation, relation_counts in counts.items():
-        _require_closed(
-            relation_counts,
-            {"positive", "hard_negative", "advisory"},
-            f"{relation} held-out counts",
-        )
-        if (
-            type(relation_counts["positive"]) is not int
-            or type(relation_counts["hard_negative"]) is not int
-            or type(relation_counts["advisory"]) is not bool
-            or relation_counts["positive"] < 30
-            or relation_counts["hard_negative"] < 30
-            or relation_counts["advisory"]
-        ):
-            raise BenchmarkError(
-                "calibration relation counts are insufficient or "
-                "advisory"
-            )
-    expected_seal = sha256(
-        b"history-calibration-capability-v1\0"
-        + canonical_bytes(_capability_seal_material(capability))
+    derived_counts = _derive_relation_heldout_counts(
+        context["queries"], context["qrels"]
     )
-    if capability["canonical_seal_sha256"] != expected_seal:
+    metrics = {
+        arm: _arm_metrics(
+            arm,
+            context["outputs"][arm],
+            context["queries"],
+            context["qrels"],
+        )
+        for arm in ARMS
+    }
+    confidence_intervals = _confidence_intervals(
+        context["outputs"],
+        context["queries"],
+        context["qrels"],
+    )
+    derived_evidence = _gate_evidence(
+        context, metrics, confidence_intervals
+    )
+    if capability["relation_heldout_counts"] != derived_counts:
         raise BenchmarkError(
-            "calibration capability canonical seal is invalid"
+            "calibration capability derived held-out coverage "
+            "is invalid"
+        )
+    if capability["evaluation_evidence"] != derived_evidence:
+        raise BenchmarkError(
+            "calibration capability derived evaluation evidence "
+            "is invalid"
         )
     if required_scope == SYNTHETIC_SCOPE:
         if (
@@ -2409,6 +3636,12 @@ def validate_calibration_capability(
         "calibration_capability_sha256": sha256(
             canonical_bytes(capability)
         ),
+        "relation_heldout_counts": artifact_evidence[
+            "relation_heldout_counts"
+        ],
+        "evaluation_evidence": artifact_evidence[
+            "evaluation_evidence"
+        ],
     }
 
 

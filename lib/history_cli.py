@@ -11,10 +11,12 @@ try:
     from lib import history_store
     from lib import history_projection
     from lib import history_retrieval
+    from lib import history_eval
 except ImportError:  # Direct execution through lib/history_cli.py.
     import history_store
     import history_projection
     import history_retrieval
+    import history_eval
 
 
 def _targets(args):
@@ -93,13 +95,14 @@ def write_json_artifact(conn, output, value):
 
 def parser():
     result = argparse.ArgumentParser()
-    result.add_argument("--db", required=True)
+    result.add_argument("--db")
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("init")
     sync = commands.add_parser("sync-ledger")
     sync.add_argument("path")
     append = commands.add_parser("append-tsv")
     append.add_argument("path")
+    append.add_argument("--near-sa-json")
     near_sa = commands.add_parser("import-near-sa")
     near_sa.add_argument("path")
     for name in ("materialize-ledger", "reconcile-ledger"):
@@ -119,6 +122,7 @@ def parser():
     brief.add_argument("--policy", default="history/retrieval-policy-v1.json")
     brief.add_argument("--output", default="generation_brief.json")
     brief.add_argument("--research-context")
+    brief.add_argument("--divergence-lens", default="")
     retrieve = commands.add_parser("retrieve")
     retrieve.add_argument(
         "--policy", default="history/retrieval-policy-v1.json"
@@ -142,11 +146,38 @@ def parser():
     )
     replay.add_argument("--pack", required=True)
     replay.add_argument("--receipt", required=True)
+    evaluate = commands.add_parser("evaluate")
+    evaluate.add_argument("--benchmark", required=True)
+    evaluate.add_argument("--output", required=True)
+    evaluate.add_argument(
+        "--policy", default="history/retrieval-policy-v1.json"
+    )
     return result
 
 
 def main():
-    args = parser().parse_args()
+    argument_parser = parser()
+    args = argument_parser.parse_args()
+    if args.command == "evaluate":
+        result = history_eval.write_evaluation(
+            args.benchmark,
+            args.output,
+            policy_path=args.policy,
+        )
+        _print(
+            {
+                "output": str(pathlib.Path(args.output)),
+                "scope": result["scope"],
+                "policy_commitment_sha256": result[
+                    "policy_commitment_sha256"
+                ],
+            }
+        )
+        return
+    if not args.db:
+        argument_parser.error(
+            "--db is required for store and retrieval commands"
+        )
     conn = history_store.connect(args.db)
     history_store.init_schema(conn)
     try:
@@ -160,8 +191,22 @@ def main():
                 b"\t"
             ):
                 lines = lines[1:]
+            observations = None
+            if args.near_sa_json:
+                observations = json.loads(
+                    pathlib.Path(args.near_sa_json).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                if not isinstance(observations, list):
+                    raise ValueError(
+                        "near-SA observation input must be a list"
+                    )
             value = history_store.append_rows(
-                conn, lines, {"source_path": str(pathlib.Path(args.path).resolve())}
+                conn,
+                lines,
+                {"source_path": str(pathlib.Path(args.path).resolve())},
+                near_sa_observations=observations,
             )
         elif args.command == "import-near-sa":
             value = history_store.import_near_sa_observations(conn, args.path)
@@ -195,7 +240,10 @@ def main():
                     encoding="utf-8"
                 )
             value = history_projection.build_generation_brief(
-                conn, history_projection.load_policy(args.policy), research_context
+                conn,
+                history_projection.load_policy(args.policy),
+                research_context,
+                args.divergence_lens,
             )
             publication = write_generation_brief(conn, args.output, value)
             value = dict(value, output=publication["path"])

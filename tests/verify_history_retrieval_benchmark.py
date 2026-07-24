@@ -5,6 +5,7 @@ import copy
 import json
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -88,6 +89,24 @@ class HistoryRetrievalBenchmarkTest(unittest.TestCase):
         ):
             history_eval.evaluate_benchmark(benchmark)
 
+    def reseal_capability(self, capability, trust_root=None):
+        capability.pop("canonical_seal_sha256", None)
+        capability.pop("signature", None)
+        capability["canonical_seal_sha256"] = history_eval.sha256(
+            b"history-calibration-capability-v1\0"
+            + history_eval.canonical_bytes(
+                history_eval._capability_seal_material(capability)
+            )
+        )
+        if trust_root is None:
+            capability["signature"] = "1" * 64
+        else:
+            capability["signature"] = history_eval._test_signature(
+                b"history-calibration-capability-signature-v1\0",
+                capability,
+                trust_root,
+            )
+
     def test_synthetic_metrics_match_hand_checked_fixture(self):
         result = history_eval.evaluate_benchmark(self.benchmark)
         expected = _read_json(
@@ -114,6 +133,104 @@ class HistoryRetrievalBenchmarkTest(unittest.TestCase):
         self.assertEqual(expected["tolerance"], 1e-12)
         self.assertEqual(result["paired_bootstrap"]["seed"], 20260723)
         self.assertTrue(result["input_sha256s"])
+
+    def test_history_cli_evaluate_needs_no_database(self):
+        with tempfile.TemporaryDirectory(
+            prefix="history-eval-cli."
+        ) as temporary:
+            output = pathlib.Path(temporary) / "evaluation.json"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "lib/history_cli.py"),
+                    "evaluate",
+                    "--benchmark",
+                    str(self.benchmark),
+                    "--output",
+                    str(output),
+                ],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                completed.returncode, 0, completed.stderr
+            )
+            summary = json.loads(completed.stdout)
+            self.assertEqual(
+                summary["scope"], "synthetic_contract_only"
+            )
+            artifact = _read_json(output)
+            self.assertEqual(
+                artifact["scope"], "synthetic_contract_only"
+            )
+            self.assertIn(
+                "confidence_intervals", artifact
+            )
+
+    def test_ranking_metrics_condense_to_judged_pairs(self):
+        result = history_eval.evaluate_benchmark(
+            self.benchmark, verify_expected=False
+        )
+        ranking = result["metrics"]["retrieval-only"]["ranking"]
+        self.assertEqual(ranking["mrr_at_10"], 1.0)
+        self.assertEqual(ranking["hit_at"]["1"], 1.0)
+        self.assertEqual(ranking["judged_ranked_pairs"], 9)
+        self.assertEqual(ranking["unjudged_ranked_pairs"], 9)
+        self.assertEqual(ranking["incomplete_judgment_queries"], 1)
+
+    def test_required_metrics_and_confidence_intervals_have_literal_values(
+        self,
+    ):
+        result = history_eval.evaluate_benchmark(
+            self.benchmark, verify_expected=False
+        )
+        retrieval = result["metrics"]["retrieval-only"][
+            "required_metrics"
+        ]
+        self.assertEqual(
+            retrieval["duplicate"]["hit_at"],
+            {"1": 1.0, "3": 1.0, "5": 1.0, "10": 1.0},
+        )
+        self.assertEqual(
+            retrieval["duplicate"]["mrr_at_10"], 1.0
+        )
+        self.assertEqual(
+            retrieval["duplicate"]["alert_precision"], 0.5
+        )
+        self.assertEqual(
+            retrieval["duplicate"][
+                "no_hit_false_positive_rate"
+            ],
+            1.0,
+        )
+        self.assertEqual(
+            retrieval["lineage"]["direct_parent_accuracy_at_1"],
+            0.0,
+        )
+        self.assertEqual(
+            retrieval["lineage"]["ancestor_recall_at"],
+            {"5": 1.0, "10": 1.0},
+        )
+        self.assertEqual(
+            retrieval["failure"]["recall_at"]["1"], 0.5
+        )
+        intervals = result["confidence_intervals"]
+        self.assertEqual(intervals["seed"], 20260723)
+        self.assertEqual(intervals["samples"], 2000)
+        self.assertIn("retrieval-only", intervals["arms"])
+        self.assertIn(
+            "end-to-end_minus_closed-book",
+            intervals["system_differences"],
+        )
+        duplicate_ci = intervals["arms"]["retrieval-only"][
+            "duplicate_hit_at_10"
+        ]
+        self.assertEqual(duplicate_ci["estimate"], 1.0)
+        self.assertEqual(
+            duplicate_ci["ci95"], {"lower": 1.0, "upper": 1.0}
+        )
 
     def test_future_record_is_not_visible_to_as_of_query(self):
         def mutate(root):
@@ -178,6 +295,161 @@ class HistoryRetrievalBenchmarkTest(unittest.TestCase):
             _write_jsonl(path, rows)
 
         self.assert_rejected("query text leaks", mutate)
+
+    def test_future_revision_text_cannot_leak_into_query_text(self):
+        corpus_rows = [
+            {
+                "schema_version": 1,
+                "record_id": "r-visible",
+                "lineage_id": "lin-visible",
+                "committed_at": "2026-01-01T00:00:00Z",
+                "text": "Visible historical proposal.",
+                "verdict": "accept",
+                "reason": "Visible reason.",
+                "citations": ["visible-citation"],
+            },
+            {
+                "schema_version": 1,
+                "record_id": "r-future-revision",
+                "lineage_id": "lin-visible",
+                "committed_at": "2026-03-01T00:00:00Z",
+                "text": "Future revision changes the causal estimand.",
+                "verdict": "pending",
+                "reason": "Future reason.",
+                "citations": ["future-citation"],
+            },
+        ]
+        corpus = history_eval._validate_corpus(corpus_rows)
+        query = {
+            "schema_version": 1,
+            "query_id": "q-temporal",
+            "relation_set": "duplicate",
+            "lineage_id": "lin-visible",
+            "fold": "test",
+            "as_of": "2026-02-01T00:00:00Z",
+            "corpus_watermark": "2026-01-01T00:00:00Z",
+            "text": "Future revision changes the causal estimand.",
+            "expected_abstain": False,
+            "theme": "Safety and Robustness",
+            "lexical_overlap_bucket": "high",
+            "history_age_bucket": "recent",
+        }
+        with self.assertRaisesRegex(
+            history_eval.BenchmarkError, "future revision"
+        ):
+            history_eval._validate_queries([query], corpus)
+
+    def test_temporal_watermark_uses_parsed_utc_order(self):
+        corpus_rows = [
+            {
+                "schema_version": 1,
+                "record_id": "r-whole-second",
+                "lineage_id": "lin-time",
+                "committed_at": "2026-01-01T00:00:00Z",
+                "text": "Whole-second record.",
+                "verdict": "accept",
+                "reason": "Whole-second reason.",
+                "citations": ["whole-second-citation"],
+            },
+            {
+                "schema_version": 1,
+                "record_id": "r-fractional-second",
+                "lineage_id": "lin-time",
+                "committed_at": "2026-01-01T00:00:00.900000Z",
+                "text": "Fractional-second record.",
+                "verdict": "accept",
+                "reason": "Fractional-second reason.",
+                "citations": ["fractional-second-citation"],
+            },
+        ]
+        corpus = history_eval._validate_corpus(corpus_rows)
+        query = {
+            "schema_version": 1,
+            "query_id": "q-watermark",
+            "relation_set": "duplicate",
+            "lineage_id": "lin-time",
+            "fold": "test",
+            "as_of": "2026-01-01T00:00:01Z",
+            "corpus_watermark":
+                "2026-01-01T00:00:00.900000Z",
+            "text": "Independent temporal query.",
+            "expected_abstain": False,
+            "theme": "Safety and Robustness",
+            "lexical_overlap_bucket": "low",
+            "history_age_bucket": "recent",
+        }
+        validated = history_eval._validate_queries([query], corpus)
+        self.assertEqual(set(validated), {"q-watermark"})
+
+    def test_benchmark_child_symlink_is_rejected(self):
+        benchmark = self.copied_benchmark()
+        path = benchmark / "queries.jsonl"
+        path.unlink()
+        path.symlink_to(self.benchmark / "queries.jsonl")
+        with self.assertRaisesRegex(
+            history_eval.BenchmarkError, "symlink"
+        ):
+            history_eval.evaluate_benchmark(benchmark)
+
+    def test_policy_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory(
+            prefix="history-policy."
+        ) as temporary:
+            path = pathlib.Path(temporary) / "policy.json"
+            path.symlink_to(history_eval.DEFAULT_POLICY)
+            with self.assertRaisesRegex(
+                history_eval.BenchmarkError, "symlink"
+            ):
+                history_eval.evaluate_benchmark(
+                    self.benchmark, policy_path=path
+                )
+
+    def test_policy_requires_bounded_canonical_json(self):
+        with tempfile.TemporaryDirectory(
+            prefix="history-policy."
+        ) as temporary:
+            path = pathlib.Path(temporary) / "policy.json"
+            path.write_text(
+                json.dumps(
+                    history_eval.load_policy(), indent=2
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                history_eval.BenchmarkError, "canonical JSON"
+            ):
+                history_eval.evaluate_benchmark(
+                    self.benchmark, policy_path=path
+                )
+
+    def test_retrieval_only_unused_fields_must_be_empty(self):
+        def mutate(root):
+            path = root / "outputs/retrieval-only.jsonl"
+            rows = _read_jsonl(path)
+            rows[0]["relation"] = "blocking"
+            _write_jsonl(path, rows)
+
+        self.assert_rejected(
+            "retrieval-only.*unused fields", mutate
+        )
+
+    def test_no_match_status_and_relation_are_biconditional(self):
+        def mutate(root):
+            path = root / "outputs/end-to-end.jsonl"
+            rows = _read_jsonl(path)
+            row = next(
+                item
+                for item in rows
+                if item["query_id"] == "q-dup-hit"
+            )
+            row["relation"] = "blocking"
+            row["status"] = "complete_no_match"
+            _write_jsonl(path, rows)
+
+        self.assert_rejected(
+            "complete_no_match.*no_match", mutate
+        )
 
     def test_second_independent_adjudication_is_required(self):
         def mutate(root):
@@ -380,6 +652,150 @@ class HistoryRetrievalBenchmarkTest(unittest.TestCase):
         )
         self.assertEqual(value["scope"], "synthetic_contract_only")
         self.assertFalse(value["enforcement_eligible"])
+        self.assertFalse(value["evaluation_evidence"][
+            "all_gates_passed"
+        ])
+
+    def test_synthetic_capability_uses_derived_per_label_coverage(self):
+        capability = history_eval.build_synthetic_capability_for_test(
+            self.benchmark
+        )["calibration_capability"]
+        counts = capability["relation_heldout_counts"]
+        self.assertEqual(
+            set(counts),
+            {
+                "blocking",
+                "substantive",
+                "direct-parent",
+                "ancestor-or-descendant",
+                "sibling",
+                "same-mechanism",
+                "related-defect",
+            },
+        )
+        self.assertEqual(
+            counts["blocking"],
+            {"positive": 1, "hard_negative": 2, "advisory": True},
+        )
+        self.assertEqual(
+            counts["substantive"],
+            {"positive": 0, "hard_negative": 2, "advisory": True},
+        )
+        self.assertTrue(
+            all(value["advisory"] for value in counts.values())
+        )
+        evidence = capability["evaluation_evidence"]
+        self.assertEqual(
+            evidence["error_budgets"][
+                "max_false_duplicate_rate"
+            ]["observed"],
+            0.5,
+        )
+        self.assertEqual(
+            evidence["error_budgets"][
+                "max_false_internal_no_match_rate"
+            ]["observed"],
+            0.333333333333,
+        )
+        self.assertFalse(evidence["all_gates_passed"])
+
+    def test_resealed_fabricated_coverage_is_rejected(self):
+        bundle = history_eval.build_synthetic_capability_for_test(
+            self.benchmark
+        )
+        trust_root = _read_json(
+            self.benchmark / "test-witness-key.json"
+        )
+        counts = bundle["calibration_capability"][
+            "relation_heldout_counts"
+        ]["blocking"]
+        counts.update(
+            {"positive": 30, "hard_negative": 30, "advisory": False}
+        )
+        capability = bundle["calibration_capability"]
+        self.reseal_capability(capability, trust_root)
+        with self.assertRaisesRegex(
+            history_eval.BenchmarkError, "derived held-out coverage"
+        ):
+            history_eval.validate_calibration_capability(
+                bundle,
+                policy=history_eval.load_policy(),
+                trust_root=trust_root,
+                required_scope="synthetic_contract_only",
+                benchmark=self.benchmark,
+            )
+
+    def test_resealed_fabricated_evaluation_evidence_is_rejected(self):
+        bundle = history_eval.build_synthetic_capability_for_test(
+            self.benchmark
+        )
+        trust_root = _read_json(
+            self.benchmark / "test-witness-key.json"
+        )
+        capability = bundle["calibration_capability"]
+        gate = capability["evaluation_evidence"][
+            "error_budgets"
+        ]["max_false_duplicate_rate"]
+        gate.update(
+            {
+                "observed": 0.0,
+                "ci95_upper": 0.0,
+                "passed": True,
+            }
+        )
+        self.reseal_capability(capability, trust_root)
+        with self.assertRaisesRegex(
+            history_eval.BenchmarkError,
+            "derived evaluation evidence",
+        ):
+            history_eval.validate_calibration_capability(
+                bundle,
+                policy=history_eval.load_policy(),
+                trust_root=trust_root,
+                required_scope="synthetic_contract_only",
+                benchmark=self.benchmark,
+            )
+
+    def test_capability_artifact_scope_is_fail_closed(self):
+        capability = history_eval.build_synthetic_capability_for_test(
+            self.benchmark
+        )["calibration_capability"]
+        with self.assertRaisesRegex(
+            history_eval.BenchmarkError,
+            "synthetic_contract_only.*production",
+        ):
+            history_eval.validate_capability_artifact(
+                capability, required_scope="production"
+            )
+
+    def test_production_receipt_rejects_synthetic_test_root(self):
+        commitment = _read_json(
+            self.benchmark / "policy-commitment.json"
+        )
+        commitment["scope"] = "production"
+        receipt = _read_json(
+            self.benchmark / "pre-heldout-receipt.json"
+        )
+        receipt["scope"] = "production"
+        receipt["policy_commitment_sha256"] = history_eval.sha256(
+            history_eval.canonical_bytes(commitment)
+        )
+        receipt["signature"] = "1" * 64
+        trust_root = _read_json(
+            self.benchmark / "test-witness-key.json"
+        )
+        with self.assertRaisesRegex(
+            history_eval.BenchmarkError,
+            "synthetic.*production",
+        ):
+            history_eval._validate_receipt(
+                receipt,
+                commitment,
+                trust_root,
+                "production",
+                "2026-07-23T12:00:00Z",
+                witness_verifier=lambda *_: True,
+            )
 
     def test_capability_binding_and_seal_mutations_are_rejected(self):
         baseline = history_eval.build_synthetic_capability_for_test(
@@ -412,20 +828,20 @@ class HistoryRetrievalBenchmarkTest(unittest.TestCase):
                         benchmark=self.benchmark,
                     )
 
-    def test_insufficient_or_advisory_relation_counts_are_rejected(self):
+    def test_relation_count_semantics_are_fail_closed(self):
         baseline = history_eval.build_synthetic_capability_for_test(
             self.benchmark
         )
         for field, value in (
-            ("positive", 29),
-            ("hard_negative", 29),
-            ("advisory", True),
+            ("positive", -1),
+            ("hard_negative", -1),
+            ("advisory", False),
         ):
             with self.subTest(field=field):
                 bundle = copy.deepcopy(baseline)
                 counts = bundle["calibration_capability"][
                     "relation_heldout_counts"
-                ]["duplicate"]
+                ]["blocking"]
                 counts[field] = value
                 with self.assertRaisesRegex(
                     history_eval.BenchmarkError,
@@ -440,6 +856,37 @@ class HistoryRetrievalBenchmarkTest(unittest.TestCase):
                         required_scope="synthetic_contract_only",
                         benchmark=self.benchmark,
                     )
+
+    def test_production_requires_every_positive_label_non_advisory(self):
+        capability = history_eval.build_synthetic_capability_for_test(
+            self.benchmark
+        )["calibration_capability"]
+        capability["scope"] = "production"
+        capability["trust_root_id"] = "production-root"
+        for counts in capability[
+            "relation_heldout_counts"
+        ].values():
+            counts.update(
+                {
+                    "positive": 30,
+                    "hard_negative": 30,
+                    "advisory": False,
+                }
+            )
+        capability["relation_heldout_counts"]["substantive"].update(
+            {"positive": 29, "advisory": True}
+        )
+        capability["evaluation_evidence"][
+            "all_gates_passed"
+        ] = False
+        self.reseal_capability(capability)
+        with self.assertRaisesRegex(
+            history_eval.BenchmarkError,
+            "advisory|failed",
+        ):
+            history_eval.validate_capability_artifact(
+                capability, required_scope="production"
+            )
 
 
 def main():
