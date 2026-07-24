@@ -1,6 +1,6 @@
 # Bounded Historical-Idea Retrieval Design
 
-Status: approved design; implementation pending
+Status: implemented
 
 ## Goal
 
@@ -280,16 +280,22 @@ No-op rebuilds create zero new embeddings. Appending or changing `N` facet value
 
 ## Protocol Cutover
 
-Contained staging roles use `roles/bounded-generate.md`,
-`roles/bounded-meta.md`, and `roles/bounded-review.md` while the legacy
-orchestrator remains authoritative. `hunt.sh` does not reference these staging
-roles. The cutover replaces the legacy role ABI and its callers in one change.
+Contained stages use the canonical `roles/generate.md`, `roles/meta.md`,
+`roles/review.md`, and `roles/history-compare.md` allowlists. Temporary
+`roles/bounded-*.md` paths are removed. Generation, comparison, and every
+review seat run through the contained stage ABI; selector, prescreen, external
+research, and report keep their existing process boundaries.
 
-The existing runtime protocol remains authoritative until one compatibility change switches the history path. The cutover changes these surfaces together:
+In shipped `shadow` mode the normal external research/review protocol remains
+the sole authority for ledger verdicts and history receipts are observational
+for a fixed candidate batch. The complete-receipt gate becomes authoritative
+only in calibrated `enforcement` mode.
+
+The cutover changes these surfaces together:
 
 - SQLite schema, historical import, stable TSV export, `lineage_edges`, and `search_projection_outbox`;
 - index builder, retrieval API, pack schema validator, token preflight, and history receipts;
-- `PROGRAM.md`, `roles/generate.md`, `roles/meta.md`, and the corresponding `hunt.sh` stages and mirror manifests;
+- `PROGRAM.md`, `roles/generate.md`, `roles/meta.md`, `roles/review.md`, and the corresponding `hunt.sh` stages and mirror manifests;
 - structural tests proving that generation and comparison mirrors cannot access full history;
 - failure-path tests proving that partial, failed, conflicting, uncertain, and over-budget retrieval cannot create permanent conclusions.
 

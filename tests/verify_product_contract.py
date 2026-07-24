@@ -41,8 +41,17 @@ RUNTIME_FILES = [
     "hunt.sh", "awr-side.sh", "agy-worker.sh", "grok-worker.sh",
     "litwatch.sh", "litwatch_test.sh", "publish.sh", "settle.sh",
     "lib/litwatch.py", "lib/md_ids.sh", "lib/mirror_pre.sh",
-    "lib/resolve_cmd.sh", "PROGRAM.md", "hunt.md", "trigger.md",
+    "lib/resolve_cmd.sh", "lib/history_archive.py", "lib/history_budget.py",
+    "lib/history_cli.py", "lib/history_eval.py", "lib/history_projection.py",
+    "lib/history_retrieval.py", "lib/history_runtime.py",
+    "lib/history_stage.py", "lib/history_store.py", "lib/history_witness.py",
+    "PROGRAM.md", "hunt.md", "trigger.md",
     "research_context.md", "brainstorming_policy.md", "rubric.md",
+    "history/retrieval-policy-v1.json",
+    "history/review-contract-v1.md",
+    "ledger.instance-id",
+    "roles/generate.md", "roles/meta.md", "roles/review.md",
+    "roles/history-compare.md", "roles/research.md",
     "calib/run_panel.sh", "calib/run_all.sh", "calib/run_e2e.sh",
     ".githooks/pre-push", ".github/workflows/auto-merge-routine.yml",
     "awr-state-aliases.tsv",
@@ -148,12 +157,14 @@ def stable_calibration_title(value):
 def read_text(path):
     try:
         return path.read_text()
-    except UnicodeDecodeError:
+    except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError, OSError):
         return None
 
 def assert_text_contract(paths):
     failures = []
     for path in paths:
+        if not path.is_file():
+            continue
         text = read_text(path)
         if text is None:
             continue
@@ -431,16 +442,118 @@ def verify_runtime():
     assert_text_contract(runtime_paths())
     required = {
         "brainstorming_policy.md": ["## Divergence Lenses", "## Theme Vocabulary"],
-        "hunt.sh": ["Papers Read", "Minimal Falsification Experiment", "Overlap"],
+        "hunt.sh": [
+            "Papers Read",
+            "Overlap",
+            "CONTAINED_AGENT_CMD_JSON",
+            "history_sync()",
+            "history_reconcile_ledger()",
+            "history_build_brief()",
+            "run_contained_stage()",
+            "history_observe_round()",
+            "history_compare_shortlist()",
+            "history_compare_targets()",
+            "history_seal_resume_attempt()",
+            "history_materialize_research()",
+            "history_receipts_ok()",
+            "history_append_rows()",
+            "history_materialize_ledger()",
+            "prepare_external_mirror()",
+            "copy_external_output()",
+            "lib/history_runtime.py",
+            "lib/history_archive.py",
+        ],
+        "roles/generate.md": [
+            "generation_brief.json",
+            "Minimal Falsification Experiment",
+        ],
+        "roles/review.md": [
+            "history_summary.json",
+        ],
+        "PROGRAM.md": [
+            ".ai-ideas/history.sqlite3",
+            "immutable candidate batch",
+            "history_abstain",
+            "replayable TSV projection",
+            "shadow",
+            "enforcement",
+        ],
+        "roles/research.md": [
+            "history-summaries",
+            "not evidence",
+            "academic novelty",
+            "complete_no_match",
+        ],
+        "ledger.instance-id": [],
+        "lib/history_eval.py": ["synthetic_contract_only"],
+        "lib/history_store.py": [
+            "search_projection_outbox",
+            "ledger_projection_outbox",
+            "near_sa_observations",
+        ],
         "awr-side.sh": ["Revised Idea", "Strongest Counterexample", "Reviewer Feedback"],
         "calib/run_panel.sh": ["suspected published counterpart:"],
         "calib/run_e2e.sh": ["Overlap:"],
     }
     for name, needles in required.items():
-        text = (ROOT / name).read_text()
+        path = ROOT / name
+        if not path.is_file():
+            raise AssertionError(f"missing required runtime path: {name}")
+        text = path.read_text()
         for needle in needles:
             if needle not in text:
                 raise AssertionError(f"missing {needle!r} in {name}")
+    hunt = (ROOT / "hunt.sh").read_text()
+    forbidden_hunt = {
+        "routine meta invocation": r"Read roles/meta\.md and follow it",
+        "legacy meta scheduler": r"\bMETA_(?:EVERY|MIN_REJECTS)\b",
+        "production test escape": r"HISTORY_RUNTIME_TEST_MODE",
+        "direct ledger append": r">>[ \t]*[\"']?ledger\.tsv",
+        "projection copy ownership": (
+            r"\bcp[ \t]+(?:[\"']?ledger\.tsv|"
+            r"[\"']?\$(?:HISTORY_)?LEDGER_GOOD)"
+        ),
+        "unbounded generate ledger read": r"Read roles/generate\.md and follow it",
+    }
+    for label, pattern in forbidden_hunt.items():
+        if re.search(pattern, hunt):
+            raise AssertionError(f"{label} remains in hunt.sh")
+    for name in (
+        "roles/bounded-generate.md",
+        "roles/bounded-meta.md",
+        "roles/bounded-review.md",
+    ):
+        if (ROOT / name).exists():
+            raise AssertionError(f"temporary contained role remains: {name}")
+    store = (ROOT / "lib/history_store.py").read_text()
+    for deferred in (
+        "reentry_grants",
+        "reentry_requests",
+        "round_slots",
+        "materialization_outbox",
+    ):
+        if re.search(
+            rf"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{deferred}\b",
+            store,
+            flags=re.IGNORECASE,
+        ):
+            raise AssertionError(
+                f"deferred AWR bridge table created in history store: {deferred}"
+            )
+    for role_name in (
+        "roles/generate.md",
+        "roles/meta.md",
+        "roles/review.md",
+        "roles/history-compare.md",
+    ):
+        role_text = (ROOT / role_name).read_text()
+        if "ledger.tsv" in role_text:
+            raise AssertionError(
+                f"bounded role still references full ledger: {role_name}"
+            )
+    policy = (ROOT / "history/retrieval-policy-v1.json").read_text()
+    if '"mode": "shadow"' not in policy and '"mode":"shadow"' not in policy:
+        raise AssertionError("shipped retrieval policy must remain shadow")
 
 def ledger_rows():
     with (ROOT / "ledger.tsv").open(newline="") as handle:

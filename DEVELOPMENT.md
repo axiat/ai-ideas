@@ -14,7 +14,7 @@ IDs follow the original plan; `6` remains unassigned.
 | 0 | Harness engineering | Move deterministic control into `.sh` where practical; improve Claude and Codex adapters | P0 | None |
 | 1 | Research quality | Improve success rate for autoresearch proposals with concrete solutions | P0 | Decision and observability foundations from 0 |
 | 2 | Architecture | Decouple the harness from research topics and generated content | P1 | 0 |
-| 3 | Storage and retrieval | Migrate `ledger.tsv` to SQLite and add bounded historical-idea retrieval | P1 | Data boundaries from 2 |
+| 3 | Storage and retrieval | Migrate `ledger.tsv` to SQLite and add bounded historical-idea retrieval | P1 | Done in shadow mode; enforcement awaits production calibration |
 | 4 | Execution | Support safe concurrency | P2 | 2 and 3 |
 | 5 | Documentation and structure | Build a user-oriented `README.md` and decide whether to restructure the repository | P1 | Boundary design from 2 |
 | 7 | Delivery | Containerize the system | P2 | 2 and 5 |
@@ -122,14 +122,14 @@ Acceptance: adding or switching a research topic requires no harness changes; to
 
 Use SQLite as the canonical structured history while preserving TSV import/export and the existing ledger during migration. [`docs/superpowers/specs/2026-07-23-bounded-history-retrieval-design.md`](docs/superpowers/specs/2026-07-23-bounded-history-retrieval-design.md) is canonical for model-context isolation, search projections, retrieval packs, failure semantics, and evaluation.
 
-- [ ] Define the minimal schema for ideas, runs, candidates, reviews, artifacts, invocations, and revision lineage. [`AWR-REBUILD-DRAFT.md` §5](AWR-REBUILD-DRAFT.md#5-automatic-re-entry-bridge-storage-milestone-3) is canonical for lineage identity, re-entry, historical import, transactions, and materialization.
-- [ ] Provide one-time import, dual-read validation, and stable TSV export before switching the primary write path.
-- [ ] Make writes transactional and support unique constraints, idempotent resume, and schema versions.
-- [ ] Add canonical typed lineage edges and a search-projection outbox without changing the AWR materialization outbox's file-effect responsibility.
-- [ ] Build versioned exact, FTS5, and per-facet embedding projections from the search-projection outbox; use exhaustive dense retrieval until measured scale requires an approximate index.
-- [ ] Atomically update `PROGRAM.md`, `roles/generate.md`, `roles/meta.md`, `hunt.sh`, and stage mirrors to remove full-history access and expose only schema-validated briefs and retrieval packs with hard result and token limits.
-- [ ] Propagate retrieval completeness and backend failures explicitly so incomplete retrieval cannot create a permanent verdict or novelty claim.
-- [ ] Calibrate duplicate, lineage, evidence, abstention, latency, and token behavior against temporal, manually adjudicated benchmarks before enabling retrieval-dependent decisions.
+- [x] Define the minimal schema for ideas, runs, candidates, reviews, artifacts, invocations, and revision lineage. [`AWR-REBUILD-DRAFT.md` §5](AWR-REBUILD-DRAFT.md#5-automatic-re-entry-bridge-storage-milestone-3) remains canonical for the deferred automatic re-entry bridge; this milestone does not create those tables.
+- [x] Provide one-time import, dual-read validation, and stable TSV export before switching the primary write path.
+- [x] Make writes transactional and support unique constraints, idempotent resume, and schema versions.
+- [x] Add canonical typed lineage edges and a search-projection outbox without changing the AWR materialization outbox's file-effect responsibility.
+- [x] Build versioned exact, FTS5, and per-facet embedding projections from the search-projection outbox; use exhaustive dense retrieval until measured scale requires an approximate index.
+- [x] Atomically update `PROGRAM.md`, `roles/generate.md`, `roles/meta.md`, `hunt.sh`, and stage mirrors to remove full-history access and expose only schema-validated briefs and retrieval packs with hard result and token limits.
+- [x] Propagate retrieval completeness and backend failures explicitly so incomplete retrieval cannot create a permanent verdict or novelty claim.
+- [x] Ship synthetic contract-only evaluation fixtures and keep production policy in `shadow` until sealed production calibration exists.
 
 Acceptance: historical runs, complete votes, and revision chains are queryable; repeated execution creates no duplicate records; existing TSV workflows remain exportable; agent-stage context remains bounded as history grows; every historical comparison is reproducible from a complete retrieval receipt.
 

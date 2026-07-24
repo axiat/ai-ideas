@@ -19,7 +19,7 @@ policy + ledger
   -> report -> branch + pull request
 ```
 
-The main loop writes live state under `tmp/round/`, durable decisions to `ledger.tsv`, accepted reports to `ideas/`, and per-run archives outside the checkout. [`docs/architecture.md`](docs/architecture.md) defines stage and artifact ownership.
+The main loop writes live state under `tmp/round/`, canonical history to `.ai-ideas/history.sqlite3`, replayable projections to `ledger.tsv` and `tmp/ledger.good`, accepted reports to `ideas/`, and per-run archives outside the checkout. [`docs/architecture.md`](docs/architecture.md) defines stage and artifact ownership.
 
 ## Quick Start
 
@@ -31,7 +31,7 @@ cd ai-ideas
 ./hunt.sh
 ```
 
-`./hunt.sh` is an active run, not a dry run. It invokes model and search backends, mutates `ledger.tsv`, and may push a daily branch and open a pull request after a qualifying report. Operational defaults and recovery procedures are in [`docs/getting-started.md`](docs/getting-started.md).
+`./hunt.sh` is an active run, not a dry run. It invokes model and search backends, commits canonical history to SQLite, projects `ledger.tsv`, and may push a daily branch and open a pull request after a qualifying report. Shipped history mode is `shadow`: internal retrieval is observational for a fixed generated batch, and external research/review remain the sole ledger authority. Operational defaults and recovery procedures are in [`docs/getting-started.md`](docs/getting-started.md).
 
 ## Artifacts
 

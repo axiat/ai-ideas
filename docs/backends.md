@@ -4,13 +4,17 @@ Backend commands are environment-variable command strings. Each runner appends i
 
 ## Hunt
 
-The default assignment in `hunt.sh` is:
+External stages (selector, prescreen, research, report) use legacy command
+strings. Contained stages (generation, history comparison, every review seat)
+require closed absolute JSON argv.
 
 ```bash
 AGENT_CMD=${AGENT_CMD:-codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write}
 ```
 
-`FRONT_CMD` and `BACK_CMD` fall back to `AGENT_CMD`. `REV_CMD_1` through `REV_CMD_N` override individual review seats and otherwise fall back to `BACK_CMD`.
+`FRONT_CMD` and `BACK_CMD` fall back to `AGENT_CMD`. Contained defaults use
+`CONTAINED_AGENT_CMD_JSON` (Codex with absolute executable and xhigh reasoning).
+Optional `CONTAINED_REV_CMD_<N>_JSON` overrides review seat N.
 
 ```bash
 AGENT_CMD='./grok-worker.sh' ./hunt.sh
@@ -19,9 +23,7 @@ FRONT_CMD='./agy-worker.sh' \
 BACK_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
 ./hunt.sh
 
-REV_CMD_1='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
-REV_CMD_2='./grok-worker.sh' \
-REV_CMD_3='./agy-worker.sh' \
+CONTAINED_AGENT_CMD_JSON='["/usr/local/bin/codex","-m","gpt-5.3-codex-spark","-c","model_reasoning_effort=xhigh"]' \
 ./hunt.sh
 ```
 
@@ -33,7 +35,7 @@ Claude is available only through an explicit command supplied for the current ru
 AGENT_CMD='claude -p --strict-mcp-config' ./hunt.sh
 ```
 
-No default or fallback selects Claude.
+No default or fallback selects Claude. Contained stages reject registered test fixture backends in production.
 
 ## AwR Sidecar
 

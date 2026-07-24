@@ -8,6 +8,7 @@
 - Network access for model search, repository publication, and settlement fetches
 - `gh auth status` passing for pull-request creation
 - A writable archive root; the default is `$HOME/.ai-ideas-runs/$(basename "$PWD")`
+- Writable local state under `.ai-ideas/` for the SQLite history database
 
 Minimal preflight:
 
@@ -16,10 +17,10 @@ command -v bash git gh codex
 codex login status
 gh auth status
 git remote get-url origin
-mkdir -p "$HOME/.ai-ideas-runs/$(basename "$PWD")"
+mkdir -p "$HOME/.ai-ideas-runs/$(basename "$PWD")" .ai-ideas
 ```
 
-The checkout may contain an intentional `ledger.tsv` change; `hunt.sh` adopts the working-tree ledger as its startup baseline. Other pre-existing changes remain outside the run's owned output surface and should be understood before launch.
+On first start without a durable bootstrap marker, `hunt.sh` imports the working-tree `ledger.tsv` into `.ai-ideas/history.sqlite3` and publishes both TSV projections from that snapshot. Later starts treat the database as authority and reconcile `ledger.tsv` and `tmp/ledger.good` before any agent runs. Other pre-existing dirty paths remain outside the run's owned output surface.
 
 ## First Run
 
@@ -29,7 +30,7 @@ cd ai-ideas
 ./hunt.sh
 ```
 
-`./hunt.sh` immediately starts model and retrieval work. It has no dry-run mode. Prescreen and review decisions update `ledger.tsv`. A successful Strong Accept path also creates `ideas/YYYY-MM-DD_hunt*.md`, invokes `publish.sh`, pushes `hunt/YYYY-MM-DD`, and creates or repairs its pull request.
+`./hunt.sh` immediately starts model and retrieval work. It has no dry-run mode. Canonical decisions commit to SQLite and project to `ledger.tsv`. A successful Strong Accept path also creates `ideas/YYYY-MM-DD_hunt*.md`, invokes `publish.sh`, pushes `hunt/YYYY-MM-DD`, and creates or repairs its pull request.
 
 Primary defaults:
 
@@ -43,6 +44,7 @@ Primary defaults:
 | Failure cooldown | `FAIL_SLEEP_MIN=150` minutes |
 | Complete no-report retry | `NO_HIT_SLEEP_MIN_LO=1` to `NO_HIT_SLEEP_MIN_HI=8` minutes |
 | Consecutive backend failure cap | `MAX_FAILS=12` |
+| History policy | `history/retrieval-policy-v1.json` (`shadow`) |
 
 Examples:
 
@@ -50,24 +52,38 @@ Examples:
 REVIEWERS=5 ./hunt.sh
 SA_TARGET=3 ./hunt.sh
 ./hunt.sh 30
+HISTORY_NEAR_SA=tmp/near-sa-queue.tsv ./hunt.sh
 ```
 
-The positional argument changes the failure cooldown in minutes. `SA_TARGET=0` removes the daily target and leaves termination to the operator.
+The positional argument changes the failure cooldown in minutes. `SA_TARGET=0` removes the daily target and leaves termination to the operator. `HISTORY_NEAR_SA` participates only in a first-time bootstrap epoch; a missing, unsafe, or semantically mismatched queue fails closed before agents start.
+
+## History maintenance
+
+```bash
+python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 validate
+python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 reconcile-ledger
+python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 export-tsv tmp/ledger.export.tsv
+python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 rebuild-projections
+```
+
+`shadow` is the shipped mode: generation uses the bounded brief, history retrieval archives evidence, and external research/review remain the sole authority for ledger verdicts. `enforcement` requires a matching sealed production calibration capability and trust root; synthetic fixtures never enable it. `complete_no_match` is a scoped internal result, not academic novelty.
 
 ## Result Locations
 
 | Path | Lifetime | Contents |
 | --- | --- | --- |
-| `ledger.tsv` | tracked, append-only | Prescreen direct hits and reviewed decisions |
+| `.ai-ideas/history.sqlite3` | local authority | Canonical candidates, verdicts, lineage, observations, outboxes |
+| `ledger.tsv` | tracked projection | Replayable export of the current DB snapshot |
+| `tmp/ledger.good` | recovery projection | Same snapshot used for crash recovery |
 | `ideas/YYYY-MM-DD_hunt*.md` | tracked | Strong Accept reports |
-| `tmp/round/` | live run state | Generated set, shortlist, prior work, ballots, reviews, stage logs, and timing |
-| `tmp/ledger.good` | live recovery state | Last Bash-owned ledger baseline |
+| `tmp/round/` | live run state | Brief, batch, observations, views, reviews, stage logs |
+| `tmp/near-sa-queue.tsv` | disposable view | Compatibility projection of canonical near-SA observations |
 | `tmp/hunt.metrics.tsv` | local runtime history | Round outcomes, counts, vote vectors, and run IDs |
 | `tmp/awr-side/awr/` | local AwR history | Stable row-keyed tasks, drafts, evidence, reviews, and terminal results |
 | `hunt.log` | local runtime history | Operator log and backend-stage summaries |
-| `$HOME/.ai-ideas-runs/$(basename "$PWD")/<run_id>/` | external durable archive | Frozen round inputs, manifest, stage logs, and ledger delta |
+| `$HOME/.ai-ideas-runs/$(basename "$PWD")/<run_id>/` | external durable archive | Frozen round inputs, history artifacts, receipts, and ledger delta |
 
-`tmp/` is gitignored runtime state. Per-run archives are not stored under `tmp/runs/`.
+`.ai-ideas/` and `tmp/` are gitignored. Per-run archives are not stored under `tmp/runs/`.
 
 ## Recovery
 
@@ -77,7 +93,13 @@ An ordinary interruption is restartable:
 ./hunt.sh
 ```
 
-Mechanically valid `tmp/round/ideas.tsv`, `ideas.md`, and `priorwork.md` resume once when `RESUME_FRONT=1`; all review ballots and aggregate verdicts are discarded and rerun. Set `RESUME_FRONT=0` to force a fresh front stage. A stale `tmp/hunt.lock` is removed automatically only when its recorded process is absent.
+A sealed `tmp/round/history/resume-state.json` resumes once when `RESUME_FRONT=1`. Resume mints a new run ID, seals a resume-attempt receipt, and reuses only matching policy, watermark, pack, comparator, adapter, and preflight identities. Review ballots and aggregate verdicts are always fresh. Set `RESUME_FRONT=0` to force a full front stage. A stale `tmp/hunt.lock` is removed automatically only when its recorded process is absent.
+
+After a projection crash, startup reconciliation converges both TSV targets to the current database snapshot without duplicating rows:
+
+```bash
+python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 reconcile-ledger
+```
 
 AwR restarts use stable physical-row keys. On first access, `awr-state-aliases.tsv` copies compatible content-derived state to the row key; terminal results remain terminal, feedback rounds retain their order, and cached artifacts that fail the current ABI are regenerated.
 
@@ -86,8 +108,8 @@ If a report exists but publication stopped between commit, push, and pull-reques
 `tmp/HALTED-ARCHIVE-FAIL` marks a Strong Accept recorded without a complete decision archive. Resolve the decision before removing the sentinel:
 
 1. Read the sentinel and `hunt.log` to recover the `run_id` and affected count.
-2. Either restore the complete archive at `RUNS_DIR/<run_id>` or remove the unarchived Strong Accept rows from both `ledger.tsv` and `tmp/ledger.good`.
-3. Verify `ledger.tsv`, `tmp/ledger.good`, and the archive encode the same resolved decision state.
+2. Either restore the complete archive at `RUNS_DIR/<run_id>` or repair the canonical commit and both projections so they encode the same resolved decision.
+3. Verify the archive, database snapshot, and both TSV projections agree.
 4. Remove `tmp/HALTED-ARCHIVE-FAIL` and restart.
 
 Deleting the sentinel alone permits a decision without its audit trail and is not a valid recovery.
@@ -98,7 +120,4 @@ After the pull request is merged into `origin/main`, inspect settlement first:
 
 ```bash
 DRY_RUN=1 ./settle.sh
-./settle.sh
 ```
-
-`DRY_RUN=1` still runs `git fetch --prune`, resolves `origin/main`, and validates local residue. It suppresses branch switches, resets, and deletions. The real command may switch to `main`, verifies permitted local report and ledger files byte-for-byte against the upstream tree, runs `git reset --hard origin/main`, and removes only routine branches whose commits or tree diff are already represented upstream.
