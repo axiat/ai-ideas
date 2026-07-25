@@ -140,13 +140,21 @@ output = pathlib.Path("output")
 output.mkdir(exist_ok=True)
 
 if stage == "generate":
-    tsv = "I1\tBounded Test Idea\tWorld Models - Architecture\n"
+    # Host projects ideas.tsv; corrupt the markdown for fail-closed tests.
     heading = "I1"
+    extra_heading = ""
     why = "Why It May Be Novel: Downstream research must test occupation.\n"
     if mode == "generation-duplicate-id":
-        tsv += (
-            "I1\tSecond Bounded Test Idea\t"
-            "World Models - Architecture\n"
+        extra_heading = (
+            "\n## I1\n"
+            "One-Sentence Story: Second Bounded Test Idea\n"
+            "Theme: World Models - Architecture\n"
+            "Form: new mechanism or new problem\n"
+            "Summary: Duplicate heading must fail.\n"
+            "Minimal Falsification Experiment: Compare against the "
+            "strongest fixture baseline on 128 episodes using one H100; "
+            "kill the idea if the expected bounded signal is absent.\n"
+            "Why It May Be Novel: Downstream research must test occupation.\n"
         )
     elif mode == "generation-id-mismatch":
         heading = "I2"
@@ -172,8 +180,8 @@ if stage == "generate":
         "strongest fixture baseline on 128 episodes using one H100; "
         "kill the idea if the expected bounded signal is absent.\n"
         f"{why}"
+        f"{extra_heading}"
     )
-    (output / "ideas.tsv").write_text(tsv, encoding="utf-8")
     (output / "ideas.md").write_text(markdown, encoding="utf-8")
 elif stage == "history-compare":
     pack = payload["retrieval_payload"]
@@ -241,10 +249,7 @@ elif stage == "review":
         f"Reason: {reason}\n",
         encoding="utf-8",
     )
-    (output / "verdict.tsv").write_text(
-        f"{candidate_id}\t{verdict}\t{major}\t{reason}\n",
-        encoding="utf-8",
-    )
+    # Host projects verdict.tsv from review.md; dual-write TSV is ignored.
 elif stage == "meta":
     mounted = {
         item["path"]: item["text"]

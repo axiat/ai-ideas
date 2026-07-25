@@ -1587,12 +1587,23 @@ def freeze_candidate_batch(
             r"(?m)^Theme:[ \t]*(.*\S)[ \t]*$",
             block,
         )
+        if len(markdown_stories) != 1 or len(markdown_themes) != 1:
+            raise RuntimeContractError(
+                "candidate markdown identity fields are invalid"
+            )
+        # Markdown is canonical. Contained generate already reprojects TSV
+        # from markdown; freeze still reprojects so drifted hand-fed TSV
+        # (or pre-reconcile artifacts) does not fail the batch.
+        story = markdown_stories[0]
+        theme = markdown_themes[0]
         if (
-            markdown_stories != [story]
-            or markdown_themes != [theme]
+            len(story.encode("utf-8")) > 1024
+            or len(theme.encode("utf-8")) > 1024
+            or "\t" in story
+            or "\t" in theme
         ):
             raise RuntimeContractError(
-                "candidate TSV and markdown identity differ"
+                "candidate identity exceeds TSV bounds"
             )
         parent = _declared_parent(block)
         if parent is not None:
@@ -1608,12 +1619,13 @@ def freeze_candidate_batch(
                 raise RuntimeContractError(
                     "declared parent is not the validated brief parent"
                 )
+        row_raw = f"{candidate_id}\t{story}\t{theme}".encode("utf-8")
         candidate = {
             "candidate_id": candidate_id,
             "story": story,
             "theme": theme,
             "candidate_markdown": block,
-            "tsv_row_sha256": sha256(raw),
+            "tsv_row_sha256": sha256(row_raw),
             "markdown_sha256": sha256(block.encode("utf-8")),
             "declared_parent_candidate_id": parent,
         }
@@ -1631,7 +1643,16 @@ def freeze_candidate_batch(
     _mkdir_single_use(root)
     frozen_tsv = root / "sources" / "ideas.tsv"
     frozen_markdown = root / "sources" / "ideas.md"
-    _publish_immutable(frozen_tsv, tsv_raw)
+    reconciled_tsv = (
+        b"\n".join(
+            f"{item['candidate_id']}\t{item['story']}\t{item['theme']}".encode(
+                "utf-8"
+            )
+            for item in rows
+        )
+        + b"\n"
+    )
+    _publish_immutable(frozen_tsv, reconciled_tsv)
     _publish_immutable(frozen_markdown, markdown_raw)
     publications = []
     for candidate in rows:
@@ -1656,7 +1677,7 @@ def freeze_candidate_batch(
         ),
         "ideas_tsv": {
             "path": str(frozen_tsv),
-            "sha256": sha256(tsv_raw),
+            "sha256": sha256(reconciled_tsv),
         },
         "ideas_markdown": {
             "path": str(frozen_markdown),

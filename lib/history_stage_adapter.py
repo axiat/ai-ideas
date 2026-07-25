@@ -46,9 +46,9 @@ def _install_resource_limits():
 
 
 _MODEL_ARTIFACTS = {
+    # Generate: model writes markdown only. Host projects ideas.tsv.
     "generate": (
         ("generation-ideas-markdown", "output/ideas.md", 65536),
-        ("generation-ideas-tsv", "output/ideas.tsv", 65536),
     ),
     "history-compare": (
         (
@@ -57,9 +57,9 @@ _MODEL_ARTIFACTS = {
             65536,
         ),
     ),
+    # Review: model writes markdown only. Host projects verdict.tsv.
     "review": (
         ("review-markdown", "output/review.md", 65536),
-        ("review-verdict-tsv", "output/verdict.tsv", 16384),
     ),
     "meta": (
         (

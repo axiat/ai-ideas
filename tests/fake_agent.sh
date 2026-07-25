@@ -65,10 +65,6 @@ stage = stage_values[0]
 inputs = mirror / "input"
 
 if stage == "generate":
-    ideas_tsv = (
-        "I1\tBounded Test Idea\t"
-        "World Models - Architecture\n"
-    )
     ideas_md = (
         "Assumption-Removal Attempt: incomplete — fixture; "
         "blocked by: evidence\n\n"
@@ -85,10 +81,6 @@ if stage == "generate":
         {
             "artifact_kind": "generation-ideas-markdown",
             "content": ideas_md,
-        },
-        {
-            "artifact_kind": "generation-ideas-tsv",
-            "content": ideas_tsv,
         },
     ]
 elif stage == "history-compare":
@@ -148,10 +140,8 @@ elif stage == "review":
         "History: unavailable\n"
         f"Reason: {reason}\n"
     )
-    verdict = f"{candidate_id}\taccept-w-rev\t1\t{reason}\n"
     artifacts = [
         {"artifact_kind": "review-markdown", "content": review},
-        {"artifact_kind": "review-verdict-tsv", "content": verdict},
     ]
 elif stage == "meta":
     batch = json.loads(

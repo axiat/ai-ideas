@@ -53,10 +53,6 @@ def model_output(stage="meta"):
                 "Why It May Be Novel: Downstream research must test "
                 "occupation.\n",
             ),
-            (
-                "generation-ideas-tsv",
-                "I1\tBounded Test Idea\tWorld Models - Architecture\n",
-            ),
         ],
         "history-compare": [
             (
@@ -81,10 +77,6 @@ def model_output(stage="meta"):
                 "Feasibility: One researcher and one H100 suffice.\n"
                 "History: unavailable\n"
                 "Reason: One bounded revision remains.\n",
-            ),
-            (
-                "review-verdict-tsv",
-                "I1\taccept-w-rev\t1\tOne bounded revision remains.\n",
             ),
         ],
         "meta": [

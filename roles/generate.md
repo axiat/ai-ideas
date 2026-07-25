@@ -13,18 +13,20 @@ Each candidate must:
 - fit one researcher and one H100 unless the policy explicitly provides a different bound;
 - remain materially distinct from the other candidates in the batch.
 
-At least one candidate must attempt `remove-load-bearing-assumption`. Record exactly one assumption-removal marker before the first candidate. Leave the attempt incomplete when its required evidence is unavailable.
+At least one candidate must attempt `remove-load-bearing-assumption`. Record exactly one assumption-removal marker before the first candidate:
+
+- `Assumption-Removal Attempt: complete I#` only when that candidate has all five structured fields and at least two `Crack Evidence:` lines with real `http(s)` URLs.
+- `Assumption-Removal Attempt: incomplete — <candidate>; blocked by: <field>` when real crack-evidence URLs are unavailable. Do not fabricate URLs. An incomplete attempt may still use `Form: remove-load-bearing-assumption` with honest non-URL placeholders, or omit that form and keep only the marker; either way the marker alone satisfies the attempt quota.
 
 Return one final JSON object matching the supplied strict response schema.
-Its ordered `artifacts` array contains:
+Its ordered `artifacts` array contains exactly one entry:
 
 - `generation-ideas-markdown`: the assumption-removal marker followed by
-  one section per candidate;
-- `generation-ideas-tsv`: `id<TAB>one-sentence story<TAB>theme`, one
-  candidate per row.
+  one section per candidate (`## I1` …). The host derives `ideas.tsv`
+  (`id<TAB>story<TAB>theme`) from this markdown; do not emit a separate TSV.
 
-The adapter materializes these strings as `output/ideas.md` and
-`output/ideas.tsv`. Use this candidate block in the markdown content:
+The adapter materializes the markdown as `output/ideas.md`. Use this
+candidate block:
 
 ```text
 ## I1

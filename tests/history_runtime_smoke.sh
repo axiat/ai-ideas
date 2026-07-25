@@ -299,13 +299,6 @@ def envelope(request, behavior):
                     "Why It May Be Novel: Research must test occupation.\n"
                 ),
             },
-            {
-                "artifact_kind": "generation-ideas-tsv",
-                "content": (
-                    "I1\tBounded Test Idea\t"
-                    "Evaluation and Diagnostics\n"
-                ),
-            },
         ]
     elif stage == "history-compare":
         pack = invocation["retrieval_payload"]
@@ -392,12 +385,6 @@ def envelope(request, behavior):
                     "Feasibility: One researcher and one H100 suffice.\n"
                     "History: unavailable\n"
                     f"Reason: {reason}\n"
-                ),
-            },
-            {
-                "artifact_kind": "review-verdict-tsv",
-                "content": (
-                    f"{candidate_id}\taccept-w-rev\t1\t{reason}\n"
                 ),
             },
         ]

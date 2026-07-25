@@ -2749,54 +2749,12 @@ def _validate_verdict(text, candidate_id):
     }
 
 
-def _norm_generation_field(text):
-    """Normalize for soft TSV↔markdown agreement (not product identity)."""
-    text = str(text).replace("\u00a0", " ")
-    text = re.sub(r"[^\w\s]+", " ", text, flags=re.UNICODE)
-    return " ".join(text.split()).casefold()
+def _build_generation_tsv_from_markdown(markdown):
+    """Validate generate markdown and return host-projected ideas.tsv text.
 
-
-def _generation_fields_agree(left, right):
-    """Slightly loose match: equal, containment, or high token overlap."""
-    a = _norm_generation_field(left)
-    b = _norm_generation_field(right)
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-    # Model often rephrases by adding/dropping a clause.
-    if len(shorter) >= 20 and shorter in longer:
-        return True
-    ta, tb = set(a.split()), set(b.split())
-    if not ta or not tb:
-        return False
-    overlap = len(ta & tb) / max(len(ta), len(tb))
-    return overlap >= 0.72
-
-
-def _validate_generation_output(tsv, markdown):
-    rows = tsv.splitlines()
-    if not rows or len(rows) > 20:
-        raise StageError("generation row count is invalid")
-    candidates = []
-    for index, line in enumerate(rows, start=1):
-        # Tolerate outer whitespace on TSV cells (common model variance).
-        fields = [part.strip() for part in line.split("\t")]
-        if (
-            len(fields) != 3
-            or fields[0] != f"I{index}"
-            or any(
-                not field
-                or len(field.encode("utf-8"))
-                > (16 if position == 0 else 1024)
-                for position, field in enumerate(fields)
-            )
-        ):
-            raise StageError(
-                f"generation TSV schema mismatch at row {index}"
-            )
-        candidates.append(fields)
+    Single source of truth: model writes markdown only. The TSV index is
+    derived from each section's One-Sentence Story and Theme.
+    """
     lines = markdown.splitlines()
     markers = [
         index
@@ -2808,13 +2766,13 @@ def _validate_generation_output(tsv, markdown):
         for index, line in enumerate(lines)
         if line.startswith("## ")
     ]
-    identifiers = [candidate[0] for candidate in candidates]
     if (
         len(markers) != 1
         or not headings
+        or len(headings) > 20
         or markers[0] >= headings[0][0]
         or [identifier for _, identifier in headings]
-        != identifiers
+        != [f"I{index}" for index in range(1, len(headings) + 1)]
     ):
         raise StageError("generation markdown section mismatch")
     required = (
@@ -2831,6 +2789,9 @@ def _validate_generation_output(tsv, markdown):
         "Forcing Constraint",
     )
     assumption_ids = set()
+    # id -> count of Crack Evidence rows that carry a real http(s) URL
+    assumption_url_cracks = {}
+    rows = []
     for position, (start, identifier) in enumerate(headings):
         end = (
             headings[position + 1][0]
@@ -2850,12 +2811,14 @@ def _validate_generation_output(tsv, markdown):
                             f"{identifier} {label}"
                         )
                     value = stripped[len(prefix):].strip()
-                    if (
-                        not value
-                        or len(value.encode("utf-8")) > 4096
-                    ):
+                    if not value:
                         raise StageError(
-                            f"generation field is invalid: "
+                            f"generation field is empty: "
+                            f"{identifier} {label}"
+                        )
+                    if len(value.encode("utf-8")) > 4096:
+                        raise StageError(
+                            f"generation field exceeds bound: "
                             f"{identifier} {label}"
                         )
                     values[label] = value
@@ -2876,23 +2839,28 @@ def _validate_generation_output(tsv, markdown):
                 f"generation field is missing: {identifier} "
                 f"{', '.join(missing)}"
             )
-        candidate = candidates[position]
-        if not _generation_fields_agree(
-            values["One-Sentence Story"], candidate[1]
+        story = values["One-Sentence Story"]
+        theme = values["Theme"]
+        if (
+            len(story.encode("utf-8")) > 1024
+            or len(theme.encode("utf-8")) > 1024
+            or "\t" in story
+            or "\t" in theme
+            or "\n" in story
+            or "\n" in theme
         ):
             raise StageError(
-                f"generation TSV and markdown disagree: "
-                f"{identifier} One-Sentence Story"
+                f"generation field is invalid: {identifier}"
             )
-        if not _generation_fields_agree(
-            values["Theme"], candidate[2]
-        ):
-            raise StageError(
-                f"generation TSV and markdown disagree: "
-                f"{identifier} Theme"
-            )
+        rows.append(f"{identifier}\t{story}\t{theme}")
         if values["Form"] == "remove-load-bearing-assumption":
             assumption_ids.add(identifier)
+            url_cracks = sum(
+                1
+                for evidence in crack_evidence
+                if re.search(r"https?://", evidence)
+            )
+            assumption_url_cracks[identifier] = url_cracks
             if (
                 any(
                     label not in values
@@ -2920,9 +2888,59 @@ def _validate_generation_output(tsv, markdown):
         and complete.group(1) not in assumption_ids
     ):
         raise StageError("assumption-removal marker is invalid")
+    # Complete attempts must carry real http(s) Crack Evidence URLs.
+    # Incomplete markers satisfy the attempt quota; placeholder cracks OK.
+    if complete is not None:
+        complete_id = complete.group(1)
+        if assumption_url_cracks.get(complete_id, 0) < 2:
+            raise StageError(
+                f"assumption-removal crack evidence lacks URLs: "
+                f"{complete_id}"
+            )
+    return "\n".join(rows) + "\n"
 
 
-def _validate_review_output(markdown, verdict_row):
+def _project_generation_tsv(mirror):
+    """Write output/ideas.tsv from output/ideas.md (host-owned index)."""
+    md_path = mirror / "output" / "ideas.md"
+    # Use regular-file capture so FIFO/symlink attacks cannot block open().
+    captured = _capture_regular_path(md_path, 65536)
+    if not captured["raw"]:
+        raise StageError("generation markdown bound is invalid")
+    try:
+        markdown = captured["raw"].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise StageError("generation markdown is not UTF-8") from exc
+    tsv_text = _build_generation_tsv_from_markdown(markdown)
+    tsv_raw = tsv_text.encode("utf-8")
+    tsv_path = mirror / "output" / "ideas.tsv"
+    # Replace any agent-written TSV; the host owns this file.
+    try:
+        if tsv_path.exists() or tsv_path.is_symlink():
+            tsv_path.unlink()
+    except OSError as exc:
+        raise StageError("generation TSV cannot be replaced") from exc
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(tsv_path, flags, 0o444)
+    except OSError as exc:
+        raise StageError("generation TSV cannot be written") from exc
+    try:
+        view = memoryview(tsv_raw)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+def _build_review_verdict_from_markdown(markdown, candidate_id):
+    """Validate review markdown and return host-projected verdict.tsv text.
+
+    Markdown is authoritative; dual-write TSV drift is projected away.
+    """
     lines = [line for line in markdown.splitlines() if line.strip()]
     labels = (
         "Verdict",
@@ -2939,7 +2957,7 @@ def _validate_review_output(markdown, verdict_row):
     )
     if (
         len(lines) != len(labels) + 1
-        or lines[0] != f"# {verdict_row['candidate_id']}"
+        or lines[0] != f"# {candidate_id}"
     ):
         raise StageError("review markdown schema mismatch")
     values = {}
@@ -2951,24 +2969,75 @@ def _validate_review_output(markdown, verdict_row):
         if not value or len(value.encode("utf-8")) > 4096:
             raise StageError("review markdown field is invalid")
         values[label] = value
-    if (
-        values["Verdict"] != verdict_row["verdict"]
-        or not values["CRITICAL"].isdigit()
-        or not values["MAJOR"].isdigit()
-        or int(values["MAJOR"]) != verdict_row["major_count"]
-        or values["Reason"] != verdict_row["reason"]
-    ):
-        raise StageError("review vote and markdown disagree")
+    if values["Verdict"] not in {
+        "strong-accept",
+        "accept-w-rev",
+        "reject",
+    }:
+        raise StageError("review markdown verdict is invalid")
+    if not values["CRITICAL"].isdigit() or not values["MAJOR"].isdigit():
+        raise StageError("review markdown count fields are invalid")
     critical = int(values["CRITICAL"])
     major = int(values["MAJOR"])
     if (
         critical > 0
-        and verdict_row["verdict"] != "reject"
+        and values["Verdict"] != "reject"
     ) or (
         major >= 2
-        and verdict_row["verdict"] == "strong-accept"
+        and values["Verdict"] == "strong-accept"
     ):
         raise StageError("review verdict violates a hard gate")
+    reason = values["Reason"]
+    if "\t" in reason or "\n" in reason:
+        raise StageError("review markdown reason is invalid")
+    return f"{candidate_id}\t{values['Verdict']}\t{major}\t{reason}\n"
+
+
+def _project_review_verdict(mirror, candidate_id):
+    """Write output/verdict.tsv from output/review.md (host-owned)."""
+    md_path = mirror / "output" / "review.md"
+    captured = _capture_regular_path(md_path, 65536)
+    if not captured["raw"]:
+        raise StageError("review markdown bound is invalid")
+    try:
+        markdown = captured["raw"].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise StageError("review markdown is not UTF-8") from exc
+    tsv_text = _build_review_verdict_from_markdown(markdown, candidate_id)
+    tsv_raw = tsv_text.encode("utf-8")
+    tsv_path = mirror / "output" / "verdict.tsv"
+    try:
+        if tsv_path.exists() or tsv_path.is_symlink():
+            tsv_path.unlink()
+    except OSError as exc:
+        raise StageError("review verdict cannot be replaced") from exc
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(tsv_path, flags, 0o444)
+    except OSError as exc:
+        raise StageError("review verdict cannot be written") from exc
+    try:
+        view = memoryview(tsv_raw)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _validate_review_output(markdown, verdict_row):
+    expected = _build_review_verdict_from_markdown(
+        markdown, verdict_row["candidate_id"]
+    )
+    actual = (
+        f"{verdict_row['candidate_id']}\t{verdict_row['verdict']}\t"
+        f"{verdict_row['major_count']}\t{verdict_row['reason']}\n"
+    )
+    if expected != actual:
+        raise StageError("review vote and markdown disagree")
 
 
 def _validate_failure_distillation(value, batch):
@@ -3036,10 +3105,12 @@ def validate_stage_outputs(mirror, outputs, stage, parsed_inputs, preflight, sea
     ):
         raise StageError("backend prompt attestation mismatch")
     if stage == "generate":
-        _validate_generation_output(
-            by_kind["generation-ideas-tsv"]["text"],
-            by_kind["generation-ideas-markdown"]["text"],
+        # Host already projected TSV from markdown; re-check equality.
+        expected_tsv = _build_generation_tsv_from_markdown(
+            by_kind["generation-ideas-markdown"]["text"]
         )
+        if by_kind["generation-ideas-tsv"]["text"] != expected_tsv:
+            raise StageError("generation TSV projection mismatch")
     elif stage == "history-compare":
         response = _load_json_bytes(
             by_kind["history-comparison-json"]["raw"],
@@ -3052,10 +3123,14 @@ def validate_stage_outputs(mirror, outputs, stage, parsed_inputs, preflight, sea
         except history_retrieval.ComparisonValidationError as exc:
             raise StageError("history comparison schema mismatch") from exc
     elif stage == "review":
-        verdict_row = _validate_verdict(
-            by_kind["review-verdict-tsv"]["text"],
-            parsed_inputs["candidate.json"]["candidate_id"],
+        candidate_id = parsed_inputs["candidate.json"]["candidate_id"]
+        expected_tsv = _build_review_verdict_from_markdown(
+            by_kind["review-markdown"]["text"],
+            candidate_id,
         )
+        if by_kind["review-verdict-tsv"]["text"] != expected_tsv:
+            raise StageError("review TSV projection mismatch")
+        verdict_row = _validate_verdict(expected_tsv, candidate_id)
         _validate_review_output(
             by_kind["review-markdown"]["text"],
             verdict_row,
@@ -3532,6 +3607,13 @@ def run_stage(
                 stage,
                 manifest["seat_id"],
                 preflight["serialized_sha256"],
+            )
+        if stage == "generate":
+            _project_generation_tsv(mirror)
+        if stage == "review":
+            _project_review_verdict(
+                mirror,
+                parsed_inputs["candidate.json"]["candidate_id"],
             )
         validated = validate_stage_outputs(
             mirror,

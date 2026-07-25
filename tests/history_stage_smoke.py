@@ -919,32 +919,112 @@ class HistoryStageSmoke(unittest.TestCase):
             history_stage._is_codex_backend_basename("grok-worker.sh")
         )
 
-    def test_generation_fields_agree_tolerates_light_rephrase(self):
-        self.assertTrue(
-            history_stage._generation_fields_agree(
-                "A frozen VLA can be steered without online rewards.",
-                "A frozen VLA can be steered without online rewards",
+    def test_generation_tsv_is_projected_from_markdown_only(self):
+        """Host builds TSV from MD; no model dual-write required."""
+        theme = "Data Engines"
+        md_parts = [
+            "Assumption-Removal Attempt: incomplete none available"
+        ]
+        expected_rows = []
+        for index in range(1, 11):
+            identifier = f"I{index}"
+            story = f"Bounded story number {index} with enough tokens."
+            expected_rows.append(f"{identifier}\t{story}\t{theme}")
+            md_parts.append(
+                f"## {identifier}\n"
+                f"One-Sentence Story: {story}\n"
+                f"Theme: {theme}\n"
+                "Form: new problem\n"
+                f"Summary: summary for {identifier}.\n"
+                f"Minimal Falsification Experiment: experiment {identifier}.\n"
+                f"Why It May Be Novel: novelty for {identifier}.\n"
+            )
+        projected = history_stage._build_generation_tsv_from_markdown(
+            "\n".join(md_parts) + "\n"
+        )
+        self.assertEqual(projected, "\n".join(expected_rows) + "\n")
+        # Non-sequential heading fails closed.
+        with self.assertRaises(history_stage.StageError):
+            history_stage._build_generation_tsv_from_markdown(
+                "Assumption-Removal Attempt: incomplete none\n\n"
+                "## I2\n"
+                "One-Sentence Story: skip I1.\n"
+                f"Theme: {theme}\n"
+                "Form: new problem\n"
+                "Summary: s.\n"
+                "Minimal Falsification Experiment: e.\n"
+                "Why It May Be Novel: n.\n"
+            )
+
+    def _axiom_candidate_block(
+        self,
+        identifier="I1",
+        *,
+        crack_lines,
+        form="remove-load-bearing-assumption",
+    ):
+        cracks = "\n".join(crack_lines)
+        return (
+            f"## {identifier}\n"
+            f"One-Sentence Story: Bounded axiom story for {identifier}.\n"
+            "Theme: Evaluation and Diagnostics\n"
+            f"Form: {form}\n"
+            "Assumption to Remove: Terminal success is a complete measure.\n"
+            "Why It Can Be Removed Now: Trajectory traces expose risk signals.\n"
+            "Forcing Constraint: Safety budgets cap recovery events per hour.\n"
+            f"{cracks}\n"
+            f"Summary: summary for {identifier}.\n"
+            f"Minimal Falsification Experiment: experiment {identifier}.\n"
+            f"Why It May Be Novel: novelty for {identifier}.\n"
+        )
+
+    def test_generation_incomplete_axiom_allows_placeholder_cracks(self):
+        """Incomplete marker + Form=axiom + non-URL cracks still project."""
+        md = (
+            "Assumption-Removal Attempt: incomplete — I1; blocked by: "
+            "crack evidence links unavailable\n\n"
+            + self._axiom_candidate_block(
+                crack_lines=[
+                    "Crack Evidence: <URL unavailable> | Risk pending.",
+                    "Crack Evidence: <URL unavailable> | Deploy pending.",
+                ]
             )
         )
-        self.assertTrue(
-            history_stage._generation_fields_agree(
-                "World Models - Architecture",
-                "world models - architecture",
+        projected = history_stage._build_generation_tsv_from_markdown(md)
+        self.assertEqual(
+            projected,
+            "I1\tBounded axiom story for I1.\t"
+            "Evaluation and Diagnostics\n",
+        )
+
+    def test_generation_complete_axiom_requires_real_urls(self):
+        """Complete marker needs >=2 real http(s) Crack Evidence URLs."""
+        placeholder = (
+            "Assumption-Removal Attempt: complete I1\n\n"
+            + self._axiom_candidate_block(
+                crack_lines=[
+                    "Crack Evidence: <URL unavailable> | Risk pending.",
+                    "Crack Evidence: <URL unavailable> | Deploy pending.",
+                ]
             )
         )
-        # Longer shared core with a trailing clause on one side.
-        self.assertTrue(
-            history_stage._generation_fields_agree(
-                "Object-slot world models with explicit contact channels will extrapolate better.",
-                "Object-slot world models with explicit contact channels will extrapolate better on unseen objects.",
+        with self.assertRaisesRegex(
+            history_stage.StageError,
+            r"assumption-removal crack evidence lacks URLs: I1",
+        ):
+            history_stage._build_generation_tsv_from_markdown(placeholder)
+
+        complete = (
+            "Assumption-Removal Attempt: complete I1\n\n"
+            + self._axiom_candidate_block(
+                crack_lines=[
+                    "Crack Evidence: https://example.com/one | Risk.",
+                    "Crack Evidence: https://example.com/two | Deploy.",
+                ]
             )
         )
-        self.assertFalse(
-            history_stage._generation_fields_agree(
-                "World Models - Architecture",
-                "VLA - Training Paradigms",
-            )
-        )
+        projected = history_stage._build_generation_tsv_from_markdown(complete)
+        self.assertIn("I1\tBounded axiom story for I1.\t", projected)
 
     def test_codex_cli_version_family_tolerates_patch_drift(self):
         self.assertEqual(
@@ -1075,10 +1155,12 @@ class HistoryStageSmoke(unittest.TestCase):
         fixture.manifest["registered_environment"] = {}
         fixture.manifest["registered_runtime_reads"] = []
         fixture.write_manifest()
+        # Capability match ignores binary SHA and keys on model/profile.
+        # An unregistered model is the unprovisioned signal.
         command = [
             str(executable),
             "-m",
-            "gpt-5.3-codex-spark",
+            "not-a-registered-codex-model",
             "-c",
             "model_reasoning_effort=xhigh",
         ]
@@ -1929,10 +2011,23 @@ class HistoryStageSmoke(unittest.TestCase):
 
     def test_review_output_requires_contract_fields_and_matching_vote(self):
         StageFixture(self, "review").run()
+        # Dual-write TSV drift is projected from markdown and no longer fails.
         for mode in (
-            "review-missing-field",
             "review-vote-mismatch",
             "review-major-mismatch",
+        ):
+            fixture = StageFixture(
+                self,
+                "review",
+                attack_mode=mode,
+            )
+            with self.subTest(mode=mode):
+                fixture.run()
+                self.assertTrue(
+                    (fixture.destinations / "verdict.tsv").exists()
+                )
+        for mode in (
+            "review-missing-field",
             "review-gate-violation",
         ):
             fixture = StageFixture(

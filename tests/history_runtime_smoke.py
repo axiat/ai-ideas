@@ -825,7 +825,8 @@ class CandidateAndObservationContract(RuntimeFixture):
                 self.root / "duplicate-heading-freeze",
             )
 
-    def test_candidate_freeze_binds_tsv_story_and_theme_to_markdown(self):
+    def test_candidate_freeze_reprojects_tsv_identity_from_markdown(self):
+        """Markdown is canonical; dual-write drift is projected away."""
         for field, markdown_value in (
             ("story", "A contradictory Markdown story."),
             ("theme", "Safety and Robustness"),
@@ -833,6 +834,7 @@ class CandidateAndObservationContract(RuntimeFixture):
             with self.subTest(field=field):
                 tsv = self.root / f"{field}-binding.tsv"
                 markdown = self.root / f"{field}-binding.md"
+                out = self.root / f"{field}-binding-freeze"
                 tsv.write_text(
                     "I1\tA bounded candidate.\t"
                     "Evaluation and Diagnostics\n",
@@ -854,14 +856,20 @@ class CandidateAndObservationContract(RuntimeFixture):
                     f"Theme: {theme}\n",
                     encoding="utf-8",
                 )
-                with self.assertRaises(
-                    history_runtime.RuntimeContractError
-                ):
-                    history_runtime.freeze_candidate_batch(
-                        tsv,
-                        markdown,
-                        self.root / f"{field}-binding-freeze",
-                    )
+                history_runtime.freeze_candidate_batch(
+                    tsv, markdown, out
+                )
+                frozen = (out / "sources" / "ideas.tsv").read_text(
+                    encoding="utf-8"
+                )
+                self.assertEqual(
+                    frozen, f"I1\t{story}\t{theme}\n"
+                )
+                candidate = json.loads(
+                    (out / "I1.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(candidate["story"], story)
+                self.assertEqual(candidate["theme"], theme)
 
     def test_duplicate_and_failure_are_mandatory_and_evolution_is_declared(self):
         candidate = {

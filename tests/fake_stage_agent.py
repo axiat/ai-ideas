@@ -12,11 +12,7 @@ output = pathlib.Path("output")
 output.mkdir(parents=True, exist_ok=True)
 
 if stage == "generate":
-    (output / "ideas.tsv").write_text(
-        "I1\tConstraint-Driven Sparse World Models\t"
-        "World Models - Architecture\n",
-        encoding="utf-8",
-    )
+    # Host projects ideas.tsv from markdown; model/agent writes MD only.
     (output / "ideas.md").write_text(
         "Assumption-Removal Attempt: complete I1\n\n"
         "## I1\n"
@@ -133,11 +129,7 @@ elif stage == "review":
         },
     }[verdict]
     reason = ballot["reason"]
-    (output / "verdict.tsv").write_text(
-        f"{candidate_id}\t{verdict}\t{ballot['major']}\t"
-        f"{reason}\n",
-        encoding="utf-8",
-    )
+    # Host projects verdict.tsv from review.md.
     (output / "review.md").write_text(
         f"# {candidate_id}\n"
         f"Verdict: {verdict}\n"

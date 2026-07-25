@@ -666,10 +666,19 @@ def read_regular(path, maximum, required):
         or status.st_nlink != 1
         or status.st_size > maximum
     ):
-        raise SystemExit(f"{stage} output is not a bounded regular file")
+        raise SystemExit(
+            f"{stage} output is not a bounded regular file "
+            f"(mode={status.st_mode:#o} nlink={status.st_nlink} "
+            f"size={status.st_size} max={maximum})"
+        )
     raw = path.read_bytes()
-    if len(raw) != status.st_size or b"\0" in raw or b"\r" in raw:
-        raise SystemExit(f"{stage} output contains invalid bytes")
+    if len(raw) != status.st_size:
+        raise SystemExit(f"{stage} output size changed during read")
+    if b"\0" in raw:
+        raise SystemExit(f"{stage} output contains NUL bytes")
+    # Agents may emit CRLF; normalize so host gates see LF-only text.
+    if b"\r" in raw:
+        raw = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     try:
         raw.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -747,20 +756,37 @@ run_external_stage() {
   fi
   started=$(date '+%F %T')
   log "Starting external stage [$stage] in a disposable mirror"
+  # GROK_REPO pins grok-worker.sh into the disposable mirror. Without it the
+  # worker cds to its real script directory and writes host tmp/round, so
+  # mirror-side copy of priorwork.md fails with "omitted its declared output".
   if (
     cd "$mirror" \
-      && PWD="$mirror" OLDPWD="$mirror" "${argv[@]}" "$prompt"
+      && PWD="$mirror" OLDPWD="$mirror" GROK_REPO="$mirror" \
+        "${argv[@]}" "$prompt"
   ) > "$RD/logs/$stage.log" 2>&1; then
     rc=0
   else
     rc=$?
   fi
   cat "$RD/logs/$stage.log" >> "$LOG"
+  if [ "$rc" -ne 0 ]; then
+    log "External stage [$stage] agent exit rc=$rc"
+  fi
   if [ "$rc" -eq 0 ]; then
     if ! external_input_manifest verify "$mirror" "$input_manifest" \
-      >> "$RD/logs/$stage.log" 2>&1 \
-      || ! copy_external_output "$stage" "$mirror" \
       >> "$RD/logs/$stage.log" 2>&1; then
+      log "External stage [$stage] input-manifest verify failed"
+      tail -n 20 "$RD/logs/$stage.log" >> "$LOG" 2>/dev/null || true
+      rc=2
+    elif ! copy_external_output "$stage" "$mirror" \
+      >> "$RD/logs/$stage.log" 2>&1; then
+      log "External stage [$stage] output copy failed"
+      tail -n 20 "$RD/logs/$stage.log" >> "$LOG" 2>/dev/null || true
+      # Preserve the rejected artifact for diagnosis when present.
+      if [ -f "$mirror/tmp/round/priorwork.md" ]; then
+        cp "$mirror/tmp/round/priorwork.md" \
+          "$RD/logs/priorwork.copy-fail.md" 2>/dev/null || true
+      fi
       rc=2
     fi
   fi
@@ -795,7 +821,15 @@ themes_ok() {
 }
 
 axiom_ok() {
+  # Complete Form=axiom rows need structured fields + AXIOM_MIN_CRACKS real
+  # http(s) Crack Evidence URLs. An incomplete assumption-removal marker
+  # satisfies the policy attempt quota; Form=axiom rows in that batch may
+  # keep honest non-URL placeholders and must not fail generation-contract.
   local markdown=$1 tsv=$2 id story theme block field value urls
+  local incomplete_marker=0
+  if grep -qE '^Assumption-Removal Attempt: incomplete ' "$markdown"; then
+    incomplete_marker=1
+  fi
   while IFS=$'\t' read -r id story theme; do
     [ -n "$id" ] || continue
     is_axiom_idea "$id" "$markdown" || continue
@@ -818,10 +852,15 @@ axiom_ok() {
     done
     urls=$(printf '%s\n' "$block" \
       | grep -cE '^Crack Evidence:.*https?://' || true)
-    [ "$urls" -ge "$AXIOM_MIN_CRACKS" ] || {
-      log "Assumption-removal gate: $id has too few Crack Evidence rows"
-      return 1
-    }
+    if [ "$urls" -ge "$AXIOM_MIN_CRACKS" ]; then
+      continue
+    fi
+    if [ "$incomplete_marker" -eq 1 ]; then
+      log "Assumption-removal incomplete exempt: $id ($urls real Crack Evidence URL rows)"
+      continue
+    fi
+    log "Assumption-removal gate: $id has too few Crack Evidence rows"
+    return 1
   done < "$tsv"
 }
 
@@ -874,10 +913,26 @@ priorwork_ok() {
 }
 
 cracks_ok() {
-  local id story theme block count
+  # Complete Form=axiom rows (real http(s) Crack Evidence in the idea)
+  # need Crack Evidence Verification with AXIOM_MIN_CRACKS real URL lines.
+  # Hollow / incomplete axiom attempts (placeholders, no real URLs) skip this
+  # gate — research-view may drop the incomplete marker, so exemption is keyed
+  # off the idea's own Crack Evidence URL count, not the marker alone.
+  local id story theme block count idea_block idea_urls
   while IFS=$'\t' read -r id story theme; do
     [ -n "$id" ] || continue
     is_axiom_idea "$id" "$RD/ideas.md" || continue
+    idea_block=$(awk -v id="$id" '
+      $1=="##" && $2==id {inside=1; next}
+      $1=="##" && $2~/^I[0-9]+$/ {if (inside) exit}
+      inside
+    ' "$RD/ideas.md")
+    idea_urls=$(printf '%s\n' "$idea_block" \
+      | grep -cE '^Crack Evidence:.*https?://' || true)
+    if [ "$idea_urls" -lt "$AXIOM_MIN_CRACKS" ]; then
+      log "Crack verification incomplete exempt: $id ($idea_urls real Crack Evidence URL rows)"
+      continue
+    fi
     block=$(awk -v id="$id" '
       $1=="##" && $2==id {inside=1; next}
       $1=="##" && $2~/^I[0-9]+$/ {if (inside) exit}
@@ -1218,16 +1273,31 @@ while :; do
       research_try=0
       while [ "$research_try" -le "$RESEARCH_RETRY" ]; do
         : > "$RD/priorwork.md"
-        if run_external_stage \
+        if ! run_external_stage \
           "$FRONT_CMD" \
           "Read roles/research.md and follow it" \
-          research \
-          && priorwork_ok \
-          && cracks_ok; then
-          research_ok=1
-          break
+          research; then
+          log "Research stage agent/copy failed (try $research_try)"
+          research_try=$((research_try + 1))
+          continue
         fi
-        research_try=$((research_try + 1))
+        if ! priorwork_ok; then
+          log "Research stage priorwork_ok failed (try $research_try)"
+          # Keep a copy for diagnosis before the next wipe.
+          cp "$RD/priorwork.md" \
+            "$RD/logs/priorwork.try${research_try}.md" 2>/dev/null || true
+          research_try=$((research_try + 1))
+          continue
+        fi
+        if ! cracks_ok; then
+          log "Research stage cracks_ok failed (try $research_try)"
+          cp "$RD/priorwork.md" \
+            "$RD/logs/priorwork.try${research_try}.md" 2>/dev/null || true
+          research_try=$((research_try + 1))
+          continue
+        fi
+        research_ok=1
+        break
       done
     else
       research_ok=1
