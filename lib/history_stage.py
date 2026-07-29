@@ -42,7 +42,7 @@ CANONICALIZER_SOURCE = "lib/history_stage_proxy.py"
 CODEX_CAPABILITY_SOURCE = "history/codex-adapter-capabilities-v2.json"
 CODEX_AUTH_PATH = pathlib.Path.home() / ".codex" / "auth.json"
 # Fallback when the binary cannot report a version (offline / renamed).
-CODEX_CLI_VERSION = "0.145.0"
+CODEX_CLI_VERSION = "0.146.0"
 CODEX_UPSTREAM = {
     "scheme": "https",
     "host": "chatgpt.com",
@@ -1434,7 +1434,7 @@ def codex_loopback_argv(
     output_schema_path,
     output_last_message_path,
 ):
-    """Build the pinned Codex 0.145.0 fake-provider integration argv."""
+    """Build the pinned Codex 0.146.0 fake-provider integration argv."""
     executable = pathlib.Path(executable)
     mirror = pathlib.Path(mirror)
     schema = pathlib.Path(output_schema_path)
@@ -1547,7 +1547,7 @@ def _codex_loopback_template(identity):
 
 
 def _detect_codex_cli_version(executable_path):
-    """Read `codex --version` when possible; fall back to the pin."""
+    """Read `codex --version`; return None when it cannot be read."""
     path = pathlib.Path(executable_path)
     try:
         completed = subprocess.run(
@@ -1558,13 +1558,13 @@ def _detect_codex_cli_version(executable_path):
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
-        return CODEX_CLI_VERSION
+        return None
     text = (completed.stdout or completed.stderr or "").strip()
-    # Formats seen: "codex-cli 0.145.0", "0.145.0"
+    # Formats seen: "codex-cli 0.146.0", "0.146.0"
     for token in text.replace(",", " ").split():
         if token[0:1].isdigit() and token.count(".") >= 1:
             return token
-    return CODEX_CLI_VERSION
+    return None
 
 
 def _codex_cli_version_family(version):
@@ -1678,67 +1678,57 @@ def _validated_codex_capability(
         raise StageError("Codex capability registry is invalid")
     captured_path = captured.get("path")
     observed_version = (
-        _detect_codex_cli_version(captured_path)
-        if captured_path
-        else CODEX_CLI_VERSION
+        _detect_codex_cli_version(captured_path) if captured_path else None
     )
-    # Try observed version first, then the static pin (offline fallbacks).
-    candidate_versions = []
-    for version in (observed_version, CODEX_CLI_VERSION):
-        if version not in candidate_versions:
-            candidate_versions.append(version)
+    # Fail closed on version drift: when the binary reports a version, only
+    # that version may match. The static pin is the offline fallback for
+    # binaries that cannot report one (renamed / no --version output).
+    effective_version = (
+        observed_version if observed_version is not None else CODEX_CLI_VERSION
+    )
     matches = []
-    matched_profile_sha256 = None
-    matched_version = None
-    for version in candidate_versions:
-        profile_sha256 = _sha256(
-            _codex_profile_bytes(
-                captured["sha256"],
-                identity,
-                policy,
-                adapter_artifacts,
-                codex_cli_version=version,
-            )
+    profile_sha256 = _sha256(
+        _codex_profile_bytes(
+            captured["sha256"],
+            identity,
+            policy,
+            adapter_artifacts,
+            codex_cli_version=effective_version,
         )
-        for item in registry["capabilities"]:
-            if not isinstance(item, dict):
-                continue
-            keys = set(item)
-            if not {
-                "capability_id",
-                "codex_cli_version",
-                "profile_sha256",
-            }.issubset(keys):
-                continue
-            if item.get("profile_sha256") != profile_sha256:
-                continue
-            if not _codex_cli_version_compatible(
-                item.get("codex_cli_version"),
-                version,
-            ) and not _codex_cli_version_compatible(
-                item.get("codex_cli_version"),
-                observed_version,
-            ):
-                continue
-            expected_id = _sha256(
-                b"history-codex-capability-v3\0"
-                + profile_sha256.encode("ascii")
-            )
-            # Accept v2 id formula for registries written before the
-            # binary-agnostic profile (migration window).
-            expected_id_v2 = _sha256(
-                b"history-codex-capability-v2\0"
-                + profile_sha256.encode("ascii")
-            )
-            if item.get("capability_id") not in (
-                expected_id,
-                expected_id_v2,
-            ):
-                continue
-            matches.append(item)
-            matched_profile_sha256 = profile_sha256
-            matched_version = version
-    # De-duplicate if both version candidates hit the same entry.
+    )
+    for item in registry["capabilities"]:
+        if not isinstance(item, dict):
+            continue
+        keys = set(item)
+        if not {
+            "capability_id",
+            "codex_cli_version",
+            "profile_sha256",
+        }.issubset(keys):
+            continue
+        if item.get("profile_sha256") != profile_sha256:
+            continue
+        if not _codex_cli_version_compatible(
+            item.get("codex_cli_version"),
+            effective_version,
+        ):
+            continue
+        expected_id = _sha256(
+            b"history-codex-capability-v3\0"
+            + profile_sha256.encode("ascii")
+        )
+        # Accept v2 id formula for registries written before the
+        # binary-agnostic profile (migration window).
+        expected_id_v2 = _sha256(
+            b"history-codex-capability-v2\0"
+            + profile_sha256.encode("ascii")
+        )
+        if item.get("capability_id") not in (
+            expected_id,
+            expected_id_v2,
+        ):
+            continue
+        matches.append(item)
     unique = []
     seen = set()
     for item in matches:
@@ -1756,8 +1746,8 @@ def _validated_codex_capability(
         "registry": registry_capture,
         "identity": identity,
         "observed_codex_cli_version": observed_version,
-        "matched_profile_sha256": matched_profile_sha256,
-        "matched_codex_cli_version": matched_version,
+        "matched_profile_sha256": profile_sha256,
+        "matched_codex_cli_version": effective_version,
     }
 
 

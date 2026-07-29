@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-07-29 Harness: contained Codex integration upgraded to CLI 0.146.0
+
+- Codex 0.146.0 changed the wire shape: the final user message carries a CLI-assigned `id` (`msg_...`), and developer/user context items are injected ahead of the prompt. The exact preflight comparison in `lib/history_stage_proxy.py` rejected the request and every contained stage failed with `canonicalizer_rejected: Codex prompt does not match preflight`. `validate_client_request` now strips a volatile `msg_` id from the last message before the same exact comparison; any other drift, forged id, or extra key still fails closed.
+- `lib/history_stage.py`: closed a fail-open in capability matching. When `codex --version` reported an unregistered family (0.146 vs registered 0.145), the matcher retried with the static pin and admitted the drifted binary. `_detect_codex_cli_version` now returns `None` on detection failure, the static pin (`0.146.0`) applies only to that offline fallback, and a successfully detected version is the only candidate. Patch drift within a registered major.minor family remains tolerated.
+- `history/codex-adapter-capabilities-v2.json`: appended the recomputed 0.146-family capability (the profile binds the canonicalizer hash and version family, so the proxy change invalidated prior entries; they remain as inert history).
+- Tests: `tests/history_stage_proxy_smoke.py` gained 0.146 wire-shape acceptance and tamper-rejection cases, and the installed-binary loopback gates moved to the 0.146 family with a corrected version check (the old gate could not skip any codex binary). `tests/history_stage_smoke.py` gained capability-matching tests for version drift fail-closed, reported-version match, and pin fallback only on unreadable versions.
+- Validation: both smoke suites pass (46 + 20 tests), including the installed-codex loopback contract running the real 0.146.0 binary through the canonical proxy.
+
 ## 2026-07-23 Product foundation
 
 - Established the README, generated hero, focused operator guides, contribution contract, and project scope as the public product surface.

@@ -1206,6 +1206,68 @@ class HistoryStageProxySmoke(unittest.TestCase):
                 )
             )
 
+    def test_validate_client_request_accepts_codex_0146_wire_shape(self):
+        exchange = self.exchange_for_validation()
+        prompt_message = {
+            "content": [
+                {"text": self.prompt, "type": "input_text"}
+            ],
+            "role": "user",
+            "type": "message",
+        }
+        # Codex 0.146 tags wire messages with volatile ids and injects
+        # developer/user context items ahead of the prompt.
+        wire_0146 = {
+            "input": [
+                {
+                    "content": [
+                        {"text": "<permissions instructions>", "type": "input_text"}
+                    ],
+                    "id": "msg_019fadf1-c433-75b3-9a47-2471bff32cd8",
+                    "role": "developer",
+                    "type": "message",
+                },
+                {
+                    **prompt_message,
+                    "id": "msg_019fadf1-c433-75b3-9a47-2471bff32cd9",
+                },
+            ]
+        }
+        self.assertEqual(
+            exchange.validate_client_request(canonical(wire_0146)),
+            wire_0146,
+        )
+        bad_shapes = (
+            # Tampered prompt text.
+            {
+                "input": [
+                    {
+                        **prompt_message,
+                        "id": "msg_0123abcd-0000-0000-0000-000000000000",
+                        "content": [
+                            {"text": "tampered", "type": "input_text"}
+                        ],
+                    }
+                ]
+            },
+            # Id that is not a CLI-assigned msg_ identifier.
+            {
+                "input": [
+                    {**prompt_message, "id": "forged"}
+                ]
+            },
+            # Any other extra key on the prompt message.
+            {
+                "input": [
+                    {**prompt_message, "extra": "field"}
+                ]
+            },
+        )
+        for shape in bad_shapes:
+            with self.subTest(shape=shape):
+                with self.assertRaises(history_stage_proxy.ProxyError):
+                    exchange.validate_client_request(canonical(shape))
+
     def test_adapter_renders_exact_declared_artifacts_for_every_stage(self):
         for stage in ("generate", "history-compare", "review", "meta"):
             with self.subTest(stage=stage):
@@ -1320,20 +1382,20 @@ class HistoryStageProxySmoke(unittest.TestCase):
                 },
             )
 
-    def test_installed_codex_0145_loopback_contract(self):
+    def test_installed_codex_0146_loopback_contract(self):
         if sys.platform != "darwin":
             self.skipTest("Codex loopback Seatbelt integration")
         codex = shutil.which("codex")
         if codex is None:
-            self.skipTest("Codex 0.145.0 is unavailable")
+            self.skipTest("Codex 0.146.0 is unavailable")
         version = subprocess.run(
             [codex, "--version"],
             check=True,
             capture_output=True,
             text=True,
         ).stdout.strip()
-        if "0.145" not in version and "codex" not in version.lower():
-            self.skipTest(f"Codex unavailable or unexpected version: {version}")
+        if "0.146" not in version:
+            self.skipTest(f"Codex 0.146.x is unavailable: {version}")
         root = pathlib.Path(
             tempfile.mkdtemp(
                 prefix="history-codex-loopback-",
@@ -1499,15 +1561,15 @@ class HistoryStageProxySmoke(unittest.TestCase):
             self.skipTest("Codex run-stage Seatbelt integration")
         codex = shutil.which("codex")
         if codex is None:
-            self.skipTest("Codex 0.145.0 is unavailable")
+            self.skipTest("Codex 0.146.0 is unavailable")
         version = subprocess.run(
             [codex, "--version"],
             check=True,
             capture_output=True,
             text=True,
         ).stdout.strip()
-        if "0.145" not in version and "codex" not in version.lower():
-            self.skipTest(f"Codex unavailable or unexpected version: {version}")
+        if "0.146" not in version:
+            self.skipTest(f"Codex 0.146.x is unavailable: {version}")
         self.sentinels = [ROOT / "ledger.tsv", ROOT / ".git"]
         fixture = StageFixture(self, "meta")
         fixture.manifest["registered_environment"] = {}
@@ -1619,15 +1681,15 @@ class HistoryStageProxySmoke(unittest.TestCase):
             self.skipTest("Codex run-stage Seatbelt integration")
         codex = shutil.which("codex")
         if codex is None:
-            self.skipTest("Codex 0.145.0 is unavailable")
+            self.skipTest("Codex 0.146.0 is unavailable")
         version = subprocess.run(
             [codex, "--version"],
             check=True,
             capture_output=True,
             text=True,
         ).stdout.strip()
-        if "0.145" not in version and "codex" not in version.lower():
-            self.skipTest(f"Codex unavailable or unexpected version: {version}")
+        if "0.146" not in version:
+            self.skipTest(f"Codex 0.146.x is unavailable: {version}")
         self.sentinels = [ROOT / "ledger.tsv", ROOT / ".git"]
         fixture = StageFixture(self, "meta")
         fixture.manifest["registered_environment"] = {}
