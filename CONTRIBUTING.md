@@ -84,12 +84,24 @@ python3 lib/history_stage.py run \
 ```
 
 The `xhigh` command is the registered target configuration, not an online
-availability check. It runs only when the local platform, Codex `0.145.0`
-binary hash, model, reasoning setting, adapter, canonicalizer, response
+availability check. It runs only when the local platform, Codex `0.146.x`
+CLI version family, model, reasoning setting, adapter, canonicalizer, response
 schemas, policy bounds, owner-only authentication file, and Darwin
 `sandbox-exec` profile match the audited capability. Any drift fails before
 backend launch. Linux fixture containment requires `bwrap`; Codex fails closed
 there until a loopback-only network namespace is registered.
+
+Upgrading the contained Codex CLI: adapt
+`lib/history_stage_proxy.py` to the new wire shape (normalize volatile
+CLI-assigned fields such as message `id`s rather than loosening the exact
+preflight comparison), bump `CODEX_CLI_VERSION` in `lib/history_stage.py`,
+then re-register the capability in
+`history/codex-adapter-capabilities-v2.json` by recomputing
+`_codex_profile_bytes` per stage identity with the new version family and
+appending the entry. Finish by running the installed-binary loopback tests
+in `tests/history_stage_proxy_smoke.py`. Version detection that succeeds
+never falls back to the static pin; an unregistered minor family fails
+closed.
 
 The command is a closed JSON argv array. The host captures and hashes the
 registered role, policy, mounted inputs, executable, fixed argv, and canonical

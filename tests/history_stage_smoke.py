@@ -1076,6 +1076,131 @@ class HistoryStageSmoke(unittest.TestCase):
         self.assertNotIn(b"binary_sha256", p0)
         self.assertIn(b"codex_cli_version_family", p0)
 
+    def _codex_capability_fixture(self, registered_version, reported_version):
+        root = pathlib.Path(
+            tempfile.mkdtemp(prefix="codex-capability-")
+        )
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "history").mkdir()
+        policy = {
+            "max_output_tokens": 2048,
+            "model_context_limit": 32768,
+            "safety_margin": 1024,
+        }
+        identity = {
+            "model": "gpt-5.3-codex-spark",
+            "reasoning_setting": "model_reasoning_effort=xhigh",
+        }
+        adapter = {
+            "executable": {"sha256": "a" * 64},
+            "canonicalizer": {"sha256": "b" * 64},
+        }
+        profile_sha256 = hashlib.sha256(
+            history_stage._codex_profile_bytes(
+                "0" * 64,
+                identity,
+                policy,
+                adapter,
+                codex_cli_version=registered_version,
+            )
+        ).hexdigest()
+        capability_id = hashlib.sha256(
+            b"history-codex-capability-v3\0"
+            + profile_sha256.encode("ascii")
+        ).hexdigest()
+        registry = {
+            "capabilities": [
+                {
+                    "capability_id": capability_id,
+                    "codex_cli_version": registered_version,
+                    "profile_sha256": profile_sha256,
+                }
+            ],
+            "schema_version": 3,
+        }
+        (root / "history" / "codex-adapter-capabilities-v2.json").write_bytes(
+            history_stage._canonical_bytes(registry)
+        )
+        codex = root / "codex"
+        if reported_version is None:
+            codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        else:
+            codex.write_text(
+                f'#!/bin/sh\necho "codex-cli {reported_version}"\n',
+                encoding="utf-8",
+            )
+        codex.chmod(0o755)
+        captured = {"path": str(codex), "sha256": "0" * 64}
+        return root, captured, identity, policy, adapter
+
+    def test_codex_capability_fails_closed_on_version_drift(self):
+        (
+            root,
+            captured,
+            identity,
+            policy,
+            adapter,
+        ) = self._codex_capability_fixture("0.145.0", "0.146.0")
+        with mock.patch.object(history_stage, "ROOT", root):
+            with self.assertRaises(history_stage.StageError) as ctx:
+                history_stage._validated_codex_capability(
+                    captured, identity, policy, adapter
+                )
+        self.assertIn("capability is unavailable", str(ctx.exception))
+
+    def test_codex_capability_matches_reported_version(self):
+        (
+            root,
+            captured,
+            identity,
+            policy,
+            adapter,
+        ) = self._codex_capability_fixture("0.146.0", "0.146.1")
+        with mock.patch.object(history_stage, "ROOT", root):
+            matched = history_stage._validated_codex_capability(
+                captured, identity, policy, adapter
+            )
+        self.assertEqual(
+            matched["observed_codex_cli_version"], "0.146.1"
+        )
+        self.assertEqual(matched["codex_cli_version"], "0.146.0")
+
+    def test_codex_capability_pin_fallback_only_when_version_unreadable(self):
+        # Detection failure falls back to the static pin; the registry
+        # entry for the pinned family then matches.
+        (
+            root,
+            captured,
+            identity,
+            policy,
+            adapter,
+        ) = self._codex_capability_fixture(
+            history_stage.CODEX_CLI_VERSION, None
+        )
+        with mock.patch.object(history_stage, "ROOT", root):
+            matched = history_stage._validated_codex_capability(
+                captured, identity, policy, adapter
+            )
+        self.assertIsNone(matched["observed_codex_cli_version"])
+        self.assertEqual(
+            matched["matched_codex_cli_version"],
+            history_stage.CODEX_CLI_VERSION,
+        )
+        # A registry pinned to a different family must not match through
+        # the fallback when detection succeeded.
+        (
+            root,
+            captured,
+            identity,
+            policy,
+            adapter,
+        ) = self._codex_capability_fixture("0.145.0", "0.145.9")
+        with mock.patch.object(history_stage, "ROOT", root):
+            matched = history_stage._validated_codex_capability(
+                captured, identity, policy, adapter
+            )
+        self.assertEqual(matched["codex_cli_version"], "0.145.0")
+
     def test_codex_command_grammar_allows_reasoning_without_tool_widening(self):
         prefix = [
             "/absolute/codex",

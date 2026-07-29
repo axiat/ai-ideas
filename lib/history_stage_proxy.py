@@ -5,6 +5,7 @@ import hashlib
 import http.client
 import http.server
 import json
+import re
 import socket
 import socketserver
 import threading
@@ -569,6 +570,26 @@ def _synthesize_response(message, completed_response):
     )
 
 
+_CLIENT_MESSAGE_ID = re.compile(r"^msg_[A-Za-z0-9-]+$")
+
+
+def _normalize_client_message(message):
+    """Strip volatile CLI-assigned fields from a client message item.
+
+    Codex 0.146 tags each wire message with a server-style ``id``
+    (``msg_...``). The field carries no prompt semantics, so it is
+    removed before the exact preflight comparison; any other drift
+    still fails the comparison.
+    """
+    if not isinstance(message, dict):
+        return message
+    normalized = dict(message)
+    message_id = normalized.get("id")
+    if isinstance(message_id, str) and _CLIENT_MESSAGE_ID.match(message_id):
+        del normalized["id"]
+    return normalized
+
+
 class CanonicalExchange:
     """Validate one Codex request and one bounded loopback response."""
 
@@ -661,7 +682,7 @@ class CanonicalExchange:
         messages = value.get("input")
         if not isinstance(messages, list) or not messages:
             raise ProxyError("Codex request input is invalid")
-        if messages[-1] != {
+        if _normalize_client_message(messages[-1]) != {
             "content": [
                 {"text": self.prompt, "type": "input_text"}
             ],
