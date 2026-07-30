@@ -1,6 +1,6 @@
 # Research-Direction Hard Constraint Design
 
-Status: draft
+Status: approved on 2026-07-31
 
 ## Goal
 
