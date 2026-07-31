@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "direction_id": "dynamic-spatial-memory-vla-v1",
+  "statement": "Research persistent, queryable, dynamically correctable 3D spatial memory for 2D-vision VLA foundation models controlling humanoid robots in long-horizon tasks that combine navigation and manipulation.",
+  "all_candidates_must_match": true,
+  "allowed_axes": [
+    {
+      "id": "memory-representation-update",
+      "description": "Represent, persist, invalidate, protect, and repair embodied 3D memory under scene changes."
+    },
+    {
+      "id": "memory-to-vla-injection",
+      "description": "Inject 3D memory into a frozen GR00T backbone through spatial tokens, target-pose embeddings, rendered visual prompts, or a lightweight adapter."
+    },
+    {
+      "id": "disturbance-recovery-evaluation",
+      "description": "Measure attributable gains over a 2D VLA baseline in long-horizon disturbance and recovery tasks."
+    }
+  ],
+  "target_failures": [
+    {
+      "id": "out-of-view-target",
+      "description": "The task target is outside the current camera view."
+    },
+    {
+      "id": "dynamic-scene-change",
+      "description": "Objects move or people alter the scene after memory formation."
+    },
+    {
+      "id": "task-interruption-recovery",
+      "description": "Execution is interrupted and must resume from persistent spatial state."
+    }
+  ],
+  "fixed_constraints": [
+    "Use GR00T N1.6 as the VLA skill foundation and preserve its pretrained backbone.",
+    "Remain compatible with the EngineAI PM01-EDU or T800 platform and the existing layered controller.",
+    "Treat locomotion and whole-body control as execution infrastructure.",
+    "Attribute the measured task effect to the 3D-memory contribution."
+  ],
+  "excluded_scopes": [
+    "Generic World Model, VLA, or robotics research without dynamically correctable 3D memory.",
+    "Pure locomotion, gait, or whole-body-control research.",
+    "Generic SLAM, mapping, or scene graphs without a measured VLA decision or task-execution effect.",
+    "Static-only or single-frame perception.",
+    "Training a VLA from scratch.",
+    "Large-scale retraining or architectural replacement of the GR00T backbone.",
+    "Reproducing a closed OminiA-style end-to-end model.",
+    "System integration without a research question and falsifiable experiment."
+  ]
+}

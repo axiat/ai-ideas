@@ -23,6 +23,7 @@ python3 tests/history_projection_smoke.py
 python3 tests/history_budget_smoke.py
 python3 tests/history_retrieval_smoke.py
 python3 tests/history_retrieval_adversarial.py
+python3 tests/direction_contract_smoke.py
 python3 tests/history_runtime_smoke.py
 bash tests/history_runtime_smoke.sh
 python3 tests/verify_product_contract.py runtime
