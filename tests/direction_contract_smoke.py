@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -29,6 +30,20 @@ class DirectionContractSmoke(unittest.TestCase):
         direction.write_bytes(direction_contract.canonical_bytes(self.contract))
         os.symlink("direction.json", self.repo / "direction-link.json")
         os.link(direction, self.repo / "direction-hardlink.json")
+        self.dot_direction = self.repo / "dot-direction.json"
+        self.dot_direction.write_bytes(
+            direction_contract.canonical_bytes(self.contract)
+        )
+        self.nested = self.repo / "nested"
+        self.nested.mkdir()
+        (self.nested / "direction.json").write_bytes(
+            direction_contract.canonical_bytes(self.contract)
+        )
+        self.outside = self.repo / "outside"
+        self.outside.mkdir()
+        (self.outside / "direction.json").write_bytes(
+            direction_contract.canonical_bytes(self.contract)
+        )
 
     def changed(self, **changes):
         value = copy.deepcopy(self.contract)
@@ -115,6 +130,32 @@ class DirectionContractSmoke(unittest.TestCase):
             with self.subTest(source=source):
                 with self.assertRaises(direction_contract.DirectionContractError):
                     direction_contract.load_contract(source, self.repo)
+
+    def test_loader_rejects_explicit_dot_components_before_normalizing(self):
+        for source in ("./dot-direction.json", "nested/./direction.json"):
+            with self.subTest(source=source):
+                with self.assertRaises(direction_contract.DirectionContractError):
+                    direction_contract.load_contract(source, self.repo)
+
+    def test_loader_rejects_intermediate_symlink_replacement_during_open(self):
+        original_open = direction_contract.os.open
+        replaced = False
+
+        def race_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal replaced
+            if path == "nested" and dir_fd is not None and not replaced:
+                os.unlink(self.nested / "direction.json")
+                os.rmdir(self.nested)
+                os.symlink(str(self.outside), str(self.nested))
+                replaced = True
+            if dir_fd is None:
+                return original_open(path, flags, mode)
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch.object(direction_contract.os, "open", side_effect=race_open):
+            with self.assertRaises(direction_contract.DirectionContractError):
+                direction_contract.load_contract("nested/direction.json", self.repo)
+        self.assertTrue(replaced)
 
     def test_snapshot_checks_both_destinations_before_writing(self):
         os.unlink(self.repo / "direction-hardlink.json")

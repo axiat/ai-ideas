@@ -160,52 +160,36 @@ def parse_contract_bytes(raw):
 def _relative_components(source):
     if not isinstance(source, str) or not source:
         _error("contract source must be a nonempty relative path")
+    raw_components = source.split(os.sep)
+    if any(part in ("", ".", "..") for part in raw_components):
+        _error("contract source has an unsafe path component")
     path = pathlib.PurePath(source)
     if path.is_absolute() or not path.parts:
         _error("contract source must be a relative path")
-    if any(part in ("", ".", "..") for part in path.parts):
-        _error("contract source has an unsafe path component")
     return path.parts
 
 
 def _open_contract(source, repo_root):
     components = _relative_components(source)
     root = pathlib.Path(repo_root)
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        _error("safe directory descriptors are unavailable")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW
+    directory_fd = None
+    descriptor = None
     try:
-        root_stat = os.stat(str(root), follow_symlinks=False)
-    except OSError as exc:
-        raise DirectionContractError("repository root is unavailable") from exc
-    if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
-        _error("repository root must be a real directory")
-
-    current = root
-    for component in components[:-1]:
-        current = current / component
-        try:
-            entry = os.lstat(str(current))
-        except OSError as exc:
-            raise DirectionContractError("contract parent is unavailable") from exc
-        if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
-            _error("contract parent must be a real directory")
-
-    final_path = current / components[-1]
-    try:
-        entry = os.lstat(str(final_path))
-    except OSError as exc:
-        raise DirectionContractError("contract source is unavailable") from exc
-    if stat.S_ISLNK(entry.st_mode) or not stat.S_ISREG(entry.st_mode):
-        _error("contract source must be a regular file")
-    if entry.st_nlink != 1 or entry.st_size > MAX_CONTRACT_BYTES:
-        _error("contract source has an invalid link count or size")
-
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        descriptor = os.open(str(final_path), flags)
-    except OSError as exc:
-        raise DirectionContractError("contract source could not be opened") from exc
-    try:
+        directory_fd = os.open(str(root), directory_flags)
+        for component in components[:-1]:
+            next_directory_fd = os.open(
+                component, directory_flags, dir_fd=directory_fd
+            )
+            previous_directory_fd = directory_fd
+            directory_fd = next_directory_fd
+            os.close(previous_directory_fd)
+        descriptor = os.open(
+            components[-1], file_flags, dir_fd=directory_fd
+        )
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
             _error("opened contract source is invalid")
@@ -224,8 +208,13 @@ def _open_contract(source, repo_root):
         if len(raw) > MAX_CONTRACT_BYTES or after.st_size != opened.st_size:
             _error("contract source changed during read")
         return raw
+    except OSError as exc:
+        raise DirectionContractError("contract source could not be opened") from exc
     finally:
-        os.close(descriptor)
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory_fd is not None:
+            os.close(directory_fd)
 
 
 def load_contract(source, repo_root):
