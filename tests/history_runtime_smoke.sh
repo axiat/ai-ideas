@@ -803,7 +803,10 @@ for archive, root in zip(archives, (reference, observed)):
         reason="decision",
     )
     batch = json.loads((root / "history/batch/batch.json").read_text())
-    if batch.get("schema_version") != 1:
+    if (
+        batch.get("schema_version") != 2
+        or batch.get("direction") is not None
+    ):
         raise SystemExit("invalid archived frozen batch")
     batches.append(batch)
     authority = json.loads(
