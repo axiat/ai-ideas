@@ -42,6 +42,39 @@ Startup imports an operator TSV baseline only when the durable bootstrap marker 
 
 A prescreen direct hit becomes `reject/high/novelty-dead` immediately. Internal history retrieval never creates an automatic verdict. In shipped `shadow` mode, history receipts are observational for a fixed generated batch; the normal external research/review protocol remains the sole authority for ledger verdicts. In calibrated `enforcement` mode, complete receipts gate permanent conclusions and nonpermanent statuses produce `history_abstain` without a ledger row.
 
+## Directed Runs
+
+`RESEARCH_DIRECTION_FILE` selects a repository-relative closed contract. The
+host canonicalizes it before any agent invocation and preserves the canonical
+snapshot for the process lifetime.
+
+```text
+canonical direction snapshot
+-> contained generation with optional direction_constraint.json
+-> Direction Axis, Target Failure, Direction Evidence validation
+-> schema-v2 frozen batch with direction identity
+-> selector advisory ranking and direction.tsv classification
+-> all in-scope gate
+-> history retrieval, prescreen, prior-work research, review, commit
+```
+
+Generation receives optional `direction_constraint.json`; the disposable
+selector mirror receives the same bytes at
+`tmp/round/history/direction-constraint.json`. Generation supplies exact
+structural fields. The selector supplies advisory `select.tsv` plus ordered
+`direction.tsv` rows: `in-scope` or `out-of-scope` and one evidence sentence
+per candidate. This classifier is an independent model judgment under
+fail-closed orchestration, not a proof of natural-language meaning.
+
+Missing or malformed output, selector failure, or one `out-of-scope` result
+archives the entire batch as `rejected:direction` before history retrieval and
+research. The rejection consumes no backend-failure budget and takes the short no-hit retry.
+A schema-v2 batch binds `direction: null` or the exact canonical identity;
+resume compares it through `expected-direction`. Direction mode sets
+`theme_min_low=0`, while all other quality gates remain active. Undirected
+runs retain broad generation, selector fallback, theme quota, schema-v1 batch
+compatibility, and existing resume behavior.
+
 ## Data Flow and Ownership
 
 | Surface | Writer | Persistence |

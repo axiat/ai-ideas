@@ -45,7 +45,8 @@ RUNTIME_FILES = [
     "lib/history_cli.py", "lib/history_eval.py", "lib/history_projection.py",
     "lib/history_retrieval.py", "lib/history_runtime.py",
     "lib/history_stage.py", "lib/history_store.py", "lib/history_witness.py",
-    "PROGRAM.md", "hunt.md", "trigger.md",
+    "README.md", "PROGRAM.md", "hunt.md", "trigger.md",
+    "docs/getting-started.md", "docs/architecture.md",
     "research_context.md", "brainstorming_policy.md", "rubric.md",
     "history/retrieval-policy-v1.json",
     "history/review-contract-v1.md",
@@ -554,6 +555,104 @@ def verify_runtime():
     policy = (ROOT / "history/retrieval-policy-v1.json").read_text()
     if '"mode": "shadow"' not in policy and '"mode":"shadow"' not in policy:
         raise AssertionError("shipped retrieval policy must remain shadow")
+    assert_research_direction_product_contract()
+
+
+def assert_research_direction_product_contract():
+    """Bind the directed-run operator contract across its public surfaces."""
+    required = {
+        "README.md": [
+            "RESEARCH_DIRECTION_FILE='directions/dynamic-spatial-memory-vla-v1.json'",
+            "caffeinate -is ./hunt.sh",
+            "canonicalized before any agent invocation",
+            "Direction Axis",
+            "Target Failure",
+            "Direction Evidence",
+            "independent selector classification",
+            "rejects the whole batch before history retrieval and research",
+            "same canonical direction identity",
+            "broad generation",
+            "not a proof of natural-language meaning",
+        ],
+        "docs/getting-started.md": [
+            "RESEARCH_DIRECTION_FILE='directions/dynamic-spatial-memory-vla-v1.json'",
+            "caffeinate -is ./hunt.sh",
+            "canonicalized before any agent invocation",
+            "independent selector classification",
+            "rejects the whole batch before history retrieval and research",
+            "same canonical direction identity",
+            "broad generation",
+            "not a proof of natural-language meaning",
+        ],
+        "PROGRAM.md": [
+            "direction_constraint.json",
+            "direction-constraint.json",
+            "Direction Axis",
+            "Target Failure",
+            "Direction Evidence",
+            "direction.tsv",
+            "in-scope",
+            "out-of-scope",
+            "schema-v2",
+            "expected-direction",
+            "rejected:direction",
+            "short no-hit retry",
+            "theme_min_low=0",
+            "Form, falsification, evidence, novelty, review, and",
+        ],
+        "docs/architecture.md": [
+            "direction_constraint.json",
+            "direction-constraint.json",
+            "Direction Axis",
+            "Target Failure",
+            "Direction Evidence",
+            "direction.tsv",
+            "in-scope",
+            "out-of-scope",
+            "schema-v2",
+            "expected-direction",
+            "rejected:direction",
+            "short no-hit retry",
+            "theme_min_low=0",
+            "while all other quality gates remain active",
+        ],
+        "hunt.sh": [
+            "RESEARCH_DIRECTION_FILE",
+            "direction_constraint.json",
+            "direction.tsv",
+            "validate_direction_verdicts",
+            "rejected:direction",
+            "random_no_hit_sleep_min",
+            "theme_min_low=0",
+            "--expected-direction",
+        ],
+        "roles/generate.md": [
+            "direction_constraint.json",
+            "Direction Axis",
+            "Target Failure",
+            "Direction Evidence",
+        ],
+        "roles/select.md": [
+            "direction-constraint.json",
+            "direction.tsv",
+            "in-scope",
+            "out-of-scope",
+            "rejects the whole batch",
+        ],
+    }
+    direction = ROOT / "directions/dynamic-spatial-memory-vla-v1.json"
+    if not direction.is_file():
+        raise AssertionError("missing initial research-direction contract")
+    direction_text = direction.read_text()
+    if '"direction_id": "dynamic-spatial-memory-vla-v1"' not in direction_text:
+        raise AssertionError("initial research-direction contract identity changed")
+    for name, needles in required.items():
+        text = (ROOT / name).read_text()
+        for needle in needles:
+            if needle not in text:
+                raise AssertionError(
+                    f"missing directed-run contract {needle!r} in {name}"
+                )
 
 def ledger_rows():
     with (ROOT / "ledger.tsv").open(newline="") as handle:

@@ -47,6 +47,13 @@ protocol. Only a human may modify this file or the immutable inputs.
    report placement, and `publish.sh`.
 10. During the loop, do not request human confirmation. Only the entry point
     defines the stopping condition; never lower the bar or stop early.
+11. `RESEARCH_DIRECTION_FILE`, when set, names a repository-relative closed
+    direction contract. The host canonicalizes the contract before any agent
+    invocation. Every raw candidate must provide exact `Direction Axis`,
+    `Target Failure`, and `Direction Evidence` fields. An independent selector
+    classifies every candidate; malformed coverage, selector failure, or one
+    `out-of-scope` verdict rejects the complete batch before history retrieval,
+    prescreen, prior-work research, review, or ledger mutation.
 
 ## Startup
 
@@ -65,6 +72,10 @@ protocol. Only a human may modify this file or the immutable inputs.
 4. Recover and validate the published search generation.
 5. Build `generation-brief.json` from bounded theme counts, structured failure
    counts, the selected divergence lens, and at most one eligible parent.
+6. Canonicalize `RESEARCH_DIRECTION_FILE` when present and write its startup
+   identity before generation or resume selection. Resume supplies that
+   identity through `expected-direction`; directed and undirected identities
+   must match exactly.
 
 ## Round protocol
 
@@ -86,6 +97,37 @@ brief
 -> decision archive
 -> report and publication
 ```
+
+### Directed candidate gate
+
+```text
+canonical direction snapshot
+-> contained generation with optional direction_constraint.json
+-> exact candidate-field validation
+-> immutable schema-v2 batch with direction identity
+-> selector advisory ranking plus direction.tsv classification
+-> all in-scope gate
+-> history retrieval, prescreen, research, review, commit
+```
+
+Generation receives the canonical `direction_constraint.json`; the selector
+mirror receives the same bytes at
+`tmp/round/history/direction-constraint.json`. It writes advisory `select.tsv`
+and ordered `direction.tsv` rows with `in-scope` or `out-of-scope` plus bounded
+evidence. The classifier is an independent model judgment enforced by a
+fail-closed host; it is not a proof of natural-language meaning.
+
+One absent, malformed, reordered, or `out-of-scope` direction row archives the
+batch as `rejected:direction` before retrieval and research. Rejection leaves
+the backend-failure budget unchanged and uses the short no-hit retry. The
+batch manifest uses schema-v2 with `direction: null` or the exact canonical
+identity. Resume validates that identity through `expected-direction`.
+
+Direction mode sets `theme_min_low=0` because low-inventory balancing can force
+off-direction candidates. Form, falsification, evidence, novelty, review, and
+acceptance rules remain active. An undirected invocation keeps broad generation,
+existing selector fallback, theme quota, frozen-batch compatibility, and resume
+behavior.
 
 ### Candidate freeze and observation
 

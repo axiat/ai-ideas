@@ -33,6 +33,17 @@ cd ai-ideas
 
 `./hunt.sh` is an active run, not a dry run. It invokes model and search backends, commits canonical history to SQLite, projects `ledger.tsv`, and may push a daily branch and open a pull request after a qualifying report. Shipped history mode is `shadow`: internal retrieval is observational for a fixed generated batch, and external research/review remain the sole ledger authority. Operational defaults and recovery procedures are in [`docs/getting-started.md`](docs/getting-started.md).
 
+## Directed Run
+
+```bash
+RESEARCH_DIRECTION_FILE='directions/dynamic-spatial-memory-vla-v1.json' \
+  caffeinate -is ./hunt.sh
+```
+
+The repository-relative contract is canonicalized before any agent invocation. Every raw candidate must carry exact `Direction Axis`, `Target Failure`, and `Direction Evidence` fields and pass independent selector classification. A missing, malformed, or `out-of-scope` result rejects the whole batch before history retrieval and research. Resume requires the same canonical direction identity. With `RESEARCH_DIRECTION_FILE` unset, broad generation retains its existing contract.
+
+The semantic classifier is an independent model judgment wrapped by fail-closed orchestration; it is not a proof of natural-language meaning.
+
 ## Artifacts
 
 The durable accounting surface is an eight-column TSV:
