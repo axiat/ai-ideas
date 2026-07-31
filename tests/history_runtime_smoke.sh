@@ -1218,6 +1218,10 @@ run_direction_hunt() {
     ROUND_LIMIT="$round_limit" \
     RUNS_DIR="$runs" \
     FAKE_AGENT_MODE="$mode" \
+    FAKE_DIRECTION_CONTRACT_TARGET=\
+"$repository/tmp/round/history/direction-constraint.json" \
+    FAKE_DIRECTION_CONTRACT_REPLACEMENT=\
+"$repository/directions/test-direction-drift.json" \
     bash ./hunt.sh
   ) > "$case_root/$label.log" 2>&1
 }
@@ -1344,6 +1348,69 @@ do
     exit 1
   fi
 done
+
+gate_drift_repo="$case_root/direction-contract-drift"
+gate_drift_runs="$case_root/direction-contract-drift-runs"
+prepare_direction_repo "$gate_drift_repo"
+python3 - \
+  "$gate_drift_repo/directions/dynamic-spatial-memory-vla-v1.json" \
+  "$gate_drift_repo/directions/test-direction-drift.json" <<'PY'
+import json
+import pathlib
+import sys
+
+source, destination = map(pathlib.Path, sys.argv[1:])
+value = json.loads(source.read_text(encoding="utf-8"))
+value["statement"] += " Deterministic gate drift."
+destination.write_text(
+    json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+if ! run_direction_hunt \
+  "$gate_drift_repo" \
+  direction-contract-drift \
+  direction-contract-drift \
+  directions/dynamic-spatial-memory-vla-v1.json \
+  1 1 0 2 \
+  "$gate_drift_runs"; then
+  printf 'history_runtime_smoke: direction gate drift did not reject cleanly\n' >&2
+  cat "$case_root/direction-contract-drift.log" >&2
+  exit 1
+fi
+set -- "$gate_drift_runs"/*
+[ "$#" -eq 1 ] && [ -d "$1/round" ] || {
+  printf 'history_runtime_smoke: direction gate drift was not archived once\n' >&2
+  exit 1
+}
+gate_drift_archive=$1
+assert_rejection_archive "$gate_drift_archive"
+for forbidden in \
+  history/direction-gate.json \
+  history/observations \
+  prescreen.md \
+  priorwork.md \
+  history/observations/comparison-index.json \
+  history/review-attempts
+do
+  test ! -e "$gate_drift_archive/round/$forbidden" || {
+    printf 'history_runtime_smoke: direction gate drift reached %s\n' \
+      "$forbidden" >&2
+    exit 1
+  }
+done
+if grep -Eq '^(prescreen|research|review)	' \
+  "$gate_drift_archive/round/stages.tsv"; then
+  printf 'history_runtime_smoke: direction gate drift invoked downstream stage\n' \
+    >&2
+  exit 1
+fi
 
 undirected_repo="$case_root/undirected-selector-failure"
 undirected_runs="$case_root/undirected-selector-failure-runs"

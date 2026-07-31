@@ -327,12 +327,30 @@ history_freeze_batch() {
     --markdown "$2"
     --output-root "$3"
     --brief "$4"
+    --expected-direction "$6"
   )
   if [ -n "${5:-}" ]; then
     freeze_args+=(--direction "$5")
   fi
   python3 lib/history_runtime.py freeze-batch \
     "${freeze_args[@]}"
+}
+
+history_publish_round_direction() {
+  local mode=$1
+  local -a publish_args=(
+    publish-round
+    --startup-identity "$startup_root/direction-identity.json"
+    --output-identity "$RD/history/direction-identity.json"
+  )
+  if [ "$direction_active" -eq 1 ]; then
+    publish_args+=(
+      --startup-contract "$startup_root/direction-constraint.json"
+      --output-contract "$RD/history/direction-constraint.json"
+    )
+  fi
+  [ "$mode" = fresh ] || publish_args+=(--resume)
+  python3 lib/direction_contract.py "${publish_args[@]}"
 }
 
 history_observe_round() {
@@ -434,9 +452,10 @@ history_receipts_ok() {
 }
 
 validate_direction_verdicts() {
-  python3 lib/direction_contract.py validate-verdicts \
+  python3 lib/history_runtime.py validate-direction-gate \
     --contract "$RD/history/direction-constraint.json" \
-    --ideas "$RD/history/batch/sources/ideas.tsv" \
+    --expected-direction "$startup_root/direction-identity.json" \
+    --batch "$RD/history/batch/batch.json" \
     --verdicts "$RD/direction.tsv" \
     --output "$RD/history/direction-gate.json"
 }
@@ -527,10 +546,19 @@ prepare_external_mirror() {
       cp brainstorming_policy.md "$mirror/brainstorming_policy.md"
       cp "$RD/history/batch/sources/ideas.md" \
         "$mirror/tmp/round/ideas.md"
-      if [ -f "$RD/history/direction-constraint.json" ]; then
+      if [ "$direction_active" -eq 1 ]; then
         mkdir -p "$mirror/tmp/round/history"
-        cp "$RD/history/direction-constraint.json" \
-          "$mirror/tmp/round/history/direction-constraint.json"
+        if ! python3 lib/history_runtime.py copy-direction \
+          --contract "$RD/history/direction-constraint.json" \
+          --round-identity "$RD/history/direction-identity.json" \
+          --expected-direction "$startup_root/direction-identity.json" \
+          --batch "$RD/history/batch/batch.json" \
+          --output \
+            "$mirror/tmp/round/history/direction-constraint.json" \
+          > "$RD/history/copy-direction.json"; then
+          log "Direction snapshot changed before selector copy"
+          return 2
+        fi
       fi
       ;;
     prescreen)
@@ -1168,11 +1196,15 @@ while :; do
       run_id="$(date +%Y%m%dT%H%M%S)-p$$-r${round}-$RANDOM"
     done
     printf '%s\n' "$run_id" > "$RD/history/run-id"
-    cp "$startup_root/direction-identity.json" \
-      "$RD/history/direction-identity.json"
-    if [ "$direction_active" -eq 1 ]; then
-      cp "$startup_root/direction-constraint.json" \
-        "$RD/history/direction-constraint.json"
+    if [ ! -e "$RD/history/direction-identity.json" ] \
+       && [ "$direction_active" -eq 0 ]; then
+      if ! history_publish_round_direction fresh; then
+        log "Legacy undirected round identity publication failed"
+        exit 2
+      fi
+    elif ! history_publish_round_direction resume; then
+      log "Resumed round direction snapshot changed"
+      exit 2
     fi
     mkdir -p "$RD/history/resume-attempts"
     prior_archive=
@@ -1211,11 +1243,9 @@ while :; do
     : > "$RD/stages.tsv"
     run_id="$(date +%Y%m%dT%H%M%S)-p$$-r${round}"
     printf '%s\n' "$run_id" > "$RD/history/run-id"
-    cp "$startup_root/direction-identity.json" \
-      "$RD/history/direction-identity.json"
-    if [ "$direction_active" -eq 1 ]; then
-      cp "$startup_root/direction-constraint.json" \
-        "$RD/history/direction-constraint.json"
+    if ! history_publish_round_direction fresh; then
+      log "Round direction snapshot publication failed"
+      exit 2
     fi
     lens=$(pick_lens)
     if ! history_build_brief "$RD/history/generation-brief.json" "$lens" \
@@ -1278,6 +1308,7 @@ while :; do
       "$RD/history/batch" \
       "$RD/history/generation-brief.json" \
       "$round_direction" \
+      "$startup_root/direction-identity.json" \
       > "$RD/history/freeze-batch.json"; then
       fail_round freeze-batch || exit 1
       continue

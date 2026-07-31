@@ -52,7 +52,7 @@ def _has_control(value):
 
 
 def _validate_text(value, label, maximum=MAX_TEXT_BYTES):
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value.strip():
         _error("%s must be a nonempty string" % label)
     if _has_control(value):
         _error("%s contains a control character" % label)
@@ -222,53 +222,218 @@ def load_contract(source, repo_root):
     return parse_contract_bytes(_open_contract(source, repo_root))
 
 
-def _check_new_snapshot_destination(destination):
-    path = pathlib.Path(destination)
-    parent = path.parent
+def _path_parent_components(path, label):
     try:
-        parent_stat = os.stat(str(parent), follow_symlinks=False)
+        raw = os.fspath(path)
+    except TypeError as exc:
+        raise DirectionContractError("%s is invalid" % label) from exc
+    if not isinstance(raw, str) or not raw or "\0" in raw:
+        _error("%s is invalid" % label)
+    if sys.platform == "darwin":
+        for alias in ("/var", "/tmp", "/etc"):
+            if raw == alias or raw.startswith(alias + os.sep):
+                raw = "/private" + raw
+                break
+    if raw.endswith(os.sep):
+        _error("%s must name a file" % label)
+    components = []
+    for component in raw.split(os.sep):
+        if component in ("", "."):
+            continue
+        if component == "..":
+            _error("%s has an unsafe path component" % label)
+        components.append(component)
+    if not components:
+        _error("%s must name a file" % label)
+    return os.path.isabs(raw), components[:-1], components[-1]
+
+
+def _open_path_parent(path, label):
+    absolute, parents, name = _path_parent_components(path, label)
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        _error("safe directory descriptors are unavailable")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_fd = None
+    try:
+        directory_fd = os.open(os.sep if absolute else ".", flags)
+        for component in parents:
+            next_fd = os.open(
+                component,
+                flags,
+                dir_fd=directory_fd,
+            )
+            previous_fd = directory_fd
+            directory_fd = next_fd
+            os.close(previous_fd)
+        return directory_fd, name
     except OSError as exc:
-        raise DirectionContractError("snapshot parent is unavailable") from exc
-    if not stat.S_ISDIR(parent_stat.st_mode) or stat.S_ISLNK(parent_stat.st_mode):
-        _error("snapshot parent must be a real directory")
+        if directory_fd is not None:
+            os.close(directory_fd)
+        raise DirectionContractError("%s parent is unavailable" % label) from exc
+
+
+def _read_regular_path(path, label, maximum=MAX_CONTRACT_BYTES):
+    parent_fd, name = _open_path_parent(path, label)
+    descriptor = None
     try:
-        os.lstat(str(path))
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > maximum
+        ):
+            _error("%s is not a bounded single-link regular file" % label)
+        chunks = []
+        remaining = maximum + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(descriptor)
+        if (
+            len(raw) > maximum
+            or after.st_dev != before.st_dev
+            or after.st_ino != before.st_ino
+            or after.st_size != before.st_size
+        ):
+            _error("%s changed during read" % label)
+        return raw
+    except OSError as exc:
+        raise DirectionContractError("%s could not be read" % label) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent_fd)
+
+
+def _load_identity_path(path, label):
+    raw = _read_regular_path(path, label)
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DirectionContractError("%s is not valid UTF-8 JSON" % label) from exc
+    value = validate_identity(value)
+    if raw != canonical_bytes(value):
+        _error("%s is not canonical" % label)
+    return value, raw
+
+
+def _open_new_snapshot_destination(destination):
+    parent_fd, name = _open_path_parent(destination, "snapshot destination")
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
-        pass
+        return {"parent_fd": parent_fd, "name": name}
     except OSError as exc:
-        raise DirectionContractError("snapshot destination cannot be checked") from exc
-    else:
-        _error("snapshot destination already exists")
-    return path, parent
+        os.close(parent_fd)
+        raise DirectionContractError(
+            "snapshot destination cannot be checked"
+        ) from exc
+    os.close(parent_fd)
+    _error("snapshot destination already exists")
+
+
+def _close_snapshot_destination(destination):
+    parent_fd = destination.get("parent_fd")
+    if parent_fd is not None:
+        os.close(parent_fd)
+        destination["parent_fd"] = None
+
+
+def _write_new_snapshot_destination(destination, raw):
+    if not isinstance(raw, bytes):
+        _error("snapshot content must be bytes")
+    parent_fd = destination["parent_fd"]
+    name = destination["name"]
+    temporary = ".%s.%s.tmp" % (name, secrets.token_hex(16))
+    descriptor = None
+    failure = None
+    linked = False
+    published = False
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        total = 0
+        while total < len(raw):
+            written_count = os.write(descriptor, raw[total:])
+            if written_count <= 0:
+                _error("snapshot write made no progress")
+            total += written_count
+        os.fsync(descriptor)
+        written = os.fstat(descriptor)
+        os.link(
+            temporary,
+            name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        linked = True
+        linked_stat = os.stat(
+            name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(linked_stat.st_mode)
+            or linked_stat.st_dev != written.st_dev
+            or linked_stat.st_ino != written.st_ino
+        ):
+            _error("published snapshot differs from the written file")
+        published = True
+    except (
+        OSError,
+        NotImplementedError,
+        TypeError,
+        DirectionContractError,
+    ) as exc:
+        failure = exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if linked is True and not published:
+            try:
+                os.unlink(name, dir_fd=parent_fd)
+            except OSError as exc:
+                if failure is None:
+                    failure = exc
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            if failure is None:
+                failure = exc
+        try:
+            os.fsync(parent_fd)
+        except OSError as exc:
+            if failure is None:
+                failure = exc
+    if failure is not None or not published:
+        raise DirectionContractError("atomic snapshot write failed") from failure
 
 
 def _atomic_write_new(destination, raw):
-    path, parent = _check_new_snapshot_destination(destination)
-
-    temporary = parent / (".%s.%s.tmp" % (path.name, secrets.token_hex(16)))
+    opened = _open_new_snapshot_destination(destination)
     try:
-        descriptor = os.open(
-            str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
-        )
-        try:
-            total = 0
-            while total < len(raw):
-                total += os.write(descriptor, raw[total:])
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        os.replace(str(temporary), str(path))
-        directory = os.open(str(parent), os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except OSError as exc:
-        try:
-            os.unlink(str(temporary))
-        except OSError:
-            pass
-        raise DirectionContractError("atomic snapshot write failed") from exc
+        _write_new_snapshot_destination(opened, raw)
+    finally:
+        _close_snapshot_destination(opened)
 
 
 def write_snapshot(source, repo_root, output_path, identity_path):
@@ -279,13 +444,81 @@ def write_snapshot(source, repo_root, output_path, identity_path):
         _atomic_write_new(identity_path, b"null\n")
         return None
     contract, raw, identity = load_contract(source, repo_root)
-    if pathlib.Path(output_path) == pathlib.Path(identity_path):
+    if os.path.abspath(os.fspath(output_path)) == os.path.abspath(
+        os.fspath(identity_path)
+    ):
         _error("snapshot contract and identity destinations must differ")
-    _check_new_snapshot_destination(output_path)
-    _check_new_snapshot_destination(identity_path)
-    _atomic_write_new(output_path, raw)
-    _atomic_write_new(identity_path, canonical_bytes(identity))
+    opened = []
+    try:
+        opened.append(_open_new_snapshot_destination(output_path))
+        opened.append(_open_new_snapshot_destination(identity_path))
+        _write_new_snapshot_destination(opened[0], raw)
+        _write_new_snapshot_destination(opened[1], canonical_bytes(identity))
+    finally:
+        for destination in opened:
+            _close_snapshot_destination(destination)
     return contract, raw, identity
+
+
+def publish_round_snapshot(
+    startup_contract_path,
+    startup_identity_path,
+    output_contract_path,
+    output_identity_path,
+    *,
+    resume,
+):
+    """Publish a fresh round snapshot or validate an existing resumed snapshot."""
+    identity, identity_raw = _load_identity_path(
+        startup_identity_path, "startup direction identity"
+    )
+    contract_raw = None
+    if identity is None:
+        if startup_contract_path is not None or output_contract_path is not None:
+            _error("undirected snapshots must not name a contract")
+    else:
+        if startup_contract_path is None or output_contract_path is None:
+            _error("directed snapshots require contract paths")
+        contract_raw = _read_regular_path(
+            startup_contract_path, "startup direction contract"
+        )
+        contract, canonical_raw, computed = parse_contract_bytes(contract_raw)
+        del contract
+        if canonical_raw != contract_raw:
+            _error("startup direction contract is not canonical")
+        if computed != identity:
+            _error("startup direction identity changed")
+    if resume:
+        existing_identity, existing_identity_raw = _load_identity_path(
+            output_identity_path, "round direction identity"
+        )
+        if existing_identity != identity or existing_identity_raw != identity_raw:
+            _error("round direction identity changed")
+        if identity is not None:
+            existing_contract = _read_regular_path(
+                output_contract_path, "round direction contract"
+            )
+            if existing_contract != contract_raw:
+                _error("round direction contract changed")
+        return identity
+    destinations = []
+    try:
+        if identity is not None:
+            destinations.append(
+                _open_new_snapshot_destination(output_contract_path)
+            )
+        destinations.append(
+            _open_new_snapshot_destination(output_identity_path)
+        )
+        offset = 0
+        if identity is not None:
+            _write_new_snapshot_destination(destinations[0], contract_raw)
+            offset = 1
+        _write_new_snapshot_destination(destinations[offset], identity_raw)
+    finally:
+        for destination in destinations:
+            _close_snapshot_destination(destination)
+    return identity
 
 
 def validate_identity(value):
@@ -317,9 +550,11 @@ def validate_candidate_fields(values, contract, candidate_id):
         _error("candidate direction fields are incomplete")
     axes = {item["id"] for item in contract["allowed_axes"]}
     failures = {item["id"] for item in contract["target_failures"]}
-    if values["Direction Axis"] not in axes:
+    axis = values["Direction Axis"]
+    failure = values["Target Failure"]
+    if not isinstance(axis, str) or axis not in axes:
         _error("candidate %s has an invalid Direction Axis" % candidate_id)
-    if values["Target Failure"] not in failures:
+    if not isinstance(failure, str) or failure not in failures:
         _error("candidate %s has an invalid Target Failure" % candidate_id)
     _validate_evidence(values["Direction Evidence"], "Direction Evidence")
 
@@ -418,6 +653,16 @@ def _command_snapshot(arguments):
     )
 
 
+def _command_publish_round(arguments):
+    publish_round_snapshot(
+        arguments.startup_contract,
+        arguments.startup_identity,
+        arguments.output_contract,
+        arguments.output_identity,
+        resume=arguments.resume,
+    )
+
+
 def _command_validate_verdicts(arguments):
     contract_path = pathlib.Path(arguments.contract)
     if contract_path.is_absolute():
@@ -451,6 +696,12 @@ def main(argv=None):
     snapshot.add_argument("--identity-output", required=True)
     snapshot.add_argument("--source")
     snapshot.add_argument("--output")
+    publish = commands.add_parser("publish-round")
+    publish.add_argument("--startup-contract")
+    publish.add_argument("--startup-identity", required=True)
+    publish.add_argument("--output-contract")
+    publish.add_argument("--output-identity", required=True)
+    publish.add_argument("--resume", action="store_true")
     validate = commands.add_parser("validate-verdicts")
     validate.add_argument("--contract", required=True)
     validate.add_argument("--ideas", required=True)
@@ -460,6 +711,8 @@ def main(argv=None):
     try:
         if arguments.command == "snapshot":
             _command_snapshot(arguments)
+        elif arguments.command == "publish-round":
+            _command_publish_round(arguments)
         else:
             _command_validate_verdicts(arguments)
     except (DirectionContractError, OSError) as exc:

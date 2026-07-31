@@ -1538,6 +1538,7 @@ def freeze_candidate_batch(
     output_root,
     generation_brief=None,
     direction_contract=None,
+    expected_direction=_DIRECTION_UNSPECIFIED,
 ):
     tsv_path = pathlib.Path(ideas_tsv)
     markdown_path = pathlib.Path(ideas_md)
@@ -1642,6 +1643,34 @@ def freeze_candidate_batch(
         raise RuntimeContractError(
             "generated candidate TSV and markdown differ"
         )
+    if direction_contract is None:
+        direction_identity = None
+    else:
+        try:
+            _, _, direction_identity = (
+                direction_contract_lib.parse_contract_bytes(
+                    canonical_bytes(direction_contract)
+                )
+            )
+        except direction_contract_lib.DirectionContractError as exc:
+            raise RuntimeContractError(
+                "direction contract is invalid"
+            ) from exc
+    if expected_direction is not _DIRECTION_UNSPECIFIED:
+        try:
+            expected_direction = (
+                direction_contract_lib.validate_identity(
+                    expected_direction
+                )
+            )
+        except direction_contract_lib.DirectionContractError as exc:
+            raise RuntimeContractError(
+                "expected direction identity is invalid"
+            ) from exc
+        if direction_identity != expected_direction:
+            raise RuntimeContractError(
+                "direction identity changed before batch freeze"
+            )
     root = pathlib.Path(
         os.path.abspath(os.fspath(output_root))
     )
@@ -1672,19 +1701,6 @@ def freeze_candidate_batch(
                 "content_sha256": candidate["content_sha256"],
             }
         )
-    if direction_contract is None:
-        direction_identity = None
-    else:
-        try:
-            _, _, direction_identity = (
-                direction_contract_lib.parse_contract_bytes(
-                    canonical_bytes(direction_contract)
-                )
-            )
-        except direction_contract_lib.DirectionContractError as exc:
-            raise RuntimeContractError(
-                "direction contract is invalid"
-            ) from exc
     manifest = {
         "schema_version": 2,
         "artifact_root": str(root),
@@ -4825,6 +4841,123 @@ def _load_batch_candidates(batch_path):
             )
         candidates[candidate_id] = candidate
     return manifest, candidates
+
+
+def _load_direction_identity(path, label):
+    value = _load_canonical_json(path, label)
+    try:
+        return direction_contract_lib.validate_identity(value)
+    except direction_contract_lib.DirectionContractError as exc:
+        raise RuntimeContractError(f"{label} is invalid") from exc
+
+
+def _load_canonical_direction_contract(path, label):
+    raw = _read_bound_regular(
+        path,
+        label,
+        maximum=direction_contract_lib.MAX_CONTRACT_BYTES,
+    )
+    try:
+        contract, canonical_raw, identity = (
+            direction_contract_lib.parse_contract_bytes(raw)
+        )
+    except direction_contract_lib.DirectionContractError as exc:
+        raise RuntimeContractError(f"{label} is invalid") from exc
+    if raw != canonical_raw:
+        raise RuntimeContractError(f"{label} is not canonical")
+    return contract, raw, identity
+
+
+def copy_verified_direction_contract(
+    *,
+    contract_path,
+    round_identity_path,
+    expected_direction,
+    batch_path,
+    output_path,
+):
+    """Publish the exact round contract after one identity-bound read."""
+    try:
+        expected = direction_contract_lib.validate_identity(
+            expected_direction
+        )
+    except direction_contract_lib.DirectionContractError as exc:
+        raise RuntimeContractError(
+            "expected direction identity is invalid"
+        ) from exc
+    round_identity = _load_direction_identity(
+        round_identity_path, "round direction identity"
+    )
+    batch, _ = _load_batch_candidates(batch_path)
+    _, raw, actual = _load_canonical_direction_contract(
+        contract_path, "round direction contract"
+    )
+    if (
+        expected is None
+        or round_identity != expected
+        or frozen_batch_direction(batch) != expected
+        or actual != expected
+    ):
+        raise RuntimeContractError(
+            "direction identity changed before selector copy"
+        )
+    _publish_immutable(output_path, raw)
+    return actual
+
+
+def validate_direction_gate(
+    *,
+    contract_path,
+    expected_direction,
+    batch_path,
+    verdicts_path,
+    output_path,
+):
+    """Validate selector verdicts against startup, batch, and gate identity."""
+    try:
+        expected = direction_contract_lib.validate_identity(
+            expected_direction
+        )
+    except direction_contract_lib.DirectionContractError as exc:
+        raise RuntimeContractError(
+            "expected direction identity is invalid"
+        ) from exc
+    batch, _ = _load_batch_candidates(batch_path)
+    _, _, actual = _load_canonical_direction_contract(
+        contract_path, "direction gate contract"
+    )
+    if (
+        expected is None
+        or frozen_batch_direction(batch) != expected
+        or actual != expected
+    ):
+        raise RuntimeContractError(
+            "direction identity changed before verdict validation"
+        )
+    candidate_ids = [
+        item["candidate_id"] for item in batch["candidates"]
+    ]
+    verdict_raw = _read_bound_regular(
+        verdicts_path,
+        "direction verdicts",
+        maximum=65536,
+    )
+    try:
+        verdicts = direction_contract_lib.require_all_in_scope(
+            verdict_raw, candidate_ids
+        )
+    except direction_contract_lib.DirectionContractError as exc:
+        raise RuntimeContractError(
+            "direction verdicts are invalid"
+        ) from exc
+    receipt = {
+        "schema_version": 1,
+        "direction": actual,
+        "candidate_count": len(candidate_ids),
+        "verdicts": verdicts,
+    }
+    _publish_immutable(output_path, canonical_bytes(receipt))
+    return receipt
 
 
 def observe_frozen_batch(
@@ -8735,6 +8868,19 @@ def _main(argv=None):
     freeze.add_argument("--output-root", required=True)
     freeze.add_argument("--brief", required=True)
     freeze.add_argument("--direction")
+    freeze.add_argument("--expected-direction")
+    copy_direction = subparsers.add_parser("copy-direction")
+    copy_direction.add_argument("--contract", required=True)
+    copy_direction.add_argument("--round-identity", required=True)
+    copy_direction.add_argument("--expected-direction", required=True)
+    copy_direction.add_argument("--batch", required=True)
+    copy_direction.add_argument("--output", required=True)
+    direction_gate = subparsers.add_parser("validate-direction-gate")
+    direction_gate.add_argument("--contract", required=True)
+    direction_gate.add_argument("--expected-direction", required=True)
+    direction_gate.add_argument("--batch", required=True)
+    direction_gate.add_argument("--verdicts", required=True)
+    direction_gate.add_argument("--output", required=True)
     observe = subparsers.add_parser("observe-round")
     observe.add_argument("--db", required=True)
     observe.add_argument("--policy", required=True)
@@ -8982,12 +9128,41 @@ def _main(argv=None):
                 raise RuntimeContractError(
                     "direction contract is invalid"
                 ) from exc
+        expected_direction = _DIRECTION_UNSPECIFIED
+        if args.expected_direction is not None:
+            expected_direction = _load_direction_identity(
+                args.expected_direction,
+                "expected direction identity",
+            )
         result = freeze_candidate_batch(
             args.tsv,
             args.markdown,
             args.output_root,
             generation_brief=brief,
             direction_contract=direction,
+            expected_direction=expected_direction,
+        )
+    elif args.operation == "copy-direction":
+        result = copy_verified_direction_contract(
+            contract_path=args.contract,
+            round_identity_path=args.round_identity,
+            expected_direction=_load_direction_identity(
+                args.expected_direction,
+                "expected direction identity",
+            ),
+            batch_path=args.batch,
+            output_path=args.output,
+        )
+    elif args.operation == "validate-direction-gate":
+        result = validate_direction_gate(
+            contract_path=args.contract,
+            expected_direction=_load_direction_identity(
+                args.expected_direction,
+                "expected direction identity",
+            ),
+            batch_path=args.batch,
+            verdicts_path=args.verdicts,
+            output_path=args.output,
         )
     elif args.operation == "observe-round":
         authority = _cli_runtime_authority(args)

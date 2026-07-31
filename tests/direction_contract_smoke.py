@@ -168,6 +168,137 @@ class DirectionContractSmoke(unittest.TestCase):
             )
         self.assertFalse(output.exists())
 
+    def test_snapshot_rejects_symlinked_destination_ancestor(self):
+        real = self.repo / "real-parent"
+        nested = real / "nested"
+        nested.mkdir(parents=True)
+        os.symlink(real, self.repo / "aliased-parent")
+        destination = self.repo / "aliased-parent" / "nested" / "snapshot.json"
+        with self.assertRaises(direction_contract.DirectionContractError):
+            direction_contract._atomic_write_new(destination, b"sealed\n")
+        self.assertFalse((nested / "snapshot.json").exists())
+
+    def test_snapshot_retains_open_parent_across_path_swap(self):
+        parent = self.repo / "publish-parent"
+        parent.mkdir()
+        moved = self.repo / "publish-parent-opened"
+        destination = parent / "snapshot.json"
+        original_open = direction_contract.os.open
+        swapped = False
+
+        def race_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal swapped
+            if (
+                not swapped
+                and flags & os.O_CREAT
+                and flags & os.O_EXCL
+                and ".snapshot.json." in os.fspath(path)
+            ):
+                parent.rename(moved)
+                parent.mkdir()
+                swapped = True
+            if dir_fd is None:
+                return original_open(path, flags, mode)
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch.object(
+            direction_contract.os, "open", side_effect=race_open
+        ):
+            direction_contract._atomic_write_new(destination, b"sealed\n")
+        self.assertTrue(swapped)
+        self.assertEqual((moved / "snapshot.json").read_bytes(), b"sealed\n")
+        self.assertFalse(destination.exists())
+
+    def test_snapshot_destination_race_does_not_overwrite(self):
+        destination = self.repo / "raced-snapshot.json"
+        original_open = direction_contract.os.open
+        raced = False
+
+        def race_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal raced
+            if (
+                not raced
+                and flags & os.O_CREAT
+                and flags & os.O_EXCL
+                and ".raced-snapshot.json." in os.fspath(path)
+            ):
+                destination.write_bytes(b"racer\n")
+                raced = True
+            if dir_fd is None:
+                return original_open(path, flags, mode)
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch.object(
+            direction_contract.os, "open", side_effect=race_open
+        ):
+            with self.assertRaises(direction_contract.DirectionContractError):
+                direction_contract._atomic_write_new(destination, b"sealed\n")
+        self.assertTrue(raced)
+        self.assertEqual(destination.read_bytes(), b"racer\n")
+
+    def test_round_snapshot_is_exclusive_and_resume_validates_existing_bytes(self):
+        os.unlink(self.repo / "direction-hardlink.json")
+        startup_contract = self.repo / "direction.json"
+        _, startup_raw, identity = direction_contract.load_contract(
+            "direction.json", self.repo
+        )
+        startup_identity = self.repo / "startup-identity.json"
+        startup_identity.write_bytes(direction_contract.canonical_bytes(identity))
+        round_root = self.repo / "round"
+        round_root.mkdir()
+        round_contract = round_root / "direction-constraint.json"
+        round_identity = round_root / "direction-identity.json"
+
+        direction_contract.publish_round_snapshot(
+            startup_contract,
+            startup_identity,
+            round_contract,
+            round_identity,
+            resume=False,
+        )
+        self.assertEqual(round_contract.read_bytes(), startup_raw)
+        self.assertEqual(
+            round_identity.read_bytes(),
+            direction_contract.canonical_bytes(identity),
+        )
+
+        direction_contract.publish_round_snapshot(
+            startup_contract,
+            startup_identity,
+            round_contract,
+            round_identity,
+            resume=True,
+        )
+        round_contract.chmod(0o600)
+        round_contract.write_bytes(startup_raw.replace(b"Research", b"Changed", 1))
+        with self.assertRaises(direction_contract.DirectionContractError):
+            direction_contract.publish_round_snapshot(
+                startup_contract,
+                startup_identity,
+                round_contract,
+                round_identity,
+                resume=True,
+            )
+        drifted_identity = self.repo / "drifted-startup-identity.json"
+        changed_identity = dict(identity, sha256="0" * 64)
+        drifted_identity.write_bytes(
+            direction_contract.canonical_bytes(changed_identity)
+        )
+        rejected_root = self.repo / "rejected-round"
+        rejected_root.mkdir()
+        rejected_contract = rejected_root / "direction-constraint.json"
+        rejected_identity = rejected_root / "direction-identity.json"
+        with self.assertRaises(direction_contract.DirectionContractError):
+            direction_contract.publish_round_snapshot(
+                startup_contract,
+                drifted_identity,
+                rejected_contract,
+                rejected_identity,
+                resume=False,
+            )
+        self.assertFalse(rejected_contract.exists())
+        self.assertFalse(rejected_identity.exists())
+
     def test_validate_verdicts_cli_accepts_an_absolute_contract_path(self):
         ideas = self.repo / "ideas.tsv"
         ideas.write_text(
@@ -224,9 +355,45 @@ class DirectionContractSmoke(unittest.TestCase):
             ("Direction Axis", "memory"),
             ("Target Failure", "navigation"),
             ("Direction Evidence", ""),
+            ("Direction Evidence", "   "),
         ):
             changed = dict(values, **{field: invalid})
             with self.subTest(field=field):
+                with self.assertRaises(direction_contract.DirectionContractError):
+                    direction_contract.validate_candidate_fields(
+                        changed, self.contract, "I1"
+                    )
+
+    def test_contract_prose_rejects_whitespace_only_values(self):
+        values = [
+            self.changed(statement="   "),
+            self.changed(fixed_constraints=[" \t "]),
+            self.changed(excluded_scopes=["  "]),
+        ]
+        axis = self.changed()
+        axis["allowed_axes"][0]["description"] = "   "
+        values.append(axis)
+        for value in values:
+            with self.subTest(value=value):
+                with self.assertRaises(direction_contract.DirectionContractError):
+                    direction_contract.parse_contract_bytes(
+                        json.dumps(value).encode("utf-8")
+                    )
+
+    def test_candidate_axis_and_failure_types_raise_contract_error(self):
+        valid = {
+            "Direction Axis": "memory-representation-update",
+            "Target Failure": "dynamic-scene-change",
+            "Direction Evidence": "The repair arm isolates corrected memory.",
+        }
+        for field, invalid in (
+            ("Direction Axis", ["memory-representation-update"]),
+            ("Direction Axis", None),
+            ("Target Failure", {"id": "dynamic-scene-change"}),
+            ("Target Failure", 1),
+        ):
+            changed = dict(valid, **{field: invalid})
+            with self.subTest(field=field, invalid=invalid):
                 with self.assertRaises(direction_contract.DirectionContractError):
                     direction_contract.validate_candidate_fields(
                         changed, self.contract, "I1"
@@ -268,6 +435,9 @@ class DirectionContractSmoke(unittest.TestCase):
             valid.replace(b"I1\t", b"I2\t", 1),
             valid.replace(
                 b"\tThe experiment isolates memory injection.", b"\t"
+            ),
+            valid.replace(
+                b"The experiment isolates memory injection.", b"   "
             ),
             valid.replace(b"id\tdirection-fit\tdirection-evidence\n", b""),
         ]

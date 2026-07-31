@@ -476,6 +476,13 @@ case "$prompt" in
     if [ "$FAKE_AGENT_MODE" = "selector-failure" ]; then
       exit 65
     fi
+    if [ "$FAKE_AGENT_MODE" = "direction-contract-drift" ]; then
+      [ -f "${FAKE_DIRECTION_CONTRACT_REPLACEMENT:-}" ] \
+        && [ -n "${FAKE_DIRECTION_CONTRACT_TARGET:-}" ] \
+        || exit 66
+      cp "$FAKE_DIRECTION_CONTRACT_REPLACEMENT" \
+        "$FAKE_DIRECTION_CONTRACT_TARGET"
+    fi
     record_call select
     printf 'I1\t1\tThe proposition removes a load-bearing fixed-rate assumption.\tA successful repair would support a clear-accept efficiency claim.\tThe experiment names a dense baseline, 128 episodes, and explicit kill thresholds.\tOne researcher can run the comparison on one H100.\n' > tmp/round/select.tsv
     if [ -f tmp/round/history/direction-constraint.json ] \

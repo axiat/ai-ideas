@@ -839,6 +839,107 @@ class CandidateAndObservationContract(RuntimeFixture):
         )
         history_runtime.verify_frozen_batch(result)
 
+    def test_freeze_rejects_direction_drift_before_publishing_batch(self):
+        expected = direction_contract.parse_contract_bytes(
+            direction_contract.canonical_bytes(self.direction_contract)
+        )[2]
+        drifted = copy.deepcopy(self.direction_contract)
+        drifted["statement"] += " Drifted after startup."
+        output = self.root / "drifted-direction-batch"
+        with self.assertRaisesRegex(
+            history_runtime.RuntimeContractError,
+            "direction identity changed",
+        ):
+            history_runtime.freeze_candidate_batch(
+                self.ideas_tsv,
+                self.ideas_md,
+                output,
+                direction_contract=drifted,
+                expected_direction=expected,
+            )
+        self.assertFalse(output.exists())
+        self.assertFalse((self.root / "observations").exists())
+
+    def test_selector_copy_binds_verified_round_bytes_to_startup_and_batch(self):
+        identity = direction_contract.parse_contract_bytes(
+            direction_contract.canonical_bytes(self.direction_contract)
+        )[2]
+        batch = history_runtime.freeze_candidate_batch(
+            self.ideas_tsv,
+            self.ideas_md,
+            self.root / "selector-copy-batch",
+            direction_contract=self.direction_contract,
+            expected_direction=identity,
+        )
+        round_contract = self.root / "round-direction.json"
+        round_contract.write_bytes(
+            direction_contract.canonical_bytes(self.direction_contract)
+        )
+        round_identity = self.root / "round-direction-identity.json"
+        round_identity.write_bytes(canonical(identity))
+        delivered = self.root / "selector" / "direction-constraint.json"
+        history_runtime.copy_verified_direction_contract(
+            contract_path=round_contract,
+            round_identity_path=round_identity,
+            expected_direction=identity,
+            batch_path=pathlib.Path(batch["artifact_root"]) / "batch.json",
+            output_path=delivered,
+        )
+        self.assertEqual(delivered.read_bytes(), round_contract.read_bytes())
+
+        drifted = copy.deepcopy(self.direction_contract)
+        drifted["statement"] += " Selector drift."
+        round_contract.write_bytes(direction_contract.canonical_bytes(drifted))
+        rejected = self.root / "selector-drift" / "direction-constraint.json"
+        with self.assertRaisesRegex(
+            history_runtime.RuntimeContractError,
+            "direction identity changed",
+        ):
+            history_runtime.copy_verified_direction_contract(
+                contract_path=round_contract,
+                round_identity_path=round_identity,
+                expected_direction=identity,
+                batch_path=pathlib.Path(batch["artifact_root"]) / "batch.json",
+                output_path=rejected,
+            )
+        self.assertFalse(rejected.exists())
+
+    def test_direction_gate_rejects_gate_contract_drift_before_receipt(self):
+        identity = direction_contract.parse_contract_bytes(
+            direction_contract.canonical_bytes(self.direction_contract)
+        )[2]
+        batch = history_runtime.freeze_candidate_batch(
+            self.ideas_tsv,
+            self.ideas_md,
+            self.root / "gate-drift-batch",
+            direction_contract=self.direction_contract,
+            expected_direction=identity,
+        )
+        gate_contract = self.root / "gate-direction.json"
+        drifted = copy.deepcopy(self.direction_contract)
+        drifted["statement"] += " Gate drift."
+        gate_contract.write_bytes(direction_contract.canonical_bytes(drifted))
+        verdicts = self.root / "gate-direction.tsv"
+        verdicts.write_text(
+            "id\tdirection-fit\tdirection-evidence\n"
+            "I1\tin-scope\tThe candidate tests corrected memory.\n",
+            encoding="utf-8",
+        )
+        receipt = self.root / "direction-gate.json"
+        with self.assertRaisesRegex(
+            history_runtime.RuntimeContractError,
+            "direction identity changed",
+        ):
+            history_runtime.validate_direction_gate(
+                contract_path=gate_contract,
+                expected_direction=identity,
+                batch_path=pathlib.Path(batch["artifact_root"]) / "batch.json",
+                verdicts_path=verdicts,
+                output_path=receipt,
+            )
+        self.assertFalse(receipt.exists())
+        self.assertFalse((self.root / "observations").exists())
+
     def test_new_undirected_batch_v2_records_null_direction(self):
         result = history_runtime.freeze_candidate_batch(
             self.ideas_tsv,
@@ -1617,6 +1718,88 @@ class ContainedStageContract(RuntimeFixture):
         snapshot.write_bytes(direction_path.read_bytes().replace(b"\n", b""))
         with self.assertRaises(history_runtime.RuntimeContractError):
             self._run_test_stage(tampered)
+
+    def test_public_manifest_accepts_canonical_direction_with_local_executable(
+        self,
+    ):
+        startup = self.startup()
+        direction_path = self.root / "public-direction.json"
+        direction_path.write_bytes(
+            direction_contract.parse_contract_bytes(
+                (
+                    ROOT
+                    / "directions"
+                    / "dynamic-spatial-memory-vla-v1.json"
+                ).read_bytes()
+            )[1]
+        )
+        executable = pathlib.Path("/usr/bin/true")
+        self.assertTrue(executable.is_file())
+        prepared = history_runtime.build_stage_manifest(
+            stage="generate",
+            seat_id="public-directed-generate",
+            db_path=self.database,
+            policy_path=self.policy_path,
+            input_paths={
+                "generation_brief.json": pathlib.Path(startup["brief_path"]),
+                "generation_policy.md": self.generation_policy_path,
+                "direction_constraint.json": direction_path,
+            },
+            output_root=self.root / "public-directed-output",
+            manifest_path=(
+                self.root / "public-directed-host" / "manifest.json"
+            ),
+            command_json=canonical([str(executable)]).decode().strip(),
+        )
+        manifest = json.loads(
+            pathlib.Path(prepared["manifest_path"]).read_text(encoding="utf-8")
+        )
+        mounted = {
+            item["mirror_path"]: item["sha256"]
+            for item in manifest["inputs"]
+        }
+        self.assertEqual(
+            mounted["direction_constraint.json"],
+            hashlib.sha256(direction_path.read_bytes()).hexdigest(),
+        )
+
+    def test_hash_consistent_noncanonical_direction_reaches_stage_rejection(
+        self,
+    ):
+        startup = self.startup()
+        canonical_contract = direction_contract.parse_contract_bytes(
+            (
+                ROOT
+                / "directions"
+                / "dynamic-spatial-memory-vla-v1.json"
+            ).read_bytes()
+        )[0]
+        direction_path = self.root / "public-noncanonical-direction.json"
+        direction_path.write_text(
+            json.dumps(canonical_contract, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        prepared = history_runtime.build_stage_manifest(
+            stage="generate",
+            seat_id="public-noncanonical-generate",
+            db_path=self.database,
+            policy_path=self.policy_path,
+            input_paths={
+                "generation_brief.json": pathlib.Path(startup["brief_path"]),
+                "generation_policy.md": self.generation_policy_path,
+                "direction_constraint.json": direction_path,
+            },
+            output_root=self.root / "public-noncanonical-output",
+            manifest_path=(
+                self.root / "public-noncanonical-host" / "manifest.json"
+            ),
+            command_json=canonical(["/usr/bin/true"]).decode().strip(),
+        )
+        with self.assertRaisesRegex(
+            history_runtime.RuntimeContractError,
+            "direction contract is not canonical",
+        ):
+            history_runtime.run_contained_stage(prepared)
 
     def test_private_stage_wrapper_confines_every_input_path(self):
         startup = self.startup()
