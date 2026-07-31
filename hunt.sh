@@ -29,6 +29,8 @@
 #       Optional process round bound.  Zero means unbounded.
 #   RESUME_FRONT
 #       Reuse only a runtime-validated sealed front state.
+#   RESEARCH_DIRECTION_FILE
+#       Optional repository-relative closed research-direction contract.
 set -u
 
 cd "$(dirname "$0")" || exit 2
@@ -54,6 +56,7 @@ SHORT_MAX=${SHORT_MAX:-3}
 THEME_MIN_LOW=${THEME_MIN_LOW:-2}
 AXIOM_MIN_CRACKS=${AXIOM_MIN_CRACKS:-2}
 RESUME_FRONT=${RESUME_FRONT:-1}
+RESEARCH_DIRECTION_FILE=${RESEARCH_DIRECTION_FILE:-}
 
 LOG=hunt.log
 RD=tmp/round
@@ -319,11 +322,17 @@ run_contained_stage() {
 }
 
 history_freeze_batch() {
-  python3 lib/history_runtime.py freeze-batch \
-    --tsv "$1" \
-    --markdown "$2" \
-    --output-root "$3" \
+  local -a freeze_args=(
+    --tsv "$1"
+    --markdown "$2"
+    --output-root "$3"
     --brief "$4"
+  )
+  if [ -n "${5:-}" ]; then
+    freeze_args+=(--direction "$5")
+  fi
+  python3 lib/history_runtime.py freeze-batch \
+    "${freeze_args[@]}"
 }
 
 history_observe_round() {
@@ -335,6 +344,8 @@ history_observe_round() {
 }
 
 history_seal_selection() {
+  local theme_min_low=$THEME_MIN_LOW
+  [ "${direction_active:-0}" -eq 0 ] || theme_min_low=0
   python3 lib/history_runtime.py seal-selection \
     --batch "$1" \
     --round-observation "$2" \
@@ -342,7 +353,7 @@ history_seal_selection() {
     --selector "$4" \
     --prescreen "$5" \
     --short-max "$SHORT_MAX" \
-    --theme-min-low "$THEME_MIN_LOW" \
+    --theme-min-low "$theme_min_low" \
     --output "$6"
 }
 
@@ -418,7 +429,16 @@ history_seal_resume_attempt() {
 history_receipts_ok() {
   history_runtime_authorized validate-resume \
     --policy "$HISTORY_POLICY" \
-    --resume "$1"
+    --resume "$1" \
+    --expected-direction "$startup_root/direction-identity.json"
+}
+
+validate_direction_verdicts() {
+  python3 lib/direction_contract.py validate-verdicts \
+    --contract "$RD/history/direction-constraint.json" \
+    --ideas "$RD/history/batch/sources/ideas.tsv" \
+    --verdicts "$RD/direction.tsv" \
+    --output "$RD/history/direction-gate.json"
 }
 
 history_seal_review_plan() {
@@ -505,7 +525,13 @@ prepare_external_mirror() {
     select)
       cp roles/select.md "$mirror/roles/select.md"
       cp brainstorming_policy.md "$mirror/brainstorming_policy.md"
-      cp "$RD/ideas.md" "$mirror/tmp/round/ideas.md"
+      cp "$RD/history/batch/sources/ideas.md" \
+        "$mirror/tmp/round/ideas.md"
+      if [ -f "$RD/history/direction-constraint.json" ]; then
+        mkdir -p "$mirror/tmp/round/history"
+        cp "$RD/history/direction-constraint.json" \
+          "$mirror/tmp/round/history/direction-constraint.json"
+      fi
       ;;
     prescreen)
       cp roles/prescreen.md "$mirror/roles/prescreen.md"
@@ -707,7 +733,21 @@ def atomic_write(destination, raw):
         except FileNotFoundError:
             pass
 
-if stage in outputs:
+if stage == "select":
+    relative, destination, maximum, required = outputs[stage]
+    raw = read_regular(mirror / relative, maximum, required)
+    atomic_write(destination, raw)
+    direction_contract = (
+        mirror / "tmp/round/history/direction-constraint.json"
+    )
+    if direction_contract.exists():
+        direction_raw = read_regular(
+            mirror / "tmp/round/direction.tsv",
+            65536,
+            True,
+        )
+        atomic_write(round_root / "direction.tsv", direction_raw)
+elif stage in outputs:
     relative, destination, maximum, required = outputs[stage]
     raw = read_regular(mirror / relative, maximum, required)
     atomic_write(destination, raw)
@@ -1013,6 +1053,19 @@ fail_round() {
   sleep_minutes "$FAIL_SLEEP_MIN"
 }
 
+reject_direction_round() {
+  local delay
+  if ! archive_round "rejected:direction"; then
+    log "Direction rejection archive failed"
+    return 1
+  fi
+  log "Direction gate rejected the candidate batch"
+  if [ "$ROUND_LIMIT" -eq 0 ] || [ "$round" -lt "$ROUND_LIMIT" ]; then
+    delay=$(random_no_hit_sleep_min)
+    sleep_minutes "$delay"
+  fi
+}
+
 validate_config
 mkdir -p tmp "$HISTORY_STATE_ROOT"
 
@@ -1042,6 +1095,26 @@ mkdir -p "$RUNS_DIR" || { log "Cannot create archive directory"; exit 2; }
 startup_root=tmp/history-startup
 rm -rf "$startup_root"
 mkdir -p "$startup_root"
+direction_snapshot_args=(
+  snapshot
+  --repo-root "$PWD"
+  --identity-output "$startup_root/direction-identity.json"
+)
+if [ -n "$RESEARCH_DIRECTION_FILE" ]; then
+  direction_snapshot_args+=(
+    --source "$RESEARCH_DIRECTION_FILE"
+    --output "$startup_root/direction-constraint.json"
+  )
+fi
+if ! python3 lib/direction_contract.py \
+  "${direction_snapshot_args[@]}"; then
+  log "Research direction snapshot failed before history startup"
+  exit 2
+fi
+direction_active=0
+if [ -f "$startup_root/direction-constraint.json" ]; then
+  direction_active=1
+fi
 if ! history_sync "$startup_root/generation-brief.json" "" \
   > "$startup_root/startup.json"; then
   log "History startup failed before agent invocation"
@@ -1095,6 +1168,12 @@ while :; do
       run_id="$(date +%Y%m%dT%H%M%S)-p$$-r${round}-$RANDOM"
     done
     printf '%s\n' "$run_id" > "$RD/history/run-id"
+    cp "$startup_root/direction-identity.json" \
+      "$RD/history/direction-identity.json"
+    if [ "$direction_active" -eq 1 ]; then
+      cp "$startup_root/direction-constraint.json" \
+        "$RD/history/direction-constraint.json"
+    fi
     mkdir -p "$RD/history/resume-attempts"
     prior_archive=
     if [ -d "$RUNS_DIR/$prior_run_id/round" ]; then
@@ -1132,6 +1211,12 @@ while :; do
     : > "$RD/stages.tsv"
     run_id="$(date +%Y%m%dT%H%M%S)-p$$-r${round}"
     printf '%s\n' "$run_id" > "$RD/history/run-id"
+    cp "$startup_root/direction-identity.json" \
+      "$RD/history/direction-identity.json"
+    if [ "$direction_active" -eq 1 ]; then
+      cp "$startup_root/direction-constraint.json" \
+        "$RD/history/direction-constraint.json"
+    fi
     lens=$(pick_lens)
     if ! history_build_brief "$RD/history/generation-brief.json" "$lens" \
       > "$RD/history/startup.json"; then
@@ -1150,6 +1235,12 @@ while :; do
       --input "generation_brief.json=$RD/history/generation-brief.json"
       --input "generation_policy.md=brainstorming_policy.md"
     )
+    if [ "$direction_active" -eq 1 ]; then
+      generation_inputs+=(
+        --input \
+          "direction_constraint.json=$RD/history/direction-constraint.json"
+      )
+    fi
     if [ -s research_context.md ]; then
       generation_inputs+=(--input "research_context.md=research_context.md")
     fi
@@ -1177,14 +1268,34 @@ while :; do
     cp "$RD/history/generate-output/ideas.md" "$RD/ideas.md"
     cp "$RD/history/generate-output/ideas.tsv" "$RD/ideas.all.tsv"
     cp "$RD/history/generate-output/ideas.md" "$RD/ideas.all.md"
+    round_direction=
+    if [ "$direction_active" -eq 1 ]; then
+      round_direction="$RD/history/direction-constraint.json"
+    fi
     if ! history_freeze_batch \
       "$RD/history/generate-output/ideas.tsv" \
       "$RD/history/generate-output/ideas.md" \
       "$RD/history/batch" \
       "$RD/history/generation-brief.json" \
+      "$round_direction" \
       > "$RD/history/freeze-batch.json"; then
       fail_round freeze-batch || exit 1
       continue
+    fi
+    if [ "$direction_active" -eq 1 ]; then
+      : > "$RD/select.tsv"
+      if ! run_external_stage \
+        "$FRONT_CMD" \
+        "Read roles/select.md and follow it" \
+        select; then
+        reject_direction_round || exit 1
+        continue
+      fi
+      if ! validate_direction_verdicts \
+        > "$RD/history/validate-direction.json"; then
+        reject_direction_round || exit 1
+        continue
+      fi
     fi
     if ! history_observe_round \
       "$RD/history/batch/batch.json" \
@@ -1194,13 +1305,15 @@ while :; do
       continue
     fi
 
-    : > "$RD/select.tsv"
-    if ! run_external_stage \
-      "$FRONT_CMD" \
-      "Read roles/select.md and follow it" \
-      select; then
-      log "Selector failed; sealed selection will use generation order"
+    if [ "$direction_active" -eq 0 ]; then
       : > "$RD/select.tsv"
+      if ! run_external_stage \
+        "$FRONT_CMD" \
+        "Read roles/select.md and follow it" \
+        select; then
+        log "Selector failed; sealed selection will use generation order"
+        : > "$RD/select.tsv"
+      fi
     fi
     : > "$RD/prescreen.md"
     if ! run_external_stage \

@@ -322,6 +322,48 @@ class ArchiveContract(unittest.TestCase):
             (self.destination / "manifest.tsv").exists()
         )
 
+    def test_direction_rejection_is_not_a_failure_or_decision_archive(self):
+        receipt = history_archive.archive_round(
+            **dict(self.values, reason="rejected:direction")
+        )
+        self.assertEqual(receipt["archive_class"], "rejection")
+        verified = history_archive.verify_archive(
+            self.destination / "round",
+            run_id="run-1",
+            round_number=1,
+            reason="rejected:direction",
+        )
+        self.assertEqual(
+            verified["created_reason"],
+            "rejected:direction",
+        )
+        with self.assertRaises(history_archive.ArchiveError):
+            history_archive.verified_failure_archive_binding(
+                self.destination,
+                expected_run_id="run-1",
+            )
+
+    def test_direction_rejection_receipt_cannot_change_reason(self):
+        history_archive.archive_round(
+            **dict(self.values, reason="rejected:direction")
+        )
+        receipt_path = (
+            self.destination
+            / "round/history/archive-receipt.json"
+        )
+        receipt = json.loads(
+            receipt_path.read_text(encoding="utf-8")
+        )
+        receipt["created_reason"] = "rejected:other"
+        receipt_path.chmod(0o600)
+        receipt_path.write_bytes(canonical(receipt))
+        with self.assertRaises(history_archive.ArchiveError):
+            history_archive.verify_archive(
+                self.destination / "round",
+                run_id="run-1",
+                round_number=1,
+            )
+
     def test_archive_verifier_rejects_tree_and_attempt_drift(
         self,
     ):
