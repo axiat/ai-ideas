@@ -74,6 +74,7 @@ _INPUT_CAPS = {
     "generation_brief.json": 65536,
     "generation_policy.md": 16384,
     "research_context.md": 65536,
+    "direction_constraint.json": 16384,
     "retrieval_pack.json": 65536,
     "candidate.json": 16384,
     "prior_work.md": 16384,
@@ -84,7 +85,7 @@ _INPUT_CAPS = {
 _STAGE_INPUTS = {
     "generate": (
         {"generation_brief.json", "generation_policy.md"},
-        {"research_context.md"},
+        {"research_context.md", "direction_constraint.json"},
     ),
     "history-compare": ({"retrieval_pack.json"}, set()),
     "review": (

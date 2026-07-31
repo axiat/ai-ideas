@@ -22,6 +22,7 @@ from lib import history_retrieval
 from lib import history_runtime
 from lib import history_store
 from lib import history_archive
+from lib import direction_contract
 
 
 POLICY_PATH = ROOT / "history" / "retrieval-policy-v1.json"
@@ -1356,6 +1357,113 @@ class ContainedStageContract(RuntimeFixture):
             )
         self.assertFalse(host.exists())
         self.assertFalse(output.exists())
+
+    def test_generate_direction_snapshot_is_mounted_and_canonical(self):
+        startup = self.startup()
+        direction_path = self.root / "direction_constraint.json"
+        direction_path.write_bytes(
+            direction_contract.canonical_bytes(
+                json.loads(
+                    (ROOT / "directions" / "dynamic-spatial-memory-vla-v1.json")
+                    .read_text(encoding="utf-8")
+                )
+            )
+        )
+        command = canonical([str(FAKE_STAGE_AGENT)]).decode("utf-8").strip()
+        prepared = history_runtime._build_stage_manifest_for_test(
+            test_authority=self.shadow_test_authority(),
+            test_state_root=self.root,
+            stage="generate",
+            seat_id="directed-generate",
+            db_path=self.database,
+            policy_path=self.policy_path,
+            input_paths={
+                "generation_brief.json": pathlib.Path(startup["brief_path"]),
+                "generation_policy.md": self.generation_policy_path,
+                "direction_constraint.json": direction_path,
+            },
+            output_root=self.root / "directed-output",
+            manifest_path=self.root / "directed-host" / "manifest.json",
+            command_json=command,
+        )
+        manifest = json.loads(
+            pathlib.Path(prepared["manifest_path"]).read_text(encoding="utf-8")
+        )
+        mounted = {
+            item["mirror_path"]: item for item in manifest["inputs"]
+        }
+        self.assertEqual(
+            history_runtime._INPUT_CAPS["direction_constraint.json"],
+            16384,
+        )
+        self.assertEqual(
+            history_runtime._STAGE_INPUTS["generate"],
+            (
+                {"generation_brief.json", "generation_policy.md"},
+                {"research_context.md", "direction_constraint.json"},
+            ),
+        )
+        self.assertEqual(
+            mounted["direction_constraint.json"]["sha256"],
+            hashlib.sha256(direction_path.read_bytes()).hexdigest(),
+        )
+        serialized = history_runtime.history_budget.serialize_stage_invocation(
+            stage="generate",
+            adapter_version=manifest["adapter"]["version"],
+            fixed_instructions=(ROOT / manifest["role"]["source"]).read_text(
+                encoding="utf-8"
+            ),
+            mounted_inputs={
+                item["mirror_path"]: (
+                    pathlib.Path(prepared["manifest_path"]).parent
+                    / ("inputs-" + manifest["seat_id"])
+                    / item["mirror_path"]
+                ).read_bytes()
+                for item in manifest["inputs"]
+            },
+            **{
+                key: manifest["invocation"][key]
+                for key in (
+                    "candidate", "retrieval_payload", "receipts", "tool_schemas",
+                    "messages", "output_schema_instructions",
+                )
+            },
+        )
+        self.assertEqual(
+            hashlib.sha256(serialized).hexdigest(),
+            manifest["invocation"]["expected_serialized_sha256"],
+        )
+        completion = self._run_test_stage(prepared)
+        self.assertEqual(completion["stage"], "generate")
+        tampered = history_runtime._build_stage_manifest_for_test(
+            test_authority=self.shadow_test_authority(),
+            test_state_root=self.root,
+            stage="generate",
+            seat_id="tampered-directed-generate",
+            db_path=self.database,
+            policy_path=self.policy_path,
+            input_paths={
+                "generation_brief.json": pathlib.Path(startup["brief_path"]),
+                "generation_policy.md": self.generation_policy_path,
+                "direction_constraint.json": direction_path,
+            },
+            output_root=self.root / "tampered-directed-output",
+            manifest_path=(
+                self.root / "tampered-directed-host" / "manifest.json"
+            ),
+            command_json=command,
+        )
+        tampered_manifest = json.loads(
+            pathlib.Path(tampered["manifest_path"]).read_text(encoding="utf-8")
+        )
+        snapshot = (
+            pathlib.Path(tampered_manifest["input_roots"][0])
+            / "direction_constraint.json"
+        )
+        snapshot.chmod(0o600)
+        snapshot.write_bytes(direction_path.read_bytes().replace(b"\n", b""))
+        with self.assertRaises(history_runtime.RuntimeContractError):
+            self._run_test_stage(tampered)
 
     def test_private_stage_wrapper_confines_every_input_path(self):
         startup = self.startup()

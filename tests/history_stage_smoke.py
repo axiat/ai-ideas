@@ -25,6 +25,7 @@ from lib import history_retrieval
 from lib import history_stage
 from lib import history_runtime
 from lib import history_store
+from lib import direction_contract
 
 
 POLICY_PATH = ROOT / "history" / "retrieval-policy-v1.json"
@@ -42,6 +43,7 @@ INPUT_CAPS = {
     "generation_brief.json": 65536,
     "generation_policy.md": 16384,
     "research_context.md": 65536,
+    "direction_constraint.json": 16384,
     "retrieval_pack.json": 65536,
     "candidate.json": 16384,
     "prior_work.md": 16384,
@@ -955,6 +957,96 @@ class HistoryStageSmoke(unittest.TestCase):
                 "Minimal Falsification Experiment: e.\n"
                 "Why It May Be Novel: n.\n"
             )
+
+    def direction_contract(self):
+        return direction_contract.parse_contract_bytes(
+            (ROOT / "directions" / "dynamic-spatial-memory-vla-v1.json").read_bytes()
+        )[0]
+
+    def generation_markdown(
+        self,
+        *,
+        direction_lines=None,
+        direction_axis="memory-representation-update",
+        target_failure="dynamic-scene-change",
+        direction_evidence=(
+            "The repair arm attributes recovery to corrected 3D memory."
+        ),
+        duplicate_direction_axis=False,
+    ):
+        if direction_lines is None:
+            direction_lines = [
+                "Direction Axis: " + direction_axis,
+                "Target Failure: " + target_failure,
+                "Direction Evidence: " + direction_evidence,
+            ]
+        if duplicate_direction_axis:
+            direction_lines.append("Direction Axis: " + direction_axis)
+        direction = "\n".join(direction_lines)
+        if direction:
+            direction += "\n"
+        return (
+            "Assumption-Removal Attempt: complete I1\n\n"
+            "## I1\n"
+            "One-Sentence Story: Constraint-Driven Sparse World Models\n"
+            "Theme: World Models - Architecture\n"
+            + direction
+            + "Form: remove-load-bearing-assumption\n"
+            "Summary: Gate latent updates with model confidence.\n"
+            "Minimal Falsification Experiment: Compare dense and gated updates.\n"
+            "Why It May Be Novel: Independent research must test occupation.\n"
+            "Assumption to Remove: Dense latent updates are required.\n"
+            "Why It Can Be Removed Now: Confidence is calibrated online.\n"
+            "Forcing Constraint: Deployment latency limits dense updates.\n"
+            "Crack Evidence: https://example.com/one | Stable skipped updates.\n"
+            "Crack Evidence: https://example.com/two | Bounded latent drift.\n"
+        )
+
+    def test_directed_generation_requires_exact_candidate_fields(self):
+        contract = self.direction_contract()
+        invalid = {
+            "missing": self.generation_markdown(direction_lines=[]),
+            "unknown-axis": self.generation_markdown(direction_axis="generic-memory"),
+            "unknown-failure": self.generation_markdown(target_failure="navigation"),
+            "empty-evidence": self.generation_markdown(direction_evidence=""),
+            "duplicate-axis": self.generation_markdown(duplicate_direction_axis=True),
+        }
+        for name, markdown in invalid.items():
+            with self.subTest(name=name):
+                with self.assertRaises(history_stage.StageError):
+                    history_stage._build_generation_tsv_from_markdown(
+                        markdown, direction_contract=contract
+                    )
+
+    def test_valid_directed_generation_preserves_three_column_tsv(self):
+        projected = history_stage._build_generation_tsv_from_markdown(
+            self.generation_markdown(), direction_contract=self.direction_contract()
+        )
+        self.assertEqual(
+            projected,
+            "I1\tConstraint-Driven Sparse World Models\t"
+            "World Models - Architecture\n",
+        )
+
+    def test_undirected_generation_keeps_current_candidate_shape(self):
+        projected = history_stage._build_generation_tsv_from_markdown(
+            self.generation_markdown(direction_lines=[])
+        )
+        self.assertEqual(
+            projected,
+            "I1\tConstraint-Driven Sparse World Models\t"
+            "World Models - Architecture\n",
+        )
+
+    def test_generate_direction_profile_is_closed_and_bounded(self):
+        self.assertEqual(
+            history_stage._INPUT_CAPS["direction_constraint.json"],
+            16384,
+        )
+        self.assertEqual(
+            history_stage._STAGE_PROFILES["generate"]["optional_inputs"],
+            {"research_context.md", "direction_constraint.json"},
+        )
 
     def _axiom_candidate_block(
         self,

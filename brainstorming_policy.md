@@ -4,6 +4,8 @@ This policy is mandatory for the weekly idea routine and overrides the default v
 
 ## Divergence Requirements
 
+When `direction_constraint.json` is mounted, every raw candidate must satisfy that contract. Its scope overrides free cross-domain expansion, low-inventory theme coverage, and off-direction divergence-lens use; all quality, form, evidence, falsification, and review rules remain active.
+
 - `research_context.md` is optional inspiration, not a constraint. At most 1–2 ideas per round may directly concern the current DSRL or π0.5 stack. The rest must range freely across World Models, VLA, and embodied AI.
 - Priority: pure novelty that changes the problem definition or foundational mechanism, with Transformer-level ambition; then problem discovery with initial investigation; then incremental improvements to existing directions.
 - At most one evolution or recheck idea may appear per round; the two share a slot. Evolution may repair only an `accept-w-rev`, `overlap=low` row with an experimental-design failure; an occupied or novelty-capped story is irreparable. Recheck may resubmit unchanged either an AwR idea with weak prior-work research or a `reject`, `category=evidence-incomplete` row where unanimous Strong Accept votes were reduced only by a hard evidence gate. Begin with `Evolved from:` or `Recheck:` and state the eligibility condition. A story gets one recheck; another failure makes it permanent. Every resubmission receives fresh prior-work research and review and inherits no votes. `novelty-dead` rejects, including direct hits, `overlap=high`, and CRITICAL findings, cannot return.
