@@ -982,6 +982,338 @@ END;
 """
 
 
+_STRICT_PAIR_COMPLETION_SQL = """
+CREATE TABLE audit_strict_pair_completion_probe(
+  value INTEGER NOT NULL CHECK(value = 0)
+);
+INSERT INTO audit_strict_pair_completion_probe(value)
+SELECT 1
+FROM audit_batch_pair_receipts receipt
+JOIN audit_snapshots snapshot ON snapshot.snapshot_id = receipt.snapshot_id
+WHERE length(snapshot.snapshot_id) = 64
+  AND snapshot.snapshot_id NOT GLOB '*[^0-9a-f]*'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_pair_set_bindings binding
+    JOIN audit_snapshot_batch_sets batch_set
+      ON batch_set.snapshot_id = binding.snapshot_id
+     AND batch_set.current_batch_ids_hash = binding.current_batch_ids_hash
+    WHERE binding.run_id = receipt.run_id
+      AND binding.batch_id = receipt.batch_id
+      AND binding.snapshot_id = receipt.snapshot_id
+      AND binding.pair_plan_sha = receipt.pair_plan_sha
+      AND binding.pair_result_sha = receipt.pair_result_sha
+      AND binding.member_count = batch_set.member_count
+      AND receipt.pair_count
+          = (batch_set.member_count * (batch_set.member_count - 1)) / 2
+      AND NOT EXISTS (
+        SELECT 1 FROM audit_batch_pairs pair
+        WHERE pair.run_id = receipt.run_id
+          AND pair.batch_id = receipt.batch_id
+          AND NOT EXISTS (
+            SELECT 1
+            FROM json_each(batch_set.member_ids_json) left_member
+            JOIN json_each(batch_set.member_ids_json) right_member
+              ON left_member.value < right_member.value
+            WHERE pair.pair_plan_sha = receipt.pair_plan_sha
+              AND pair.pair_result_sha = receipt.pair_result_sha
+              AND pair.left_staging_candidate_id = left_member.value
+              AND pair.right_staging_candidate_id = right_member.value
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM json_each(batch_set.member_ids_json) left_member
+        JOIN json_each(batch_set.member_ids_json) right_member
+          ON left_member.value < right_member.value
+        WHERE NOT EXISTS (
+          SELECT 1 FROM audit_batch_pairs pair
+          WHERE pair.run_id = receipt.run_id
+            AND pair.batch_id = receipt.batch_id
+            AND pair.pair_plan_sha = receipt.pair_plan_sha
+            AND pair.pair_result_sha = receipt.pair_result_sha
+            AND pair.left_staging_candidate_id = left_member.value
+            AND pair.right_staging_candidate_id = right_member.value
+        )
+      )
+  );
+INSERT INTO audit_strict_pair_completion_probe(value)
+SELECT 1
+FROM audit_activation_maps activation
+JOIN audit_batch_staging staging
+  ON staging.staging_candidate_id = activation.staging_candidate_id
+JOIN audit_batch_pair_receipts receipt
+  ON receipt.run_id = staging.run_id AND receipt.batch_id = staging.batch_id
+JOIN audit_snapshots snapshot ON snapshot.snapshot_id = receipt.snapshot_id
+WHERE length(snapshot.snapshot_id) = 64
+  AND snapshot.snapshot_id NOT GLOB '*[^0-9a-f]*'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_pair_set_bindings binding
+    JOIN audit_snapshot_batch_sets batch_set
+      ON batch_set.snapshot_id = binding.snapshot_id
+     AND batch_set.current_batch_ids_hash = binding.current_batch_ids_hash
+    JOIN json_each(batch_set.member_ids_json) selected_member
+      ON selected_member.value = activation.staging_candidate_id
+    WHERE binding.run_id = receipt.run_id
+      AND binding.batch_id = receipt.batch_id
+      AND binding.snapshot_id = receipt.snapshot_id
+      AND binding.pair_plan_sha = activation.pair_plan_sha
+      AND binding.pair_result_sha = activation.pair_result_sha
+      AND (
+        batch_set.member_count = 1
+        OR EXISTS (
+          SELECT 1 FROM audit_batch_pairs pair
+          WHERE pair.run_id = receipt.run_id
+            AND pair.batch_id = receipt.batch_id
+            AND pair.pair_plan_sha = receipt.pair_plan_sha
+            AND pair.pair_result_sha = receipt.pair_result_sha
+            AND (
+              pair.left_staging_candidate_id = activation.staging_candidate_id
+              OR pair.right_staging_candidate_id = activation.staging_candidate_id
+            )
+        )
+      )
+  );
+DROP TABLE audit_strict_pair_completion_probe;
+
+DROP TRIGGER IF EXISTS audit_batch_pair_receipts_snapshot_set_guard;
+CREATE TRIGGER audit_batch_pair_receipts_snapshot_set_guard
+BEFORE INSERT ON audit_batch_pair_receipts
+WHEN length(NEW.snapshot_id) = 64
+  AND NEW.snapshot_id NOT GLOB '*[^0-9a-f]*'
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_snapshot_batch_sets batch_set
+    WHERE batch_set.snapshot_id = NEW.snapshot_id
+      AND batch_set.run_id = NEW.run_id
+      AND batch_set.batch_id = NEW.batch_id
+      AND NEW.pair_count
+          = (batch_set.member_count * (batch_set.member_count - 1)) / 2
+      AND NOT EXISTS (
+        SELECT 1 FROM audit_batch_pairs pair
+        WHERE pair.run_id = NEW.run_id
+          AND pair.batch_id = NEW.batch_id
+          AND NOT EXISTS (
+            SELECT 1
+            FROM json_each(batch_set.member_ids_json) left_member
+            JOIN json_each(batch_set.member_ids_json) right_member
+              ON left_member.value < right_member.value
+            WHERE pair.pair_plan_sha = NEW.pair_plan_sha
+              AND pair.pair_result_sha = NEW.pair_result_sha
+              AND pair.left_staging_candidate_id = left_member.value
+              AND pair.right_staging_candidate_id = right_member.value
+          )
+      )
+  ) THEN RAISE(ABORT, 'strict batch pair receipt set mismatch') END;
+END;
+
+DROP TRIGGER IF EXISTS audit_batch_pair_set_bindings_identity_guard;
+CREATE TRIGGER audit_batch_pair_set_bindings_identity_guard
+BEFORE INSERT ON audit_batch_pair_set_bindings
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_pair_receipts receipt
+    JOIN audit_snapshot_batch_sets batch_set
+      ON batch_set.snapshot_id = receipt.snapshot_id
+    WHERE receipt.run_id = NEW.run_id
+      AND receipt.batch_id = NEW.batch_id
+      AND receipt.snapshot_id = NEW.snapshot_id
+      AND receipt.pair_plan_sha = NEW.pair_plan_sha
+      AND receipt.pair_result_sha = NEW.pair_result_sha
+      AND batch_set.run_id = NEW.run_id
+      AND batch_set.batch_id = NEW.batch_id
+      AND batch_set.current_batch_ids_hash = NEW.current_batch_ids_hash
+      AND batch_set.member_count = NEW.member_count
+      AND receipt.pair_count
+          = (batch_set.member_count * (batch_set.member_count - 1)) / 2
+      AND NOT EXISTS (
+        SELECT 1 FROM audit_batch_pairs pair
+        WHERE pair.run_id = NEW.run_id
+          AND pair.batch_id = NEW.batch_id
+          AND NOT EXISTS (
+            SELECT 1
+            FROM json_each(batch_set.member_ids_json) left_member
+            JOIN json_each(batch_set.member_ids_json) right_member
+              ON left_member.value < right_member.value
+            WHERE pair.pair_plan_sha = NEW.pair_plan_sha
+              AND pair.pair_result_sha = NEW.pair_result_sha
+              AND pair.left_staging_candidate_id = left_member.value
+              AND pair.right_staging_candidate_id = right_member.value
+          )
+      )
+  ) THEN RAISE(ABORT, 'batch pair set binding identity mismatch') END;
+END;
+
+DROP TRIGGER IF EXISTS audit_batch_pairs_set_binding_guard;
+CREATE TRIGGER audit_batch_pairs_set_binding_guard
+BEFORE INSERT ON audit_batch_pairs
+BEGIN
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM audit_batch_pair_receipts receipt
+    JOIN audit_snapshots snapshot ON snapshot.snapshot_id = receipt.snapshot_id
+    WHERE receipt.run_id = NEW.run_id
+      AND receipt.batch_id = NEW.batch_id
+      AND length(snapshot.snapshot_id) = 64
+      AND snapshot.snapshot_id NOT GLOB '*[^0-9a-f]*'
+  ) AND NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_pair_receipts receipt
+    JOIN audit_batch_pair_set_bindings binding
+      ON binding.run_id = receipt.run_id
+     AND binding.batch_id = receipt.batch_id
+     AND binding.snapshot_id = receipt.snapshot_id
+     AND binding.pair_plan_sha = receipt.pair_plan_sha
+     AND binding.pair_result_sha = receipt.pair_result_sha
+    JOIN audit_snapshot_batch_sets batch_set
+      ON batch_set.snapshot_id = binding.snapshot_id
+     AND batch_set.current_batch_ids_hash = binding.current_batch_ids_hash
+    JOIN json_each(batch_set.member_ids_json) left_member
+      ON left_member.value = NEW.left_staging_candidate_id
+    JOIN json_each(batch_set.member_ids_json) right_member
+      ON right_member.value = NEW.right_staging_candidate_id
+    WHERE receipt.run_id = NEW.run_id
+      AND receipt.batch_id = NEW.batch_id
+      AND receipt.pair_plan_sha = NEW.pair_plan_sha
+      AND receipt.pair_result_sha = NEW.pair_result_sha
+      AND left_member.value < right_member.value
+  ) THEN RAISE(ABORT, 'strict batch pair is outside the frozen pair set') END;
+END;
+
+DROP TRIGGER IF EXISTS audit_activation_maps_evidence_guard;
+CREATE TRIGGER audit_activation_maps_evidence_guard
+BEFORE INSERT ON audit_activation_maps
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_batch_staging staging
+    WHERE staging.staging_candidate_id = NEW.staging_candidate_id
+      AND staging.raw_artifact_sha = NEW.raw_artifact_sha
+  ) THEN RAISE(ABORT, 'activation staging artifact mismatch') END;
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM audit_batch_staging staging
+    JOIN audit_batch_pair_receipts receipt
+      ON receipt.run_id = staging.run_id AND receipt.batch_id = staging.batch_id
+    JOIN audit_batch_pair_set_bindings binding
+      ON binding.run_id = receipt.run_id
+     AND binding.batch_id = receipt.batch_id
+     AND binding.snapshot_id = receipt.snapshot_id
+     AND binding.pair_plan_sha = receipt.pair_plan_sha
+     AND binding.pair_result_sha = receipt.pair_result_sha
+    JOIN audit_snapshots snapshot ON snapshot.snapshot_id = binding.snapshot_id
+    WHERE staging.staging_candidate_id = NEW.staging_candidate_id
+      AND binding.pair_plan_sha = NEW.pair_plan_sha
+      AND binding.pair_result_sha = NEW.pair_result_sha
+      AND length(snapshot.snapshot_id) = 64
+      AND snapshot.snapshot_id NOT GLOB '*[^0-9a-f]*'
+  ) AND NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_staging staging
+    JOIN audit_batch_pair_receipts receipt
+      ON receipt.run_id = staging.run_id AND receipt.batch_id = staging.batch_id
+    JOIN audit_batch_pair_set_bindings binding
+      ON binding.run_id = receipt.run_id
+     AND binding.batch_id = receipt.batch_id
+     AND binding.snapshot_id = receipt.snapshot_id
+     AND binding.pair_plan_sha = receipt.pair_plan_sha
+     AND binding.pair_result_sha = receipt.pair_result_sha
+    JOIN audit_snapshot_batch_sets batch_set
+      ON batch_set.snapshot_id = binding.snapshot_id
+     AND batch_set.current_batch_ids_hash = binding.current_batch_ids_hash
+     AND batch_set.member_count = binding.member_count
+    JOIN audit_snapshots snapshot ON snapshot.snapshot_id = binding.snapshot_id
+    JOIN json_each(batch_set.member_ids_json) selected_member
+      ON selected_member.value = staging.staging_candidate_id
+    JOIN audit_activation_receipts activation_receipt
+      ON activation_receipt.staging_candidate_id = staging.staging_candidate_id
+     AND activation_receipt.activation_receipt_sha = NEW.activation_receipt_sha
+    WHERE staging.staging_candidate_id = NEW.staging_candidate_id
+      AND binding.pair_plan_sha = NEW.pair_plan_sha
+      AND binding.pair_result_sha = NEW.pair_result_sha
+      AND NEW.source_sequence > snapshot.history_as_of_watermark
+      AND receipt.pair_count
+          = (batch_set.member_count * (batch_set.member_count - 1)) / 2
+      AND NOT EXISTS (
+        SELECT 1 FROM audit_batch_pairs pair
+        WHERE pair.run_id = receipt.run_id
+          AND pair.batch_id = receipt.batch_id
+          AND NOT EXISTS (
+            SELECT 1
+            FROM json_each(batch_set.member_ids_json) left_member
+            JOIN json_each(batch_set.member_ids_json) right_member
+              ON left_member.value < right_member.value
+            WHERE pair.pair_plan_sha = receipt.pair_plan_sha
+              AND pair.pair_result_sha = receipt.pair_result_sha
+              AND pair.left_staging_candidate_id = left_member.value
+              AND pair.right_staging_candidate_id = right_member.value
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM json_each(batch_set.member_ids_json) left_member
+        JOIN json_each(batch_set.member_ids_json) right_member
+          ON left_member.value < right_member.value
+        WHERE NOT EXISTS (
+          SELECT 1 FROM audit_batch_pairs pair
+          WHERE pair.run_id = receipt.run_id
+            AND pair.batch_id = receipt.batch_id
+            AND pair.pair_plan_sha = receipt.pair_plan_sha
+            AND pair.pair_result_sha = receipt.pair_result_sha
+            AND pair.left_staging_candidate_id = left_member.value
+            AND pair.right_staging_candidate_id = right_member.value
+        )
+      )
+      AND (
+        batch_set.member_count = 1
+        OR EXISTS (
+          SELECT 1 FROM audit_batch_pairs pair
+          WHERE pair.run_id = receipt.run_id
+            AND pair.batch_id = receipt.batch_id
+            AND pair.pair_plan_sha = receipt.pair_plan_sha
+            AND pair.pair_result_sha = receipt.pair_result_sha
+            AND (
+              pair.left_staging_candidate_id = NEW.staging_candidate_id
+              OR pair.right_staging_candidate_id = NEW.staging_candidate_id
+            )
+        )
+      )
+  ) THEN RAISE(ABORT, 'strict activation pair completion mismatch') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_staging staging
+    JOIN audit_batch_pair_receipts receipt
+      ON receipt.run_id = staging.run_id AND receipt.batch_id = staging.batch_id
+    JOIN audit_batch_pair_set_bindings binding
+      ON binding.run_id = receipt.run_id
+     AND binding.batch_id = receipt.batch_id
+     AND binding.snapshot_id = receipt.snapshot_id
+     AND binding.pair_plan_sha = receipt.pair_plan_sha
+     AND binding.pair_result_sha = receipt.pair_result_sha
+    JOIN audit_snapshots snapshot ON snapshot.snapshot_id = binding.snapshot_id
+    WHERE staging.staging_candidate_id = NEW.staging_candidate_id
+      AND binding.pair_plan_sha = NEW.pair_plan_sha
+      AND binding.pair_result_sha = NEW.pair_result_sha
+      AND length(snapshot.snapshot_id) = 64
+      AND snapshot.snapshot_id NOT GLOB '*[^0-9a-f]*'
+  ) AND NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_staging staging
+    JOIN audit_batch_pairs pair
+      ON pair.run_id = staging.run_id AND pair.batch_id = staging.batch_id
+     AND (
+       pair.left_staging_candidate_id = staging.staging_candidate_id
+       OR pair.right_staging_candidate_id = staging.staging_candidate_id
+     )
+    WHERE staging.staging_candidate_id = NEW.staging_candidate_id
+      AND pair.pair_plan_sha = NEW.pair_plan_sha
+      AND pair.pair_result_sha = NEW.pair_result_sha
+  ) THEN RAISE(ABORT, 'legacy activation pair evidence mismatch') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
@@ -1001,6 +1333,10 @@ MIGRATIONS = (
     Migration(
         "l1-snapshot-batch-membership", 1,
         _SNAPSHOT_BATCH_MEMBERSHIP_SQL,
+    ),
+    Migration(
+        "l1-strict-pair-completion", 1,
+        _STRICT_PAIR_COMPLETION_SQL,
     ),
 )
 

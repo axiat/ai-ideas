@@ -304,8 +304,10 @@ class HistoryAuditL1Smoke(unittest.TestCase):
             "pair_count": pair_plan["pair_count"],
         }
 
-    def _inject_same_batch_staging(self, *, story="injected nonmember"):
-        staging_id = "stg-v2-" + "e" * 64
+    def _inject_same_batch_staging(
+        self, *, story="injected nonmember", staging_id=None
+    ):
+        staging_id = staging_id or "stg-v2-" + "e" * 64
         raw_candidate = history_store._normalize_append_row(row(story))
         raw_artifact_sha = hashlib.sha256(raw_candidate).hexdigest()
         candidate_hash = contract.framed_sha256(
@@ -332,6 +334,61 @@ class HistoryAuditL1Smoke(unittest.TestCase):
             "raw_artifact_sha": raw_artifact_sha,
             "raw_candidate": raw_candidate,
         }
+
+    def _install_mixed_strict_pair(self, snapshot, staged):
+        nonmember = self._inject_same_batch_staging(
+            story="legacy pair nonmember", staging_id="legacy-nonmember"
+        )
+        pair_plan = audit.plan_batch_pairs(staged)
+        pair_result_sha = "d" * 64
+        pair_receipt = {
+            "run_id": self.run_id,
+            "batch_id": self.batch_id,
+            "snapshot_id": snapshot["snapshot_id"],
+            "pair_plan_sha": pair_plan["pair_plan_sha"],
+            "pair_result_sha": pair_result_sha,
+            "pair_count": 1,
+        }
+        self.conn.execute(
+            """
+            INSERT INTO audit_batch_pair_receipts(
+              run_id, batch_id, snapshot_id, pair_plan_sha, pair_result_sha,
+              pair_count, completed_at
+            ) VALUES(?, ?, ?, ?, ?, 1, '2026-08-03T00:00:00Z')
+            """,
+            (
+                self.run_id, self.batch_id, snapshot["snapshot_id"],
+                pair_plan["pair_plan_sha"], pair_result_sha,
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO audit_batch_pair_set_bindings(
+              run_id, batch_id, snapshot_id, pair_plan_sha, pair_result_sha,
+              current_batch_ids_hash, member_count, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, 2, '2026-08-03T00:00:00Z')
+            """,
+            (
+                self.run_id, self.batch_id, snapshot["snapshot_id"],
+                pair_plan["pair_plan_sha"], pair_result_sha,
+                snapshot["current_batch_ids_hash"],
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO audit_batch_pairs(
+              run_id, batch_id, left_staging_candidate_id,
+              right_staging_candidate_id, pair_plan_sha, pair_result_sha,
+              created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+            """,
+            (
+                self.run_id, self.batch_id, nonmember["staging_candidate_id"],
+                staged["candidates"][1]["staging_candidate_id"],
+                pair_plan["pair_plan_sha"], pair_result_sha,
+            ),
+        )
+        return pair_receipt
 
     def _receipt_inputs(self, snapshot):
         prior_ids = snapshot["expected_asset_ids"]
@@ -519,6 +576,7 @@ class HistoryAuditL1Smoke(unittest.TestCase):
                 if migration.component not in {
                     "l1-pair-snapshot-ownership",
                     "l1-snapshot-batch-membership",
+                    "l1-strict-pair-completion",
                 }
             )
             with mock.patch.object(audit_store, "MIGRATIONS", old_migrations):
@@ -595,7 +653,10 @@ class HistoryAuditL1Smoke(unittest.TestCase):
             old_migrations = tuple(
                 migration
                 for migration in audit_store.MIGRATIONS
-                if migration.component != "l1-snapshot-batch-membership"
+                if migration.component not in {
+                    "l1-snapshot-batch-membership",
+                    "l1-strict-pair-completion",
+                }
             )
             with mock.patch.object(audit_store, "MIGRATIONS", old_migrations):
                 audit_store.init_schema(conn)
@@ -704,6 +765,265 @@ class HistoryAuditL1Smoke(unittest.TestCase):
                     pair_receipt["pair_result_sha"], activation_sha,
                 ),
             )
+
+    def test_activation_rejects_mixed_pair_that_leaves_frozen_member_unpaired(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        self.conn.execute(
+            "DROP TRIGGER audit_batch_pairs_set_binding_guard"
+        )
+        pair_receipt = self._install_mixed_strict_pair(snapshot, staged)
+        selected = staged["candidates"][1]
+        direction_check = audit.record_direction_check(
+            self.conn,
+            staged_candidate=selected,
+            direction_receipt=self.direction,
+            semantic_relation="distinct",
+            lineage_relation="none",
+            evidence_sha="f" * 64,
+        )
+        before = self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0]
+        with self.assertRaises(ValueError):
+            audit.activate_staged_candidate(
+                self.conn,
+                snapshot=snapshot,
+                staged_candidate=selected,
+                pair_receipt=pair_receipt,
+                direction_check=direction_check,
+            )
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0],
+            before,
+        )
+
+    def test_database_rejects_member_activation_over_mixed_strict_pair(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        self.conn.execute(
+            "DROP TRIGGER audit_batch_pairs_set_binding_guard"
+        )
+        pair_receipt = self._install_mixed_strict_pair(snapshot, staged)
+        selected = staged["candidates"][1]
+        appended = history_store.append_rows(
+            self.conn, [selected["raw_candidate"]], {"run_id": "mixed-direct"}
+        )
+        candidate = self.conn.execute(
+            "SELECT candidate_id, source_sequence FROM candidates WHERE candidate_id=?",
+            (appended["candidate_ids"][0],),
+        ).fetchone()
+        activation_sha = "a" * 64
+        self.conn.execute(
+            """
+            INSERT INTO audit_activation_receipts(
+              activation_receipt_sha, staging_candidate_id,
+              receipt_json, created_at
+            ) VALUES(?, ?, '{}', '2026-08-03T00:00:00Z')
+            """,
+            (activation_sha, selected["staging_candidate_id"]),
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_activation_maps(
+                  staging_candidate_id, legacy_candidate_id, source_sequence,
+                  raw_artifact_sha, pair_plan_sha, pair_result_sha,
+                  activation_receipt_sha, activated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+                """,
+                (
+                    selected["staging_candidate_id"], candidate["candidate_id"],
+                    candidate["source_sequence"], selected["raw_artifact_sha"],
+                    pair_receipt["pair_plan_sha"],
+                    pair_receipt["pair_result_sha"], activation_sha,
+                ),
+            )
+
+    def test_database_rejects_nonmember_endpoint_under_strict_pair_binding(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self._install_mixed_strict_pair(snapshot, staged)
+
+    def test_database_does_not_route_strict_binding_through_legacy_activation(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        self.conn.execute("DROP TRIGGER audit_batch_pairs_set_binding_guard")
+        pair_receipt = self._install_mixed_strict_pair(snapshot, staged)
+        nonmember = self.conn.execute(
+            "SELECT * FROM audit_batch_staging WHERE staging_candidate_id=?",
+            ("legacy-nonmember",),
+        ).fetchone()
+        raw_candidate = history_store._normalize_append_row(
+            row("legacy pair nonmember")
+        )
+        appended = history_store.append_rows(
+            self.conn, [raw_candidate], {"run_id": "strict-legacy-direct"}
+        )
+        candidate = self.conn.execute(
+            "SELECT candidate_id, source_sequence FROM candidates WHERE candidate_id=?",
+            (appended["candidate_ids"][0],),
+        ).fetchone()
+        activation_sha = "b" * 64
+        self.conn.execute(
+            """
+            INSERT INTO audit_activation_receipts(
+              activation_receipt_sha, staging_candidate_id,
+              receipt_json, created_at
+            ) VALUES(?, 'legacy-nonmember', '{}', '2026-08-03T00:00:00Z')
+            """,
+            (activation_sha,),
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_activation_maps(
+                  staging_candidate_id, legacy_candidate_id, source_sequence,
+                  raw_artifact_sha, pair_plan_sha, pair_result_sha,
+                  activation_receipt_sha, activated_at
+                ) VALUES('legacy-nonmember', ?, ?, ?, ?, ?, ?,
+                         '2026-08-03T00:00:00Z')
+                """,
+                (
+                    candidate["candidate_id"], candidate["source_sequence"],
+                    nonmember["raw_artifact_sha"], pair_receipt["pair_plan_sha"],
+                    pair_receipt["pair_result_sha"], activation_sha,
+                ),
+            )
+
+    def test_strict_pair_completion_upgrade_probe_rejects_mixed_pair(self):
+        conn = history_store.connect(self.root / "pair-completion-upgrade.sqlite3")
+        try:
+            history_store.init_schema(conn)
+            history_store.import_tsv_epoch(conn, self.ledger)
+            old_migrations = tuple(
+                migration
+                for migration in audit_store.MIGRATIONS
+                if migration.component != "l1-strict-pair-completion"
+            )
+            with mock.patch.object(audit_store, "MIGRATIONS", old_migrations):
+                audit_store.init_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO audit_run_manifests(
+                  run_id, manifest_schema_version, plan_hash,
+                  manifest_json, created_at
+                ) VALUES('run-upgrade-pair', 'history-audit-manifest-v2', ?, '{}',
+                         '2026-08-03T00:00:00Z')
+                """,
+                ("1" * 64,),
+            )
+            member_ids = ["stg-v2-" + "2" * 64, "stg-v2-" + "3" * 64]
+            snapshot = audit.freeze_snapshot(
+                conn,
+                run_id="run-upgrade-pair",
+                batch_id="batch-upgrade-pair",
+                current_batch_ids=member_ids,
+            )
+            staged = audit.stage_raw_batch(
+                conn,
+                snapshot=snapshot,
+                raw_candidates=[
+                    {"staging_candidate_id": member_ids[0], "raw_candidate": row("a")},
+                    {"staging_candidate_id": member_ids[1], "raw_candidate": row("b")},
+                ],
+                direction_receipt=self.direction,
+            )
+            nonmember_raw = history_store._normalize_append_row(row("legacy"))
+            conn.execute(
+                """
+                INSERT INTO audit_batch_staging(
+                  staging_candidate_id, run_id, batch_id, candidate_hash,
+                  raw_artifact_sha, source_order, created_at
+                ) VALUES('legacy-upgrade', 'run-upgrade-pair',
+                         'batch-upgrade-pair', ?, ?, 99,
+                         '2026-08-03T00:00:00Z')
+                """,
+                (
+                    contract.framed_sha256(
+                        "history-candidate-content-v2", nonmember_raw
+                    ),
+                    hashlib.sha256(nonmember_raw).hexdigest(),
+                ),
+            )
+            pair_plan = audit.plan_batch_pairs(staged)
+            result_sha = "d" * 64
+            conn.execute(
+                """
+                INSERT INTO audit_batch_pair_receipts(
+                  run_id, batch_id, snapshot_id, pair_plan_sha,
+                  pair_result_sha, pair_count, completed_at
+                ) VALUES('run-upgrade-pair', 'batch-upgrade-pair', ?, ?, ?, 1,
+                         '2026-08-03T00:00:00Z')
+                """,
+                (snapshot["snapshot_id"], pair_plan["pair_plan_sha"], result_sha),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_batch_pair_set_bindings(
+                  run_id, batch_id, snapshot_id, pair_plan_sha, pair_result_sha,
+                  current_batch_ids_hash, member_count, created_at
+                ) VALUES('run-upgrade-pair', 'batch-upgrade-pair', ?, ?, ?, ?, 2,
+                         '2026-08-03T00:00:00Z')
+                """,
+                (
+                    snapshot["snapshot_id"], pair_plan["pair_plan_sha"],
+                    result_sha, snapshot["current_batch_ids_hash"],
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_batch_pairs(
+                  run_id, batch_id, left_staging_candidate_id,
+                  right_staging_candidate_id, pair_plan_sha, pair_result_sha,
+                  created_at
+                ) VALUES('run-upgrade-pair', 'batch-upgrade-pair',
+                         'legacy-upgrade', ?, ?, ?, '2026-08-03T00:00:00Z')
+                """,
+                (member_ids[1], pair_plan["pair_plan_sha"], result_sha),
+            )
+            appended = history_store.append_rows(
+                conn, [row("b")], {"run_id": "upgrade-mixed-activation"}
+            )
+            candidate = conn.execute(
+                "SELECT candidate_id, source_sequence FROM candidates "
+                "WHERE candidate_id=?",
+                (appended["candidate_ids"][0],),
+            ).fetchone()
+            activation_sha = "e" * 64
+            selected = staged["candidates"][1]
+            conn.execute(
+                """
+                INSERT INTO audit_activation_receipts(
+                  activation_receipt_sha, staging_candidate_id,
+                  receipt_json, created_at
+                ) VALUES(?, ?, '{}', '2026-08-03T00:00:00Z')
+                """,
+                (activation_sha, selected["staging_candidate_id"]),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_activation_maps(
+                  staging_candidate_id, legacy_candidate_id, source_sequence,
+                  raw_artifact_sha, pair_plan_sha, pair_result_sha,
+                  activation_receipt_sha, activated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+                """,
+                (
+                    selected["staging_candidate_id"], candidate["candidate_id"],
+                    candidate["source_sequence"], selected["raw_artifact_sha"],
+                    pair_plan["pair_plan_sha"], result_sha, activation_sha,
+                ),
+            )
+            with self.assertRaises(audit_store.AuditMigrationError):
+                audit_store.init_schema(conn)
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM audit_schema_migrations "
+                    "WHERE component='l1-strict-pair-completion'"
+                ).fetchone()
+            )
+        finally:
+            conn.close()
 
     def test_singleton_batch_records_empty_pair_receipt_and_activates(self):
         staging_id = self.staging_ids[0]

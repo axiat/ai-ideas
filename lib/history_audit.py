@@ -798,31 +798,36 @@ def activate_staged_candidate(
     ):
         raise ValueError("pair receipt is not bound to the frozen batch member set")
     member_count = len(frozen["current_batch_ids"])
-    expected_pair_count = member_count * (member_count - 1) // 2
-    actual_pair_count = conn.execute(
+    expected_pairs = {
+        (left_id, right_id)
+        for index, left_id in enumerate(frozen["current_batch_ids"])
+        for right_id in frozen["current_batch_ids"][index + 1:]
+    }
+    pair_rows = conn.execute(
         """
-        SELECT COUNT(*) FROM audit_batch_pairs
-        WHERE run_id=? AND batch_id=? AND pair_plan_sha=? AND pair_result_sha=?
+        SELECT left_staging_candidate_id, right_staging_candidate_id,
+               pair_plan_sha, pair_result_sha
+        FROM audit_batch_pairs
+        WHERE run_id=? AND batch_id=?
         """,
-        (
-            frozen["run_id"], frozen["batch_id"],
-            pair["pair_plan_sha"], pair["pair_result_sha"],
-        ),
-    ).fetchone()[0]
-    if pair["pair_count"] != expected_pair_count or actual_pair_count != pair["pair_count"]:
+        (frozen["run_id"], frozen["batch_id"]),
+    ).fetchall()
+    actual_pairs = {
+        (row["left_staging_candidate_id"], row["right_staging_candidate_id"])
+        for row in pair_rows
+    }
+    if (
+        pair["pair_count"] != len(expected_pairs)
+        or len(pair_rows) != len(expected_pairs)
+        or actual_pairs != expected_pairs
+        or any(
+            row["pair_plan_sha"] != pair["pair_plan_sha"]
+            or row["pair_result_sha"] != pair["pair_result_sha"]
+            for row in pair_rows
+        )
+    ):
         raise ValueError("pair plan is incomplete for the frozen batch member set")
-    if member_count > 1 and conn.execute(
-        """
-        SELECT 1 FROM audit_batch_pairs
-        WHERE run_id=? AND batch_id=? AND pair_plan_sha=? AND pair_result_sha=?
-          AND (left_staging_candidate_id=? OR right_staging_candidate_id=?)
-        LIMIT 1
-        """,
-        (
-            frozen["run_id"], frozen["batch_id"],
-            pair["pair_plan_sha"], pair["pair_result_sha"], staging_id, staging_id,
-        ),
-    ).fetchone() is None:
+    if member_count > 1 and not any(staging_id in item for item in actual_pairs):
         raise ValueError("staged candidate is outside the completed pair plan")
     direction_fields = (
         "run_id", "batch_id", "direction_id", "contract_sha", "validator_version",
