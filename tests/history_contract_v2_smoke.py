@@ -210,14 +210,34 @@ class HistoryContractV2Smoke(unittest.TestCase):
             {"final_status": "uncertain", "no_match_basis": "l2_exhaustive"},
             {"final_status": "complete_no_match", "no_match_basis": None},
             {"final_status": "complete_no_match", "no_match_basis": "legacy"},
+            {
+                "final_status": "complete_no_match",
+                "no_match_basis": "l2_exhaustive",
+                "coverage_complete": False,
+            },
+            {
+                "final_status": "complete_no_match",
+                "no_match_basis": "l2_exhaustive",
+                "adjudication_complete": False,
+            },
+            {
+                "final_status": "complete_no_match",
+                "no_match_basis": "l2_exhaustive",
+                "semantic_policy_qualified": False,
+            },
         ):
             value = valid_receipt()
             value.update(invalid)
-            with self.assertRaises(contract.ContractV2Error):
-                contract.validate_receipt(value)
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(contract.ContractV2Error):
+                    contract.validate_receipt(value)
         for basis in ("l1_calibrated", "l2_exhaustive"):
             value = valid_receipt()
-            value.update(final_status="complete_no_match", no_match_basis=basis)
+            value.update(
+                final_status="complete_no_match",
+                no_match_basis=basis,
+                semantic_policy_qualified=True,
+            )
             self.assertEqual(contract.validate_receipt(value), value)
 
 

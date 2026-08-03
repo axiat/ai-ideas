@@ -164,11 +164,12 @@ def put_object(conn, root, raw, retention_profile, *, pin_reason=None):
     expected = _descriptor_material(
         raw, compressed, retention_profile, relative_path
     )
-    row = conn.execute(
-        "SELECT * FROM audit_cas_objects WHERE object_id=?", (object_id,)
-    ).fetchone()
-    if row is None:
-        try:
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM audit_cas_objects WHERE object_id=?", (object_id,)
+        ).fetchone()
+        if row is None:
             conn.execute(
                 """
                 INSERT INTO audit_cas_objects(
@@ -179,19 +180,23 @@ def put_object(conn, root, raw, retention_profile, *, pin_reason=None):
                 """,
                 tuple(expected[field] for field in expected),
             )
-        except sqlite3.DatabaseError as exc:
-            raise CASError("CAS descriptor persistence failed") from exc
-        row = conn.execute(
-            "SELECT * FROM audit_cas_objects WHERE object_id=?", (object_id,)
-        ).fetchone()
-    _assert_descriptor_matches(row, expected)
-
-    if pin_reason is not None:
-        conn.execute(
-            "INSERT OR IGNORE INTO audit_cas_pins(object_id, pin_reason, pinned_at) "
-            "VALUES(?, ?, ?)",
-            (object_id, pin_reason, _utc_now()),
-        )
+            row = conn.execute(
+                "SELECT * FROM audit_cas_objects WHERE object_id=?", (object_id,)
+            ).fetchone()
+        _assert_descriptor_matches(row, expected)
+        if pin_reason is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO audit_cas_pins("
+                "object_id, pin_reason, pinned_at) VALUES(?, ?, ?)",
+                (object_id, pin_reason, _utc_now()),
+            )
+        conn.execute("COMMIT")
+    except Exception as exc:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        if isinstance(exc, CASError):
+            raise
+        raise CASError("CAS descriptor persistence failed") from exc
     return dict(row)
 
 

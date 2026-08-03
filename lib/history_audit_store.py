@@ -31,6 +31,7 @@ _KNOWN_LEGACY_RELATIONS = frozenset(
         "uncertain",
     }
 )
+_FENCE_GUARDS = {}
 
 
 class AuditMigrationError(RuntimeError):
@@ -421,6 +422,160 @@ CREATE TABLE audit_semantic_qualifications(
 """ + _immutable_guards("audit_semantic_qualifications")
 
 
+_INTEGRITY_GUARDS_SQL = """
+CREATE TABLE audit_integrity_guard_probe(
+  value INTEGER NOT NULL CHECK(value = 0)
+);
+INSERT INTO audit_integrity_guard_probe(value)
+SELECT 1 FROM audit_receipts receipt
+WHERE (
+    receipt.final_status = 'complete_no_match'
+    AND NOT (
+      receipt.coverage_complete = 1
+      AND receipt.adjudication_complete = 1
+      AND receipt.semantic_policy_qualified = 1
+    )
+  )
+  OR NOT EXISTS (
+    SELECT 1 FROM audit_run_manifests run
+    WHERE run.run_id = receipt.run_id AND run.plan_hash = receipt.plan_hash
+  )
+  OR NOT EXISTS (
+    SELECT 1 FROM audit_snapshots snapshot
+    WHERE snapshot.snapshot_id = receipt.snapshot_id
+      AND snapshot.snapshot_hash = receipt.snapshot_hash
+      AND snapshot.history_as_of_watermark = receipt.history_as_of_watermark
+      AND snapshot.current_batch_id_namespace
+          = receipt.current_batch_id_namespace
+      AND snapshot.current_batch_ids_hash = receipt.current_batch_ids_hash
+      AND snapshot.exclusion_policy_sha = receipt.exclusion_policy_sha
+      AND snapshot.expected_asset_ids_hash = receipt.expected_asset_ids_hash
+  );
+INSERT INTO audit_integrity_guard_probe(value)
+SELECT 1 FROM audit_activation_maps activation
+WHERE NOT EXISTS (
+    SELECT 1 FROM audit_batch_staging staging
+    WHERE staging.staging_candidate_id = activation.staging_candidate_id
+      AND staging.raw_artifact_sha = activation.raw_artifact_sha
+  )
+  OR NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_staging staging
+    JOIN audit_batch_pairs pair
+      ON pair.run_id = staging.run_id AND pair.batch_id = staging.batch_id
+     AND (
+       pair.left_staging_candidate_id = staging.staging_candidate_id
+       OR pair.right_staging_candidate_id = staging.staging_candidate_id
+     )
+    WHERE staging.staging_candidate_id = activation.staging_candidate_id
+      AND pair.pair_plan_sha = activation.pair_plan_sha
+      AND pair.pair_result_sha = activation.pair_result_sha
+  );
+INSERT INTO audit_integrity_guard_probe(value)
+SELECT 1 FROM audit_direction_checks direction_check
+WHERE NOT EXISTS (
+  SELECT 1 FROM audit_batch_staging staging
+  WHERE staging.staging_candidate_id = direction_check.staging_candidate_id
+    AND staging.run_id = direction_check.run_id
+    AND staging.batch_id = direction_check.batch_id
+);
+DROP TABLE audit_integrity_guard_probe;
+CREATE TRIGGER audit_receipts_release_and_identity_guard
+BEFORE INSERT ON audit_receipts
+BEGIN
+  SELECT CASE WHEN NEW.final_status = 'complete_no_match' AND NOT (
+    NEW.coverage_complete = 1
+    AND NEW.adjudication_complete = 1
+    AND NEW.semantic_policy_qualified = 1
+  ) THEN RAISE(ABORT, 'complete_no_match release gates are incomplete') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_run_manifests r
+    WHERE r.run_id = NEW.run_id AND r.plan_hash = NEW.plan_hash
+  ) THEN RAISE(ABORT, 'receipt run and plan identity mismatch') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_snapshots s
+    WHERE s.snapshot_id = NEW.snapshot_id
+      AND s.snapshot_hash = NEW.snapshot_hash
+      AND s.history_as_of_watermark = NEW.history_as_of_watermark
+      AND s.current_batch_id_namespace = NEW.current_batch_id_namespace
+      AND s.current_batch_ids_hash = NEW.current_batch_ids_hash
+      AND s.exclusion_policy_sha = NEW.exclusion_policy_sha
+      AND s.expected_asset_ids_hash = NEW.expected_asset_ids_hash
+  ) THEN RAISE(ABORT, 'receipt frozen snapshot identity mismatch') END;
+END;
+CREATE TRIGGER audit_activation_maps_evidence_guard
+BEFORE INSERT ON audit_activation_maps
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_batch_staging s
+    WHERE s.staging_candidate_id = NEW.staging_candidate_id
+      AND s.raw_artifact_sha = NEW.raw_artifact_sha
+  ) THEN RAISE(ABORT, 'activation staging artifact mismatch') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_staging s
+    JOIN audit_batch_pairs p
+      ON p.run_id = s.run_id AND p.batch_id = s.batch_id
+     AND (
+       p.left_staging_candidate_id = s.staging_candidate_id
+       OR p.right_staging_candidate_id = s.staging_candidate_id
+     )
+    WHERE s.staging_candidate_id = NEW.staging_candidate_id
+      AND p.pair_plan_sha = NEW.pair_plan_sha
+      AND p.pair_result_sha = NEW.pair_result_sha
+  ) THEN RAISE(ABORT, 'activation pair evidence mismatch') END;
+END;
+CREATE TRIGGER audit_direction_checks_staging_owner_guard
+BEFORE INSERT ON audit_direction_checks
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_batch_staging s
+    WHERE s.staging_candidate_id = NEW.staging_candidate_id
+      AND s.run_id = NEW.run_id
+      AND s.batch_id = NEW.batch_id
+  ) THEN RAISE(ABORT, 'direction check staging ownership mismatch') END;
+END;
+CREATE TRIGGER audit_logical_tasks_fenced_update
+BEFORE UPDATE ON audit_logical_tasks
+BEGIN
+  SELECT CASE WHEN audit_fenced_cas_allowed() <> 1
+    THEN RAISE(ABORT, 'logical task update requires fenced CAS') END;
+  SELECT CASE WHEN NEW.task_hash <> OLD.task_hash
+    OR NEW.run_id <> OLD.run_id
+    OR NEW.stage <> OLD.stage
+    OR NEW.staging_candidate_id <> OLD.staging_candidate_id
+    OR NEW.input_id <> OLD.input_id
+    OR NEW.created_at <> OLD.created_at
+    THEN RAISE(ABORT, 'logical task identity is immutable') END;
+  SELECT CASE WHEN NEW.fence <> OLD.fence + 1
+    THEN RAISE(ABORT, 'logical task fence must increase by one') END;
+END;
+CREATE TRIGGER audit_logical_tasks_no_delete
+BEFORE DELETE ON audit_logical_tasks
+BEGIN
+  SELECT RAISE(ABORT, 'logical task cannot be deleted');
+END;
+CREATE TRIGGER audit_metadata_outbox_fenced_update
+BEFORE UPDATE ON audit_metadata_outbox
+BEGIN
+  SELECT CASE WHEN audit_fenced_cas_allowed() <> 1
+    THEN RAISE(ABORT, 'metadata outbox update requires fenced CAS') END;
+  SELECT CASE WHEN NEW.outbox_id <> OLD.outbox_id
+    OR NEW.profile_id <> OLD.profile_id
+    OR NEW.candidate_id <> OLD.candidate_id
+    OR NEW.created_at <> OLD.created_at
+    THEN RAISE(ABORT, 'metadata outbox identity is immutable') END;
+  SELECT CASE WHEN NEW.fence <> OLD.fence + 1
+    THEN RAISE(ABORT, 'metadata outbox fence must increase by one') END;
+END;
+CREATE TRIGGER audit_metadata_outbox_no_delete
+BEFORE DELETE ON audit_metadata_outbox
+BEGIN
+  SELECT RAISE(ABORT, 'metadata outbox cannot be deleted');
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
@@ -429,6 +584,7 @@ MIGRATIONS = (
     Migration("receipts", 1, _RECEIPT_SQL),
     Migration("metadata", 1, _METADATA_SQL),
     Migration("semantic-qualification", 1, _SEMANTIC_SQL),
+    Migration("integrity-guards", 1, _INTEGRITY_GUARDS_SQL),
 )
 
 
@@ -497,6 +653,11 @@ def init_schema(conn):
         raise TypeError("conn must be a sqlite3 connection")
     if conn.in_transaction:
         raise AuditMigrationError("v2 migration requires an idle connection")
+    guard = {"active": False}
+    _FENCE_GUARDS[id(conn)] = guard
+    conn.create_function(
+        "audit_fenced_cas_allowed", 0, lambda: 1 if guard["active"] else 0
+    )
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA recursive_triggers = ON")
     for migration in MIGRATIONS:
@@ -601,22 +762,29 @@ def compare_and_set_logical_task(
         or new_fence != expected_fence + 1
     ):
         raise ValueError("logical task fence must increase by exactly one")
-    cursor = conn.execute(
-        """
-        UPDATE audit_logical_tasks
-        SET state=?, fence=?, claim_token=?, lease_until=?
-        WHERE task_hash=? AND state=? AND fence=?
-        """,
-        (
-            new_state,
-            new_fence,
-            claim_token,
-            lease_until,
-            task_hash,
-            expected_state,
-            expected_fence,
-        ),
-    )
+    guard = _FENCE_GUARDS.get(id(conn))
+    if guard is None:
+        raise AuditMigrationError("fenced CAS is not initialized for connection")
+    guard["active"] = True
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE audit_logical_tasks
+            SET state=?, fence=?, claim_token=?, lease_until=?
+            WHERE task_hash=? AND state=? AND fence=?
+            """,
+            (
+                new_state,
+                new_fence,
+                claim_token,
+                lease_until,
+                task_hash,
+                expected_state,
+                expected_fence,
+            ),
+        )
+    finally:
+        guard["active"] = False
     if cursor.rowcount != 1:
         raise StaleFence("logical task state or fence is stale")
     return True
@@ -641,22 +809,29 @@ def compare_and_set_metadata_outbox(
         or new_fence != expected_fence + 1
     ):
         raise ValueError("metadata outbox fence must increase by exactly one")
-    cursor = conn.execute(
-        """
-        UPDATE audit_metadata_outbox
-        SET state=?, fence=?, claim_token=?, lease_until=?
-        WHERE outbox_id=? AND state=? AND fence=?
-        """,
-        (
-            new_state,
-            new_fence,
-            claim_token,
-            lease_until,
-            outbox_id,
-            expected_state,
-            expected_fence,
-        ),
-    )
+    guard = _FENCE_GUARDS.get(id(conn))
+    if guard is None:
+        raise AuditMigrationError("fenced CAS is not initialized for connection")
+    guard["active"] = True
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE audit_metadata_outbox
+            SET state=?, fence=?, claim_token=?, lease_until=?
+            WHERE outbox_id=? AND state=? AND fence=?
+            """,
+            (
+                new_state,
+                new_fence,
+                claim_token,
+                lease_until,
+                outbox_id,
+                expected_state,
+                expected_fence,
+            ),
+        )
+    finally:
+        guard["active"] = False
     if cursor.rowcount != 1:
         raise StaleFence("metadata outbox state or fence is stale")
     return True

@@ -331,6 +331,15 @@ def validate_receipt(value):
     if status == "complete_no_match":
         if basis not in _NO_MATCH_BASES:
             raise ContractV2Error("complete_no_match requires a closed basis")
+        if not all(
+            normalized[field]
+            for field in (
+                "coverage_complete",
+                "adjudication_complete",
+                "semantic_policy_qualified",
+            )
+        ):
+            raise ContractV2Error("complete_no_match requires all release gates")
     elif basis is not None:
         raise ContractV2Error("no_match_basis requires complete_no_match")
     return normalized

@@ -163,6 +163,18 @@ class HistoryAuditMigrationSmoke(unittest.TestCase):
             ("7" * 64,),
         )
 
+    def _import_candidate(self):
+        ledger = self.root / "ledger.tsv"
+        ledger.write_bytes(
+            HEADER
+            + b"2026-08-03\thunt\tAudit\tactivation candidate\taccept-w-rev"
+            + b"\treason\tlow\tdesign-fixable\n"
+        )
+        history_store.import_tsv_epoch(self.conn, ledger)
+        return self.conn.execute(
+            "SELECT candidate_id, source_sequence FROM candidates"
+        ).fetchone()
+
     def test_empty_database_applies_each_component_once(self):
         audit_store.init_schema(self.conn)
         rows = self.conn.execute(
@@ -303,6 +315,13 @@ class HistoryAuditMigrationSmoke(unittest.TestCase):
     def test_claim_compare_and_set_rejects_stale_fence(self):
         audit_store.init_schema(self.conn)
         self._insert_run_and_task()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "UPDATE audit_logical_tasks SET state='claimed', fence=1, "
+                "claim_token='bypass', lease_until='2026-08-03T00:01:00Z' "
+                "WHERE task_hash=?",
+                ("7" * 64,),
+            )
         with self.assertRaises(ValueError):
             audit_store.compare_and_set_logical_task(
                 self.conn,
@@ -337,6 +356,168 @@ class HistoryAuditMigrationSmoke(unittest.TestCase):
                 claim_token="stale",
                 lease_until="2026-08-03T00:02:00Z",
             )
+
+    def test_metadata_outbox_rejects_unfenced_update(self):
+        candidate = self._import_candidate()
+        audit_store.init_schema(self.conn)
+        self.conn.execute(
+            """
+            INSERT INTO audit_metadata_profiles(
+              profile_id, profile_sha256, profile_json, created_at
+            ) VALUES('profile-1', ?, '{}', '2026-08-03T00:00:00Z')
+            """,
+            ("8" * 64,),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO audit_metadata_outbox(
+              outbox_id, profile_id, candidate_id, state, fence,
+              claim_token, lease_until, created_at
+            ) VALUES('outbox-1', 'profile-1', ?, 'pending', 0, NULL, NULL,
+                     '2026-08-03T00:00:00Z')
+            """,
+            (candidate["candidate_id"],),
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "UPDATE audit_metadata_outbox SET state='claimed', fence=1, "
+                "claim_token='bypass', lease_until='2026-08-03T00:01:00Z' "
+                "WHERE outbox_id='outbox-1'"
+            )
+        self.assertTrue(
+            audit_store.compare_and_set_metadata_outbox(
+                self.conn,
+                "outbox-1",
+                expected_state="pending",
+                expected_fence=0,
+                new_state="claimed",
+                new_fence=1,
+                claim_token="claim-1",
+                lease_until="2026-08-03T00:01:00Z",
+            )
+        )
+
+    def test_activation_and_direction_checks_bind_batch_owned_evidence(self):
+        candidate = self._import_candidate()
+        audit_store.init_schema(self.conn)
+        for run_id, plan_hash in (("run-1", SHA), ("run-2", "9" * 64)):
+            self.conn.execute(
+                """
+                INSERT INTO audit_run_manifests(
+                  run_id, manifest_schema_version, plan_hash,
+                  manifest_json, created_at
+                ) VALUES(?, 'history-audit-manifest-v2', ?, '{}',
+                         '2026-08-03T00:00:00Z')
+                """,
+                (run_id, plan_hash),
+            )
+        staging = (
+            ("stg-1", "run-1", "batch-1", "1" * 64, "2" * 64, 0),
+            ("stg-2", "run-1", "batch-1", "3" * 64, "4" * 64, 1),
+            ("stg-other", "run-2", "batch-2", "5" * 64, "6" * 64, 0),
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO audit_batch_staging(
+              staging_candidate_id, run_id, batch_id, candidate_hash,
+              raw_artifact_sha, source_order, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+            """,
+            staging,
+        )
+        self.conn.execute(
+            """
+            INSERT INTO audit_batch_pairs(
+              run_id, batch_id, left_staging_candidate_id,
+              right_staging_candidate_id, pair_plan_sha, pair_result_sha,
+              created_at
+            ) VALUES('run-1', 'batch-1', 'stg-1', 'stg-2', ?, ?,
+                     '2026-08-03T00:00:00Z')
+            """,
+            ("7" * 64, "8" * 64),
+        )
+
+        activation = (
+            candidate["candidate_id"],
+            candidate["source_sequence"],
+            "7" * 64,
+            "8" * 64,
+            "a" * 64,
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_activation_maps(
+                  staging_candidate_id, legacy_candidate_id, source_sequence,
+                  raw_artifact_sha, pair_plan_sha, pair_result_sha,
+                  activation_receipt_sha, activated_at
+                ) VALUES('stg-1', ?, ?, ?, ?, ?, ?,
+                         '2026-08-03T00:00:00Z')
+                """,
+                activation[:2] + ("f" * 64,) + activation[2:],
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_activation_maps(
+                  staging_candidate_id, legacy_candidate_id, source_sequence,
+                  raw_artifact_sha, pair_plan_sha, pair_result_sha,
+                  activation_receipt_sha, activated_at
+                ) VALUES('stg-1', ?, ?, ?, ?, ?, ?,
+                         '2026-08-03T00:00:00Z')
+                """,
+                activation[:2] + ("2" * 64, "e" * 64, "8" * 64, "a" * 64),
+            )
+        self.conn.execute(
+            """
+            INSERT INTO audit_activation_maps(
+              staging_candidate_id, legacy_candidate_id, source_sequence,
+              raw_artifact_sha, pair_plan_sha, pair_result_sha,
+              activation_receipt_sha, activated_at
+            ) VALUES('stg-1', ?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+            """,
+            activation[:2] + ("2" * 64,) + activation[2:],
+        )
+
+        self.conn.execute(
+            """
+            INSERT INTO audit_direction_contracts(
+              run_id, batch_id, direction_id, contract_sha,
+              validator_version, artifact_sha, created_at
+            ) VALUES('run-1', 'batch-1', 'direction-1', ?, 'validator-v1', ?,
+                     '2026-08-03T00:00:00Z')
+            """,
+            ("b" * 64, "c" * 64),
+        )
+        direction_values = (
+            "b" * 64,
+            "c" * 64,
+            "d" * 64,
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_direction_checks(
+                  run_id, batch_id, direction_id, contract_sha,
+                  validator_version, artifact_sha, staging_candidate_id,
+                  semantic_relation, lineage_relation, evidence_sha, checked_at
+                ) VALUES('run-1', 'batch-1', 'direction-1', ?, 'validator-v1', ?,
+                         'stg-other', 'distinct', 'none', ?,
+                         '2026-08-03T00:00:00Z')
+                """,
+                direction_values,
+            )
+        self.conn.execute(
+            """
+            INSERT INTO audit_direction_checks(
+              run_id, batch_id, direction_id, contract_sha,
+              validator_version, artifact_sha, staging_candidate_id,
+              semantic_relation, lineage_relation, evidence_sha, checked_at
+            ) VALUES('run-1', 'batch-1', 'direction-1', ?, 'validator-v1', ?,
+                     'stg-1', 'distinct', 'none', ?, '2026-08-03T00:00:00Z')
+            """,
+            direction_values,
+        )
 
     def test_immutable_fact_tables_reject_update_and_delete(self):
         audit_store.init_schema(self.conn)
