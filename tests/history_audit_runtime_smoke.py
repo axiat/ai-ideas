@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -51,6 +52,19 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             record("asset-1", "alpha evidence", "lineage-a"),
             record("asset-2", "beta evidence", "lineage-b"),
         ]
+        self.capabilities = {
+            provider: {
+                "provider": provider,
+                "capability_profile_hash": sha("capability-" + provider),
+                "model_identity": "fake-model-" + provider,
+                "reasoning_identity": "high",
+                "model_default": False,
+                "reasoning_default": False,
+                "executable": provider,
+                "cli_revision": "fake-cli-v1",
+            }
+            for provider in ("codex", "grok")
+        }
         self.plan = self._plan(self.records)
 
     def tearDown(self):
@@ -147,7 +161,11 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 "detail": ["codex"],
                 "reduce": ["codex"],
             },
-            "provider_capability_profile_hashes": [sha("codex"), sha("grok")],
+            "provider_capability_profile_hashes": {
+                provider: capability["capability_profile_hash"]
+                for provider, capability in self.capabilities.items()
+            },
+            "provider_capabilities": copy.deepcopy(self.capabilities),
             "capacity_profile_id": "fake-safe-24k-v1",
             "semantic_policy_profile_id": "semantic-test-v1",
             "risk_policy_version": "risk-v1",
@@ -212,6 +230,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             "provider_capability_profile_hashes": copy.deepcopy(
                 plan["provider_capability_profile_hashes"]
             ),
+            "provider_capabilities": copy.deepcopy(plan["provider_capabilities"]),
             "capacity_profile": copy.deepcopy(plan["capacity_profile"]),
             "budget_policy": copy.deepcopy(plan["budget_policy"]),
             "budget_policy_sha": budget_sha,
@@ -339,6 +358,238 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         with self.assertRaises(self._api("ExecutionError")) as caught:
             self._install(forged)
         self.assertEqual(caught.exception.code, "frozen_identity_mismatch")
+
+    def test_canonical_plan_persists_provider_keyed_capability_material(self):
+        plan = self._install()
+        task = self._api("load_task")(self.conn, plan["logical_task_keys"][0])
+        self.assertIn("provider_capabilities", task["durable_plan"])
+        self.assertEqual(
+            task["durable_plan"]["provider_capabilities"], self.capabilities
+        )
+
+    def test_record_attempt_rejects_arbitrary_capability_hash(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        self._api("claim_task")(
+            self.conn, task_key, "worker-a", 60, expected_fence=0, now=self._now()
+        )
+        forged = copy.deepcopy(self.capabilities["codex"])
+        forged["capability_profile_hash"] = sha("arbitrary-profile")
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("record_attempt")(
+                self.conn, task_key, forged, {"attempt_kind": "initial"},
+                cas_root=self.cas_root,
+                request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            )
+        self.assertEqual(caught.exception.code, "capability_authority_mismatch")
+
+    def test_database_rejects_swapped_provider_profile_provenance(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        claim = self._api("claim_task")(
+            self.conn, task_key, "worker-a", 60, expected_fence=0, now=self._now()
+        )
+        task = self._api("load_task")(self.conn, task_key)
+        request_bytes = task["durable_request_text"].encode()
+        request = history_execution.history_cas.put_object(
+            self.conn, self.cas_root, request_bytes, "attempt-transient-7d",
+            expires_at=(datetime.datetime.fromisoformat(task["created_at"])
+                        + datetime.timedelta(days=7)).isoformat(),
+        )
+        forged = copy.deepcopy(self.capabilities["codex"])
+        forged["capability_profile_hash"] = self.capabilities["grok"]["capability_profile_hash"]
+        provenance = {
+            **forged,
+            "attempt_kind": "initial",
+            "ordinal": 0,
+            "claim_token": claim["claim_token"],
+            "claim_fence": claim["fence"],
+        }
+        attempt_id = history_contract_v2.attempt_id(task_key, 0, provenance)
+        maximum = plan["capacity_profile"]["max_output_tokens"]
+        reserved = {
+            "input_tokens": len(request_bytes),
+            "output_tokens": maximum,
+            "provider_usage_units": len(request_bytes) + maximum,
+        }
+        self.conn.execute(
+            """
+            INSERT INTO audit_runtime_budget_reservations_v2(
+              attempt_id, task_hash, plan_sha, candidate_id, intent,
+              attempt_kind, reserved_json, created_at
+            ) VALUES(?, ?, ?, ?, ?, 'initial', ?, ?)
+            """,
+            (
+                attempt_id, task_key, plan["plan_sha"],
+                plan["candidate"]["candidate_id"], plan["intent"],
+                history_contract_v2.canonical_bytes(reserved).decode(), self._now(),
+            ),
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_task_attempts(
+                  attempt_id, task_hash, ordinal, provenance_json,
+                  request_cas_object_id, output_cas_object_id, state, created_at
+                ) VALUES(?, ?, 0, ?, ?, NULL, 'started', ?)
+                """,
+                (
+                    attempt_id, task_key,
+                    history_contract_v2.canonical_bytes(provenance).decode(),
+                    request["object_id"], self._now(),
+                ),
+            )
+
+    def _legacy_l2_connection(
+        self, *, through_authority=False, fact_kind="planned"
+    ):
+        path = self.root / f"legacy-{fact_kind}-{'authority' if through_authority else 'runtime'}.sqlite3"
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        prefix = []
+        for migration in history_audit_store.MIGRATIONS:
+            prefix.append(migration)
+            if migration.component == (
+                "l2-runtime-authority" if through_authority else "l2-runtime"
+            ):
+                break
+        with mock.patch.object(history_audit_store, "MIGRATIONS", tuple(prefix)):
+            history_audit_store.init_schema(conn)
+        run_id = "legacy-l2-run"
+        plan_sha = sha("legacy-l2-plan")
+        snapshot_id = sha("legacy-l2-snapshot-id")
+        snapshot_hash = sha("legacy-l2-snapshot")
+        task_hash = sha("legacy-l2-task")
+        state = "settling" if fact_kind == "settlement" else (
+            "claimed" if fact_kind in {"active", "attempt"} else "planned"
+        )
+        claim_token = "legacy-worker" if state in {"claimed", "settling"} else None
+        lease_until = self._now(60) if claim_token else None
+        conn.execute(
+            "INSERT INTO audit_run_manifests VALUES(?, 'history-audit-manifest-v2', ?, '{}', ?)",
+            (run_id, plan_sha, self._now()),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_snapshots(
+              snapshot_id, snapshot_hash, history_as_of_watermark,
+              current_batch_id_namespace, current_batch_ids_hash,
+              exclusion_policy_sha, expected_asset_ids_hash, created_at,
+              run_id, batch_id
+            ) VALUES(?, ?, 0, 'history-v2-staging-v1', ?, ?, ?, ?, ?, 'legacy-batch')
+            """,
+            (snapshot_id, snapshot_hash, sha("batch-set"), sha("exclude"),
+             sha("assets"), self._now(), run_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_logical_tasks(
+              task_hash, run_id, stage, staging_candidate_id, input_id,
+              state, fence, claim_token, lease_until, created_at
+            ) VALUES(?, ?, 'map', 'legacy-candidate', 'legacy-input',
+                     ?, 0, ?, ?, ?)
+            """,
+            (task_hash, run_id, state, claim_token, lease_until, self._now()),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_task_bindings_v2(
+              task_hash, plan_sha, snapshot_id, snapshot_hash, shard_input_sha,
+              assigned_item_ids_json, frozen_records_json, provider_pool_json,
+              parent_task_hash, split_depth, created_at
+            ) VALUES(?, ?, ?, ?, ?, '["asset-1"]', '[]', '["codex"]',
+                     NULL, 0, ?)
+            """,
+            (task_hash, plan_sha, snapshot_id, snapshot_hash, sha("legacy-input"), self._now()),
+        )
+        conn.commit()
+        if fact_kind in {"attempt", "settlement"}:
+            request = history_execution.history_cas.put_object(
+                conn, self.cas_root, b"legacy request", "attempt-transient-7d"
+            )
+            output = history_execution.history_cas.put_object(
+                conn, self.cas_root, b"legacy output", "attempt-transient-7d"
+            )
+            attempt_id = sha("legacy-" + fact_kind + "-attempt")
+            conn.execute(
+                """
+                INSERT INTO audit_task_attempts(
+                  attempt_id, task_hash, ordinal, provenance_json,
+                  request_cas_object_id, output_cas_object_id, state, created_at
+                ) VALUES(?, ?, 0, '{}', ?, NULL, 'started', ?)
+                """,
+                (attempt_id, task_hash, request["object_id"], self._now()),
+            )
+            if fact_kind == "settlement":
+                conn.execute(
+                    """
+                    INSERT INTO audit_attempt_completions_v2(
+                      attempt_id, output_cas_object_id, outcome,
+                      normalized_result_json, usage_json, completed_at
+                    ) VALUES(?, ?, 'valid', '{}', '{}', ?)
+                    """,
+                    (attempt_id, output["object_id"], self._now()),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO audit_task_settlements_v2(
+                      task_hash, settlement_sha256, settlement_kind,
+                      normalized_result_json, valid_attempt_ids_json,
+                      valid_output_cas_ids_json, settled_at
+                    ) VALUES(?, ?, 'equal', '{}', ?, ?, ?)
+                    """,
+                    (
+                        task_hash, sha("legacy-settlement"),
+                        json.dumps([attempt_id]), json.dumps([output["object_id"]]),
+                        self._now(),
+                    ),
+                )
+            conn.commit()
+        return conn, task_hash, plan_sha
+
+    def test_pre_authority_l2_facts_make_upgrade_fail_closed(self):
+        for fact_kind in ("planned", "active", "attempt", "settlement"):
+            with self.subTest(fact_kind=fact_kind):
+                conn, _, _ = self._legacy_l2_connection(fact_kind=fact_kind)
+                try:
+                    with self.assertRaises(history_audit_store.AuditMigrationError):
+                        history_audit_store.init_schema(conn)
+                finally:
+                    conn.close()
+
+    def test_empty_pre_authority_l2_upgrade_applies_integrity_migration(self):
+        conn = sqlite3.connect(self.root / "legacy-empty-runtime.sqlite3")
+        conn.row_factory = sqlite3.Row
+        prefix = []
+        for migration in history_audit_store.MIGRATIONS:
+            prefix.append(migration)
+            if migration.component == "l2-runtime":
+                break
+        with mock.patch.object(history_audit_store, "MIGRATIONS", tuple(prefix)):
+            history_audit_store.init_schema(conn)
+        history_audit_store.init_schema(conn)
+        applied = conn.execute(
+            """
+            SELECT 1 FROM audit_schema_migrations
+            WHERE component='l2-runtime-integrity' AND version=1
+            """
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(applied)
+
+    def test_stranded_authority_is_integrity_error_for_load_and_recovery(self):
+        conn, task_hash, plan_sha = self._legacy_l2_connection(through_authority=True)
+        try:
+            with self.assertRaises(self._api("ExecutionError")) as loaded:
+                self._api("load_task")(conn, task_hash)
+            self.assertEqual(loaded.exception.code, "stranded_l2_authority")
+            with self.assertRaises(self._api("ExecutionError")) as recovered:
+                self._api("recover_run")(
+                    conn, plan_sha, cas_root=self.cas_root, now=self._now()
+                )
+            self.assertEqual(recovered.exception.code, "stranded_l2_authority")
+        finally:
+            conn.close()
 
     def test_anchor_authority_comes_only_from_durable_frozen_records(self):
         plan = self._install()
@@ -612,7 +863,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         self._api("record_attempt")(
             self.conn,
             parent,
-            {"provider": "codex", "profile_hash": sha("codex")},
+            copy.deepcopy(self.capabilities["codex"]),
             {
                 "attempt_kind": "initial",
                 "input_tokens": 1,
@@ -648,7 +899,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             self._api("record_attempt")(
                 self.conn,
                 child,
-                {"provider": "codex", "profile_hash": sha("codex")},
+                copy.deepcopy(self.capabilities["codex"]),
                 {
                     "attempt_kind": "split",
                     "input_tokens": 1,
@@ -676,7 +927,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         self._api("record_attempt")(
             self.conn,
             parent,
-            {"provider": "codex", "profile_hash": sha("codex")},
+            copy.deepcopy(self.capabilities["codex"]),
             {"attempt_kind": "initial"},
             cas_root=self.cas_root,
             request_bytes=plan["shards"][0]["serialized_request"].encode(),
@@ -732,7 +983,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         attempt = self._api("record_attempt")(
             self.conn,
             task_key,
-            {"provider": "codex", "profile_hash": sha("codex")},
+            copy.deepcopy(self.capabilities["codex"]),
             {
                 "attempt_kind": "initial",
                 "input_tokens": 1,
@@ -760,7 +1011,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         attempt = self._api("record_attempt")(
             self.conn,
             task_key,
-            {"provider": "codex", "profile_hash": sha("codex")},
+            copy.deepcopy(self.capabilities["codex"]),
             {
                 "attempt_kind": "initial",
                 "input_tokens": 1,

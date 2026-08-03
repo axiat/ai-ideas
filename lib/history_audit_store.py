@@ -2154,6 +2154,50 @@ END;
 """
 
 
+_L2_RUNTIME_INTEGRITY_SQL = """
+CREATE TABLE audit_l2_authority_upgrade_probe(
+  value INTEGER NOT NULL CHECK(value = 0)
+);
+INSERT INTO audit_l2_authority_upgrade_probe(value)
+SELECT 1
+FROM audit_task_bindings_v2 binding
+LEFT JOIN audit_l2_plans_v2 plan ON plan.plan_sha=binding.plan_sha
+LEFT JOIN audit_l2_snapshot_records_v2 records
+  ON records.snapshot_id=binding.snapshot_id
+LEFT JOIN audit_l2_task_inputs_v2 input ON input.task_hash=binding.task_hash
+WHERE plan.plan_sha IS NULL
+   OR records.snapshot_id IS NULL
+   OR input.task_hash IS NULL;
+INSERT INTO audit_l2_authority_upgrade_probe(value)
+SELECT 1
+FROM audit_task_attempts attempt
+JOIN audit_task_bindings_v2 binding ON binding.task_hash=attempt.task_hash
+LEFT JOIN audit_runtime_budget_reservations_v2 reservation
+  ON reservation.attempt_id=attempt.attempt_id
+WHERE reservation.attempt_id IS NULL;
+INSERT INTO audit_l2_authority_upgrade_probe(value)
+SELECT 1
+FROM audit_attempt_completions_v2 completion
+LEFT JOIN audit_runtime_budget_settlements_v2 settlement
+  ON settlement.attempt_id=completion.attempt_id
+WHERE settlement.attempt_id IS NULL;
+DROP TABLE audit_l2_authority_upgrade_probe;
+CREATE TRIGGER audit_task_attempts_capability_authority_guard_v2
+BEFORE INSERT ON audit_task_attempts
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_task_bindings_v2 binding
+    JOIN audit_l2_plans_v2 plan ON plan.plan_sha=binding.plan_sha
+    WHERE binding.task_hash=NEW.task_hash
+      AND audit_l2_attempt_capability_valid(
+        plan.plan_json, binding.provider_pool_json, NEW.provenance_json
+      )=1
+  ) THEN RAISE(ABORT, 'attempt capability authority mismatch') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
@@ -2187,6 +2231,7 @@ MIGRATIONS = (
     ),
     Migration("l2-runtime", 1, _L2_RUNTIME_SQL),
     Migration("l2-runtime-authority", 1, _L2_RUNTIME_AUTHORITY_SQL),
+    Migration("l2-runtime-integrity", 1, _L2_RUNTIME_INTEGRITY_SQL),
 )
 
 
@@ -2419,6 +2464,52 @@ def _l2_budget_settlement_valid(usage_verified, actual_json):
         return 0
 
 
+def _l2_attempt_capability_valid(plan_json, provider_pool_json, provenance_json):
+    try:
+        plan = history_audit_plan.validate_runtime_plan_material(
+            _closed_json(plan_json)
+        )
+        pool = _closed_json(provider_pool_json)
+        provenance = _closed_json(provenance_json)
+        capability_fields = {
+            "provider", "capability_profile_hash", "model_identity",
+            "reasoning_identity", "model_default", "reasoning_default",
+            "executable", "cli_revision",
+        }
+        runtime_fields = {
+            "attempt_kind", "ordinal", "claim_token", "claim_fence"
+        }
+        if (
+            not isinstance(pool, list)
+            or not pool
+            or set(provenance) != capability_fields | runtime_fields
+            or provenance["provider"] not in pool
+            or provenance["attempt_kind"] not in {
+                "initial", "retry", "failover", "split", "detail", "reduce", "cancel"
+            }
+            or type(provenance["ordinal"]) is not int
+            or provenance["ordinal"] < 0
+            or not isinstance(provenance["claim_token"], str)
+            or not provenance["claim_token"]
+            or type(provenance["claim_fence"]) is not int
+            or provenance["claim_fence"] < 0
+        ):
+            return 0
+        expected_provider = (
+            pool[min(provenance["ordinal"], len(pool) - 1)]
+            if provenance["attempt_kind"] == "failover"
+            else pool[0]
+        )
+        bound = plan["provider_capabilities"].get(expected_provider)
+        return 1 if (
+            provenance["provider"] == expected_provider
+            and bound is not None
+            and all(provenance[field] == bound[field] for field in capability_fields)
+        ) else 0
+    except (ValueError, TypeError, KeyError, history_audit_plan.AuditPlanError):
+        return 0
+
+
 def _clear_metadata_guard(guard):
     guard.update(
         active=False,
@@ -2637,6 +2728,9 @@ def init_schema(conn):
     conn.create_function("audit_l2_budget_effective", 4, _l2_budget_effective)
     conn.create_function(
         "audit_l2_budget_settlement_valid", 2, _l2_budget_settlement_valid
+    )
+    conn.create_function(
+        "audit_l2_attempt_capability_valid", 3, _l2_attempt_capability_valid
     )
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA recursive_triggers = ON")

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Durable content-addressed storage foundation for history audit v2."""
 
+import contextlib
 import datetime
 import hashlib
 import json
@@ -62,36 +63,120 @@ def _timestamp(value, name):
     return parsed.astimezone(datetime.timezone.utc)
 
 
-def _reject_symlink_ancestors(path):
+def _directory_flags():
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _open_directory_path(path, *, create):
+    """Open every absolute path component without following a symlink."""
     absolute = pathlib.Path(path).absolute()
-    current = pathlib.Path(absolute.anchor)
-    for part in absolute.parts[1:]:
-        current = current / part
-        if current.exists() or current.is_symlink():
-            if current.is_symlink():
-                raise CASError("CAS path has a symlink ancestor")
-
-
-def _ensure_directory(path):
-    _reject_symlink_ancestors(path.parent)
-    path.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink() or not path.is_dir():
-        raise CASError("CAS directory is not a real directory")
-
-
-def _bounded_target(root, object_id):
-    configured_root = pathlib.Path(root).absolute()
-    _reject_symlink_ancestors(configured_root)
-    root = configured_root
-    _ensure_directory(root)
-    relative = _relative_path(object_id)
-    target = root / relative
+    descriptor = os.open(absolute.anchor, _directory_flags())
     try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise CASError("CAS object path escapes its root") from exc
-    _reject_symlink_ancestors(target.parent)
-    return root, relative, target
+        for part in absolute.parts[1:]:
+            try:
+                child = os.open(part, _directory_flags(), dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                child = os.open(part, _directory_flags(), dir_fd=descriptor)
+            except OSError as exc:
+                raise CASError("CAS directory path cannot be opened safely") from exc
+            os.close(descriptor)
+            descriptor = child
+        opened = os.fstat(descriptor)
+        if not stat.S_ISDIR(opened.st_mode):
+            raise CASError("CAS directory path is not a directory")
+        return absolute, descriptor, opened
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _after_root_open(root_descriptor, root_path):
+    """Test seam after the root inode is held; production behavior is empty."""
+
+
+def _after_object_directory_open(parent_descriptor, directory_name):
+    """Test seam after the object-directory inode is held."""
+
+
+def _assert_directory_identity(path, expected):
+    try:
+        _, descriptor, observed = _open_directory_path(path, create=False)
+    except (FileNotFoundError, CASError, OSError) as exc:
+        raise CASError("CAS root path changed during operation") from exc
+    try:
+        if (observed.st_dev, observed.st_ino) != (expected.st_dev, expected.st_ino):
+            raise CASError("CAS root path changed during operation")
+    finally:
+        os.close(descriptor)
+
+
+@contextlib.contextmanager
+def _object_location(root, object_id, *, create):
+    root_path, root_descriptor, root_stat = _open_directory_path(root, create=create)
+    parent_descriptor = None
+    try:
+        _after_root_open(root_descriptor, root_path)
+        _assert_directory_identity(root_path, root_stat)
+        relative = _relative_path(object_id)
+        directory_name = relative.parts[0]
+        try:
+            parent_descriptor = os.open(
+                directory_name, _directory_flags(), dir_fd=root_descriptor
+            )
+        except FileNotFoundError:
+            if not create:
+                raise
+            try:
+                os.mkdir(directory_name, mode=0o700, dir_fd=root_descriptor)
+            except FileExistsError:
+                pass
+            parent_descriptor = os.open(
+                directory_name, _directory_flags(), dir_fd=root_descriptor
+            )
+        except OSError as exc:
+            raise CASError("CAS object directory cannot be opened safely") from exc
+        parent_stat = os.fstat(parent_descriptor)
+        if not stat.S_ISDIR(parent_stat.st_mode):
+            raise CASError("CAS object directory is not a directory")
+        _after_object_directory_open(parent_descriptor, directory_name)
+        try:
+            observed_descriptor = os.open(
+                directory_name, _directory_flags(), dir_fd=root_descriptor
+            )
+        except OSError as exc:
+            raise CASError("CAS object directory changed during operation") from exc
+        try:
+            observed_stat = os.fstat(observed_descriptor)
+            if (observed_stat.st_dev, observed_stat.st_ino) != (
+                parent_stat.st_dev, parent_stat.st_ino
+            ):
+                raise CASError("CAS object directory changed during operation")
+        finally:
+            os.close(observed_descriptor)
+        yield {
+            "root_path": root_path,
+            "root_descriptor": root_descriptor,
+            "root_stat": root_stat,
+            "parent_descriptor": parent_descriptor,
+            "relative": relative,
+            "name": relative.parts[1],
+        }
+        _assert_directory_identity(root_path, root_stat)
+    finally:
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+        os.close(root_descriptor)
 
 
 def _require_regular_object(file_stat):
@@ -104,15 +189,17 @@ def _require_regular_object(file_stat):
         raise CASIntegrityError("CAS payload must not be sparse")
 
 
-def _read_payload(path):
+def _read_payload(parent_descriptor, name):
     try:
-        visible_before = os.lstat(path)
+        visible_before = os.stat(
+            name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
     except FileNotFoundError:
         raise
     _require_regular_object(visible_before)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(str(path), flags)
+        descriptor = os.open(name, flags, dir_fd=parent_descriptor)
     except FileNotFoundError:
         raise
     except OSError as exc:
@@ -144,7 +231,7 @@ def _read_payload(path):
             finished.st_mtime_ns,
         ):
             raise CASIntegrityError("CAS payload changed during verification")
-        visible = os.lstat(path)
+        visible = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
         if (visible.st_dev, visible.st_ino) != (finished.st_dev, finished.st_ino):
             raise CASIntegrityError("CAS payload path changed during verification")
         return b"".join(chunks)
@@ -152,12 +239,8 @@ def _read_payload(path):
         os.close(descriptor)
 
 
-def _fsync_directory(path):
-    descriptor = os.open(str(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+def _fsync_directory(descriptor):
+    os.fsync(descriptor)
 
 
 def _write_all(descriptor, raw):
@@ -170,40 +253,49 @@ def _write_all(descriptor, raw):
 
 
 def _publish(root, object_id, compressed):
-    root, relative, target = _bounded_target(root, object_id)
-    parent = root / relative.parent
-    _ensure_directory(parent)
-    if target.exists():
-        if _read_payload(target) != compressed:
-            raise CASIntegrityError("published CAS bytes conflict with object identity")
-        return relative.as_posix()
+    with _object_location(root, object_id, create=True) as location:
+        parent = location["parent_descriptor"]
+        name = location["name"]
+        try:
+            existing = _read_payload(parent, name)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            if existing != compressed:
+                raise CASIntegrityError("published CAS bytes conflict with object identity")
+            return location["relative"].as_posix()
 
-    temporary = parent / (
-        "." + object_id + "." + secrets.token_hex(12) + ".tmp"
-    )
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(str(temporary), flags, 0o600)
-    try:
-        _write_all(descriptor, compressed)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    try:
-        if target.exists():
-            if _read_payload(target) != compressed:
-                raise CASIntegrityError(
-                    "concurrent CAS publish conflicts with object identity"
+        temporary = "." + object_id + "." + secrets.token_hex(12) + ".tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=parent)
+        try:
+            _write_all(descriptor, compressed)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            try:
+                existing = _read_payload(parent, name)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
+                if existing != compressed:
+                    raise CASIntegrityError(
+                        "concurrent CAS publish conflicts with object identity"
+                    )
+            else:
+                os.replace(
+                    temporary, name, src_dir_fd=parent, dst_dir_fd=parent
                 )
-        else:
-            os.replace(str(temporary), str(target))
-            _fsync_directory(parent)
-            if _read_payload(target) != compressed:
-                raise CASIntegrityError("published CAS bytes failed verification")
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-    return relative.as_posix()
+                _fsync_directory(parent)
+                if _read_payload(parent, name) != compressed:
+                    raise CASIntegrityError("published CAS bytes failed verification")
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=parent)
+            except FileNotFoundError:
+                pass
+        return location["relative"].as_posix()
 
 
 def _descriptor_material(
@@ -316,7 +408,7 @@ def verify_object(conn, root, object_id):
         raise CASIntegrityError("CAS descriptor is not verified")
     if descriptor["codec"] != CODEC:
         raise CASIntegrityError("CAS codec is unsupported")
-    root, relative, path = _bounded_target(root, object_id)
+    relative = _relative_path(object_id)
     expected_relative = relative.as_posix()
     if descriptor["relative_path"] != expected_relative:
         raise CASIntegrityError("CAS descriptor path is invalid")
@@ -324,7 +416,10 @@ def verify_object(conn, root, object_id):
         "SELECT * FROM audit_cas_tombstones WHERE object_id=?", (object_id,)
     ).fetchone()
     try:
-        compressed = _read_payload(path)
+        with _object_location(root, object_id, create=False) as location:
+            compressed = _read_payload(
+                location["parent_descriptor"], location["name"]
+            )
     except FileNotFoundError as exc:
         if tombstone is None:
             raise CASIntegrityError("CAS payload is missing without tombstone") from exc
@@ -381,14 +476,21 @@ def _validate_tombstone(tombstone, descriptor):
         raise CASIntegrityError("CAS tombstone reason is invalid")
 
 
-def _delete_payload(path):
+def _delete_payload(target):
+    root, object_id = target
     try:
-        _read_payload(path)
+        with _object_location(root, object_id, create=False) as location:
+            parent = location["parent_descriptor"]
+            name = location["name"]
+            try:
+                _read_payload(parent, name)
+            except FileNotFoundError:
+                return False
+            os.unlink(name, dir_fd=parent)
+            _fsync_directory(parent)
+            return True
     except FileNotFoundError:
         return False
-    path.unlink()
-    _fsync_directory(path.parent)
-    return True
 
 
 def collect_garbage(conn, root, now, grace_seconds):
@@ -416,7 +518,7 @@ def collect_garbage(conn, root, now, grace_seconds):
         if _timestamp(descriptor["expires_at"], "expires_at") > cutoff:
             continue
         object_id = descriptor["object_id"]
-        _, relative, path = _bounded_target(root, object_id)
+        relative = _relative_path(object_id)
         if descriptor["relative_path"] != relative.as_posix():
             raise CASIntegrityError("CAS descriptor path is invalid")
         tombstone = conn.execute(
@@ -452,7 +554,7 @@ def collect_garbage(conn, root, now, grace_seconds):
                 raise
         else:
             _validate_tombstone(dict(tombstone), descriptor)
-        if _delete_payload(path):
+        if _delete_payload((root, object_id)):
             removed.append(object_id)
     return removed
 

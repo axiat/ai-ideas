@@ -344,6 +344,50 @@ class HistoryAuditStoreSmoke(unittest.TestCase):
                 self.conn, linked_parent / "cas", b"must not follow", "transient-test"
             )
 
+    def test_cas_never_follows_root_swapped_after_safe_open(self):
+        self.cas_root.mkdir()
+        detached = self.root / "detached-cas"
+        attacker = self.root / "attacker"
+        attacker.mkdir()
+
+        def swap_root(*_):
+            self.cas_root.rename(detached)
+            os.symlink(attacker, self.cas_root)
+
+        with mock.patch.object(
+            history_cas, "_after_root_open", side_effect=swap_root, create=True
+        ):
+            with self.assertRaises(history_cas.CASError):
+                history_cas.put_object(
+                    self.conn, self.cas_root, b"must stay out", "transient-test"
+                )
+        self.assertEqual(list(attacker.iterdir()), [])
+
+    def test_cas_never_follows_object_directory_swapped_after_safe_open(self):
+        raw = b"must stay inside held object directory"
+        object_id = hashlib.sha256(raw).hexdigest()
+        object_directory = self.cas_root / object_id[:2]
+        object_directory.mkdir(parents=True)
+        detached = self.root / "detached-object-directory"
+        attacker = self.root / "object-attacker"
+        attacker.mkdir()
+
+        def swap_object_directory(*_):
+            object_directory.rename(detached)
+            os.symlink(attacker, object_directory)
+
+        with mock.patch.object(
+            history_cas,
+            "_after_object_directory_open",
+            side_effect=swap_object_directory,
+            create=True,
+        ):
+            with self.assertRaises(history_cas.CASError):
+                history_cas.put_object(
+                    self.conn, self.cas_root, raw, "transient-test"
+                )
+        self.assertEqual(list(attacker.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

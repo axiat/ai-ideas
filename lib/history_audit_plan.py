@@ -139,6 +139,7 @@ _RUNTIME_PLAN_FIELDS = frozenset(
     {
         "schema_version", "run_id", "batch_id", "candidate", "snapshot",
         "provider_pools_ordered", "provider_capability_profile_hashes",
+        "provider_capabilities",
         "capacity_profile", "budget_policy", "budget_policy_sha", "intent",
         "risk_policy_sha", "settlement_policy_sha", "shard_plan_sha", "shards",
     }
@@ -165,6 +166,7 @@ def build_runtime_plan_material(plan):
             "provider_capability_profile_hashes": copy.deepcopy(
                 plan["provider_capability_profile_hashes"]
             ),
+            "provider_capabilities": copy.deepcopy(plan["provider_capabilities"]),
             "capacity_profile": copy.deepcopy(plan["capacity_profile"]),
             "budget_policy": copy.deepcopy(plan["budget_policy"]),
             "budget_policy_sha": runtime_budget_policy_sha(plan["budget_policy"]),
@@ -271,13 +273,43 @@ def validate_runtime_plan_material(material):
     ):
         raise AuditPlanError("invalid_capacity_profile")
     profiles = material["provider_capability_profile_hashes"]
+    capabilities = material["provider_capabilities"]
+    providers = {
+        provider
+        for pool in material["provider_pools_ordered"].values()
+        for provider in pool
+    }
     if (
-        not isinstance(profiles, list)
-        or not profiles
-        or len(set(profiles)) != len(profiles)
-        or any(not _is_sha(profile) for profile in profiles)
+        not isinstance(profiles, dict)
+        or set(profiles) != providers
+        or not isinstance(capabilities, dict)
+        or set(capabilities) != providers
     ):
         raise AuditPlanError("invalid_provider_capabilities")
+    capability_fields = {
+        "provider", "capability_profile_hash", "model_identity",
+        "reasoning_identity", "model_default", "reasoning_default",
+        "executable", "cli_revision",
+    }
+    for provider in sorted(providers):
+        capability = capabilities[provider]
+        if (
+            not isinstance(capability, dict)
+            or set(capability) != capability_fields
+            or capability["provider"] != provider
+            or not _is_sha(capability["capability_profile_hash"])
+            or profiles[provider] != capability["capability_profile_hash"]
+            or any(
+                not isinstance(capability[field], str) or not capability[field]
+                for field in (
+                    "model_identity", "reasoning_identity", "executable",
+                    "cli_revision",
+                )
+            )
+            or type(capability["model_default"]) is not bool
+            or type(capability["reasoning_default"]) is not bool
+        ):
+            raise AuditPlanError("invalid_provider_capabilities")
     _validate_pools(material["provider_pools_ordered"])
     return copy.deepcopy(material)
 
@@ -610,6 +642,24 @@ def _validate_pools(provider_pools):
             raise AuditPlanError("invalid_provider_pools")
 
 
+def _frozen_capability_material(provider, capability):
+    get = (
+        capability.get
+        if isinstance(capability, dict)
+        else lambda field, default=None: getattr(capability, field, default)
+    )
+    return {
+        "provider": provider,
+        "capability_profile_hash": get("profile_hash"),
+        "model_identity": get("model_identity"),
+        "reasoning_identity": get("reasoning_identity"),
+        "model_default": get("model_override") is None,
+        "reasoning_default": get("reasoning_override") is None,
+        "executable": get("executable", provider),
+        "cli_revision": get("cli_revision"),
+    }
+
+
 def _validate_profile(profile, provider_pools, capabilities):
     required = {
         "profile_id", "base_profile_id", "status", "counter", "context_tokens",
@@ -895,12 +945,17 @@ def build_plan(
         for stage in _POOL_FIELDS
         for provider in provider_pools[stage]
     }
+    frozen_capabilities = {
+        provider: _frozen_capability_material(provider, capabilities[provider])
+        for provider in sorted(capability_hashes)
+    }
     plan_material = {
         "schema_version": "history-audit-plan-v1",
         "snapshot": copy.deepcopy(snapshot),
         "candidate": copy.deepcopy(candidate),
         "provider_pools_ordered": copy.deepcopy(provider_pools),
         "provider_capability_profile_hashes": capability_hashes,
+        "provider_capabilities": frozen_capabilities,
         "capacity_profile": copy.deepcopy(capacity_profile),
         "intent": intent,
         "settlement_policy_sha": budget_policy["settlement_policy_sha"],
@@ -938,6 +993,7 @@ def build_plan(
         "base_capacity_profile_id": capacity_profile["base_profile_id"],
         "provider_pools_ordered": copy.deepcopy(provider_pools),
         "provider_capability_profile_hashes": capability_hashes,
+        "provider_capabilities": frozen_capabilities,
         "pool_bounds": pool_bounds,
         "b_pool": b_pool,
         "b_target": b_target,

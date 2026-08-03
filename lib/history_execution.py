@@ -326,6 +326,16 @@ def load_task(conn, task_key):
         (task_key,),
     ).fetchone()
     if row is None:
+        stranded = conn.execute(
+            """
+            SELECT 1 FROM audit_logical_tasks task
+            JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
+            WHERE task.task_hash=?
+            """,
+            (task_key,),
+        ).fetchone()
+        if stranded is not None:
+            raise ExecutionError("stranded_l2_authority")
         raise ExecutionError("unknown_task")
     result = dict(row)
     result["assigned_item_ids"] = _json(result.pop("assigned_item_ids_json"))
@@ -515,11 +525,18 @@ def record_attempt(
     task = load_task(conn, task_key)
     if task["state"] != "claimed":
         raise ExecutionError("task_not_claimed")
-    if not isinstance(capability, dict) or set(capability) != {"provider", "profile_hash"}:
-        raise ExecutionError("invalid_capability")
-    _require_sha(capability["profile_hash"], "profile_hash")
-    if capability["provider"] not in task["provider_pool"]:
+    if not isinstance(capability, dict) or not isinstance(capability.get("provider"), str):
+        raise ExecutionError("capability_authority_mismatch")
+    provider = capability["provider"]
+    if provider not in task["provider_pool"]:
         raise ExecutionError("provider_outside_pool")
+    bound_capability = task["durable_plan"]["provider_capabilities"].get(provider)
+    if (
+        bound_capability is None
+        or history_contract_v2.canonical_bytes(capability)
+        != history_contract_v2.canonical_bytes(bound_capability)
+    ):
+        raise ExecutionError("capability_authority_mismatch")
     if not isinstance(request_bytes, bytes):
         raise ExecutionError("invalid_attempt_request")
     if not isinstance(usage_reservation, dict):
@@ -533,6 +550,13 @@ def record_attempt(
     ordinal = count if ordinal is None else ordinal
     if type(ordinal) is not int or ordinal != count or ordinal >= MAX_ATTEMPTS:
         raise ExecutionError("attempt_limit")
+    expected_provider = (
+        task["provider_pool"][min(ordinal, len(task["provider_pool"]) - 1)]
+        if attempt_kind == "failover"
+        else task["provider_pool"][0]
+    )
+    if provider != expected_provider:
+        raise ExecutionError("capability_authority_mismatch")
     request_sha = hashlib.sha256(request_bytes).hexdigest()
     if (
         request_sha != task["durable_request_sha"]
@@ -542,8 +566,7 @@ def record_attempt(
     reserved = _derived_reservation(task, request_bytes)
     _assert_budget_available(conn, task, reserved)
     provenance = {
-        "provider": capability["provider"],
-        "capability_profile_hash": capability["profile_hash"],
+        **copy.deepcopy(bound_capability),
         "attempt_kind": attempt_kind,
         "ordinal": ordinal,
         "claim_token": task["claim_token"],
@@ -1089,7 +1112,7 @@ def run_map_task(
         }
         attempt = record_attempt(
             conn, task_key,
-            {"provider": provider_name, "profile_hash": sha_provider(provider_name)},
+            copy.deepcopy(task["durable_plan"]["provider_capabilities"][provider_name]),
             reservation, cas_root=cas_root, request_bytes=request_bytes,
         )
         response = provider(task_key, provider_name, ordinal, request_bytes)
@@ -1175,6 +1198,22 @@ def build_coverage_receipt(plan, settlements, semantic_qualification):
 def recover_run(conn, plan_sha, *, cas_root, now=None):
     """Reclaim only expired unsettled claims and verify terminal settlement payloads."""
     current = _now(now)
+    stranded = conn.execute(
+        """
+        SELECT 1
+        FROM audit_task_bindings_v2 binding
+        LEFT JOIN audit_l2_plans_v2 plan ON plan.plan_sha=binding.plan_sha
+        LEFT JOIN audit_l2_task_inputs_v2 input ON input.task_hash=binding.task_hash
+        LEFT JOIN audit_l2_snapshot_records_v2 records
+          ON records.snapshot_id=binding.snapshot_id
+        WHERE binding.plan_sha=?
+          AND (plan.plan_sha IS NULL OR input.task_hash IS NULL OR records.snapshot_id IS NULL)
+        LIMIT 1
+        """,
+        (plan_sha,),
+    ).fetchone()
+    if stranded is not None:
+        raise ExecutionError("stranded_l2_authority")
     rows = conn.execute(
         """
         SELECT task.* FROM audit_logical_tasks task
