@@ -2,6 +2,7 @@
 
 import datetime
 import hashlib
+import json
 import re
 
 try:
@@ -133,6 +134,35 @@ def _snapshot_from_row(conn, row):
     )
     if expected_hash != row["expected_asset_ids_hash"]:
         raise ValueError("frozen snapshot asset root does not replay")
+    batch_set = conn.execute(
+        "SELECT * FROM audit_snapshot_batch_sets WHERE snapshot_id=?",
+        (row["snapshot_id"],),
+    ).fetchone()
+    if batch_set is None:
+        raise ValueError("frozen snapshot batch member set is missing")
+    try:
+        current_batch_ids = json.loads(batch_set["member_ids_json"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("frozen snapshot batch member set is invalid") from exc
+    current_batch_ids = _require_staging_ids(current_batch_ids)
+    if (
+        batch_set["run_id"] != row["run_id"]
+        or batch_set["batch_id"] != row["batch_id"]
+        or batch_set["current_batch_ids_hash"] != row["current_batch_ids_hash"]
+        or batch_set["member_count"] != len(current_batch_ids)
+        or contract.ordered_set_sha256(
+            "history-current-batch-ids-v2", current_batch_ids
+        )
+        != row["current_batch_ids_hash"]
+        or json.dumps(
+            current_batch_ids,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        != batch_set["member_ids_json"]
+    ):
+        raise ValueError("frozen snapshot batch member set does not replay")
     return {
         "run_id": row["run_id"],
         "batch_id": row["batch_id"],
@@ -141,6 +171,7 @@ def _snapshot_from_row(conn, row):
         "history_as_of_watermark": row["history_as_of_watermark"],
         "current_batch_id_namespace": row["current_batch_id_namespace"],
         "current_batch_ids_hash": row["current_batch_ids_hash"],
+        "current_batch_ids": current_batch_ids,
         "exclusion_policy_sha": row["exclusion_policy_sha"],
         "expected_asset_ids": asset_ids,
         "expected_asset_ids_hash": row["expected_asset_ids_hash"],
@@ -254,6 +285,28 @@ def freeze_snapshot(conn, *, run_id, batch_id, current_batch_ids):
                 _utc_now(),
                 run_id,
                 batch_id,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_snapshot_batch_sets(
+              snapshot_id, run_id, batch_id, current_batch_ids_hash,
+              member_ids_json, member_count, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot_id,
+                run_id,
+                batch_id,
+                current_ids_hash,
+                json.dumps(
+                    current_ids,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
+                len(current_ids),
+                _utc_now(),
             ),
         )
         conn.execute("COMMIT")
@@ -444,6 +497,7 @@ def _validate_staged_batch_snapshot(conn, staged_batch):
         != CURRENT_BATCH_ID_NAMESPACE
     ):
         raise ValueError("staged batch snapshot ownership is invalid")
+    replay = _snapshot_from_row(conn, snapshot)
     candidates = staged_batch.get("candidates")
     if not isinstance(candidates, list) or not candidates:
         raise ValueError("staged batch candidates are invalid")
@@ -454,6 +508,8 @@ def _validate_staged_batch_snapshot(conn, staged_batch):
         "history-current-batch-ids-v2", staging_ids
     ) != snapshot["current_batch_ids_hash"]:
         raise ValueError("staged batch does not match snapshot exclusion hash")
+    if staging_ids != replay["current_batch_ids"]:
+        raise ValueError("staged batch does not match frozen member set")
     persisted = {
         row["staging_candidate_id"]
         for row in conn.execute(
@@ -523,6 +579,38 @@ def record_batch_pair_results(conn, staged_batch, pair_plan, pair_results):
             "snapshot_id", "pair_plan_sha", "pair_result_sha", "pair_count"
         )) != (snapshot_id, pair_plan["pair_plan_sha"], result_sha, len(normalized)):
             raise ValueError("batch pair receipt conflicts with durable state")
+        batch_set = conn.execute(
+            "SELECT * FROM audit_snapshot_batch_sets WHERE snapshot_id=?",
+            (snapshot_id,),
+        ).fetchone()
+        if batch_set is None:
+            raise ValueError("snapshot batch member set is missing")
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO audit_batch_pair_set_bindings(
+              run_id, batch_id, snapshot_id, pair_plan_sha, pair_result_sha,
+              current_batch_ids_hash, member_count, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id, batch_id, snapshot_id, pair_plan["pair_plan_sha"],
+                result_sha, batch_set["current_batch_ids_hash"],
+                batch_set["member_count"], _utc_now(),
+            ),
+        )
+        binding = conn.execute(
+            "SELECT * FROM audit_batch_pair_set_bindings "
+            "WHERE run_id=? AND batch_id=?",
+            (run_id, batch_id),
+        ).fetchone()
+        if binding is None or tuple(binding[name] for name in (
+            "snapshot_id", "pair_plan_sha", "pair_result_sha",
+            "current_batch_ids_hash", "member_count"
+        )) != (
+            snapshot_id, pair_plan["pair_plan_sha"], result_sha,
+            batch_set["current_batch_ids_hash"], batch_set["member_count"]
+        ):
+            raise ValueError("batch pair set binding conflicts with durable state")
         for item in normalized:
             conn.execute(
                 """
@@ -680,6 +768,8 @@ def activate_staged_candidate(
         )
     ):
         raise ValueError("staged candidate identity does not replay")
+    if staging_id not in set(frozen["current_batch_ids"]):
+        raise ValueError("staged candidate is outside the frozen batch member set")
     pair = conn.execute(
         "SELECT * FROM audit_batch_pair_receipts WHERE run_id=? AND batch_id=?",
         (frozen["run_id"], frozen["batch_id"]),
@@ -694,6 +784,46 @@ def activate_staged_candidate(
         ))
     ):
         raise ValueError("pair receipt is not the completed batch receipt")
+    binding = conn.execute(
+        "SELECT * FROM audit_batch_pair_set_bindings WHERE run_id=? AND batch_id=?",
+        (frozen["run_id"], frozen["batch_id"]),
+    ).fetchone()
+    if (
+        binding is None
+        or binding["snapshot_id"] != frozen["snapshot_id"]
+        or binding["pair_plan_sha"] != pair["pair_plan_sha"]
+        or binding["pair_result_sha"] != pair["pair_result_sha"]
+        or binding["current_batch_ids_hash"] != frozen["current_batch_ids_hash"]
+        or binding["member_count"] != len(frozen["current_batch_ids"])
+    ):
+        raise ValueError("pair receipt is not bound to the frozen batch member set")
+    member_count = len(frozen["current_batch_ids"])
+    expected_pair_count = member_count * (member_count - 1) // 2
+    actual_pair_count = conn.execute(
+        """
+        SELECT COUNT(*) FROM audit_batch_pairs
+        WHERE run_id=? AND batch_id=? AND pair_plan_sha=? AND pair_result_sha=?
+        """,
+        (
+            frozen["run_id"], frozen["batch_id"],
+            pair["pair_plan_sha"], pair["pair_result_sha"],
+        ),
+    ).fetchone()[0]
+    if pair["pair_count"] != expected_pair_count or actual_pair_count != pair["pair_count"]:
+        raise ValueError("pair plan is incomplete for the frozen batch member set")
+    if member_count > 1 and conn.execute(
+        """
+        SELECT 1 FROM audit_batch_pairs
+        WHERE run_id=? AND batch_id=? AND pair_plan_sha=? AND pair_result_sha=?
+          AND (left_staging_candidate_id=? OR right_staging_candidate_id=?)
+        LIMIT 1
+        """,
+        (
+            frozen["run_id"], frozen["batch_id"],
+            pair["pair_plan_sha"], pair["pair_result_sha"], staging_id, staging_id,
+        ),
+    ).fetchone() is None:
+        raise ValueError("staged candidate is outside the completed pair plan")
     direction_fields = (
         "run_id", "batch_id", "direction_id", "contract_sha", "validator_version",
         "artifact_sha", "staging_candidate_id", "semantic_relation",

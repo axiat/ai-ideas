@@ -5,7 +5,13 @@ import dataclasses
 import datetime
 import hashlib
 import json
+import re
 import sqlite3
+
+try:
+    from lib import history_contract_v2
+except ImportError:
+    import history_contract_v2
 
 
 MIGRATION_ID = "history-v1-receipt-quarantine-v1"
@@ -755,6 +761,227 @@ END;
 """
 
 
+_SNAPSHOT_BATCH_MEMBERSHIP_SQL = """
+CREATE TABLE audit_snapshot_batch_sets(
+  snapshot_id TEXT PRIMARY KEY REFERENCES audit_snapshots(snapshot_id),
+  run_id TEXT NOT NULL REFERENCES audit_run_manifests(run_id),
+  batch_id TEXT NOT NULL,
+  current_batch_ids_hash TEXT NOT NULL CHECK(length(current_batch_ids_hash) = 64),
+  member_ids_json TEXT NOT NULL,
+  member_count INTEGER NOT NULL CHECK(member_count >= 1),
+  created_at TEXT NOT NULL,
+  UNIQUE(snapshot_id, current_batch_ids_hash),
+  UNIQUE(run_id, batch_id)
+);
+CREATE TABLE audit_batch_pair_set_bindings(
+  run_id TEXT NOT NULL,
+  batch_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL,
+  pair_plan_sha TEXT NOT NULL CHECK(length(pair_plan_sha) = 64),
+  pair_result_sha TEXT NOT NULL CHECK(length(pair_result_sha) = 64),
+  current_batch_ids_hash TEXT NOT NULL CHECK(length(current_batch_ids_hash) = 64),
+  member_count INTEGER NOT NULL CHECK(member_count >= 1),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(run_id, batch_id),
+  FOREIGN KEY(run_id, batch_id)
+    REFERENCES audit_batch_pair_receipts(run_id, batch_id),
+  FOREIGN KEY(snapshot_id, current_batch_ids_hash)
+    REFERENCES audit_snapshot_batch_sets(snapshot_id, current_batch_ids_hash)
+);
+""" + _immutable_guards(
+    "audit_snapshot_batch_sets", "audit_batch_pair_set_bindings"
+) + """
+CREATE TABLE audit_snapshot_batch_membership_probe(
+  value INTEGER NOT NULL CHECK(value = 0)
+);
+INSERT INTO audit_snapshot_batch_membership_probe(value)
+SELECT 1 FROM audit_snapshots snapshot
+WHERE length(snapshot.snapshot_id) = 64
+  AND snapshot.snapshot_id NOT GLOB '*[^0-9a-f]*'
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_snapshot_batch_sets batch_set
+    WHERE batch_set.snapshot_id = snapshot.snapshot_id
+      AND batch_set.run_id = snapshot.run_id
+      AND batch_set.batch_id = snapshot.batch_id
+      AND batch_set.current_batch_ids_hash = snapshot.current_batch_ids_hash
+      AND batch_set.member_count = json_array_length(batch_set.member_ids_json)
+      AND audit_current_batch_ids_sha(batch_set.member_ids_json)
+          = snapshot.current_batch_ids_hash
+  );
+INSERT INTO audit_snapshot_batch_membership_probe(value)
+SELECT 1 FROM audit_batch_pair_receipts receipt
+JOIN audit_snapshots snapshot ON snapshot.snapshot_id = receipt.snapshot_id
+WHERE length(snapshot.snapshot_id) = 64
+  AND snapshot.snapshot_id NOT GLOB '*[^0-9a-f]*'
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_batch_pair_set_bindings binding
+    JOIN audit_snapshot_batch_sets batch_set
+      ON batch_set.snapshot_id = binding.snapshot_id
+     AND batch_set.current_batch_ids_hash = binding.current_batch_ids_hash
+    WHERE binding.run_id = receipt.run_id
+      AND binding.batch_id = receipt.batch_id
+      AND binding.snapshot_id = receipt.snapshot_id
+      AND binding.pair_plan_sha = receipt.pair_plan_sha
+      AND binding.pair_result_sha = receipt.pair_result_sha
+      AND binding.member_count = batch_set.member_count
+  );
+INSERT INTO audit_snapshot_batch_membership_probe(value)
+SELECT 1 FROM audit_activation_maps activation
+JOIN audit_batch_staging staging
+  ON staging.staging_candidate_id = activation.staging_candidate_id
+JOIN audit_batch_pair_receipts receipt
+  ON receipt.run_id = staging.run_id AND receipt.batch_id = staging.batch_id
+WHERE staging.staging_candidate_id GLOB 'stg-v2-*'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_pair_set_bindings binding
+    JOIN audit_snapshot_batch_sets batch_set
+      ON batch_set.snapshot_id = binding.snapshot_id
+     AND batch_set.current_batch_ids_hash = binding.current_batch_ids_hash
+    JOIN json_each(batch_set.member_ids_json) member
+      ON member.value = staging.staging_candidate_id
+    WHERE binding.run_id = receipt.run_id
+      AND binding.batch_id = receipt.batch_id
+      AND binding.snapshot_id = receipt.snapshot_id
+      AND binding.pair_plan_sha = activation.pair_plan_sha
+      AND binding.pair_result_sha = activation.pair_result_sha
+  );
+DROP TABLE audit_snapshot_batch_membership_probe;
+CREATE TRIGGER audit_snapshot_batch_sets_identity_guard
+BEFORE INSERT ON audit_snapshot_batch_sets
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_snapshots snapshot
+    WHERE snapshot.snapshot_id = NEW.snapshot_id
+      AND snapshot.run_id = NEW.run_id
+      AND snapshot.batch_id = NEW.batch_id
+      AND snapshot.current_batch_ids_hash = NEW.current_batch_ids_hash
+      AND snapshot.current_batch_id_namespace = 'history-v2-staging-v1'
+  ) THEN RAISE(ABORT, 'snapshot batch set identity mismatch') END;
+  SELECT CASE WHEN json_array_length(NEW.member_ids_json) <> NEW.member_count
+    OR audit_current_batch_ids_sha(NEW.member_ids_json)
+       <> NEW.current_batch_ids_hash
+    THEN RAISE(ABORT, 'snapshot batch member set hash mismatch') END;
+END;
+CREATE TRIGGER audit_batch_pair_receipts_snapshot_set_guard
+BEFORE INSERT ON audit_batch_pair_receipts
+WHEN length(NEW.snapshot_id) = 64
+  AND NEW.snapshot_id NOT GLOB '*[^0-9a-f]*'
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_snapshot_batch_sets batch_set
+    WHERE batch_set.snapshot_id = NEW.snapshot_id
+      AND batch_set.run_id = NEW.run_id
+      AND batch_set.batch_id = NEW.batch_id
+  ) THEN RAISE(ABORT, 'batch pair snapshot member set is missing') END;
+END;
+CREATE TRIGGER audit_batch_pair_set_bindings_identity_guard
+BEFORE INSERT ON audit_batch_pair_set_bindings
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_pair_receipts receipt
+    JOIN audit_snapshot_batch_sets batch_set
+      ON batch_set.snapshot_id = receipt.snapshot_id
+    WHERE receipt.run_id = NEW.run_id
+      AND receipt.batch_id = NEW.batch_id
+      AND receipt.snapshot_id = NEW.snapshot_id
+      AND receipt.pair_plan_sha = NEW.pair_plan_sha
+      AND receipt.pair_result_sha = NEW.pair_result_sha
+      AND batch_set.run_id = NEW.run_id
+      AND batch_set.batch_id = NEW.batch_id
+      AND batch_set.current_batch_ids_hash = NEW.current_batch_ids_hash
+      AND batch_set.member_count = NEW.member_count
+      AND receipt.pair_count
+          = (batch_set.member_count * (batch_set.member_count - 1)) / 2
+  ) THEN RAISE(ABORT, 'batch pair set binding identity mismatch') END;
+END;
+CREATE TRIGGER audit_batch_pairs_set_binding_guard
+BEFORE INSERT ON audit_batch_pairs
+WHEN NEW.left_staging_candidate_id GLOB 'stg-v2-*'
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_pair_set_bindings binding
+    JOIN audit_snapshot_batch_sets batch_set
+      ON batch_set.snapshot_id = binding.snapshot_id
+     AND batch_set.current_batch_ids_hash = binding.current_batch_ids_hash
+    JOIN json_each(batch_set.member_ids_json) left_member
+      ON left_member.value = NEW.left_staging_candidate_id
+    JOIN json_each(batch_set.member_ids_json) right_member
+      ON right_member.value = NEW.right_staging_candidate_id
+    WHERE binding.run_id = NEW.run_id
+      AND binding.batch_id = NEW.batch_id
+      AND binding.pair_plan_sha = NEW.pair_plan_sha
+      AND binding.pair_result_sha = NEW.pair_result_sha
+  ) THEN RAISE(ABORT, 'batch pair exact set binding is missing') END;
+END;
+DROP TRIGGER IF EXISTS audit_activation_maps_evidence_guard;
+CREATE TRIGGER audit_activation_maps_evidence_guard
+BEFORE INSERT ON audit_activation_maps
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_batch_staging staging
+    WHERE staging.staging_candidate_id = NEW.staging_candidate_id
+      AND staging.raw_artifact_sha = NEW.raw_artifact_sha
+  ) THEN RAISE(ABORT, 'activation staging artifact mismatch') END;
+  SELECT CASE WHEN NEW.staging_candidate_id GLOB 'stg-v2-*'
+    AND NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_staging staging
+    JOIN audit_batch_pair_receipts receipt
+      ON receipt.run_id = staging.run_id
+     AND receipt.batch_id = staging.batch_id
+    JOIN audit_batch_pair_set_bindings binding
+      ON binding.run_id = receipt.run_id
+     AND binding.batch_id = receipt.batch_id
+     AND binding.snapshot_id = receipt.snapshot_id
+     AND binding.pair_plan_sha = receipt.pair_plan_sha
+     AND binding.pair_result_sha = receipt.pair_result_sha
+    JOIN audit_snapshot_batch_sets batch_set
+      ON batch_set.snapshot_id = binding.snapshot_id
+     AND batch_set.current_batch_ids_hash = binding.current_batch_ids_hash
+     AND batch_set.member_count = binding.member_count
+    JOIN audit_snapshots snapshot
+      ON snapshot.snapshot_id = batch_set.snapshot_id
+    JOIN json_each(batch_set.member_ids_json) member
+      ON member.value = staging.staging_candidate_id
+    WHERE staging.staging_candidate_id = NEW.staging_candidate_id
+      AND binding.pair_plan_sha = NEW.pair_plan_sha
+      AND binding.pair_result_sha = NEW.pair_result_sha
+      AND NEW.source_sequence > snapshot.history_as_of_watermark
+      AND (
+        SELECT count(*) FROM audit_batch_pairs pair
+        WHERE pair.run_id = receipt.run_id
+          AND pair.batch_id = receipt.batch_id
+          AND pair.pair_plan_sha = receipt.pair_plan_sha
+          AND pair.pair_result_sha = receipt.pair_result_sha
+      ) = receipt.pair_count
+  ) THEN RAISE(ABORT, 'activation batch membership or watermark mismatch') END;
+  SELECT CASE WHEN NEW.staging_candidate_id NOT GLOB 'stg-v2-*'
+    AND NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_staging staging
+    JOIN audit_batch_pairs pair
+      ON pair.run_id = staging.run_id AND pair.batch_id = staging.batch_id
+     AND (
+       pair.left_staging_candidate_id = staging.staging_candidate_id
+       OR pair.right_staging_candidate_id = staging.staging_candidate_id
+     )
+    WHERE staging.staging_candidate_id = NEW.staging_candidate_id
+      AND pair.pair_plan_sha = NEW.pair_plan_sha
+      AND pair.pair_result_sha = NEW.pair_result_sha
+  ) THEN RAISE(ABORT, 'legacy activation pair evidence mismatch') END;
+  SELECT CASE WHEN NEW.staging_candidate_id GLOB 'stg-v2-*'
+    AND NOT EXISTS (
+    SELECT 1 FROM audit_activation_receipts receipt
+    WHERE receipt.staging_candidate_id = NEW.staging_candidate_id
+      AND receipt.activation_receipt_sha = NEW.activation_receipt_sha
+  ) THEN RAISE(ABORT, 'activation receipt is missing') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
@@ -771,11 +998,43 @@ MIGRATIONS = (
     Migration(
         "l1-pair-snapshot-ownership", 1, _PAIR_SNAPSHOT_OWNERSHIP_SQL
     ),
+    Migration(
+        "l1-snapshot-batch-membership", 1,
+        _SNAPSHOT_BATCH_MEMBERSHIP_SQL,
+    ),
 )
 
 
 def _utc_now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _current_batch_ids_sha(member_ids_json):
+    if not isinstance(member_ids_json, str):
+        raise ValueError("snapshot batch member set must be JSON text")
+    try:
+        values = json.loads(member_ids_json)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("snapshot batch member set is invalid JSON") from exc
+    if (
+        not isinstance(values, list)
+        or not values
+        or values != sorted(values)
+        or len(set(values)) != len(values)
+        or any(
+            not isinstance(value, str)
+            or re.fullmatch(r"stg-v2-[0-9a-f]{64}", value) is None
+            for value in values
+        )
+        or json.dumps(
+            values, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        != member_ids_json
+    ):
+        raise ValueError("snapshot batch member set is not canonical")
+    return history_contract_v2.ordered_set_sha256(
+        "history-current-batch-ids-v2", values
+    )
 
 
 def _execute_sql_script(conn, source):
@@ -843,6 +1102,9 @@ def init_schema(conn):
     _FENCE_GUARDS[id(conn)] = guard
     conn.create_function(
         "audit_fenced_cas_allowed", 0, lambda: 1 if guard["active"] else 0
+    )
+    conn.create_function(
+        "audit_current_batch_ids_sha", 1, _current_batch_ids_sha
     )
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA recursive_triggers = ON")
