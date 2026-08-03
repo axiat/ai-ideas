@@ -1849,6 +1849,103 @@ END;
 """
 
 
+_L2_RUNTIME_SQL = """
+CREATE TABLE audit_task_bindings_v2(
+  task_hash TEXT PRIMARY KEY REFERENCES audit_logical_tasks(task_hash),
+  plan_sha TEXT NOT NULL CHECK(length(plan_sha) = 64),
+  snapshot_id TEXT NOT NULL REFERENCES audit_snapshots(snapshot_id),
+  snapshot_hash TEXT NOT NULL CHECK(length(snapshot_hash) = 64),
+  shard_input_sha TEXT NOT NULL CHECK(length(shard_input_sha) = 64),
+  assigned_item_ids_json TEXT NOT NULL,
+  frozen_records_json TEXT NOT NULL,
+  provider_pool_json TEXT NOT NULL,
+  parent_task_hash TEXT REFERENCES audit_logical_tasks(task_hash),
+  split_depth INTEGER NOT NULL CHECK(split_depth >= 0),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE audit_attempt_completions_v2(
+  attempt_id TEXT PRIMARY KEY REFERENCES audit_task_attempts(attempt_id),
+  output_cas_object_id TEXT NOT NULL REFERENCES audit_cas_objects(object_id),
+  outcome TEXT NOT NULL CHECK(outcome IN (
+    'valid','timeout','429','5xx','overflow','syntax','schema',
+    'item_set','truncated','invalid_anchor','provider_error'
+  )),
+  normalized_result_json TEXT,
+  usage_json TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  CHECK((outcome = 'valid') = (normalized_result_json IS NOT NULL))
+);
+CREATE TABLE audit_task_settlements_v2(
+  task_hash TEXT PRIMARY KEY REFERENCES audit_logical_tasks(task_hash),
+  settlement_sha256 TEXT NOT NULL UNIQUE CHECK(length(settlement_sha256) = 64),
+  settlement_kind TEXT NOT NULL CHECK(settlement_kind IN ('equal','conflict')),
+  normalized_result_json TEXT,
+  valid_attempt_ids_json TEXT NOT NULL,
+  valid_output_cas_ids_json TEXT NOT NULL,
+  settled_at TEXT NOT NULL,
+  CHECK((settlement_kind = 'equal') = (normalized_result_json IS NOT NULL))
+);
+CREATE TABLE audit_task_edges_v2(
+  parent_task_hash TEXT NOT NULL REFERENCES audit_logical_tasks(task_hash),
+  child_task_hash TEXT NOT NULL UNIQUE REFERENCES audit_logical_tasks(task_hash),
+  position INTEGER NOT NULL CHECK(position IN (0,1)),
+  edge_sha256 TEXT NOT NULL UNIQUE CHECK(length(edge_sha256) = 64),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(parent_task_hash, position),
+  CHECK(parent_task_hash <> child_task_hash)
+);
+CREATE TABLE audit_task_terminal_facts_v2(
+  task_hash TEXT PRIMARY KEY REFERENCES audit_logical_tasks(task_hash),
+  terminal_state TEXT NOT NULL CHECK(terminal_state IN ('superseded','exhausted')),
+  reason TEXT NOT NULL,
+  fact_sha256 TEXT NOT NULL UNIQUE CHECK(length(fact_sha256) = 64),
+  created_at TEXT NOT NULL
+);
+""" + _immutable_guards(
+    "audit_task_bindings_v2",
+    "audit_attempt_completions_v2",
+    "audit_task_settlements_v2",
+    "audit_task_edges_v2",
+    "audit_task_terminal_facts_v2",
+) + """
+CREATE TRIGGER audit_task_bindings_v2_owner_guard
+BEFORE INSERT ON audit_task_bindings_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_logical_tasks task
+    JOIN audit_run_manifests run ON run.run_id = task.run_id
+    JOIN audit_snapshots snapshot ON snapshot.snapshot_id = NEW.snapshot_id
+    WHERE task.task_hash = NEW.task_hash
+      AND run.plan_hash = NEW.plan_sha
+      AND snapshot.run_id = task.run_id
+      AND snapshot.snapshot_hash = NEW.snapshot_hash
+  ) THEN RAISE(ABORT, 'L2 task binding ownership mismatch') END;
+END;
+CREATE TRIGGER audit_attempt_completions_v2_owner_guard
+BEFORE INSERT ON audit_attempt_completions_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_task_attempts attempt
+    JOIN audit_logical_tasks task ON task.task_hash = attempt.task_hash
+    JOIN audit_task_bindings_v2 binding ON binding.task_hash = task.task_hash
+    JOIN audit_cas_objects output ON output.object_id = NEW.output_cas_object_id
+    WHERE attempt.attempt_id = NEW.attempt_id
+      AND output.integrity_state = 'verified'
+  ) THEN RAISE(ABORT, 'L2 attempt completion ownership mismatch') END;
+END;
+CREATE TRIGGER audit_task_settlements_v2_state_guard
+BEFORE INSERT ON audit_task_settlements_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_logical_tasks task
+    WHERE task.task_hash = NEW.task_hash AND task.state = 'settling'
+  ) THEN RAISE(ABORT, 'L2 settlement requires settling state') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
@@ -1880,6 +1977,7 @@ MIGRATIONS = (
         "l1-strict-pair-completion", 1,
         _STRICT_PAIR_COMPLETION_SQL,
     ),
+    Migration("l2-runtime", 1, _L2_RUNTIME_SQL),
 )
 
 

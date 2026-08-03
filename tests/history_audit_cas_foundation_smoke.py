@@ -72,9 +72,10 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
             INSERT INTO audit_snapshots(
               snapshot_id, snapshot_hash, history_as_of_watermark,
               current_batch_id_namespace, current_batch_ids_hash,
-              exclusion_policy_sha, expected_asset_ids_hash, created_at
+              exclusion_policy_sha, expected_asset_ids_hash, created_at,
+              run_id, batch_id
             ) VALUES('snapshot-1', ?, 7, 'history-v2-staging-v1', ?, ?, ?,
-                     '2026-08-03T00:00:00Z')
+                     '2026-08-03T00:00:00Z', 'run-1', 'batch-1')
             """,
             (SHA, SHA, SHA, SHA),
         )
@@ -249,9 +250,10 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
             INSERT INTO audit_snapshots(
               snapshot_id, snapshot_hash, history_as_of_watermark,
               current_batch_id_namespace, current_batch_ids_hash,
-              exclusion_policy_sha, expected_asset_ids_hash, created_at
+              exclusion_policy_sha, expected_asset_ids_hash, created_at,
+              run_id, batch_id
             ) VALUES('snapshot-1', ?, 7, 'history-v2-staging-v1', ?, ?, ?,
-                     '2026-08-03T00:00:00Z')
+                     '2026-08-03T00:00:00Z', 'run-1', 'batch-1')
             """,
             (SHA, SHA, SHA, SHA),
         )
@@ -333,9 +335,10 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
             INSERT INTO audit_snapshots(
               snapshot_id, snapshot_hash, history_as_of_watermark,
               current_batch_id_namespace, current_batch_ids_hash,
-              exclusion_policy_sha, expected_asset_ids_hash, created_at
+              exclusion_policy_sha, expected_asset_ids_hash, created_at,
+              run_id, batch_id
             ) VALUES('snapshot-1', ?, 7, 'history-v2-staging-v1', ?, ?, ?,
-                     '2026-08-03T00:00:00Z')
+                     '2026-08-03T00:00:00Z', 'run-1', 'batch-1')
             """,
             (SHA, SHA, SHA, SHA),
         )

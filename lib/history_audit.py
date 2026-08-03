@@ -1,5 +1,6 @@
 """Frozen-corpus M0 L1 history audit contracts."""
 
+import copy
 import datetime
 import hashlib
 import json
@@ -1313,3 +1314,163 @@ def build_l1_receipt(snapshot, retrieval, adjudication, qualification):
         "evidence_anchors": adjudication["evidence_anchors"],
     }
     return contract.validate_receipt(receipt)
+
+
+_L2_RELATION_SEVERITY = {
+    "distinct": 0,
+    "related_only": 1,
+    "uncertain": 2,
+    "substantive_overlap": 3,
+    "blocking_duplicate": 4,
+}
+_L2_EXCEPTIONAL_RELATIONS = frozenset(
+    {"blocking_duplicate", "substantive_overlap", "uncertain"}
+)
+
+
+def _collapse_l2_exceptional_cards(rows):
+    by_lineage = {}
+    for row in rows:
+        relation = row["semantic_relation"]
+        if relation not in _L2_EXCEPTIONAL_RELATIONS:
+            continue
+        lineage_id = row["lineage_id"]
+        card = by_lineage.setdefault(
+            lineage_id,
+            {
+                "lineage_id": lineage_id,
+                "semantic_relation": relation,
+                "item_ids": [],
+                "evidence": [],
+            },
+        )
+        if _L2_RELATION_SEVERITY[relation] > _L2_RELATION_SEVERITY[card["semantic_relation"]]:
+            card["semantic_relation"] = relation
+        card["item_ids"].append(row["item_id"])
+        card["evidence"].append(copy.deepcopy(row["anchor"]))
+    result = []
+    for lineage_id in sorted(by_lineage):
+        card = by_lineage[lineage_id]
+        card["item_ids"] = sorted(set(card["item_ids"]))
+        unique = {
+            contract.canonical_bytes(anchor): anchor for anchor in card["evidence"]
+        }
+        card["evidence"] = [unique[key] for key in sorted(unique)]
+        result.append(card)
+    return result
+
+
+def summarize_l2_coverage(plan, settlements, semantic_qualification):
+    """Collapse terminal map facts into coverage, cards, gates, and fixed status."""
+    if (
+        not isinstance(plan, dict)
+        or not isinstance(plan.get("snapshot"), dict)
+        or not isinstance(plan["snapshot"].get("records"), list)
+        or not isinstance(settlements, list)
+    ):
+        raise ValueError("L2 coverage inputs are invalid")
+    if (
+        not isinstance(semantic_qualification, dict)
+        or set(semantic_qualification) != {"qualified", "profile_id"}
+        or type(semantic_qualification["qualified"]) is not bool
+        or not isinstance(semantic_qualification["profile_id"], str)
+        or not semantic_qualification["profile_id"]
+    ):
+        raise ValueError("semantic qualification is invalid")
+    expected_ids = sorted(item["item_id"] for item in plan["snapshot"]["records"])
+    if len(set(expected_ids)) != len(expected_ids):
+        raise ValueError("snapshot asset IDs are duplicated")
+    observed = []
+    rows = []
+    conflicts = False
+    exhausted_reasons = []
+    invalid_schema = False
+    invalid_anchor = False
+    for settlement in settlements:
+        if not isinstance(settlement, dict):
+            raise ValueError("terminal settlement is invalid")
+        state = settlement.get("state")
+        if state == "superseded":
+            continue
+        if state == "exhausted":
+            reason = settlement.get("reason") or "budget_exceeded"
+            exhausted_reasons.append(reason)
+            invalid_schema = invalid_schema or reason in {"schema", "stale_snapshot"}
+            invalid_anchor = invalid_anchor or reason == "invalid_anchor"
+            continue
+        if state != "settled":
+            continue
+        if settlement.get("settlement_kind") == "conflict":
+            conflicts = True
+            observed.extend(settlement.get("item_ids", []))
+            continue
+        normalized = settlement.get("normalized_result")
+        if not isinstance(normalized, dict) or not isinstance(normalized.get("items"), list):
+            raise ValueError("equal settlement lacks normalized result")
+        for row in normalized["items"]:
+            if not isinstance(row, dict) or not {
+                "item_id", "lineage_id", "semantic_relation", "lineage_relation", "anchor"
+            }.issubset(row):
+                raise ValueError("normalized L2 row is invalid")
+            observed.append(row["item_id"])
+            rows.append(copy.deepcopy(row))
+    observed_set = set(observed)
+    duplicate_ids = sorted({item_id for item_id in observed if observed.count(item_id) > 1})
+    missing_ids = sorted(set(expected_ids).difference(observed_set))
+    extra_ids = sorted(observed_set.difference(expected_ids))
+    exceptional = _collapse_l2_exceptional_cards(rows)
+    verified_hits = [
+        card for card in exceptional
+        if card["semantic_relation"] in {"blocking_duplicate", "substantive_overlap"}
+    ]
+    semantic_uncertain = any(
+        card["semantic_relation"] == "uncertain" for card in exceptional
+    )
+    coverage_complete = not (
+        missing_ids or duplicate_ids or extra_ids or invalid_schema or invalid_anchor
+    )
+    adjudication_complete = coverage_complete and not (
+        conflicts or exhausted_reasons or semantic_uncertain
+    )
+    exhausted_reason = sorted(exhausted_reasons)[0] if exhausted_reasons else None
+    no_match_basis = (
+        "l2_exhaustive"
+        if coverage_complete
+        and adjudication_complete
+        and semantic_qualification["qualified"]
+        and not verified_hits
+        and not exceptional
+        else None
+    )
+    status, reason = derive_final_status(
+        identity_valid=not (invalid_schema or invalid_anchor),
+        verified_hits=verified_hits,
+        coverage_complete=coverage_complete,
+        adjudication_complete=adjudication_complete,
+        semantic_policy_qualified=semantic_qualification["qualified"],
+        unresolved_conflict=conflicts or semantic_uncertain,
+        exhausted_reason=exhausted_reason,
+        no_match_basis=no_match_basis,
+    )
+    return {
+        "expected_ids": expected_ids,
+        "observed_ids": sorted(observed_set.intersection(expected_ids)),
+        "missing_ids": missing_ids,
+        "duplicate_ids": duplicate_ids,
+        "extra_ids": extra_ids,
+        "invalid_schema": invalid_schema,
+        "invalid_anchor": invalid_anchor,
+        "truncated": False,
+        "coverage_complete": coverage_complete,
+        "adjudication_complete": adjudication_complete,
+        "semantic_policy_qualified": semantic_qualification["qualified"],
+        "semantic_policy_profile_id": semantic_qualification["profile_id"],
+        "no_match_basis": no_match_basis if status == "complete_no_match" else None,
+        "final_status": status,
+        "stage_reason_code": reason,
+        "reducer_input": exceptional,
+        "lineage_vote_count": len(exceptional),
+        "evidence_anchors": [
+            anchor for card in exceptional for anchor in card["evidence"]
+        ],
+    }

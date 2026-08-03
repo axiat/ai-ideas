@@ -260,6 +260,78 @@ def settle_attempt(reservation_id, actual_usage, usage_verified, events):
     )
 
 
+_RUNTIME_ATTEMPT_KINDS = frozenset(
+    {"initial", "retry", "failover", "split", "detail", "reduce"}
+)
+
+
+def append_runtime_budget_event(events, *, work_id, attempt_kind, usage):
+    """Append one idempotent realized-work event without replaying plan reserves."""
+    if not isinstance(events, list):
+        raise AuditPlanError("invalid_budget_ledger")
+    if not isinstance(work_id, str) or not work_id:
+        raise AuditPlanError("invalid_runtime_budget", "work_id")
+    if attempt_kind not in _RUNTIME_ATTEMPT_KINDS:
+        raise AuditPlanError("invalid_runtime_budget", "attempt_kind")
+    if (
+        not isinstance(usage, dict)
+        or not {"input_tokens", "output_tokens", "provider_usage_units"}.issubset(usage)
+        or set(usage).difference(_RESOURCE_FIELDS)
+    ):
+        raise AuditPlanError("invalid_runtime_budget", "usage")
+    normalized = {
+        field: _require_nonnegative(value, field) for field, value in usage.items()
+    }
+    material = {
+        "event_type": "runtime_attempt_settled",
+        "work_id": work_id,
+        "attempt_kind": attempt_kind,
+        "usage": normalized,
+    }
+    prior = [
+        event for event in events
+        if event.get("event_type") == "runtime_attempt_settled"
+        and event.get("work_id") == work_id
+    ]
+    if prior:
+        comparable = {
+            key: prior[0][key]
+            for key in ("event_type", "work_id", "attempt_kind", "usage")
+        }
+        if comparable != material:
+            raise AuditPlanError("conflicting_runtime_budget_event")
+        return prior[0]
+    return _event(events, material)
+
+
+def realized_budget_totals(events):
+    """Count realized Task 5 work only; planner reservations stay separate."""
+    totals = {
+        "started_attempts": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "provider_usage_units": 0,
+    }
+    currency_known = False
+    seen = set()
+    for event in events:
+        if event.get("event_type") != "runtime_attempt_settled":
+            continue
+        work_id = event.get("work_id")
+        if work_id in seen:
+            continue
+        seen.add(work_id)
+        totals["started_attempts"] += 1
+        for field, value in event["usage"].items():
+            if field == "currency_micros":
+                currency_known = True
+                totals.setdefault(field, 0)
+            totals[field] += value
+    if not currency_known:
+        totals.pop("currency_micros", None)
+    return totals
+
+
 def _validate_pools(provider_pools):
     if not isinstance(provider_pools, dict) or set(provider_pools) != set(_POOL_FIELDS):
         raise AuditPlanError("invalid_provider_pools")
