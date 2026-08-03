@@ -1021,15 +1021,26 @@ def split_task(conn, parent_key):
             child_hash = history_contract_v2.logical_task_key(
                 parent["plan_sha"], parent["stage"], parent["staging_candidate_id"], input_sha
             )
-            conn.execute(
-                """
-                INSERT INTO audit_logical_tasks(
-                  task_hash, run_id, stage, staging_candidate_id, input_id,
-                  state, fence, claim_token, lease_until, created_at
-                ) VALUES(?, ?, ?, ?, ?, 'planned', 0, NULL, NULL, ?)
-                """,
-                (child_hash, parent["run_id"], parent["stage"], parent["staging_candidate_id"], child_input, created_at),
-            )
+            with history_audit_store.l2_split_task_insert_guard(
+                conn,
+                task_hash=child_hash,
+                run_id=parent["run_id"],
+                stage=parent["stage"],
+                candidate_id=parent["staging_candidate_id"],
+                input_id=child_input,
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO audit_logical_tasks(
+                      task_hash, run_id, stage, staging_candidate_id, input_id,
+                      state, fence, claim_token, lease_until, created_at
+                    ) VALUES(?, ?, ?, ?, ?, 'planned', 0, NULL, NULL, ?)
+                    """,
+                    (
+                        child_hash, parent["run_id"], parent["stage"],
+                        parent["staging_candidate_id"], child_input, created_at,
+                    ),
+                )
             conn.execute(
                 """
                 INSERT INTO audit_task_bindings_v2(

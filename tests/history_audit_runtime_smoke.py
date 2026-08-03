@@ -63,7 +63,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 "executable": provider,
                 "cli_revision": "fake-cli-v1",
             }
-            for provider in ("codex", "grok")
+            for provider in ("codex", "grok", "reviewer")
         }
         self.plan = self._plan(self.records)
 
@@ -156,7 +156,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             "candidate": candidate,
             "snapshot": snapshot,
             "provider_pools_ordered": {
-                "comparator": ["codex"],
+                "comparator": ["reviewer"],
                 "map": ["codex", "grok"],
                 "detail": ["codex"],
                 "reduce": ["codex"],
@@ -439,6 +439,150 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                     request["object_id"], self._now(),
                 ),
             )
+
+    def _insert_forged_task_binding_chain(self, conn, plan, cas_root):
+        shard = plan["shards"][0]
+        forged_task = sha("forged-upgrade-task")
+        request_bytes = shard["serialized_request"].encode()
+        request = history_execution.history_cas.put_object(
+            conn, cas_root, request_bytes, "attempt-transient-7d",
+            expires_at="2026-08-10T00:00:00+00:00",
+        )
+        provenance = {
+            **copy.deepcopy(self.capabilities["reviewer"]),
+            "attempt_kind": "initial",
+            "ordinal": 0,
+            "claim_token": "forged-worker",
+            "claim_fence": 0,
+        }
+        attempt_id = history_contract_v2.attempt_id(forged_task, 0, provenance)
+        maximum = plan["capacity_profile"]["max_output_tokens"]
+        reserved = {
+            "input_tokens": len(request_bytes),
+            "output_tokens": maximum,
+            "provider_usage_units": len(request_bytes) + maximum,
+        }
+        conn.execute(
+            """
+            INSERT INTO audit_logical_tasks(
+              task_hash, run_id, stage, staging_candidate_id, input_id,
+              state, fence, claim_token, lease_until, created_at
+            ) VALUES(?, ?, 'map', 'forged-candidate', ?,
+                     'planned', 0, NULL, NULL, ?)
+            """,
+            (forged_task, plan["run_id"], shard["shard_id"], self._now()),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_task_bindings_v2(
+              task_hash, plan_sha, snapshot_id, snapshot_hash,
+              shard_input_sha, assigned_item_ids_json, frozen_records_json,
+              provider_pool_json, parent_task_hash, split_depth, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?)
+            """,
+            (
+                forged_task, plan["plan_sha"], plan["snapshot"]["snapshot_id"],
+                plan["snapshot"]["snapshot_hash"], shard["request_sha256"],
+                history_contract_v2.canonical_bytes(shard["item_ids"]).decode(),
+                history_contract_v2.canonical_bytes(plan["snapshot"]["records"]).decode(),
+                history_contract_v2.canonical_bytes(["reviewer"]).decode(),
+                self._now(),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_l2_task_inputs_v2(
+              task_hash, input_id, request_sha, request_text,
+              item_ids_json, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (
+                forged_task, shard["shard_id"], shard["request_sha256"],
+                shard["serialized_request"],
+                history_contract_v2.canonical_bytes(shard["item_ids"]).decode(),
+                self._now(),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_runtime_budget_reservations_v2(
+              attempt_id, task_hash, plan_sha, candidate_id, intent,
+              attempt_kind, reserved_json, created_at
+            ) VALUES(?, ?, ?, ?, ?, 'initial', ?, ?)
+            """,
+            (
+                attempt_id, forged_task, plan["plan_sha"],
+                plan["candidate"]["candidate_id"], plan["intent"],
+                history_contract_v2.canonical_bytes(reserved).decode(), self._now(),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_task_attempts(
+              attempt_id, task_hash, ordinal, provenance_json,
+              request_cas_object_id, output_cas_object_id, state, created_at
+            ) VALUES(?, ?, 0, ?, ?, NULL, 'started', ?)
+            """,
+            (
+                attempt_id, forged_task,
+                history_contract_v2.canonical_bytes(provenance).decode(),
+                request["object_id"], self._now(),
+            ),
+        )
+
+    def test_database_rejects_forged_task_binding_before_attempt_authority(self):
+        plan = self._install()
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "forged task authority"
+        ):
+            self._insert_forged_task_binding_chain(
+                self.conn, plan, self.cas_root
+            )
+
+    def test_upgrade_probe_rejects_existing_forged_task_binding_chain(self):
+        conn = sqlite3.connect(self.root / "forged-upgrade.sqlite3")
+        conn.row_factory = sqlite3.Row
+        before_task_authority = tuple(
+            migration for migration in history_audit_store.MIGRATIONS
+            if migration.component != "l2-runtime-task-authority"
+        )
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", before_task_authority
+        ):
+            history_audit_store.init_schema(conn)
+            history_execution.persist_plan(conn, self.plan)
+            self._insert_forged_task_binding_chain(
+                conn, self.plan, self.root / "forged-upgrade-cas"
+            )
+            conn.commit()
+        try:
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.init_schema(conn)
+        finally:
+            conn.close()
+
+    def test_valid_root_and_split_facts_upgrade_into_task_authority(self):
+        conn = sqlite3.connect(self.root / "valid-task-authority-upgrade.sqlite3")
+        conn.row_factory = sqlite3.Row
+        before_task_authority = tuple(
+            migration for migration in history_audit_store.MIGRATIONS
+            if migration.component != "l2-runtime-task-authority"
+        )
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", before_task_authority
+        ):
+            history_audit_store.init_schema(conn)
+            history_execution.persist_plan(conn, self.plan)
+            history_execution.split_task(conn, self.plan["logical_task_keys"][0])
+        history_audit_store.init_schema(conn)
+        applied = conn.execute(
+            """
+            SELECT 1 FROM audit_schema_migrations
+            WHERE component='l2-runtime-task-authority' AND version=1
+            """
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(applied)
 
     def _legacy_l2_connection(
         self, *, through_authority=False, fact_kind="planned"
