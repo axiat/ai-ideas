@@ -2,23 +2,31 @@
 # Run the bounded idea-hunt protocol.
 #
 # SQLite is the only history authority.  ledger.tsv and tmp/ledger.good are
-# replayable projections reconciled by the history runtime.  Generation,
-# internal-history comparison, and every review seat run through the contained
-# stage ABI; selector, prescreen, external prior-work research, report assembly,
-# and publication retain their existing process boundaries.
+# replayable projections reconciled by the history runtime. Generation,
+# internal-history comparison, and every review seat use contained-v1 or
+# portable-v2. Selector, prescreen, external prior-work research, report
+# assembly, and publication retain their existing process boundaries.
 #
 # Usage:
 #   ./hunt.sh [failure retry delay in minutes; default: 150]
 #
 # Main controls:
+#   HISTORY_RUNTIME_ABI=v1|v2
+#       V1 is the compatibility default. V2 selects provider-neutral portable
+#       execution for generation, history comparison, and review.
+#   HUNT_PROVIDER / HUNT_MODEL / HUNT_REASONING_EFFORT
+#       V2 base provider and optional exact overrides. Provider/model/reasoning
+#       values omitted from the environment preserve the CLI's current defaults.
+#   HUNT_REVIEW_PROVIDER_<N> / MODEL_<N> / REASONING_EFFORT_<N>
+#       Optional v2 review-seat overrides.
 #   AGENT_CMD / FRONT_CMD / BACK_CMD
-#       Legacy external command strings for selector, prescreen, research, and
-#       report.  They are parsed as argv without eval or a shell.
+#       External command strings for selector, prescreen, research, and report.
+#       They are parsed as argv without eval or a shell and never enter v2
+#       internal stages.
 #   CONTAINED_AGENT_CMD_JSON
-#       Canonical absolute JSON argv for generation and comparison.  The
-#       default is the registered Codex xhigh prefix.
+#       V1 canonical absolute JSON argv for generation and comparison.
 #   CONTAINED_REV_CMD_<N>_JSON
-#       Optional canonical absolute JSON argv override for review seat N.
+#       Optional v1 canonical absolute JSON argv override for review seat N.
 #   HISTORY_CALIBRATION_CAPABILITY / HISTORY_PRODUCTION_TRUST_ROOT
 #       Production enforcement authority.  Shadow mode needs neither.
 #   REVIEWERS, MIN_READ, SHORT_MAX, THEME_MIN_LOW, AXIOM_MIN_CRACKS
@@ -55,6 +63,62 @@ hunt_provider_diagnostic() {
   printf '%s\n' "$output"
 }
 
+hunt_write_provider_profile() {
+  local output=$1 provider=$2 model=$3 reasoning=$4 temporary
+  local -a command=(
+    python3 -B lib/history_audit_cli.py provider-command
+    --surface hunt
+    --provider "$provider"
+  )
+  [ -z "$model" ] || command+=(--model "$model")
+  [ -z "$reasoning" ] || command+=(--reasoning "$reasoning")
+  mkdir -p "$(dirname "$output")" || return 1
+  temporary="${output}.tmp.$$"
+  if ! "${command[@]}" > "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  chmod 600 "$temporary" || { rm -f "$temporary"; return 1; }
+  mv -f "$temporary" "$output"
+}
+
+hunt_write_base_profile() {
+  hunt_write_provider_profile \
+    "$1" \
+    "${HUNT_PROVIDER:-codex}" \
+    "${HUNT_MODEL:-}" \
+    "${HUNT_REASONING_EFFORT:-}"
+}
+
+hunt_write_review_profile() {
+  local seat=$1 output=$2 provider model reasoning provider_changed=0
+  local provider_name="HUNT_REVIEW_PROVIDER_${seat}"
+  local model_name="HUNT_REVIEW_MODEL_${seat}"
+  local reasoning_name="HUNT_REVIEW_REASONING_EFFORT_${seat}"
+  local base_provider=${HUNT_PROVIDER:-codex}
+  if runtime_variable_is_set "$provider_name" && [ -n "${!provider_name}" ]; then
+    provider=${!provider_name}
+  else
+    provider=$base_provider
+  fi
+  [ "$provider" = "$base_provider" ] || provider_changed=1
+  if runtime_variable_is_set "$model_name"; then
+    model=${!model_name}
+  elif [ "$provider_changed" -eq 1 ]; then
+    model=
+  else
+    model=${HUNT_MODEL:-}
+  fi
+  if runtime_variable_is_set "$reasoning_name"; then
+    reasoning=${!reasoning_name}
+  elif [ "$provider_changed" -eq 1 ]; then
+    reasoning=
+  else
+    reasoning=${HUNT_REASONING_EFFORT:-}
+  fi
+  hunt_write_provider_profile "$output" "$provider" "$model" "$reasoning"
+}
+
 hunt_runtime_preflight() {
   local abi=v1 name index indices="" provider model reasoning diagnostic
   local base_provider base_model base_reasoning provider_changed reviewer_limit
@@ -64,6 +128,7 @@ hunt_runtime_preflight() {
   fi
   case "$abi" in
     v1)
+      HUNT_RUNTIME_ABI=v1
       for name in HUNT_PROVIDER HUNT_MODEL HUNT_REASONING_EFFORT; do
         if runtime_variable_is_set "$name"; then
           printf 'hunt.sh: %s is valid only with HISTORY_RUNTIME_ABI=v2\n' \
@@ -171,10 +236,8 @@ hunt_runtime_preflight() {
       >/dev/null || return 2
   done
 
-  printf '%s\n' \
-    "hunt.sh: HISTORY_RUNTIME_ABI=v2 portable stages are not wired; unsupported in this checkpoint: $diagnostic" \
-    >&2
-  return 2
+  HUNT_RUNTIME_ABI=v2
+  return 0
 }
 
 hunt_runtime_preflight || exit 2
@@ -221,6 +284,15 @@ log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG"
 }
 
+copy_mutable_round_view() {
+  local source=$1 destination=$2 temporary="${2}.tmp.$$"
+  if ! cp "$source" "$temporary" || ! chmod 600 "$temporary" \
+     || ! mv -f "$temporary" "$destination"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+
 is_uint() {
   case "$1" in
     ''|*[!0-9]*) return 1 ;;
@@ -237,38 +309,49 @@ validate_config() {
   do
     value=${!name}
     is_uint "$value" || {
-      log "$name must be a nonnegative integer: $value"
+      printf 'hunt.sh: %s must be a nonnegative integer: %s\n' \
+        "$name" "$value" >&2
       exit 2
     }
   done
-  [ "$MAX_FAILS" -ge 1 ] || { log "MAX_FAILS must be at least 1"; exit 2; }
-  [ "$REVIEWERS" -ge 1 ] || { log "REVIEWERS must be at least 1"; exit 2; }
-  [ "$EMPTY_MAX" -ge 1 ] || { log "EMPTY_MAX must be at least 1"; exit 2; }
-  [ "$SHORT_MAX" -ge 1 ] || { log "SHORT_MAX must be at least 1"; exit 2; }
+  [ "$MAX_FAILS" -ge 1 ] || {
+    printf 'hunt.sh: MAX_FAILS must be at least 1\n' >&2; exit 2;
+  }
+  [ "$REVIEWERS" -ge 1 ] || {
+    printf 'hunt.sh: REVIEWERS must be at least 1\n' >&2; exit 2;
+  }
+  [ "$EMPTY_MAX" -ge 1 ] || {
+    printf 'hunt.sh: EMPTY_MAX must be at least 1\n' >&2; exit 2;
+  }
+  [ "$SHORT_MAX" -ge 1 ] || {
+    printf 'hunt.sh: SHORT_MAX must be at least 1\n' >&2; exit 2;
+  }
   [ "$AXIOM_MIN_CRACKS" -ge 1 ] || {
-    log "AXIOM_MIN_CRACKS must be at least 1"
+    printf 'hunt.sh: AXIOM_MIN_CRACKS must be at least 1\n' >&2
     exit 2
   }
   case "$ALLOW_ZERO_NO_HIT_SLEEP" in
     0|1) ;;
-    *) log "ALLOW_ZERO_NO_HIT_SLEEP must be 0 or 1"; exit 2 ;;
+    *) printf 'hunt.sh: ALLOW_ZERO_NO_HIT_SLEEP must be 0 or 1\n' >&2; exit 2 ;;
   esac
   case "$RESUME_FRONT" in
     0|1) ;;
-    *) log "RESUME_FRONT must be 0 or 1"; exit 2 ;;
+    *) printf 'hunt.sh: RESUME_FRONT must be 0 or 1\n' >&2; exit 2 ;;
   esac
   if [ "$NO_HIT_SLEEP_MIN_LO" -gt "$NO_HIT_SLEEP_MIN_HI" ]; then
-    log "NO_HIT_SLEEP_MIN_LO cannot exceed NO_HIT_SLEEP_MIN_HI"
+    printf 'hunt.sh: NO_HIT_SLEEP_MIN_LO cannot exceed NO_HIT_SLEEP_MIN_HI\n' >&2
     exit 2
   fi
   if [ "$ALLOW_ZERO_NO_HIT_SLEEP" != 1 ] \
      && { [ "$NO_HIT_SLEEP_MIN_LO" -lt 1 ] \
        || [ "$NO_HIT_SLEEP_MIN_HI" -lt 1 ]; }; then
-    log "No-hit sleeps must be positive outside explicit test configuration"
+    printf '%s\n' \
+      'hunt.sh: No-hit sleeps must be positive outside explicit test configuration' \
+      >&2
     exit 2
   fi
   case "$RUNS_DIR" in
-    ''|/) log "RUNS_DIR must name a bounded directory"; exit 2 ;;
+    ''|/) printf 'hunt.sh: RUNS_DIR must name a bounded directory\n' >&2; exit 2 ;;
   esac
 }
 
@@ -408,6 +491,101 @@ history_runtime_authorized() {
   "${command_line[@]}"
 }
 
+history_audit_init() {
+  [ "$HUNT_RUNTIME_ABI" = v2 ] || return 0
+  python3 -B lib/history_audit_cli.py init \
+    --db "$HISTORY_DB" \
+    --cas-root "$HISTORY_STATE_ROOT/audit-cas"
+}
+
+history_audit_plan_shadow_round() {
+  local batch=$1 selection=$2 observation_root=$3 output_root=$4 profile_root=$5
+  local candidate_id candidate_path observation_path seat candidate_list
+  local -a profile_args=(
+    --execution-request-profile "$profile_root/base.json"
+  )
+  [ "$HUNT_RUNTIME_ABI" = v2 ] || return 0
+  mkdir -p "$output_root/candidates" || return 1
+  for seat in $(seq 1 "$REVIEWERS"); do
+    if ! hunt_write_review_profile \
+      "$seat" "$profile_root/review-${seat}.json"; then
+      return 1
+    fi
+    profile_args+=(
+      --execution-request-profile "$profile_root/review-${seat}.json"
+    )
+  done
+  candidate_list="$output_root/candidates.tsv"
+  if ! python3 -B - \
+    "$batch" "$selection" "$observation_root" "$output_root/candidates" \
+    > "$candidate_list" <<'PY'
+import json
+import pathlib
+import sys
+
+from lib import history_audit_plan
+from lib import history_runtime
+
+batch_path, selection_path, observation_root, candidate_root = sys.argv[1:]
+batch = json.loads(pathlib.Path(batch_path).read_text(encoding="utf-8"))
+history_runtime.verify_frozen_batch(batch)
+selection = json.loads(pathlib.Path(selection_path).read_text(encoding="utf-8"))
+selected = {
+    item["candidate_id"]
+    for item in selection.get("targets", [])
+    if item.get("disposition") == "shortlist"
+}
+root = pathlib.Path(candidate_root)
+root.mkdir(parents=True, exist_ok=True)
+for source_order, descriptor in enumerate(batch["candidates"]):
+    candidate_id = descriptor["candidate_id"]
+    if candidate_id not in selected:
+        continue
+    candidate = {
+        "candidate_id": candidate_id,
+        "candidate_hash": "",
+        "raw_artifact_sha": descriptor["content_sha256"],
+        "source_order": source_order,
+    }
+    candidate["candidate_hash"] = history_audit_plan.runtime_candidate_hash(
+        candidate
+    )
+    raw = (
+        json.dumps(
+            candidate,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    candidate_path = root / f"{candidate_id}.json"
+    candidate_path.write_bytes(raw)
+    observation_path = (
+        pathlib.Path(observation_root)
+        / candidate_id
+        / "build-observation.json"
+    )
+    print(candidate_id, candidate_path, observation_path, sep="\t")
+PY
+  then
+    return 1
+  fi
+  while IFS=$'\t' read -r candidate_id candidate_path observation_path; do
+    [ -n "$candidate_id" ] || continue
+    python3 -B lib/history_audit_cli.py plan \
+      --db "$HISTORY_DB" \
+      --candidate "$candidate_path" \
+      --batch "$batch" \
+      --intent duplicate_search \
+      --output "$output_root/${candidate_id}.json" \
+      --l1-observation "$observation_path" \
+      "${profile_args[@]}" \
+      > "$output_root/${candidate_id}.stdout" \
+      || return 1
+  done < "$candidate_list"
+}
+
 history_startup() {
   local brief=$1 lens=${2:-}
   local -a startup_args=(
@@ -462,6 +640,22 @@ run_contained_stage() {
     --output-root "$output_root" \
     --manifest "$manifest" \
     --command "$command_json" \
+    "$@"
+}
+
+run_portable_generate_stage() {
+  local profile=$1 output_root=$2 state_root=$3 prompt_path=$4
+  shift 4
+  printf '%s\n' '{"schema_version":1,"stage":"generate"}' \
+    > "$prompt_path" || return 1
+  chmod 600 "$prompt_path" || return 1
+  python3 -B lib/portable_stage.py run \
+    --provider-request-profile "$profile" \
+    --stage generate \
+    --seat generate \
+    --serialized-prompt "$prompt_path" \
+    --output-root "$output_root" \
+    --state-root "$state_root" \
     "$@"
 }
 
@@ -527,13 +721,23 @@ history_materialize_selection() {
 }
 
 history_compare_shortlist() {
-  history_runtime_authorized compare-targets \
-    --db "$HISTORY_DB" \
-    --policy "$HISTORY_POLICY" \
-    --batch "$1" \
-    --artifact-root "$2" \
-    --selection "$3" \
-    --command "$4"
+  local -a compare_args=(
+    compare-targets
+    --db "$HISTORY_DB"
+    --policy "$HISTORY_POLICY"
+    --batch "$1"
+    --artifact-root "$2"
+    --selection "$3"
+  )
+  if [ "$HUNT_RUNTIME_ABI" = v2 ]; then
+    compare_args+=(
+      --executor portable-v2
+      --provider-request-profile "$4"
+    )
+  else
+    compare_args+=(--command "$4")
+  fi
+  history_runtime_authorized "${compare_args[@]}"
 }
 
 history_compare_targets() {
@@ -1287,6 +1491,11 @@ direction_active=0
 if [ -f "$startup_root/direction-constraint.json" ]; then
   direction_active=1
 fi
+if [ "$HUNT_RUNTIME_ABI" = v2 ] \
+   && ! history_audit_init > "$startup_root/audit-init.json"; then
+  log "History audit-v2 initialization failed before agent invocation"
+  exit 2
+fi
 if ! history_sync "$startup_root/generation-brief.json" "" \
   > "$startup_root/startup.json"; then
   log "History startup failed before agent invocation"
@@ -1399,11 +1608,22 @@ while :; do
     fi
     policy_mode=$(history_policy_mode "$RD/history/startup.json") || exit 2
 
-    contained_json=${CONTAINED_AGENT_CMD_JSON:-}
-    [ -n "$contained_json" ] \
-      || contained_json=$(default_contained_command_json) \
-      || exit 2
-    contained_json=$(normalize_command_json "$contained_json") || exit 2
+    contained_json=
+    internal_profile=
+    if [ "$HUNT_RUNTIME_ABI" = v2 ]; then
+      internal_profile="$RD/history/provider-profiles/base.json"
+      if ! hunt_write_base_profile "$internal_profile"; then
+        log "Portable base provider profile creation failed"
+        exit 2
+      fi
+    else
+      contained_json=${CONTAINED_AGENT_CMD_JSON:-}
+      [ -n "$contained_json" ] \
+        || contained_json=$(default_contained_command_json) \
+        || exit 2
+      contained_json=$(normalize_command_json "$contained_json") || exit 2
+      internal_profile=$contained_json
+    fi
 
     generation_inputs=(
       --input "generation_brief.json=$RD/history/generation-brief.json"
@@ -1418,13 +1638,24 @@ while :; do
     if [ -s research_context.md ]; then
       generation_inputs+=(--input "research_context.md=research_context.md")
     fi
-    if ! run_contained_stage \
-      generate generate \
-      "$RD/history/generate-output" \
-      "$RD/history/generate-manifest.json" \
-      "$contained_json" \
-      "${generation_inputs[@]}" \
-      > "$RD/history/generate-stage.json"; then
+    if [ "$HUNT_RUNTIME_ABI" = v2 ]; then
+      run_portable_generate_stage \
+        "$internal_profile" \
+        "$RD/history/generate-output" \
+        "$RD/history/generate-attempt" \
+        "$RD/history/generate-prompt.json" \
+        "${generation_inputs[@]}" \
+        > "$RD/history/generate-stage.json"
+    else
+      run_contained_stage \
+        generate generate \
+        "$RD/history/generate-output" \
+        "$RD/history/generate-manifest.json" \
+        "$contained_json" \
+        "${generation_inputs[@]}" \
+        > "$RD/history/generate-stage.json"
+    fi
+    if [ "$?" -ne 0 ]; then
       fail_round generate || exit 1
       continue
     fi
@@ -1438,10 +1669,14 @@ while :; do
       continue
     fi
 
-    cp "$RD/history/generate-output/ideas.tsv" "$RD/ideas.tsv"
-    cp "$RD/history/generate-output/ideas.md" "$RD/ideas.md"
-    cp "$RD/history/generate-output/ideas.tsv" "$RD/ideas.all.tsv"
-    cp "$RD/history/generate-output/ideas.md" "$RD/ideas.all.md"
+    copy_mutable_round_view \
+      "$RD/history/generate-output/ideas.tsv" "$RD/ideas.tsv" || exit 2
+    copy_mutable_round_view \
+      "$RD/history/generate-output/ideas.md" "$RD/ideas.md" || exit 2
+    copy_mutable_round_view \
+      "$RD/history/generate-output/ideas.tsv" "$RD/ideas.all.tsv" || exit 2
+    copy_mutable_round_view \
+      "$RD/history/generate-output/ideas.md" "$RD/ideas.all.md" || exit 2
     round_direction=
     if [ "$direction_active" -eq 1 ]; then
       round_direction="$RD/history/direction-constraint.json"
@@ -1509,6 +1744,16 @@ while :; do
       fail_round selection-contract || exit 1
       continue
     fi
+    if [ "$HUNT_RUNTIME_ABI" = v2 ] \
+       && ! history_audit_plan_shadow_round \
+         "$RD/history/batch/batch.json" \
+         "$RD/history/selection.json" \
+         "$RD/history/observations" \
+         "$RD/history/audit-shadow" \
+         "$RD/history/provider-profiles"; then
+      fail_round audit-shadow-plan || exit 1
+      continue
+    fi
     if ! history_materialize_selection \
       "$RD/history/batch/batch.json" \
       "$RD/history/selection.json" \
@@ -1520,14 +1765,15 @@ while :; do
     for view in \
       ideas.all.tsv ideas.all.md kills.tsv keeps.tsv ideas.tsv ideas.md
     do
-      cp "$RD/history/views/$view" "$RD/$view"
+      copy_mutable_round_view "$RD/history/views/$view" "$RD/$view" \
+        || exit 2
     done
 
     if ! history_compare_targets \
       "$RD/history/batch/batch.json" \
       "$RD/history/observations" \
       "$RD/history/selection.json" \
-      "$contained_json" \
+      "$internal_profile" \
       > "$RD/history/compare-targets.json"; then
       fail_round history-comparison || exit 1
       continue
@@ -1552,8 +1798,10 @@ while :; do
       fail_round research-view || exit 1
       continue
     fi
-    cp "$RD/history/research-view/ideas.tsv" "$RD/ideas.tsv"
-    cp "$RD/history/research-view/ideas.md" "$RD/ideas.md"
+    copy_mutable_round_view \
+      "$RD/history/research-view/ideas.tsv" "$RD/ideas.tsv" || exit 2
+    copy_mutable_round_view \
+      "$RD/history/research-view/ideas.md" "$RD/ideas.md" || exit 2
 
     : > "$RD/priorwork.md"
     if [ -s "$RD/ideas.tsv" ]; then
@@ -1608,18 +1856,32 @@ while :; do
     fi
   fi
 
-  contained_json=${CONTAINED_AGENT_CMD_JSON:-}
-  [ -n "$contained_json" ] \
-    || contained_json=$(default_contained_command_json) \
-    || exit 2
-  contained_json=$(normalize_command_json "$contained_json") || exit 2
   reviewer_args=()
-  for seat in $(seq 1 "$REVIEWERS"); do
-    variable="CONTAINED_REV_CMD_${seat}_JSON"
-    reviewer_json=${!variable:-$contained_json}
-    reviewer_json=$(normalize_command_json "$reviewer_json") || exit 2
-    reviewer_args+=(--reviewer-command "${seat}=${reviewer_json}")
-  done
+  if [ "$HUNT_RUNTIME_ABI" = v2 ]; then
+    reviewer_args+=(--executor portable-v2)
+    for seat in $(seq 1 "$REVIEWERS"); do
+      reviewer_profile="$RD/history/provider-profiles/review-${seat}.json"
+      if ! hunt_write_review_profile "$seat" "$reviewer_profile"; then
+        log "Portable review provider profile creation failed for seat $seat"
+        exit 2
+      fi
+      reviewer_args+=(
+        --reviewer-request-profile "${seat}=${reviewer_profile}"
+      )
+    done
+  else
+    contained_json=${CONTAINED_AGENT_CMD_JSON:-}
+    [ -n "$contained_json" ] \
+      || contained_json=$(default_contained_command_json) \
+      || exit 2
+    contained_json=$(normalize_command_json "$contained_json") || exit 2
+    for seat in $(seq 1 "$REVIEWERS"); do
+      variable="CONTAINED_REV_CMD_${seat}_JSON"
+      reviewer_json=${!variable:-$contained_json}
+      reviewer_json=$(normalize_command_json "$reviewer_json") || exit 2
+      reviewer_args+=(--reviewer-command "${seat}=${reviewer_json}")
+    done
+  fi
 
   review_attempt_number=1
   while :; do

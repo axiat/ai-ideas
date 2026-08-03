@@ -463,6 +463,51 @@ class HistoryAuditCliLifecycleSmoke(unittest.TestCase):
                 self.assertFalse(self.launch_log.exists())
                 self._assert_zero_hard_work()
 
+    def test_verify_reconstructs_compact_provider_profile_descriptors(self):
+        self._init()
+        profile_path, _ = self._provider_profile("kimi")
+        plan_path = self.root / "provider-bound-plan.json"
+        planned = self._plan(
+            plan_path,
+            "--execution-request-profile",
+            profile_path,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stderr.decode())
+        plan = self._canonical_stdout(planned)
+
+        verified = self._run("verify", "--receipt", plan_path)
+        self.assertEqual(verified.returncode, 0, verified.stderr.decode())
+        verification = self._canonical_stdout(verified)
+        self.assertEqual(verification["status"], "verified")
+        self.assertEqual(verification["plan_sha256"], plan["plan_sha256"])
+        self.assertFalse(self.launch_log.exists())
+
+        attacks = {
+            "unsupported-kimi-reasoning": {
+                "requested_reasoning": "unsupported",
+            },
+            "self-consistent-wrong-profile-hash": {
+                "execution_request_profile_hash": "b" * 64,
+            },
+        }
+        for label, updates in attacks.items():
+            with self.subTest(label=label):
+                tampered = json.loads(json.dumps(plan))
+                tampered["execution_request_profiles"][0].update(updates)
+                material = dict(tampered)
+                material.pop("plan_sha256")
+                tampered["plan_sha256"] = sha256(
+                    PLAN_DOMAIN + canonical_bytes(material)
+                )
+                receipt = self.root / f"{label}.json"
+                receipt.write_bytes(canonical_bytes(tampered))
+
+                verified = self._run("verify", "--receipt", receipt)
+                self.assertNotEqual(verified.returncode, 0)
+                self.assertEqual(verified.stdout, b"")
+                self.assertIn(b"profile", verified.stderr.lower())
+                self.assertFalse(self.launch_log.exists())
+
     def test_evaluate_is_closed_shadow_only_and_never_publishes_authority(self):
         rows = evaluation_fixture.qrels(
             30,

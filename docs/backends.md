@@ -1,58 +1,143 @@
 # Backends
 
-Backend commands are environment-variable command strings. Each runner appends its prompt as the final argument. Quote the complete command when setting an override.
+`HISTORY_RUNTIME_ABI=v2` is the provider-neutral runtime. Internal stages use
+registered provider IDs and portable mirrors. Omitted model and reasoning
+values preserve the selected CLI's current configuration.
 
 ## Hunt
 
-External stages (selector, prescreen, research, report) use legacy command
-strings. Contained stages (generation, history comparison, every review seat)
-require closed absolute JSON argv.
+Generation, history comparison, and review accept `codex`, `kimi`, or `grok`.
+The default is Codex with its current configured model and reasoning effort:
 
 ```bash
-AGENT_CMD=${AGENT_CMD:-codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write}
+HISTORY_RUNTIME_ABI=v2 ./hunt.sh
 ```
 
-`FRONT_CMD` and `BACK_CMD` fall back to `AGENT_CMD`. Contained defaults use
-`CONTAINED_AGENT_CMD_JSON` (Codex with absolute executable and xhigh reasoning).
-Optional `CONTAINED_REV_CMD_<N>_JSON` overrides review seat N.
+Explicit override grammar examples:
 
 ```bash
-AGENT_CMD='./grok-worker.sh' ./hunt.sh
-
-FRONT_CMD='./agy-worker.sh' \
-BACK_CMD='codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=codex \
+HUNT_MODEL=gpt-5.6-sol \
+HUNT_REASONING_EFFORT=xhigh \
 ./hunt.sh
 
-CONTAINED_AGENT_CMD_JSON='["/usr/local/bin/codex","-m","gpt-5.3-codex-spark","-c","model_reasoning_effort=xhigh"]' \
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=kimi \
+HUNT_MODEL=kimi-code/k3 \
+./hunt.sh
+
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=grok \
+HUNT_MODEL=grok-4.5 \
+HUNT_REASONING_EFFORT=high \
 ./hunt.sh
 ```
 
-`./agy-worker.sh` and the AwR built-in adapter default to `AGY_MODEL=gemini-3.6-flash-high`. Overrides use the complete model ID printed by `agy models`.
+These spellings are adapter inputs only. The checks did not query Codex, Kimi,
+or Grok for model availability, account entitlement, or capacity.
 
-Claude is available only through an explicit command supplied for the current run:
+Kimi CLI `0.31.1` has no reasoning flag; setting
+`HUNT_REASONING_EFFORT` with `HUNT_PROVIDER=kimi` fails preflight. Per-seat
+overrides use `HUNT_REVIEW_PROVIDER_<N>`, `HUNT_REVIEW_MODEL_<N>`, and
+`HUNT_REVIEW_REASONING_EFFORT_<N>`:
 
 ```bash
-AGENT_CMD='claude -p --strict-mcp-config' ./hunt.sh
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=kimi \
+HUNT_REVIEW_PROVIDER_1=grok \
+HUNT_REVIEW_MODEL_1=grok-4.5 \
+HUNT_REVIEW_REASONING_EFFORT_1=high \
+./hunt.sh
 ```
 
-No default or fallback selects Claude. Contained stages reject registered test fixture backends in production.
+Selector, prescreen, external prior-work research, and report assembly retain
+the existing `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` process interface. These
+variables never enter v2 internal stages, and `HUNT_PROVIDER` does not change
+their Codex default. A host without Codex must set `AGENT_CMD` or both
+`FRONT_CMD` and `BACK_CMD` to a prompt-taking command that satisfies the
+external stage's file contract. Grammar-only command shapes:
+
+```bash
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=kimi \
+AGENT_CMD='kimi --auto --output-format text -p' \
+./hunt.sh
+
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=grok \
+AGENT_CMD='./grok-worker.sh' \
+./hunt.sh
+```
 
 ## AwR Sidecar
 
-The default assignment in `awr-side.sh` is:
+AwR adds `opencode` and `agy`. Codex with its current CLI configuration remains
+the default:
 
 ```bash
-SIDE_CMD=${SIDE_CMD:-codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral}
+HISTORY_RUNTIME_ABI=v2 SIDE_POLL_SEC=0 ./awr-side.sh
 ```
 
-`SIDE_RESEARCH_CMD` and `SIDE_JUDGE_CMD` fall back to `SIDE_CMD`; `SIDE_PRIORWORK_CMD` falls back to `SIDE_JUDGE_CMD`. `SIDE_CMD=agy` selects the mirror-local adapter explicitly.
+Explicit OpenCode and agy grammar examples:
 
 ```bash
-SIDE_CMD=agy SIDE_POLL_SEC=0 ./awr-side.sh
-SIDE_JUDGE_CMD='./grok-worker.sh' SIDE_POLL_SEC=0 ./awr-side.sh
+HISTORY_RUNTIME_ABI=v2 \
+AWR_PROVIDER=opencode \
+AWR_MODEL=openai/gpt-5.6-sol \
+AWR_REASONING_EFFORT=high \
+SIDE_POLL_SEC=0 \
+./awr-side.sh
+
+HISTORY_RUNTIME_ABI=v2 \
+AWR_PROVIDER=agy \
+AWR_MODEL=gemini-3.6-flash-high \
+AWR_REASONING_EFFORT=high \
+SIDE_POLL_SEC=0 \
+./awr-side.sh
 ```
 
-Operational defaults are `SIDE_POLL_SEC=9000`, `SIDE_MAX_BAD=3`, `SIDE_MAX_ROUNDS=3`, `SIDE_GAP_MIN_SEC=60`, `SIDE_GAP_MAX_SEC=600`, `SIDE_GAP_SEC=120` for the built-in agy adapter, and `SIDE_COOLDOWN_SEC=3600` after three consecutive no-artifact calls.
+These spellings are adapter inputs only. The checks did not query either
+provider for model availability, account entitlement, or capacity.
+
+Role-specific controls are `AWR_RESEARCH_*`, `AWR_PRIORWORK_*`, and
+`AWR_JUDGE_*`. For example:
+
+```bash
+HISTORY_RUNTIME_ABI=v2 \
+AWR_PROVIDER=codex \
+AWR_PRIORWORK_PROVIDER=opencode \
+AWR_JUDGE_PROVIDER=agy \
+SIDE_POLL_SEC=0 \
+./awr-side.sh
+```
+
+V2 rejects `SIDE_CMD`, `SIDE_RESEARCH_CMD`, `SIDE_PRIORWORK_CMD`, and
+`SIDE_JUDGE_CMD`. V1 retains those compatibility controls.
+
+## Portable Boundary
+
+Each v2 attempt runs directly on the host in a disposable bounded mirror. The
+mirror contains one role plus declared inputs; it omits the full ledger,
+SQLite database, Git metadata, unrelated round state, and `.claude`. The host
+sets a fixed request-byte ceiling, accepts one closed JSON envelope on stdout,
+validates it, and publishes outputs atomically.
+
+This is process-level data minimization, not an OS/container sandbox. A
+host-privileged CLI can still access absolute host paths outside the mirror.
+Provider authentication and current CLI defaults remain available through the
+provider's normal host configuration.
+
+## V1 Compatibility
+
+With `HISTORY_RUNTIME_ABI=v1`, Hunt retains `CONTAINED_AGENT_CMD_JSON` and
+`CONTAINED_REV_CMD_<N>_JSON`; AwR retains `SIDE_*`. V2 rejects those internal
+overrides before state mutation. Hunt v2 continues to allow
+`AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` only for its four external stages.
+
+Operational AwR defaults remain `SIDE_POLL_SEC=9000`, `SIDE_MAX_BAD=3`,
+`SIDE_MAX_ROUNDS=3`, `SIDE_GAP_MIN_SEC=60`, `SIDE_GAP_MAX_SEC=600`, and
+`SIDE_COOLDOWN_SEC=3600`.
 
 ## Literature Monitor
 

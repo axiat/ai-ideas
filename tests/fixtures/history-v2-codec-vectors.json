@@ -27,13 +27,13 @@
       }
     },
     {
-      "canonical_utf8": "{\"candidate\":{\"story\":\"机械臂 café\",\"theme\":\"视觉\"},\"enabled\":true}\n",
+      "canonical_utf8": "{\"candidate\":{\"story\":\"bras robotisé café\",\"theme\":\"visión\"},\"enabled\":true}\n",
       "name": "non_ascii_candidate",
-      "sha256": "00710b18cfd9d12576075e329296a6faffdf91e9b1ec5cf415178c67ccbb4469",
+      "sha256": "597371d1d9b93d8d05b5160d1bde30fc37361e9dd43f42e341fbfeedd238b5dd",
       "value": {
         "candidate": {
-          "story": "机械臂 café",
-          "theme": "视觉"
+          "story": "bras robotisé café",
+          "theme": "visión"
         },
         "enabled": true
       }
@@ -50,10 +50,10 @@
     }
   ],
   "ordered_id_set": {
-    "canonical_utf8": "[\"asset-a\",\"asset-β\",\"资产-1\"]\n",
+    "canonical_utf8": "[\"asset-a\",\"asset-é\",\"asset-β\"]\n",
     "domain": "history-id-set-v2",
-    "expected_hash": "97a49f110e8bd565b0d35f445794f53b06174c05fa4303c57ab5bd92941d69f5",
-    "values": ["asset-β", "asset-a", "资产-1"]
+    "expected_hash": "5900f1c88b20cea2a1bfd9643027edfccf97fd6b6321ce0cf4cd7963fb3780ee",
+    "values": ["asset-β", "asset-a", "asset-é"]
   },
   "plan": {
     "expected_hash": "edba3112be5f31922c0dd1a3c47b6e8465dfcda3bc6eac2d619e102a4ea9f30c",

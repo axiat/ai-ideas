@@ -105,7 +105,7 @@ write_hunt_ledger() {
   local path=$1
   printf '%s\n' \
     $'date\tsource\ttheme\tidea\tverdict\treason\toverlap\tcategory' \
-    $'2026-07-23\thunt\tEvaluation and Diagnostics\tA bounded historical fixture.\treject\tThe fixture is occupied.\thigh\tnovelty-dead' \
+    $'2026-07-23\thunt\tWorld Models - Architecture\tA bounded historical fixture.\treject\tThe fixture is occupied.\thigh\tnovelty-dead' \
     > "$path"
 }
 
@@ -198,7 +198,7 @@ if len(archives) != 1:
     raise SystemExit(f"expected one archived round, got {archives}")
 round_root = archives[0] / "round"
 batch = json.loads(
-    (round_root / "history/frozen-candidates/batch.json").read_text(
+    (round_root / "history/batch/batch.json").read_text(
         encoding="utf-8"
     )
 )
@@ -306,6 +306,53 @@ if comparison_sha != hashlib.sha256(
     raise SystemExit("comparison v2 index used the wrong hash domain")
 if not comparison["targets"]:
     raise SystemExit("comparison v2 index has no targets")
+public_stage_fields = {
+    "schema_version",
+    "execution_boundary",
+    "stage",
+    "seat_id",
+    "provider",
+    "provider_validation",
+    "authority",
+    "execution_request_profile_hash",
+    "serialized_prompt_sha256",
+    "role_sha256",
+    "input_sha256s",
+    "provider_request_sha256",
+    "response_schema_sha256",
+    "preflight",
+    "completion",
+    "outputs",
+}
+
+
+def assert_public_stage(stage_record, label):
+    if set(stage_record) != public_stage_fields:
+        raise SystemExit(f"{label} public stage schema changed")
+    if stage_record.get("schema_version") != "portable-stage-public-v1":
+        raise SystemExit(f"{label} public stage version changed")
+    if stage_record.get("execution_boundary") != "portable-mirror-v1":
+        raise SystemExit(f"{label} stage masqueraded as contained-v1")
+    encoded = json.dumps(stage_record, sort_keys=True)
+    for forbidden in (
+        '"prepared"',
+        '"executable_path"',
+        '"serialized_prompt"',
+        '"provider_request"',
+        str(round_root),
+    ):
+        if forbidden in encoded:
+            raise SystemExit(f"{label} public stage leaked private state")
+    relative_paths = [
+        stage_record["preflight"]["path"],
+        stage_record["completion"]["path"],
+        stage_record["completion"]["model_envelope_path"],
+        *[item["path"] for item in stage_record["outputs"].values()],
+    ]
+    if any(path.startswith("/") or ".." in path.split("/") for path in relative_paths):
+        raise SystemExit(f"{label} public stage path escaped its index root")
+
+
 for target in comparison["targets"]:
     if set(target) != {
         "candidate_id",
@@ -318,16 +365,7 @@ for target in comparison["targets"]:
     if not target["portable_stages"]:
         raise SystemExit("comparison v2 target omitted portable stage records")
     for stage_record in target["portable_stages"]:
-        if set(stage_record) != {"prepared", "completion_sha256"}:
-            raise SystemExit("comparison portable stage record is not closed")
-        prepared = stage_record["prepared"]
-        if prepared.get("execution_boundary") != "portable-mirror-v1":
-            raise SystemExit("comparison stage masqueraded as contained-v1")
-        if any(
-            field in prepared
-            for field in ("manifest_path", "command_argv", "command_prefix_sha256")
-        ):
-            raise SystemExit("comparison portable stage retained contained-v1 fields")
+        assert_public_stage(stage_record, "comparison")
 def has_profile_hash(value):
     if isinstance(value, dict):
         if isinstance(value.get("execution_request_profile_hash"), str):
@@ -372,21 +410,9 @@ if review_sha != hashlib.sha256(
 if not review["entries"]:
     raise SystemExit("review v2 index has no portable entries")
 for entry in review["entries"]:
-    if set(entry) != {
-        "candidate_id",
-        "seat_id",
-        "prepared",
-        "completion_sha256",
-    }:
+    if set(entry) != {"candidate_id", "seat_id", "stage"}:
         raise SystemExit(f"review v2 entry schema changed: {entry.keys()}")
-    prepared = entry["prepared"]
-    if prepared.get("execution_boundary") != "portable-mirror-v1":
-        raise SystemExit("review entry masqueraded as contained-v1")
-    if any(
-        field in prepared
-        for field in ("manifest_path", "command_argv", "command_prefix_sha256")
-    ):
-        raise SystemExit("review portable stage retained contained-v1 fields")
+    assert_public_stage(entry["stage"], "review")
 if not has_profile_hash(review):
     raise SystemExit("review index omitted capability profile binding")
 completions = list(round_root.rglob("completion.json"))

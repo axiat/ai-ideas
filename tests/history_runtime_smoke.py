@@ -3,6 +3,7 @@
 
 import ast
 import copy
+import dataclasses
 import hashlib
 import inspect
 import json
@@ -23,11 +24,16 @@ from lib import history_runtime
 from lib import history_store
 from lib import history_archive
 from lib import direction_contract
+from lib import provider_adapters
 
 
 POLICY_PATH = ROOT / "history" / "retrieval-policy-v1.json"
 ROLE_PATH = ROOT / "roles" / "history-compare.md"
 FAKE_STAGE_AGENT = ROOT / "tests" / "fake_stage_agent.py"
+FAKE_PORTABLE_PROVIDER = (
+    ROOT / "tests" / "fake_portable_stage_provider.py"
+)
+PROVIDER_REGISTRY = ROOT / "history" / "provider-adapters-v1.json"
 
 
 def canonical(value):
@@ -2205,6 +2211,88 @@ class ReceiptAndResumeContract(RuntimeFixture):
 
 class RoundCoordinatorContract(CapabilityContract):
     @staticmethod
+    def _portable_profile():
+        return provider_adapters.resolve_command_intent(
+            provider_adapters.load_registry(PROVIDER_REGISTRY),
+            "hunt",
+            "codex",
+            model="MODEL",
+            reasoning="high",
+            executable_lookup=lambda _: str(FAKE_PORTABLE_PROVIDER),
+        )
+
+    def test_nonissued_portable_profiles_fail_before_state_or_launch(self):
+        forged = dataclasses.replace(
+            self._portable_profile(),
+            requested_model="forged-model",
+            execution_request_profile_hash="b" * 64,
+        )
+        self.assertFalse(
+            provider_adapters.command_intent_is_issued(forged)
+        )
+        comparison_root = self.root / "forged-comparison"
+        review_plan_path = self.root / "forged-review-plan.json"
+        review_index_path = self.root / "forged-review-index.json"
+        with mock.patch.object(
+            history_runtime, "_run_portable_stage"
+        ) as launch:
+            with self.assertRaisesRegex(
+                history_runtime.RuntimeContractError,
+                "portable provider request profile is invalid",
+            ):
+                history_runtime.compare_frozen_targets(
+                    db_path=self.database,
+                    policy_path=self.policy_path,
+                    batch_path=self.root / "missing-batch.json",
+                    artifact_root=comparison_root,
+                    selection_path=self.root / "missing-selection.json",
+                    executor="portable-v2",
+                    portable_request_profile=forged,
+                )
+            with self.assertRaisesRegex(
+                history_runtime.RuntimeContractError,
+                "portable provider request profile is invalid",
+            ):
+                history_runtime.seal_round_review_plan(
+                    db_path=self.database,
+                    policy_path=self.policy_path,
+                    batch_path=self.root / "missing-batch.json",
+                    selection_path=self.root / "missing-selection.json",
+                    comparison_index_path=(
+                        comparison_root / "comparison-index.json"
+                    ),
+                    artifact_root=comparison_root,
+                    prior_work_path=self.root / "missing-prior-work.md",
+                    review_contract_path=self.review_contract_path,
+                    reviewer_commands={},
+                    executor="portable-v2",
+                    reviewer_request_profiles={"1": forged},
+                    round_date="2026-07-24",
+                    min_read=5,
+                    axiom_min_cracks=2,
+                    output_path=review_plan_path,
+                )
+            with self.assertRaisesRegex(
+                history_runtime.RuntimeContractError,
+                "portable provider request profile is invalid",
+            ):
+                history_runtime.run_review_matrix(
+                    db_path=self.database,
+                    policy_path=self.policy_path,
+                    batch_path=self.root / "missing-batch.json",
+                    review_plan_path=review_plan_path,
+                    reviewer_commands={},
+                    executor="portable-v2",
+                    reviewer_request_profiles={"1": forged},
+                    stage_root=self.root / "forged-review-stages",
+                    output_path=review_index_path,
+                )
+            launch.assert_not_called()
+        self.assertFalse(comparison_root.exists())
+        self.assertFalse(review_plan_path.exists())
+        self.assertFalse(review_index_path.exists())
+
+    @staticmethod
     def _direction_contract():
         return json.loads(
             (
@@ -2419,6 +2507,202 @@ class RoundCoordinatorContract(CapabilityContract):
             test_comparator_status=comparison_status,
         )
         return state
+
+    def test_portable_indices_persist_only_closed_public_stage_descriptors(self):
+        profile = self._portable_profile()
+        state = self._sealed_round(stem="portable-public")
+        comparison_path = (
+            state["observation_root"] / "comparison-index.json"
+        )
+        comparison = history_runtime.compare_frozen_targets(
+            db_path=self.database,
+            policy_path=self.policy_path,
+            batch_path=state["batch"],
+            artifact_root=state["observation_root"],
+            selection_path=state["selection"],
+            executor="portable-v2",
+            portable_request_profile=profile,
+        )
+        public_fields = {
+            "schema_version",
+            "execution_boundary",
+            "stage",
+            "seat_id",
+            "provider",
+            "provider_validation",
+            "authority",
+            "execution_request_profile_hash",
+            "serialized_prompt_sha256",
+            "role_sha256",
+            "input_sha256s",
+            "provider_request_sha256",
+            "response_schema_sha256",
+            "preflight",
+            "completion",
+            "outputs",
+        }
+        private_fields = {
+            "prepared",
+            "executable_path",
+            "serialized_prompt",
+            "provider_request",
+            "provider_command",
+            "input_paths",
+            "output_root",
+            "output_paths",
+            "state_root",
+            "preflight_path",
+            "completion_path",
+        }
+
+        def assert_public_stage(stage, reference_root):
+            self.assertEqual(set(stage), public_fields)
+            self.assertTrue(private_fields.isdisjoint(stage))
+            self.assertNotIn(
+                str(self.root), canonical(stage).decode("utf-8")
+            )
+            for descriptor in (
+                stage["preflight"],
+                stage["completion"],
+                *stage["outputs"].values(),
+            ):
+                relative = pathlib.PurePosixPath(descriptor["path"])
+                self.assertFalse(relative.is_absolute())
+                self.assertNotIn("..", relative.parts)
+                self.assertTrue((reference_root / relative).is_file())
+            envelope = pathlib.PurePosixPath(
+                stage["completion"]["model_envelope_path"]
+            )
+            self.assertFalse(envelope.is_absolute())
+            self.assertNotIn("..", envelope.parts)
+            self.assertTrue((reference_root / envelope).is_file())
+
+        self.assertEqual(comparison["schema_version"], 2)
+        for target in comparison["targets"]:
+            candidate_root = (
+                state["observation_root"] / target["candidate_id"]
+            )
+            self.assertTrue(target["portable_stages"])
+            for stage in target["portable_stages"]:
+                assert_public_stage(stage, candidate_root)
+
+        research_root = self.root / "portable-public-research"
+        research = history_runtime.materialize_research_views(
+            db_path=self.database,
+            policy_path=self.policy_path,
+            batch_path=state["batch"],
+            selection_path=state["selection"],
+            comparison_index_path=comparison_path,
+            artifact_root=state["observation_root"],
+            output_root=research_root,
+            authority=self.shadow_test_authority(),
+        )
+        self.assertEqual(research["eligible_order"], ["I2"])
+
+        original_comparison = comparison_path.read_bytes()
+        changed = json.loads(original_comparison.decode("utf-8"))
+        changed["targets"][0]["portable_stages"][0]["extra"] = "private"
+        material = dict(changed)
+        material.pop("comparison_index_sha256")
+        changed["comparison_index_sha256"] = history_runtime.sha256(
+            b"history-runtime-comparison-index-v2\0"
+            + history_runtime.canonical_bytes(material)
+        )
+        comparison_path.chmod(0o600)
+        comparison_path.write_bytes(canonical(changed))
+        with self.assertRaises(history_runtime.RuntimeContractError):
+            history_runtime.materialize_research_views(
+                db_path=self.database,
+                policy_path=self.policy_path,
+                batch_path=state["batch"],
+                selection_path=state["selection"],
+                comparison_index_path=comparison_path,
+                artifact_root=state["observation_root"],
+                output_root=self.root / "portable-public-tampered",
+                authority=self.shadow_test_authority(),
+            )
+        comparison_path.write_bytes(original_comparison)
+
+        prior_work = self.root / "portable-public-prior-work.md"
+        prior_work.write_text(
+            "## I2\nPapers Read: 5\nOverlap: low\n",
+            encoding="utf-8",
+        )
+        profiles = {"1": profile}
+        review_plan_path = self.root / "portable-public-review-plan.json"
+        history_runtime.seal_round_review_plan(
+            db_path=self.database,
+            policy_path=self.policy_path,
+            batch_path=state["batch"],
+            selection_path=state["selection"],
+            comparison_index_path=comparison_path,
+            artifact_root=state["observation_root"],
+            prior_work_path=prior_work,
+            review_contract_path=self.review_contract_path,
+            reviewer_commands={},
+            executor="portable-v2",
+            reviewer_request_profiles=profiles,
+            round_date="2026-07-24",
+            min_read=5,
+            axiom_min_cracks=2,
+            output_path=review_plan_path,
+        )
+        review_index_path = self.root / "portable-public-review-index.json"
+        review = history_runtime.run_review_matrix(
+            db_path=self.database,
+            policy_path=self.policy_path,
+            batch_path=state["batch"],
+            review_plan_path=review_plan_path,
+            reviewer_commands={},
+            executor="portable-v2",
+            reviewer_request_profiles=profiles,
+            stage_root=self.root / "portable-public-review-stages",
+            output_path=review_index_path,
+        )
+        self.assertEqual(review["schema_version"], 2)
+        self.assertEqual(len(review["entries"]), 1)
+        entry = review["entries"][0]
+        self.assertEqual(set(entry), {"candidate_id", "seat_id", "stage"})
+        assert_public_stage(entry["stage"], review_index_path.parent)
+        self.assertTrue(
+            history_runtime.verify_review_matrix(
+                db_path=self.database,
+                policy_path=self.policy_path,
+                batch_path=state["batch"],
+                review_plan_path=review_plan_path,
+                review_index_path=review_index_path,
+            )
+        )
+        aggregation = history_runtime.build_round_aggregation(
+            db_path=self.database,
+            policy_path=self.policy_path,
+            batch_path=state["batch"],
+            review_plan_path=review_plan_path,
+            review_index_path=review_index_path,
+            output_path=self.root / "portable-public-aggregation.json",
+        )
+        self.assertEqual(len(aggregation["ledger_rows"]), 1)
+
+        original_review = review_index_path.read_bytes()
+        changed = json.loads(original_review.decode("utf-8"))
+        changed["entries"][0]["stage"]["extra"] = "private"
+        material = dict(changed)
+        material.pop("review_index_sha256")
+        changed["review_index_sha256"] = history_runtime.sha256(
+            b"history-runtime-review-index-v2\0"
+            + history_runtime.canonical_bytes(material)
+        )
+        review_index_path.chmod(0o600)
+        review_index_path.write_bytes(canonical(changed))
+        with self.assertRaises(history_runtime.RuntimeContractError):
+            history_runtime.verify_review_matrix(
+                db_path=self.database,
+                policy_path=self.policy_path,
+                batch_path=state["batch"],
+                review_plan_path=review_plan_path,
+                review_index_path=review_index_path,
+            )
+        review_index_path.write_bytes(original_review)
 
     def _resume_round(
         self,

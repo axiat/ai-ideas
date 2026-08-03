@@ -34,6 +34,19 @@ def main():
     output = pathlib.Path("output/result.json")
     valid = b'{"request_id":"request-1","status":"ok"}\n'
     if mode in {"success", "undeclared-read"}:
+        if request.get("audit_environment"):
+            forbidden = {
+                "PWD",
+                "OLDPWD",
+                "GIT_DIR",
+                "HISTORY_DB",
+                "HUNT_RUNTIME_ABI",
+                "AWR_RUNTIME_ABI",
+                "CONTAINED_AGENT_CMD_JSON",
+                "AGENT_CMD",
+            }
+            if forbidden.intersection(os.environ):
+                return 25
         if mode == "undeclared-read":
             forbidden = ["ledger.tsv", "history.sqlite3", ".git/config"]
             if any(pathlib.Path(path).exists() for path in forbidden):
@@ -43,6 +56,10 @@ def main():
                 if path.lstat().st_mode & 0o777 != expected:
                     return 20
         _write(output, valid)
+        return 0
+    if mode == "stdout-flood":
+        _write(output, valid)
+        sys.stdout.buffer.write(b"x" * (1024 * 1024))
         return 0
     if mode == "extra-file":
         _write(output, valid)

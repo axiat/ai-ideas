@@ -510,7 +510,20 @@ class HistoryStageSmoke(unittest.TestCase):
         hunt = (ROOT / "hunt.sh").read_text(encoding="utf-8")
         self.assertIn("run_contained_stage", hunt)
         self.assertIn("history_runtime_authorized run-stage", hunt)
-        self.assertIn("history_runtime_authorized compare-targets", hunt)
+        compare_shortlist = hunt[
+            hunt.index("history_compare_shortlist() {"):
+            hunt.index("history_compare_targets() {")
+        ]
+        compare_targets = hunt[
+            hunt.index("history_compare_targets() {"):
+            hunt.index("history_publish_summaries() {")
+        ]
+        self.assertIn("compare-targets", compare_shortlist)
+        self.assertIn(
+            'history_runtime_authorized "${compare_args[@]}"',
+            compare_shortlist,
+        )
+        self.assertIn('history_compare_shortlist "$@"', compare_targets)
         self.assertIn("history_runtime_authorized run-review-matrix", hunt)
         self.assertNotIn("Read roles/generate.md and follow it", hunt)
         self.assertNotIn("Read roles/meta.md and follow it", hunt)

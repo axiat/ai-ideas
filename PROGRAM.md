@@ -30,15 +30,18 @@ protocol. Only a human may modify this file or the immutable inputs.
    In enforcement mode, a nonpermanent internal-history result creates neither
    a research task nor a row; its sealed target remains an auditable
    `history_abstain`.
-6. Generation receives only the bounded generation brief, generation policy,
-   optional bounded research context, and its output directory. It never reads
-   the database, ledger, indexes, run archives, failure queue, or Git history.
-   One confirmed parent may occupy the shared evolution/recheck slot. All
-   candidates receive fresh external research and review.
-7. Contained generation, comparison, and review stages use canonical absolute
-   JSON argv, sealed manifests, exact input allowlists, fresh mirrors, durable
-   preflight receipts, and validated completion receipts. Reviewer mirrors
-   form the exact candidate × seat product and cannot read sibling output.
+6. Generation's declared input surface contains only its role, the bounded
+   generation brief, generation policy, and optional bounded research context.
+   Its mirror omits the database, ledger, indexes, run archives, failure queue,
+   and Git history. One confirmed parent may occupy the shared
+   evolution/recheck slot. All candidates receive fresh external research and
+   review.
+7. V1 generation, comparison, and review use canonical absolute JSON argv and
+   OS-scoped containment. V2 uses registered provider command intents and
+   direct-host portable mirrors; it retains same-user host authority. Both
+   ABIs use sealed manifests, exact declared-input allowlists, fresh mirrors,
+   durable preflight receipts, and validated completion receipts. Reviewer
+   mirrors form the exact candidate × seat product and omit sibling output.
 8. Selector, prescreen, external prior-work research, and report assembly run
    in disposable mirrors containing only their declared roles and inputs. The
    host validates and atomically copies only their declared outputs.
@@ -59,23 +62,24 @@ protocol. Only a human may modify this file or the immutable inputs.
 
 `hunt.sh` performs all authority checks before an agent can start:
 
-1. Load the retrieval policy. Enforcement requires a matching sealed
+1. Canonicalize `RESEARCH_DIRECTION_FILE` when present and write its startup
+   identity. This precedes audit initialization, database synchronization,
+   provider launch, and resume selection. Resume later supplies that identity
+   through `expected-direction`; directed and undirected identities must match
+   exactly.
+2. Load the retrieval policy. Enforcement requires a matching sealed
    production calibration capability and trust root; synthetic test
    authorities are rejected by production entrypoints.
-2. When the durable bootstrap marker is absent, import `ledger.tsv` once in a
+3. When the durable bootstrap marker is absent, import `ledger.tsv` once in a
    sealed epoch. The legacy near-SA snapshot participates only when the
    operator explicitly sets `HISTORY_NEAR_SA`; an invalid, missing, stale,
    symlinked, or semantically mismatched snapshot fails the epoch before an
    agent starts.
-3. Reconcile pending ledger projection outbox work to `ledger.tsv` and
+4. Reconcile pending ledger projection outbox work to `ledger.tsv` and
    `tmp/ledger.good`, including recovery after either target rename or receipt.
-4. Recover and validate the published search generation.
-5. Build `generation-brief.json` from bounded theme counts, structured failure
+5. Recover and validate the published search generation.
+6. Build `generation-brief.json` from bounded theme counts, structured failure
    counts, the selected divergence lens, and at most one eligible parent.
-6. Canonicalize `RESEARCH_DIRECTION_FILE` when present and write its startup
-   identity before generation or resume selection. Resume supplies that
-   identity through `expected-direction`; directed and undirected identities
-   must match exactly.
 
 ## Round protocol
 
@@ -83,12 +87,13 @@ The production path is:
 
 ```text
 brief
--> contained generation
+-> internal generation (v1 OS-contained or v2 direct-host portable)
 -> immutable candidate batch
+-> directed selector classification and all-in-scope gate, when configured
 -> model-free history retrieval
--> external selection and prescreen
+-> undirected selector ranking or reuse of directed ranking, then prescreen
 -> sealed target selection
--> contained history comparison
+-> internal history comparison (v1 OS-contained or v2 direct-host portable)
 -> eligible external prior-work research
 -> sealed independent review matrix
 -> deterministic aggregation
@@ -102,7 +107,7 @@ brief
 
 ```text
 canonical direction snapshot
--> contained generation with optional direction_constraint.json
+-> internal generation with direction_constraint.json
 -> exact candidate-field validation
 -> immutable schema-v2 batch with direction identity
 -> selector advisory ranking plus direction.tsv classification
@@ -131,7 +136,7 @@ behavior.
 
 ### Candidate freeze and observation
 
-Contained generation writes `ideas.tsv` and `ideas.md`. The host freezes their
+Internal generation writes `ideas.tsv` and `ideas.md`. The host freezes their
 exact bytes, one canonical candidate artifact per id, and a batch manifest
 before any downstream decision. Duplicate and failure-pattern retrieval run
 for every frozen candidate; evolution retrieval runs only for a validated
@@ -170,7 +175,7 @@ occupation search and produces the evidence fields in the fixed contract.
 The host seals one review plan from the frozen candidate, exact prior-work
 block, review contract, comparison receipt set, optional enforcement summary,
 and reviewer command prefixes. Each candidate × seat review runs in a fresh
-contained mirror. Aggregation validates every completion and ballot, applies
+ABI-specific mirror. Aggregation validates every completion and ballot, applies
 the MAJOR cap and mechanical evidence gates, assigns the lowest vote, overlap,
 and non-SA category, and constructs one closed delta.
 
@@ -191,7 +196,7 @@ artifacts remain unchanged; reviews and aggregate verdicts are always fresh.
 
 Every round archive preserves the generation brief, frozen batch, retrieval
 traces and packs, comparisons and receipts, policy authority references,
-contained-stage preflights and completions, review plan and matrix,
+internal-stage preflights and completions, review plan and matrix,
 aggregation, commit receipt, and projection receipt. Publication builds and
 fsyncs a fresh sibling tree, seals its exact file manifest and authority
 reference, then renames it atomically. Reuse requires the archived tree, source

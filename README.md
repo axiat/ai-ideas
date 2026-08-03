@@ -13,7 +13,7 @@ An auditable research-idea discovery harness for embodied AI.
 ## Pipeline
 
 ```text
-policy + ledger
+policy + bounded generation brief from SQLite
   -> generate -> rank -> direct-hit prescreen -> adversarial prior-work research
   -> independent reviewers -> deterministic minimum vote -> ledger
   -> report -> branch + pull request
@@ -23,12 +23,17 @@ The main loop writes live state under `tmp/round/`, canonical history to `.ai-id
 
 ## Quick Start
 
-The default path requires Bash, Git, an authenticated Codex CLI, network access, and an authenticated `gh` session for publication.
+The default v2 path requires Bash, Git, an authenticated Codex CLI, network
+access, and an authenticated `gh` session for publication. Hunt v2 supports
+Codex, Kimi, and Grok for its internal stages. Selecting Kimi or Grok does not
+change the Codex default used by selector, prescreen, external research, and
+report stages; a host without Codex must configure compatible
+`AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` values.
 
 ```bash
 git clone git@github.com:axiat/ai-ideas.git
 cd ai-ideas
-./hunt.sh
+HISTORY_RUNTIME_ABI=v2 ./hunt.sh
 ```
 
 `./hunt.sh` is an active run, not a dry run. It invokes model and search backends, commits canonical history to SQLite, projects `ledger.tsv`, and may push a daily branch and open a pull request after a qualifying report. Shipped history mode is `shadow`: internal retrieval is observational for a fixed generated batch, and external research/review remain the sole ledger authority. Operational defaults and recovery procedures are in [`docs/getting-started.md`](docs/getting-started.md).
@@ -36,6 +41,7 @@ cd ai-ideas
 ## Directed Run
 
 ```bash
+HISTORY_RUNTIME_ABI=v2 \
 RESEARCH_DIRECTION_FILE='directions/dynamic-spatial-memory-vla-v1.json' \
   caffeinate -is ./hunt.sh
 ```
@@ -54,17 +60,21 @@ date  source  theme  idea  verdict  reason  overlap  category
 
 Historical seven-column rows remain valid. Accepted reports use `ideas/YYYY-MM-DD_hunt*.md`. Archived rounds contain a manifest, frozen decision inputs, logs, and a ledger delta under `$HOME/.ai-ideas-runs/$(basename "$PWD")/<run_id>/` by default.
 
-## Optional Backends
+## Provider Selection
 
-Codex is the default for the hunt, AwR sidecar, literature monitor, and calibration runners. Overrides are explicit and never automatic fallbacks.
+Omitting model and reasoning overrides preserves the selected CLI's current
+configuration. Hunt accepts `codex`, `kimi`, and `grok`; AwR additionally
+accepts `opencode` and `agy`.
 
 ```bash
-AGENT_CMD='./grok-worker.sh' ./hunt.sh
-FRONT_CMD='./agy-worker.sh' BACK_CMD='./grok-worker.sh' ./hunt.sh
-AGENT_CMD='claude -p --strict-mcp-config' ./hunt.sh
+HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=kimi ./hunt.sh
+HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=grok ./hunt.sh
+HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode SIDE_POLL_SEC=0 ./awr-side.sh
 ```
 
-Claude runs only when the current command explicitly names it; no default, fallback, hook, or worker starts it. Exact defaults, role-specific overrides, and retrieval behavior are in [`docs/backends.md`](docs/backends.md).
+Exact model/reasoning spelling for every provider, role-specific overrides,
+the external Hunt stage boundary, and v1 compatibility are in
+[`docs/backends.md`](docs/backends.md).
 
 ## Calibration
 

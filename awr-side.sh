@@ -20,17 +20,24 @@
 # Usage:
 #   caffeinate -is ./awr-side.sh
 #
-# Backend command strings are split on whitespace and receive the prompt as
-# their final argument. Codex is the default. Provider overrides are explicit:
+# `HISTORY_RUNTIME_ABI=v2` uses portable provider IDs. Codex is the default;
+# model and reasoning omission preserves the selected CLI's current defaults:
+#   AWR_PROVIDER / AWR_MODEL / AWR_REASONING_EFFORT
+#   AWR_RESEARCH_PROVIDER / MODEL / REASONING_EFFORT
+#   AWR_PRIORWORK_PROVIDER / MODEL / REASONING_EFFORT
+#   AWR_JUDGE_PROVIDER / MODEL / REASONING_EFFORT
+#
+# V1 command strings are split on whitespace and receive the prompt as their
+# final argument:
 #   SIDE_CMD             all three roles
 #   SIDE_RESEARCH_CMD    researcher only; falls back to SIDE_CMD
 #   SIDE_JUDGE_CMD       reviewer only; falls back to SIDE_CMD
 #   SIDE_PRIORWORK_CMD   prior work only; falls back to SIDE_JUDGE_CMD
 #
 # Examples:
-#   SIDE_CMD=agy ./awr-side.sh
-#   SIDE_CMD='./grok-worker.sh' ./awr-side.sh
-#   SIDE_CMD='claude -p --strict-mcp-config' ./awr-side.sh
+#   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode ./awr-side.sh
+#   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh
+#   HISTORY_RUNTIME_ABI=v1 SIDE_CMD=agy ./awr-side.sh
 #
 # `SIDE_CMD=agy` selects the mirror-local built-in adapter with AGY_MODEL and
 # AGY_PRINT_TIMEOUT. Relative custom commands are resolved against the source
@@ -69,6 +76,55 @@ awr_provider_diagnostic() {
   printf '%s\n' "$output"
 }
 
+awr_write_provider_profile() {
+  local output=$1 provider=$2 model_override=$3 reasoning=$4 temporary
+  local -a command=(
+    python3 -B "$repo/lib/history_audit_cli.py" provider-command
+    --surface awr
+    --provider "$provider"
+  )
+  [ -z "$model_override" ] || command+=(--model "$model_override")
+  [ -z "$reasoning" ] || command+=(--reasoning "$reasoning")
+  mkdir -p "$(dirname "$output")" || return 1
+  temporary="${output}.tmp.$$"
+  if ! "${command[@]}" > "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  chmod 600 "$temporary" || { rm -f "$temporary"; return 1; }
+  mv -f "$temporary" "$output"
+}
+
+awr_write_role_profile() {
+  local role=$1 output=$2 provider model_override reasoning provider_changed=0
+  local provider_name="AWR_${role}_PROVIDER"
+  local model_name="AWR_${role}_MODEL"
+  local reasoning_name="AWR_${role}_REASONING_EFFORT"
+  local base_provider=${AWR_PROVIDER:-codex}
+  if runtime_variable_is_set "$provider_name" && [ -n "${!provider_name}" ]; then
+    provider=${!provider_name}
+  else
+    provider=$base_provider
+  fi
+  [ "$provider" = "$base_provider" ] || provider_changed=1
+  if runtime_variable_is_set "$model_name"; then
+    model_override=${!model_name}
+  elif [ "$provider_changed" -eq 1 ]; then
+    model_override=
+  else
+    model_override=${AWR_MODEL:-}
+  fi
+  if runtime_variable_is_set "$reasoning_name"; then
+    reasoning=${!reasoning_name}
+  elif [ "$provider_changed" -eq 1 ]; then
+    reasoning=
+  else
+    reasoning=${AWR_REASONING_EFFORT:-}
+  fi
+  awr_write_provider_profile \
+    "$output" "$provider" "$model_override" "$reasoning"
+}
+
 awr_runtime_preflight() {
   local abi=v1 name role diagnostic provider model reasoning
   local base_provider base_model base_reasoning provider_changed
@@ -78,6 +134,7 @@ awr_runtime_preflight() {
   fi
   case "$abi" in
     v1)
+      AWR_RUNTIME_ABI=v1
       for name in \
         AWR_PROVIDER AWR_MODEL AWR_REASONING_EFFORT \
         AWR_RESEARCH_PROVIDER AWR_RESEARCH_MODEL AWR_RESEARCH_REASONING_EFFORT \
@@ -146,10 +203,8 @@ awr_runtime_preflight() {
       >/dev/null || return 2
   done
 
-  printf '%s\n' \
-    "awr-side: HISTORY_RUNTIME_ABI=v2 portable stages are not wired; unsupported in this checkpoint: $diagnostic" \
-    >&2
-  return 2
+  AWR_RUNTIME_ABI=v2
+  return 0
 }
 
 awr_runtime_preflight || exit 2
@@ -319,21 +374,91 @@ nofile=0
 
 # Resolve command heads once at startup. Configuration errors must fail before
 # the queue loop or they can bypass both bad-artifact and no-file accounting.
-. "$repo/lib/resolve_cmd.sh"
-. "$repo/lib/mirror_pre.sh"
-# Attribute resolution errors to the variable that supplied the command.
-research_label="awr-side: SIDE_CMD"; [ -n "${SIDE_RESEARCH_CMD:-}" ] && research_label="awr-side: SIDE_RESEARCH_CMD"
-judge_label="awr-side: SIDE_CMD"; [ -n "${SIDE_JUDGE_CMD:-}" ] && judge_label="awr-side: SIDE_JUDGE_CMD"
-# Prior-work attribution follows its PRIORWORK -> JUDGE -> CMD fallback chain.
-priorwork_label="awr-side: SIDE_CMD"; [ -n "${SIDE_JUDGE_CMD:-}" ] && priorwork_label="awr-side: SIDE_JUDGE_CMD"; [ -n "${SIDE_PRIORWORK_CMD:-}" ] && priorwork_label="awr-side: SIDE_PRIORWORK_CMD"
-research_cmd=$(resolve_cmd "$repo" "$research_label" "$research_cmd") || exit 2
-judge_cmd=$(resolve_cmd "$repo" "$judge_label" "$judge_cmd") || exit 2
-priorwork_cmd=$(resolve_cmd "$repo" "$priorwork_label" "$priorwork_cmd") || exit 2
+if [ "$AWR_RUNTIME_ABI" = v2 ]; then
+  profile_root="$statedir/provider-profiles"
+  research_cmd="$profile_root/research.json"
+  priorwork_cmd="$profile_root/priorwork.json"
+  judge_cmd="$profile_root/judge.json"
+  awr_write_role_profile RESEARCH "$research_cmd" || exit 2
+  awr_write_role_profile PRIORWORK "$priorwork_cmd" || exit 2
+  awr_write_role_profile JUDGE "$judge_cmd" || exit 2
+else
+  . "$repo/lib/resolve_cmd.sh"
+  . "$repo/lib/mirror_pre.sh"
+  # Attribute resolution errors to the variable that supplied the command.
+  research_label="awr-side: SIDE_CMD"; [ -n "${SIDE_RESEARCH_CMD:-}" ] && research_label="awr-side: SIDE_RESEARCH_CMD"
+  judge_label="awr-side: SIDE_CMD"; [ -n "${SIDE_JUDGE_CMD:-}" ] && judge_label="awr-side: SIDE_JUDGE_CMD"
+  # Prior-work attribution follows its PRIORWORK -> JUDGE -> CMD fallback chain.
+  priorwork_label="awr-side: SIDE_CMD"; [ -n "${SIDE_JUDGE_CMD:-}" ] && priorwork_label="awr-side: SIDE_JUDGE_CMD"; [ -n "${SIDE_PRIORWORK_CMD:-}" ] && priorwork_label="awr-side: SIDE_PRIORWORK_CMD"
+  research_cmd=$(resolve_cmd "$repo" "$research_label" "$research_cmd") || exit 2
+  judge_cmd=$(resolve_cmd "$repo" "$judge_label" "$judge_cmd") || exit 2
+  priorwork_cmd=$(resolve_cmd "$repo" "$priorwork_label" "$priorwork_cmd") || exit 2
+fi
 
-# $1=command, $2=only writable artifact, $3=prompt, $4=raw backend log.
-# Each call sees a disposable mirror. Only the validated target is copied back.
+portable_attempt_counter=0
+
+run_portable_agent() {
+  local profile=$1 target=$2 logf=$3 stage=$4 output_name=$5
+  local attempt prompt_path output_root state_root input rc
+  local -a command
+  shift 5
+  throttle
+  portable_attempt_counter=$((portable_attempt_counter + 1))
+  attempt="$statedir/portable-attempts/${key}.${stage}.p$$.${portable_attempt_counter}"
+  prompt_path="$statedir/portable-prompts/${key}.${stage}.p$$.${portable_attempt_counter}.json"
+  output_root="$attempt/output"
+  state_root="$attempt/state"
+  mkdir -p "$(dirname "$attempt")" "$(dirname "$prompt_path")" || return 1
+  printf '{"schema_version":1,"stage":"%s"}\n' "$stage" \
+    > "$prompt_path" || return 1
+  chmod 600 "$prompt_path" || return 1
+  rm -f "$target"
+  command=(
+    python3 -B "$repo/lib/portable_stage.py" run
+    --provider-request-profile "$profile"
+    --stage "$stage"
+    --seat "${key}-${stage}"
+    --serialized-prompt "$prompt_path"
+    --output-root "$output_root"
+    --state-root "$state_root"
+  )
+  for input in "$@"; do
+    command+=(--input "$input")
+  done
+  "${command[@]}" >> "$logf" 2>&1
+  rc=$?
+  if [ -s "$output_root/$output_name" ]; then
+    cp "$output_root/$output_name" "$target" || return 1
+  fi
+  if [ -e "$target" ]; then
+    nofile=0
+  else
+    nofile=$((nofile + 1))
+    if [ "$nofile" -ge 3 ]; then
+      if [ "$cooldown" -gt 0 ]; then
+        log "Circuit open: ${nofile} consecutive calls produced no artifact (rc=$rc); retrying after ${cooldown}s"
+        sleep "$cooldown"; nofile=0
+      else
+        log "Circuit open: ${nofile} consecutive calls produced no artifact (rc=$rc); exiting"
+        exit 3
+      fi
+    fi
+  fi
+  return "$rc"
+}
+
+# $1=command/profile, $2=only writable artifact, $3=prompt, $4=raw backend
+# log. v1 receives a disposable legacy mirror. v2 receives only the declared
+# role inputs through portable-mirror-v1.
 run_agent() {
-  local cmd=$1 target=$2 prompt=$3 logf=$4 first sandbox rel target_in_sandbox prompt_in_sandbox pre rc
+  local cmd=$1 target=$2 prompt=$3 logf=$4 stage=${5:-} output_name=${6:-}
+  local first sandbox rel target_in_sandbox prompt_in_sandbox pre rc
+  if [ "$AWR_RUNTIME_ABI" = v2 ]; then
+    shift 6
+    run_portable_agent \
+      "$cmd" "$target" "$logf" "$stage" "$output_name" "$@"
+    return $?
+  fi
   throttle
   read -r first _ <<<"$cmd"
   case "$first" in ''|agy|*/agy) gate ;; esac
@@ -508,7 +633,15 @@ while :; do
     if ! { check_draft "$draft" >/dev/null 2>&1 && [ "$draft" -nt "$task" ]; }; then
       hint=""; [ -s "$draft" ] && hint=", with the existing draft at ${draft}; improve it in place"
       log "Starting [research:$key round $((rounds + 1))]: $theme"
-      run_agent "$research_cmd" "$new" "Read ${repo}/roles/awr.md and follow it. The task is ${task}${hint}. Write the artifact to ${new}." "$alog"; rc=$?
+      stage_inputs=(
+        "task.md=$task"
+        "brainstorming_policy.md=$repo/brainstorming_policy.md"
+      )
+      [ ! -s "$draft" ] || stage_inputs+=("draft.md=$draft")
+      run_agent \
+        "$research_cmd" "$new" \
+        "Read ${repo}/roles/awr.md and follow it. The task is ${task}${hint}. Write the artifact to ${new}." \
+        "$alog" awr-research draft.md "${stage_inputs[@]}"; rc=$?
       if why=$(check_draft "$new"); then
         mv -f "$new" "$draft"
       else
@@ -526,7 +659,11 @@ while :; do
     # Prior work must target this draft. Reuse is limited to crash or reviewer retries.
     if ! { check_priorwork "$pwork" >/dev/null 2>&1 && [ "$pwork" -nt "$draft" ]; }; then
       log "Starting [priorwork:$key round $((rounds + 1))]"
-      run_agent "$priorwork_cmd" "$pworknew" "Read ${repo}/roles/awr-priorwork.md and follow it. The draft is ${draft}; use only its ## Revised Idea claim to form queries and do not trust its ## Search Record. The task context is ${task}. Write independent prior-work evidence to ${pworknew}." "$alog"; rc=$?
+      run_agent \
+        "$priorwork_cmd" "$pworknew" \
+        "Read ${repo}/roles/awr-priorwork.md and follow it. The draft is ${draft}; use only its ## Revised Idea claim to form queries and do not trust its ## Search Record. The task context is ${task}. Write independent prior-work evidence to ${pworknew}." \
+        "$alog" awr-priorwork priorwork.md \
+        "draft.md=$draft" "task.md=$task"; rc=$?
       if why=$(check_priorwork "$pworknew"); then
         mv -f "$pworknew" "$pwork"
       else
@@ -537,7 +674,13 @@ while :; do
     fi
     # Independent review.
     log "Starting [review:$key round $((rounds + 1))]"
-    run_agent "$judge_cmd" "$judgef" "Read ${repo}/roles/awr-judge.md and follow it. Review ${draft} using independent prior-work evidence from ${pwork}; novelty depends only on that evidence, not the draft's search record. The task context is ${task}; the criteria are ${repo}/rubric.md and ${repo}/brainstorming_policy.md. Overwrite ${judgef} with the decision." "$alog"; rc=$?
+    run_agent \
+      "$judge_cmd" "$judgef" \
+      "Read ${repo}/roles/awr-judge.md and follow it. Review ${draft} using independent prior-work evidence from ${pwork}; novelty depends only on that evidence, not the draft's search record. The task context is ${task}; the criteria are ${repo}/rubric.md and ${repo}/brainstorming_policy.md. Overwrite ${judgef} with the decision." \
+      "$alog" awr-judge judge.md \
+      "draft.md=$draft" "priorwork.md=$pwork" "task.md=$task" \
+      "rubric.md=$repo/rubric.md" \
+      "brainstorming_policy.md=$repo/brainstorming_policy.md"; rc=$?
     if ! why=$(check_judge "$judgef"); then
       mv -f "$judgef" "$outdir/$key.judge.bad$((nbad + 1))" 2>/dev/null || true
       log "Rejected [review:$key] (backend rc=$rc): ${why}$([ $((nbad + 1)) -ge "$max_bad" ] && printf '; reached %s bad artifacts, blacklisted' "$max_bad")"

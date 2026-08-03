@@ -293,6 +293,36 @@ def main():
         )
         + "\n"
     ).encode("utf-8")
+    if mode == "boolean-schema-version":
+        value = json.loads(raw)
+        value["schema_version"] = True
+        raw = (
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+    if mode == "non-nfc-envelope":
+        value = json.loads(raw)
+        value["artifacts"][0]["content"] += "Cafe\u0301\n"
+        raw = (
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+    if mode == "duplicate-key":
+        raw = raw.replace(
+            b'{"artifacts":',
+            b'{"schema_version":1,"artifacts":',
+            1,
+        )
     if mode == "extra-envelope":
         value = json.loads(raw)
         value["unexpected"] = True

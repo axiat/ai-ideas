@@ -2,7 +2,19 @@
 
 ## Filesystem
 
-`hunt.sh` owns the repository host process. Contained generation, history comparison, and every review seat run in OS-scoped temporary mirrors with sealed input allowlists. Those mirrors receive no `ledger.tsv`, SQLite database, search index, `.git`, run archive, unrestricted repository root, or writable path outside the mirror. Darwin uses `sandbox-exec`; Linux uses `bwrap` when available. Missing containment fails closed.
+`hunt.sh` owns the repository host process. Under `HISTORY_RUNTIME_ABI=v1`,
+generation, history comparison, and every review seat run in OS-scoped
+temporary mirrors with sealed input allowlists. Darwin uses `sandbox-exec`;
+Linux uses `bwrap`. Missing v1 containment fails closed.
+
+Under `HISTORY_RUNTIME_ABI=v2`, each internal stage runs as a normal same-user
+host process in a disposable portable mirror. The mounted surface contains one
+role and declared inputs; it omits `ledger.tsv`, the SQLite database, search
+indexes, `.git`, run archives, and unrelated round state. The process retains
+the user's host privileges and can access absolute paths, credentials,
+configuration, processes, and network resources allowed to that user. The
+portable mirror bounds declared inputs and accepted outputs; it is not an OS
+or container sandbox.
 
 Selector, prescreen, external research, and report stages still run in disposable repository mirrors with host-validated outputs. Review seats never share sibling output. Prompt instructions, `.claude/settings.json`, `GROK_REPO`, and Codex workspace flags are backend controls, not a host security boundary.
 
@@ -12,7 +24,7 @@ Per-run archives default to `$HOME/.ai-ideas-runs/$(basename "$PWD")`, outside t
 
 ## Network
 
-The default hunt external commands enable search and workspace network access for selector, prescreen, research, and report. Contained stages use closed JSON argv and fail closed without a verified adapter profile. Litwatch fetches OAI records by default and may call its annotation backend. `publish.sh` and `settle.sh` access the Git remote; `publish.sh` also calls GitHub through `gh`.
+The default hunt external commands enable search and workspace network access for selector, prescreen, research, and report. V1 contained stages use closed JSON argv and deny network access. V2 portable stages use registered command-intent argv but inherit ordinary host network authority. Litwatch fetches OAI records by default and may call its annotation backend. `publish.sh` and `settle.sh` access the Git remote; `publish.sh` also calls GitHub through `gh`.
 
 The frozen-panel default omits retrieval flags; the runner also applies provider-specific controls where available and tells reviewers to use only the supplied evidence. End-to-end calibration enables search and network access. A custom backend remains responsible for enforcing either policy; artifact validation cannot prove network behavior.
 
@@ -20,7 +32,7 @@ The frozen-panel default omits retrieval flags; the runner also applies provider
 
 `tmp/hunt.lock` prevents concurrent main loops in one checkout. `tmp/awr-side.lock` performs the same role for the AwR sidecar. Stale locks are cleared only after the recorded process is absent. These locks do not coordinate other checkouts or isolate subprocesses, credentials, environment variables, network sockets, or same-user processes.
 
-Backend commands execute as local child processes. Contained commands require absolute executables and sealed manifests. `approval_policy=never` prevents the default Codex commands from pausing for approval; it does not constrain Bash, other providers, or operating-system capabilities.
+Backend commands execute as local child processes. V1 contained commands require absolute executables and sealed manifests before entering the OS containment layer. V2 resolves a registered executable and closed argv, then launches it directly on the host; the mirror does not restrict same-user process authority. `approval_policy=never` prevents the default Codex commands from pausing for approval; it does not constrain Bash, other providers, or operating-system capabilities.
 
 ## Decision and Publication
 

@@ -91,7 +91,7 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
         return receipt
 
     def test_descriptor_binds_raw_and_compressed_hash_codec_and_lengths(self):
-        raw = "请求与输出\n".encode("utf-8")
+        raw = "requête et sortie\n".encode("utf-8")
         descriptor = history_cas.put_object(
             self.conn, self.cas_root, raw, "transient-7d"
         )
