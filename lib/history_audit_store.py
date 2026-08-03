@@ -42,6 +42,7 @@ _KNOWN_LEGACY_RELATIONS = frozenset(
 )
 _FENCE_GUARDS = {}
 _L2_TASK_INSERT_GUARDS = {}
+_L2_TERMINAL_TRANSITION_GUARDS = {}
 
 
 class AuditMigrationError(RuntimeError):
@@ -2354,6 +2355,391 @@ END;
 """
 
 
+_L2_RUNTIME_SPLIT_AUTHORITY_SQL = """
+CREATE TABLE audit_l2_terminal_transition_authority_v2(
+  parent_task_hash TEXT PRIMARY KEY REFERENCES audit_logical_tasks(task_hash),
+  transition_kind TEXT NOT NULL CHECK(transition_kind IN ('split','exhaust')),
+  authority_kind TEXT NOT NULL CHECK(
+    authority_kind IN ('claimed-v1','legacy-complete-v1')
+  ),
+  claim_fence INTEGER CHECK(claim_fence IS NULL OR claim_fence >= 0),
+  claim_token TEXT,
+  lease_until TEXT,
+  child0_task_hash TEXT REFERENCES audit_logical_tasks(task_hash)
+    DEFERRABLE INITIALLY DEFERRED,
+  child1_task_hash TEXT REFERENCES audit_logical_tasks(task_hash)
+    DEFERRABLE INITIALLY DEFERRED,
+  authorization_sha256 TEXT NOT NULL UNIQUE CHECK(length(authorization_sha256)=64),
+  created_at TEXT NOT NULL,
+  CHECK(
+    (transition_kind='split' AND child0_task_hash IS NOT NULL
+      AND child1_task_hash IS NOT NULL AND child0_task_hash<>child1_task_hash)
+    OR
+    (transition_kind='exhaust' AND child0_task_hash IS NULL
+      AND child1_task_hash IS NULL)
+  )
+);
+INSERT INTO audit_l2_terminal_transition_authority_v2(
+  parent_task_hash, transition_kind, authority_kind, claim_fence,
+  claim_token, lease_until, child0_task_hash, child1_task_hash,
+  authorization_sha256, created_at
+)
+SELECT task.task_hash, 'split', 'legacy-complete-v1', NULL, NULL, NULL,
+       edge0.child_task_hash, edge1.child_task_hash,
+       audit_l2_transition_authorization_sha(
+         task.task_hash, 'split', NULL, NULL, NULL,
+         edge0.child_task_hash, edge1.child_task_hash
+       ), terminal.created_at
+FROM audit_logical_tasks task
+JOIN audit_task_terminal_facts_v2 terminal ON terminal.task_hash=task.task_hash
+JOIN audit_task_edges_v2 edge0
+  ON edge0.parent_task_hash=task.task_hash AND edge0.position=0
+JOIN audit_task_edges_v2 edge1
+  ON edge1.parent_task_hash=task.task_hash AND edge1.position=1
+WHERE task.state='superseded' AND terminal.terminal_state='superseded';
+INSERT INTO audit_l2_terminal_transition_authority_v2(
+  parent_task_hash, transition_kind, authority_kind, claim_fence,
+  claim_token, lease_until, child0_task_hash, child1_task_hash,
+  authorization_sha256, created_at
+)
+SELECT task.task_hash, 'exhaust', 'legacy-complete-v1', NULL, NULL, NULL,
+       NULL, NULL,
+       audit_l2_transition_authorization_sha(
+         task.task_hash, 'exhaust', NULL, NULL, NULL, NULL, NULL
+       ), terminal.created_at
+FROM audit_logical_tasks task
+JOIN audit_task_terminal_facts_v2 terminal ON terminal.task_hash=task.task_hash
+WHERE task.state='exhausted' AND terminal.terminal_state='exhausted';
+""" + _immutable_guards(
+    "audit_l2_terminal_transition_authority_v2",
+) + """
+DROP TRIGGER audit_task_attempts_full_task_authority_guard;
+DROP TRIGGER audit_logical_tasks_l2_insert_authority_guard_v2;
+DROP VIEW audit_l2_valid_task_authority_v2;
+CREATE VIEW audit_l2_split_family_facts_v2 AS
+SELECT parent.task_hash AS parent_task_hash,
+       child0.task_hash AS child0_task_hash,
+       child1.task_hash AS child1_task_hash,
+       parent_binding.plan_sha AS plan_sha,
+       audit_l2_split_family_valid(
+         plan.plan_json,
+         records.records_json,
+         json_object(
+           'parent_task_hash', parent.task_hash,
+           'parent_state', parent.state,
+           'parent_fence', parent.fence,
+           'parent_input_id', parent.input_id,
+           'parent_assigned_json', parent_binding.assigned_item_ids_json,
+           'terminal_state', terminal.terminal_state,
+           'terminal_reason', terminal.reason,
+           'terminal_sha', terminal.fact_sha256,
+           'authority_kind', authority.authority_kind,
+           'claim_fence', authority.claim_fence,
+           'claim_token', authority.claim_token,
+           'lease_until', authority.lease_until,
+           'authority_child0', authority.child0_task_hash,
+           'authority_child1', authority.child1_task_hash,
+           'authority_sha', authority.authorization_sha256,
+           'children', json_array(
+             json_object(
+               'position', 0, 'task_hash', child0.task_hash,
+               'run_id', child0.run_id, 'stage', child0.stage,
+               'candidate_id', child0.staging_candidate_id,
+               'input_id', child0.input_id, 'plan_sha', binding0.plan_sha,
+               'snapshot_id', binding0.snapshot_id,
+               'snapshot_hash', binding0.snapshot_hash,
+               'shard_input_sha', binding0.shard_input_sha,
+               'assigned_json', binding0.assigned_item_ids_json,
+               'frozen_json', binding0.frozen_records_json,
+               'pool_json', binding0.provider_pool_json,
+               'parent_hash', binding0.parent_task_hash,
+               'split_depth', binding0.split_depth,
+               'parent_plan_sha', parent_binding.plan_sha,
+               'parent_snapshot_id', parent_binding.snapshot_id,
+               'parent_candidate_id', parent.staging_candidate_id,
+               'parent_split_depth', parent_binding.split_depth,
+               'request_sha', input0.request_sha,
+               'request_text', input0.request_text,
+               'item_ids_json', input0.item_ids_json,
+               'edge_sha', edge0.edge_sha256
+             ),
+             json_object(
+               'position', 1, 'task_hash', child1.task_hash,
+               'run_id', child1.run_id, 'stage', child1.stage,
+               'candidate_id', child1.staging_candidate_id,
+               'input_id', child1.input_id, 'plan_sha', binding1.plan_sha,
+               'snapshot_id', binding1.snapshot_id,
+               'snapshot_hash', binding1.snapshot_hash,
+               'shard_input_sha', binding1.shard_input_sha,
+               'assigned_json', binding1.assigned_item_ids_json,
+               'frozen_json', binding1.frozen_records_json,
+               'pool_json', binding1.provider_pool_json,
+               'parent_hash', binding1.parent_task_hash,
+               'split_depth', binding1.split_depth,
+               'parent_plan_sha', parent_binding.plan_sha,
+               'parent_snapshot_id', parent_binding.snapshot_id,
+               'parent_candidate_id', parent.staging_candidate_id,
+               'parent_split_depth', parent_binding.split_depth,
+               'request_sha', input1.request_sha,
+               'request_text', input1.request_text,
+               'item_ids_json', input1.item_ids_json,
+               'edge_sha', edge1.edge_sha256
+             )
+           )
+         )
+       ) AS authority_valid
+FROM audit_logical_tasks parent
+JOIN audit_task_bindings_v2 parent_binding
+  ON parent_binding.task_hash=parent.task_hash
+JOIN audit_l2_task_inputs_v2 parent_input
+  ON parent_input.task_hash=parent.task_hash
+JOIN audit_l2_plans_v2 plan ON plan.plan_sha=parent_binding.plan_sha
+JOIN audit_l2_snapshot_records_v2 records
+  ON records.snapshot_id=parent_binding.snapshot_id
+JOIN audit_task_terminal_facts_v2 terminal
+  ON terminal.task_hash=parent.task_hash
+JOIN audit_l2_terminal_transition_authority_v2 authority
+  ON authority.parent_task_hash=parent.task_hash
+ AND authority.transition_kind='split'
+JOIN audit_task_edges_v2 edge0
+  ON edge0.parent_task_hash=parent.task_hash AND edge0.position=0
+JOIN audit_task_edges_v2 edge1
+  ON edge1.parent_task_hash=parent.task_hash AND edge1.position=1
+JOIN audit_logical_tasks child0 ON child0.task_hash=edge0.child_task_hash
+JOIN audit_task_bindings_v2 binding0 ON binding0.task_hash=child0.task_hash
+JOIN audit_l2_task_inputs_v2 input0 ON input0.task_hash=child0.task_hash
+JOIN audit_logical_tasks child1 ON child1.task_hash=edge1.child_task_hash
+JOIN audit_task_bindings_v2 binding1 ON binding1.task_hash=child1.task_hash
+JOIN audit_l2_task_inputs_v2 input1 ON input1.task_hash=child1.task_hash;
+CREATE VIEW audit_l2_valid_split_families_v2 AS
+SELECT parent_task_hash, child0_task_hash, child1_task_hash, plan_sha
+FROM audit_l2_split_family_facts_v2 WHERE authority_valid=1;
+CREATE VIEW audit_l2_valid_task_authority_v2 AS
+WITH RECURSIVE valid(task_hash) AS (
+  SELECT task.task_hash
+  FROM audit_logical_tasks task
+  JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
+  JOIN audit_l2_task_inputs_v2 input ON input.task_hash=task.task_hash
+  JOIN audit_l2_plans_v2 plan ON plan.plan_sha=binding.plan_sha
+  JOIN audit_l2_snapshot_records_v2 records
+    ON records.snapshot_id=binding.snapshot_id
+  WHERE binding.parent_task_hash IS NULL
+    AND audit_l2_binding_authority_valid(
+      plan.plan_json, records.records_json,
+      json_object(
+        'task_hash', task.task_hash, 'run_id', task.run_id,
+        'stage', task.stage, 'candidate_id', task.staging_candidate_id,
+        'input_id', task.input_id, 'plan_sha', binding.plan_sha,
+        'snapshot_id', binding.snapshot_id,
+        'snapshot_hash', binding.snapshot_hash,
+        'shard_input_sha', binding.shard_input_sha,
+        'assigned_json', binding.assigned_item_ids_json,
+        'frozen_json', binding.frozen_records_json,
+        'pool_json', binding.provider_pool_json,
+        'parent_hash', NULL, 'split_depth', binding.split_depth,
+        'parent_input_id', NULL, 'parent_assigned_json', NULL,
+        'parent_plan_sha', NULL, 'parent_snapshot_id', NULL,
+        'parent_candidate_id', NULL, 'parent_split_depth', NULL
+      )
+    )=1
+    AND audit_l2_input_authority_valid(
+      plan.plan_json,
+      json_object(
+        'task_hash', task.task_hash, 'stage', task.stage,
+        'candidate_id', task.staging_candidate_id,
+        'input_id', input.input_id, 'plan_sha', binding.plan_sha,
+        'parent_hash', NULL, 'request_sha', input.request_sha,
+        'request_text', input.request_text,
+        'item_ids_json', input.item_ids_json
+      )
+    )=1
+  UNION ALL
+  SELECT member.value
+  FROM valid parent_valid
+  JOIN audit_l2_valid_split_families_v2 family
+    ON family.parent_task_hash=parent_valid.task_hash
+  JOIN json_each(json_array(
+    family.child0_task_hash, family.child1_task_hash
+  )) member
+)
+SELECT DISTINCT task_hash FROM valid;
+CREATE VIEW audit_l2_valid_exhaustions_v2 AS
+SELECT task.task_hash
+FROM audit_l2_valid_task_authority_v2 valid
+JOIN audit_logical_tasks task ON task.task_hash=valid.task_hash
+JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
+JOIN audit_task_terminal_facts_v2 terminal ON terminal.task_hash=task.task_hash
+JOIN audit_l2_terminal_transition_authority_v2 authority
+  ON authority.parent_task_hash=task.task_hash
+ AND authority.transition_kind='exhaust'
+WHERE task.state='exhausted'
+  AND terminal.terminal_state='exhausted'
+  AND terminal.fact_sha256=audit_l2_terminal_fact_sha(
+    task.task_hash, terminal.terminal_state, terminal.reason
+  )
+  AND authority.authorization_sha256=audit_l2_transition_authorization_sha(
+    task.task_hash, 'exhaust', authority.claim_fence,
+    authority.claim_token, authority.lease_until, NULL, NULL
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_task_edges_v2 edge
+    WHERE edge.parent_task_hash=task.task_hash
+  )
+  AND (
+    authority.authority_kind='legacy-complete-v1'
+    OR (
+      authority.authority_kind='claimed-v1'
+      AND authority.claim_fence=task.fence-1
+      AND authority.claim_token IS NOT NULL
+      AND authority.lease_until IS NOT NULL
+      AND (
+        terminal.reason<>'single_item_overflow'
+        OR (
+          json_array_length(binding.assigned_item_ids_json)=1
+          AND EXISTS (
+            SELECT 1
+            FROM audit_task_attempts attempt
+            JOIN audit_attempt_completions_v2 completion
+              ON completion.attempt_id=attempt.attempt_id
+            JOIN audit_cas_objects output
+              ON output.object_id=completion.output_cas_object_id
+            WHERE attempt.task_hash=task.task_hash
+              AND completion.outcome='overflow'
+              AND output.integrity_state='verified'
+              AND json_extract(attempt.provenance_json, '$.claim_fence')
+                    =authority.claim_fence
+              AND json_extract(attempt.provenance_json, '$.claim_token')
+                    =authority.claim_token
+          )
+        )
+      )
+    )
+  );
+CREATE TABLE audit_l2_split_authority_upgrade_probe(
+  value INTEGER NOT NULL CHECK(value=0)
+);
+INSERT INTO audit_l2_split_authority_upgrade_probe(value)
+SELECT 1 FROM audit_task_bindings_v2 binding
+LEFT JOIN audit_l2_valid_task_authority_v2 valid
+  ON valid.task_hash=binding.task_hash
+WHERE valid.task_hash IS NULL;
+INSERT INTO audit_l2_split_authority_upgrade_probe(value)
+SELECT 1 FROM audit_logical_tasks task
+LEFT JOIN audit_l2_valid_split_families_v2 split
+  ON split.parent_task_hash=task.task_hash
+LEFT JOIN audit_l2_valid_exhaustions_v2 exhausted
+  ON exhausted.task_hash=task.task_hash
+WHERE (task.state='superseded' AND split.parent_task_hash IS NULL)
+   OR (task.state='exhausted' AND exhausted.task_hash IS NULL);
+INSERT INTO audit_l2_split_authority_upgrade_probe(value)
+SELECT 1 FROM audit_task_terminal_facts_v2 terminal
+LEFT JOIN audit_l2_valid_split_families_v2 split
+  ON split.parent_task_hash=terminal.task_hash
+LEFT JOIN audit_l2_valid_exhaustions_v2 exhausted
+  ON exhausted.task_hash=terminal.task_hash
+WHERE (terminal.terminal_state='superseded' AND split.parent_task_hash IS NULL)
+   OR (terminal.terminal_state='exhausted' AND exhausted.task_hash IS NULL);
+INSERT INTO audit_l2_split_authority_upgrade_probe(value)
+SELECT 1 FROM audit_task_edges_v2 edge
+LEFT JOIN audit_l2_valid_split_families_v2 split
+  ON split.parent_task_hash=edge.parent_task_hash
+ AND (split.child0_task_hash=edge.child_task_hash
+      OR split.child1_task_hash=edge.child_task_hash)
+WHERE split.parent_task_hash IS NULL;
+INSERT INTO audit_l2_split_authority_upgrade_probe(value)
+SELECT 1 FROM audit_l2_terminal_transition_authority_v2 authority
+LEFT JOIN audit_l2_valid_split_families_v2 split
+  ON split.parent_task_hash=authority.parent_task_hash
+LEFT JOIN audit_l2_valid_exhaustions_v2 exhausted
+  ON exhausted.task_hash=authority.parent_task_hash
+WHERE (authority.transition_kind='split' AND split.parent_task_hash IS NULL)
+   OR (authority.transition_kind='exhaust' AND exhausted.task_hash IS NULL);
+DROP TABLE audit_l2_split_authority_upgrade_probe;
+DROP TRIGGER IF EXISTS audit_logical_tasks_fenced_update;
+CREATE TRIGGER audit_logical_tasks_fenced_update
+BEFORE UPDATE ON audit_logical_tasks
+BEGIN
+  SELECT CASE WHEN audit_fenced_cas_allowed()<>1
+    THEN RAISE(ABORT, 'logical task update requires fenced CAS') END;
+  SELECT CASE WHEN NEW.task_hash<>OLD.task_hash OR NEW.run_id<>OLD.run_id
+    OR NEW.stage<>OLD.stage
+    OR NEW.staging_candidate_id<>OLD.staging_candidate_id
+    OR NEW.input_id<>OLD.input_id OR NEW.created_at<>OLD.created_at
+    THEN RAISE(ABORT, 'logical task identity is immutable') END;
+  SELECT CASE WHEN NEW.fence<>OLD.fence+1
+    THEN RAISE(ABORT, 'logical task fence must increase by one') END;
+  SELECT CASE WHEN OLD.state IN ('settled','superseded','exhausted')
+    THEN RAISE(ABORT, 'logical task terminal state is closed') END;
+  SELECT CASE WHEN NEW.state IN ('superseded','exhausted')
+    AND audit_l2_terminal_transition_allowed(
+      OLD.task_hash, OLD.state, OLD.fence, OLD.claim_token, OLD.lease_until,
+      NEW.state, NEW.fence, NEW.claim_token, NEW.lease_until
+    )<>1
+    THEN RAISE(ABORT, 'logical task terminal transition lacks authority') END;
+END;
+CREATE TRIGGER audit_logical_tasks_l2_insert_authority_guard_v2
+BEFORE INSERT ON audit_logical_tasks
+WHEN EXISTS (SELECT 1 FROM audit_l2_plans_v2 plan WHERE plan.run_id=NEW.run_id)
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_l2_plans_v2 plan
+    WHERE plan.run_id=NEW.run_id
+      AND plan.candidate_id=NEW.staging_candidate_id
+      AND (
+        audit_l2_root_task_valid(
+          plan.plan_json, NEW.task_hash, NEW.run_id, NEW.stage,
+          NEW.staging_candidate_id, NEW.input_id
+        )=1
+        OR audit_l2_split_task_insert_allowed(
+          NEW.task_hash, NEW.run_id, NEW.stage,
+          NEW.staging_candidate_id, NEW.input_id
+        )=1
+      )
+  ) THEN RAISE(ABORT, 'forged task authority') END;
+END;
+CREATE TRIGGER audit_task_terminal_facts_v2_authority_guard
+BEFORE INSERT ON audit_task_terminal_facts_v2
+BEGIN
+  SELECT CASE WHEN audit_l2_terminal_fact_insert_allowed(
+    NEW.task_hash, NEW.terminal_state, NEW.reason,
+    NEW.fact_sha256, NEW.created_at
+  )<>1 THEN RAISE(ABORT, 'terminal fact lacks transition authority') END;
+END;
+CREATE TRIGGER audit_task_edges_v2_authority_guard
+BEFORE INSERT ON audit_task_edges_v2
+BEGIN
+  SELECT CASE WHEN audit_l2_edge_insert_allowed(
+    NEW.parent_task_hash, NEW.child_task_hash, NEW.position,
+    NEW.edge_sha256, NEW.created_at
+  )<>1 THEN RAISE(ABORT, 'split edge lacks transition authority') END;
+END;
+CREATE TRIGGER audit_l2_terminal_transition_authority_v2_insert_guard
+BEFORE INSERT ON audit_l2_terminal_transition_authority_v2
+BEGIN
+  SELECT CASE WHEN audit_l2_transition_authority_insert_allowed(
+    NEW.parent_task_hash, NEW.transition_kind, NEW.authority_kind,
+    NEW.claim_fence, NEW.claim_token, NEW.lease_until,
+    NEW.child0_task_hash, NEW.child1_task_hash,
+    NEW.authorization_sha256, NEW.created_at
+  )<>1 THEN RAISE(ABORT, 'terminal authorization context is invalid') END;
+END;
+CREATE TRIGGER audit_task_attempts_full_task_authority_guard
+BEFORE INSERT ON audit_task_attempts
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_l2_valid_task_authority_v2 valid
+    JOIN audit_task_bindings_v2 binding ON binding.task_hash=valid.task_hash
+    JOIN audit_l2_plans_v2 plan ON plan.plan_sha=binding.plan_sha
+    WHERE valid.task_hash=NEW.task_hash
+      AND audit_l2_attempt_capability_valid(
+        plan.plan_json, binding.provider_pool_json, NEW.provenance_json
+      )=1
+  ) THEN RAISE(ABORT, 'attempt lacks validated task authority') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
@@ -2390,6 +2776,9 @@ MIGRATIONS = (
     Migration("l2-runtime-integrity", 1, _L2_RUNTIME_INTEGRITY_SQL),
     Migration(
         "l2-runtime-task-authority", 1, _L2_RUNTIME_TASK_AUTHORITY_SQL
+    ),
+    Migration(
+        "l2-runtime-split-authority", 1, _L2_RUNTIME_SPLIT_AUTHORITY_SQL
     ),
 )
 
@@ -2844,21 +3233,224 @@ def _l2_input_authority_valid(plan_json, facts_json):
         return 0
 
 
+def _l2_fact_sha(domain, value):
+    return history_contract_v2.framed_sha256(
+        domain, history_contract_v2.canonical_bytes(value)
+    )
+
+
+def _l2_terminal_fact_sha(task_hash, terminal_state, reason):
+    try:
+        return _l2_fact_sha(
+            "history-task-terminal-v2",
+            {
+                "task_hash": task_hash,
+                "terminal_state": terminal_state,
+                "reason": reason,
+            },
+        )
+    except (TypeError, ValueError, history_contract_v2.ContractV2Error):
+        return ""
+
+
+def _l2_edge_sha(parent_task_hash, child_task_hash, position):
+    try:
+        return _l2_fact_sha(
+            "history-task-edge-v2",
+            {
+                "parent_task_hash": parent_task_hash,
+                "child_task_hash": child_task_hash,
+                "position": position,
+            },
+        )
+    except (TypeError, ValueError, history_contract_v2.ContractV2Error):
+        return ""
+
+
+def _l2_transition_authorization_sha(
+    parent_task_hash, transition_kind, claim_fence, claim_token,
+    lease_until, child0_task_hash, child1_task_hash,
+):
+    try:
+        return _l2_fact_sha(
+            "history-l2-terminal-transition-authority-v1",
+            {
+                "parent_task_hash": parent_task_hash,
+                "transition_kind": transition_kind,
+                "claim_fence": claim_fence,
+                "claim_token": claim_token,
+                "lease_until": lease_until,
+                "child_task_hashes": (
+                    [child0_task_hash, child1_task_hash]
+                    if transition_kind == "split" else []
+                ),
+            },
+        )
+    except (TypeError, ValueError, history_contract_v2.ContractV2Error):
+        return ""
+
+
+def _l2_split_family_valid(plan_json, records_json, facts_json):
+    """Validate one whole two-child split family without reading caller state."""
+    try:
+        facts = json.loads(facts_json)
+        parent_ids = _closed_json(facts["parent_assigned_json"])
+        children = facts["children"]
+        if (
+            set(facts) != {
+                "parent_task_hash", "parent_state", "parent_fence",
+                "parent_input_id", "parent_assigned_json", "terminal_state",
+                "terminal_reason", "terminal_sha", "authority_kind",
+                "claim_fence", "claim_token", "lease_until",
+                "authority_child0", "authority_child1", "authority_sha",
+                "children",
+            }
+            or facts["parent_state"] != "superseded"
+            or facts["terminal_state"] != "superseded"
+            or facts["terminal_reason"] != "invalid_parent_split"
+            or facts["terminal_sha"] != _l2_terminal_fact_sha(
+                facts["parent_task_hash"], "superseded", "invalid_parent_split"
+            )
+            or not isinstance(parent_ids, list)
+            or len(parent_ids) < 2
+            or not isinstance(children, list)
+            or len(children) != 2
+            or [child["position"] for child in children] != [0, 1]
+        ):
+            return 0
+        midpoint = len(parent_ids) // 2
+        groups = (parent_ids[:midpoint], parent_ids[midpoint:])
+        child_hashes = []
+        for position, child in enumerate(children):
+            if set(child) != {
+                "position", "task_hash", "run_id", "stage", "candidate_id",
+                "input_id", "plan_sha", "snapshot_id", "snapshot_hash",
+                "shard_input_sha", "assigned_json", "frozen_json", "pool_json",
+                "parent_hash", "split_depth", "parent_plan_sha",
+                "parent_snapshot_id", "parent_candidate_id",
+                "parent_split_depth", "request_sha", "request_text",
+                "item_ids_json", "edge_sha",
+            }:
+                return 0
+            binding_facts = {
+                "task_hash": child["task_hash"],
+                "run_id": child["run_id"],
+                "stage": child["stage"],
+                "candidate_id": child["candidate_id"],
+                "input_id": child["input_id"],
+                "plan_sha": child["plan_sha"],
+                "snapshot_id": child["snapshot_id"],
+                "snapshot_hash": child["snapshot_hash"],
+                "shard_input_sha": child["shard_input_sha"],
+                "assigned_json": child["assigned_json"],
+                "frozen_json": child["frozen_json"],
+                "pool_json": child["pool_json"],
+                "parent_hash": child["parent_hash"],
+                "split_depth": child["split_depth"],
+                "parent_input_id": facts["parent_input_id"],
+                "parent_assigned_json": facts["parent_assigned_json"],
+                "parent_plan_sha": child["parent_plan_sha"],
+                "parent_snapshot_id": child["parent_snapshot_id"],
+                "parent_candidate_id": child["parent_candidate_id"],
+                "parent_split_depth": child["parent_split_depth"],
+            }
+            input_facts = {
+                "task_hash": child["task_hash"],
+                "stage": child["stage"],
+                "candidate_id": child["candidate_id"],
+                "input_id": child["input_id"],
+                "plan_sha": child["plan_sha"],
+                "parent_hash": child["parent_hash"],
+                "request_sha": child["request_sha"],
+                "request_text": child["request_text"],
+                "item_ids_json": child["item_ids_json"],
+            }
+            if (
+                child["parent_hash"] != facts["parent_task_hash"]
+                or _closed_json(child["assigned_json"]) != groups[position]
+                or _closed_json(child["item_ids_json"]) != groups[position]
+                or _l2_binding_authority_valid(
+                    plan_json, records_json,
+                    json.dumps(binding_facts, sort_keys=True, separators=(",", ":")),
+                ) != 1
+                or _l2_input_authority_valid(
+                    plan_json,
+                    json.dumps(input_facts, sort_keys=True, separators=(",", ":")),
+                ) != 1
+                or child["edge_sha"] != _l2_edge_sha(
+                    facts["parent_task_hash"], child["task_hash"], position
+                )
+            ):
+                return 0
+            child_hashes.append(child["task_hash"])
+        if (
+            facts["authority_child0"] != child_hashes[0]
+            or facts["authority_child1"] != child_hashes[1]
+            or facts["authority_kind"] not in {"claimed-v1", "legacy-complete-v1"}
+            or facts["authority_sha"] != _l2_transition_authorization_sha(
+                facts["parent_task_hash"], "split", facts["claim_fence"],
+                facts["claim_token"], facts["lease_until"],
+                child_hashes[0], child_hashes[1],
+            )
+        ):
+            return 0
+        if facts["authority_kind"] == "claimed-v1" and (
+            facts["claim_fence"] != facts["parent_fence"] - 1
+            or not isinstance(facts["claim_token"], str)
+            or not facts["claim_token"]
+            or not isinstance(facts["lease_until"], str)
+        ):
+            return 0
+        return 1
+    except (
+        ValueError, TypeError, KeyError, IndexError,
+        history_contract_v2.ContractV2Error,
+    ):
+        return 0
+
+
 @contextlib.contextmanager
 def l2_split_task_insert_guard(
     conn, *, task_hash, run_id, stage, candidate_id, input_id
 ):
-    """Authorize one already-derived split task row inside its transaction."""
-    if not conn.in_transaction:
-        raise AuditMigrationError("split task insert requires a transaction")
-    guard = _L2_TASK_INSERT_GUARDS.get(id(conn))
-    if guard is None or guard["expected"] is not None:
-        raise AuditMigrationError("split task insert guard is unavailable")
-    guard["expected"] = (task_hash, run_id, stage, candidate_id, input_id)
+    """Reject the retired caller-selected split-child authorization surface."""
+    del conn, task_hash, run_id, stage, candidate_id, input_id
+    raise AuditMigrationError(
+        "split child authorization is derived by the storage transition"
+    )
+    yield
+
+
+def _clear_l2_terminal_transition_guard(guard):
+    guard.update(
+        active=False,
+        expected_children=frozenset(),
+        expected_transition=None,
+        expected_terminal=None,
+        expected_edges=frozenset(),
+        expected_authority=None,
+    )
+
+
+@contextlib.contextmanager
+def _l2_terminal_transition_guard(
+    conn, *, children, transition, terminal, edges, authority
+):
+    guard = _L2_TERMINAL_TRANSITION_GUARDS.get(id(conn))
+    if guard is None or guard["active"] or not conn.in_transaction:
+        raise AuditMigrationError("L2 terminal transition guard is unavailable")
+    guard.update(
+        active=True,
+        expected_children=frozenset(children),
+        expected_transition=transition,
+        expected_terminal=terminal,
+        expected_edges=frozenset(edges),
+        expected_authority=authority,
+    )
     try:
         yield
     finally:
-        guard["expected"] = None
+        _clear_l2_terminal_transition_guard(guard)
 
 
 def _clear_metadata_guard(guard):
@@ -3034,8 +3626,10 @@ def init_schema(conn):
     guard = {}
     _clear_metadata_guard(guard)
     _FENCE_GUARDS[id(conn)] = guard
-    split_guard = {"expected": None}
+    split_guard = {}
+    _clear_l2_terminal_transition_guard(split_guard)
     _L2_TASK_INSERT_GUARDS[id(conn)] = split_guard
+    _L2_TERMINAL_TRANSITION_GUARDS[id(conn)] = split_guard
     conn.create_function(
         "audit_fenced_cas_allowed", 0, lambda: 1 if guard["active"] else 0
     )
@@ -3093,8 +3687,50 @@ def init_schema(conn):
         "audit_l2_input_authority_valid", 2, _l2_input_authority_valid
     )
     conn.create_function(
+        "audit_l2_split_family_valid", 3, _l2_split_family_valid
+    )
+    conn.create_function(
+        "audit_l2_terminal_fact_sha", 3, _l2_terminal_fact_sha
+    )
+    conn.create_function("audit_l2_edge_sha", 3, _l2_edge_sha)
+    conn.create_function(
+        "audit_l2_transition_authorization_sha", 7,
+        _l2_transition_authorization_sha,
+    )
+    conn.create_function(
         "audit_l2_split_task_insert_allowed", 5,
-        lambda *values: 1 if split_guard["expected"] == tuple(values) else 0,
+        lambda *values: 1 if (
+            split_guard["active"]
+            and tuple(values) in split_guard["expected_children"]
+        ) else 0,
+    )
+    conn.create_function(
+        "audit_l2_terminal_transition_allowed", 9,
+        lambda *values: 1 if (
+            split_guard["active"]
+            and split_guard["expected_transition"] == tuple(values)
+        ) else 0,
+    )
+    conn.create_function(
+        "audit_l2_terminal_fact_insert_allowed", 5,
+        lambda *values: 1 if (
+            split_guard["active"]
+            and split_guard["expected_terminal"] == tuple(values)
+        ) else 0,
+    )
+    conn.create_function(
+        "audit_l2_edge_insert_allowed", 5,
+        lambda *values: 1 if (
+            split_guard["active"]
+            and tuple(values) in split_guard["expected_edges"]
+        ) else 0,
+    )
+    conn.create_function(
+        "audit_l2_transition_authority_insert_allowed", 10,
+        lambda *values: 1 if (
+            split_guard["active"]
+            and split_guard["expected_authority"] == tuple(values)
+        ) else 0,
     )
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA recursive_triggers = ON")
@@ -3226,6 +3862,475 @@ def compare_and_set_logical_task(
     if cursor.rowcount != 1:
         raise StaleFence("logical task state or fence is stale")
     return True
+
+
+def _l2_transition_timestamp(value):
+    if not isinstance(value, str) or not value:
+        raise ValueError("L2 terminal transition timestamp is required")
+    parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("L2 terminal transition timestamp needs timezone")
+    return parsed.astimezone(datetime.timezone.utc).isoformat()
+
+
+def _l2_transition_parent(conn, parent_task_hash):
+    row = conn.execute(
+        """
+        SELECT task.*, binding.plan_sha, binding.snapshot_id,
+               binding.snapshot_hash, binding.assigned_item_ids_json,
+               binding.frozen_records_json, binding.provider_pool_json,
+               binding.split_depth
+        FROM audit_l2_valid_task_authority_v2 valid
+        JOIN audit_logical_tasks task ON task.task_hash=valid.task_hash
+        JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
+        WHERE task.task_hash=?
+        """,
+        (parent_task_hash,),
+    ).fetchone()
+    if row is None:
+        raise AuditMigrationError("split parent lacks durable task authority")
+    return dict(row)
+
+
+def _validated_split_children(conn, parent_task_hash):
+    family = conn.execute(
+        """
+        SELECT child0_task_hash, child1_task_hash
+        FROM audit_l2_valid_split_families_v2
+        WHERE parent_task_hash=?
+        """,
+        (parent_task_hash,),
+    ).fetchone()
+    if family is None:
+        raise AuditMigrationError("superseded task has malformed split authority")
+    rows = conn.execute(
+        """
+        SELECT edge.position, binding.task_hash, binding.assigned_item_ids_json
+        FROM audit_task_edges_v2 edge
+        JOIN audit_task_bindings_v2 binding
+          ON binding.task_hash=edge.child_task_hash
+        WHERE edge.parent_task_hash=? ORDER BY edge.position
+        """,
+        (parent_task_hash,),
+    ).fetchall()
+    if (
+        len(rows) != 2
+        or [row["position"] for row in rows] != [0, 1]
+        or [row["task_hash"] for row in rows]
+           != [family["child0_task_hash"], family["child1_task_hash"]]
+    ):
+        raise AuditMigrationError("superseded task has incomplete split children")
+    return [
+        {
+            "position": row["position"],
+            "task_hash": row["task_hash"],
+            "item_ids": _closed_json(row["assigned_item_ids_json"]),
+        }
+        for row in rows
+    ]
+
+
+def _l2_claim_is_live(parent, expected_fence, claim_token, now):
+    return (
+        parent["state"] == "claimed"
+        and type(expected_fence) is int
+        and parent["fence"] == expected_fence
+        and isinstance(claim_token, str)
+        and claim_token
+        and parent["claim_token"] == claim_token
+        and _metadata_lease_live(parent["lease_until"], now) == 1
+    )
+
+
+def _l2_current_claim_has_overflow(conn, parent):
+    return conn.execute(
+        """
+        SELECT 1
+        FROM audit_task_attempts attempt
+        JOIN audit_attempt_completions_v2 completion
+          ON completion.attempt_id=attempt.attempt_id
+        JOIN audit_cas_objects output
+          ON output.object_id=completion.output_cas_object_id
+        WHERE attempt.task_hash=? AND completion.outcome='overflow'
+          AND output.integrity_state='verified'
+          AND json_extract(attempt.provenance_json, '$.claim_fence')=?
+          AND json_extract(attempt.provenance_json, '$.claim_token')=?
+        LIMIT 1
+        """,
+        (parent["task_hash"], parent["fence"], parent["claim_token"]),
+    ).fetchone() is not None
+
+
+def transition_l2_split_task(
+    conn, parent_task_hash, *, expected_fence, claim_token, now
+):
+    """Atomically derive and persist one exact two-child split transition."""
+    if conn.in_transaction:
+        raise AuditMigrationError("split transition requires an idle connection")
+    now = _l2_transition_timestamp(now)
+    parent = _l2_transition_parent(conn, parent_task_hash)
+    if parent["state"] == "superseded":
+        return {
+            "state": "superseded",
+            "children": _validated_split_children(conn, parent_task_hash),
+        }
+    if parent["state"] in {"settled", "exhausted"}:
+        raise StaleFence("logical task is already terminal")
+    if not _l2_claim_is_live(parent, expected_fence, claim_token, now):
+        raise StaleFence("split requires a live matching claim")
+    item_ids = _closed_json(parent["assigned_item_ids_json"])
+    if len(item_ids) < 2:
+        raise AuditMigrationError("split parent is not divisible")
+    midpoint = len(item_ids) // 2
+    groups = (item_ids[:midpoint], item_ids[midpoint:])
+    if not all(groups):
+        raise AuditMigrationError("split produced an empty child")
+    frozen_records = _closed_json(parent["frozen_records_json"])
+    record_by_id = {record["item_id"]: record for record in frozen_records}
+    child_rows = []
+    for position, child_ids in enumerate(groups):
+        request_material = {
+            "parent_task_hash": parent_task_hash,
+            "position": position,
+            "item_ids": child_ids,
+        }
+        request_text = history_contract_v2.canonical_bytes(
+            request_material
+        ).decode("utf-8")
+        request_sha = hashlib.sha256(request_text.encode("utf-8")).hexdigest()
+        child_rows.append(
+            {
+                "position": position,
+                "task_hash": history_contract_v2.logical_task_key(
+                    parent["plan_sha"], parent["stage"],
+                    parent["staging_candidate_id"], request_sha,
+                ),
+                "input_id": parent["input_id"] + f".{position}",
+                "request_sha": request_sha,
+                "request_text": request_text,
+                "item_ids": child_ids,
+                "frozen_records": [record_by_id[item_id] for item_id in child_ids],
+            }
+        )
+    created_at = now
+    terminal_sha = _l2_terminal_fact_sha(
+        parent_task_hash, "superseded", "invalid_parent_split"
+    )
+    edges = []
+    children = []
+    for child in child_rows:
+        children.append(
+            (
+                child["task_hash"], parent["run_id"], parent["stage"],
+                parent["staging_candidate_id"], child["input_id"],
+            )
+        )
+        edges.append(
+            (
+                parent_task_hash, child["task_hash"], child["position"],
+                _l2_edge_sha(
+                    parent_task_hash, child["task_hash"], child["position"]
+                ),
+                created_at,
+            )
+        )
+    authorization_sha = _l2_transition_authorization_sha(
+        parent_task_hash, "split", parent["fence"], parent["claim_token"],
+        parent["lease_until"], child_rows[0]["task_hash"],
+        child_rows[1]["task_hash"],
+    )
+    transition = (
+        parent_task_hash, "claimed", parent["fence"], parent["claim_token"],
+        parent["lease_until"], "superseded", parent["fence"] + 1, None, None,
+    )
+    terminal = (
+        parent_task_hash, "superseded", "invalid_parent_split",
+        terminal_sha, created_at,
+    )
+    authority = (
+        parent_task_hash, "split", "claimed-v1", parent["fence"],
+        parent["claim_token"], parent["lease_until"],
+        child_rows[0]["task_hash"], child_rows[1]["task_hash"],
+        authorization_sha, created_at,
+    )
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT state, fence, claim_token, lease_until "
+            "FROM audit_logical_tasks WHERE task_hash=?",
+            (parent_task_hash,),
+        ).fetchone()
+        if current is None or tuple(current) != (
+            "claimed", parent["fence"], parent["claim_token"],
+            parent["lease_until"],
+        ):
+            raise StaleFence("split claim changed before transition")
+        with _l2_terminal_transition_guard(
+            conn, children=children, transition=transition,
+            terminal=terminal, edges=edges, authority=authority,
+        ):
+            compare_and_set_logical_task(
+                conn, parent_task_hash,
+                expected_state="claimed", expected_fence=parent["fence"],
+                new_state="superseded", new_fence=parent["fence"] + 1,
+                claim_token=None, lease_until=None,
+            )
+            conn.execute(
+                "INSERT INTO audit_task_terminal_facts_v2 VALUES(?, ?, ?, ?, ?)",
+                terminal,
+            )
+            for child in child_rows:
+                conn.execute(
+                    """
+                    INSERT INTO audit_logical_tasks(
+                      task_hash, run_id, stage, staging_candidate_id, input_id,
+                      state, fence, claim_token, lease_until, created_at
+                    ) VALUES(?, ?, ?, ?, ?, 'planned', 0, NULL, NULL, ?)
+                    """,
+                    (
+                        child["task_hash"], parent["run_id"], parent["stage"],
+                        parent["staging_candidate_id"], child["input_id"],
+                        created_at,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO audit_task_bindings_v2(
+                      task_hash, plan_sha, snapshot_id, snapshot_hash,
+                      shard_input_sha, assigned_item_ids_json,
+                      frozen_records_json, provider_pool_json,
+                      parent_task_hash, split_depth, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        child["task_hash"], parent["plan_sha"],
+                        parent["snapshot_id"], parent["snapshot_hash"],
+                        child["request_sha"],
+                        history_contract_v2.canonical_bytes(
+                            child["item_ids"]
+                        ).decode("utf-8"),
+                        history_contract_v2.canonical_bytes(
+                            child["frozen_records"]
+                        ).decode("utf-8"),
+                        parent["provider_pool_json"], parent_task_hash,
+                        parent["split_depth"] + 1, created_at,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO audit_l2_task_inputs_v2(
+                      task_hash, input_id, request_sha, request_text,
+                      item_ids_json, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        child["task_hash"], child["input_id"],
+                        child["request_sha"], child["request_text"],
+                        history_contract_v2.canonical_bytes(
+                            child["item_ids"]
+                        ).decode("utf-8"),
+                        created_at,
+                    ),
+                )
+            for edge in edges:
+                conn.execute(
+                    "INSERT INTO audit_task_edges_v2 VALUES(?, ?, ?, ?, ?)", edge
+                )
+            conn.execute(
+                """
+                INSERT INTO audit_l2_terminal_transition_authority_v2(
+                  parent_task_hash, transition_kind, authority_kind,
+                  claim_fence, claim_token, lease_until,
+                  child0_task_hash, child1_task_hash,
+                  authorization_sha256, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                authority,
+            )
+            if conn.execute(
+                "SELECT 1 FROM audit_l2_valid_split_families_v2 "
+                "WHERE parent_task_hash=?", (parent_task_hash,),
+            ).fetchone() is None:
+                raise AuditMigrationError("split transition failed durable validation")
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    return {
+        "state": "superseded",
+        "children": _validated_split_children(conn, parent_task_hash),
+    }
+
+
+def transition_l2_exhaust_task(
+    conn, task_hash, reason, *, expected_fence, claim_token, now
+):
+    """Atomically persist one claimed task exhaustion with exact authority."""
+    if conn.in_transaction:
+        raise AuditMigrationError("exhaust transition requires an idle connection")
+    now = _l2_transition_timestamp(now)
+    parent = _l2_transition_parent(conn, task_hash)
+    if parent["state"] == "exhausted":
+        if conn.execute(
+            "SELECT 1 FROM audit_l2_valid_exhaustions_v2 WHERE task_hash=?",
+            (task_hash,),
+        ).fetchone() is None:
+            raise AuditMigrationError("exhausted task has malformed authority")
+        return {"state": "exhausted", "children": []}
+    if parent["state"] in {"settled", "superseded"}:
+        raise StaleFence("logical task is already terminal")
+    if not _l2_claim_is_live(parent, expected_fence, claim_token, now):
+        raise StaleFence("exhaustion requires a live matching claim")
+    item_ids = _closed_json(parent["assigned_item_ids_json"])
+    if reason == "single_item_overflow" and (
+        len(item_ids) != 1 or not _l2_current_claim_has_overflow(conn, parent)
+    ):
+        raise AuditMigrationError("single-item exhaustion lacks overflow evidence")
+    created_at = now
+    terminal_sha = _l2_terminal_fact_sha(task_hash, "exhausted", reason)
+    authorization_sha = _l2_transition_authorization_sha(
+        task_hash, "exhaust", parent["fence"], parent["claim_token"],
+        parent["lease_until"], None, None,
+    )
+    transition = (
+        task_hash, "claimed", parent["fence"], parent["claim_token"],
+        parent["lease_until"], "exhausted", parent["fence"] + 1, None, None,
+    )
+    terminal = (task_hash, "exhausted", reason, terminal_sha, created_at)
+    authority = (
+        task_hash, "exhaust", "claimed-v1", parent["fence"],
+        parent["claim_token"], parent["lease_until"], None, None,
+        authorization_sha, created_at,
+    )
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        with _l2_terminal_transition_guard(
+            conn, children=(), transition=transition, terminal=terminal,
+            edges=(), authority=authority,
+        ):
+            compare_and_set_logical_task(
+                conn, task_hash,
+                expected_state="claimed", expected_fence=parent["fence"],
+                new_state="exhausted", new_fence=parent["fence"] + 1,
+                claim_token=None, lease_until=None,
+            )
+            conn.execute(
+                "INSERT INTO audit_task_terminal_facts_v2 VALUES(?, ?, ?, ?, ?)",
+                terminal,
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_l2_terminal_transition_authority_v2(
+                  parent_task_hash, transition_kind, authority_kind,
+                  claim_fence, claim_token, lease_until,
+                  child0_task_hash, child1_task_hash,
+                  authorization_sha256, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                authority,
+            )
+            if conn.execute(
+                "SELECT 1 FROM audit_l2_valid_exhaustions_v2 WHERE task_hash=?",
+                (task_hash,),
+            ).fetchone() is None:
+                raise AuditMigrationError("exhaustion failed durable validation")
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    return {"state": "exhausted", "children": []}
+
+
+def validate_l2_terminal_graph(conn, plan_sha=None):
+    """Require every binding and terminal fact to have complete durable authority."""
+    plan_clause = "" if plan_sha is None else "AND binding.plan_sha=?"
+    parameters = () if plan_sha is None else (plan_sha,)
+    invalid_binding = conn.execute(
+        f"""
+        SELECT 1 FROM audit_task_bindings_v2 binding
+        LEFT JOIN audit_l2_valid_task_authority_v2 valid
+          ON valid.task_hash=binding.task_hash
+        WHERE valid.task_hash IS NULL {plan_clause} LIMIT 1
+        """,
+        parameters,
+    ).fetchone()
+    invalid_terminal = conn.execute(
+        f"""
+        SELECT 1
+        FROM audit_logical_tasks task
+        JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
+        LEFT JOIN audit_l2_valid_split_families_v2 split
+          ON split.parent_task_hash=task.task_hash
+        LEFT JOIN audit_l2_valid_exhaustions_v2 exhausted
+          ON exhausted.task_hash=task.task_hash
+        WHERE ((task.state='superseded' AND split.parent_task_hash IS NULL)
+           OR (task.state='exhausted' AND exhausted.task_hash IS NULL))
+          {plan_clause}
+        LIMIT 1
+        """,
+        parameters,
+    ).fetchone()
+    invalid_fact = conn.execute(
+        f"""
+        SELECT 1
+        FROM audit_task_terminal_facts_v2 terminal
+        JOIN audit_task_bindings_v2 binding
+          ON binding.task_hash=terminal.task_hash
+        LEFT JOIN audit_l2_valid_split_families_v2 split
+          ON split.parent_task_hash=terminal.task_hash
+        LEFT JOIN audit_l2_valid_exhaustions_v2 exhausted
+          ON exhausted.task_hash=terminal.task_hash
+        WHERE ((terminal.terminal_state='superseded'
+                AND split.parent_task_hash IS NULL)
+           OR (terminal.terminal_state='exhausted'
+                AND exhausted.task_hash IS NULL))
+          {plan_clause}
+        LIMIT 1
+        """,
+        parameters,
+    ).fetchone()
+    invalid_edge = conn.execute(
+        f"""
+        SELECT 1
+        FROM audit_task_edges_v2 edge
+        JOIN audit_task_bindings_v2 binding
+          ON binding.task_hash=edge.parent_task_hash
+        LEFT JOIN audit_l2_valid_split_families_v2 split
+          ON split.parent_task_hash=edge.parent_task_hash
+         AND (split.child0_task_hash=edge.child_task_hash
+              OR split.child1_task_hash=edge.child_task_hash)
+        WHERE split.parent_task_hash IS NULL {plan_clause}
+        LIMIT 1
+        """,
+        parameters,
+    ).fetchone()
+    invalid_authority = conn.execute(
+        f"""
+        SELECT 1
+        FROM audit_l2_terminal_transition_authority_v2 authority
+        JOIN audit_task_bindings_v2 binding
+          ON binding.task_hash=authority.parent_task_hash
+        LEFT JOIN audit_l2_valid_split_families_v2 split
+          ON split.parent_task_hash=authority.parent_task_hash
+        LEFT JOIN audit_l2_valid_exhaustions_v2 exhausted
+          ON exhausted.task_hash=authority.parent_task_hash
+        WHERE ((authority.transition_kind='split'
+                AND split.parent_task_hash IS NULL)
+           OR (authority.transition_kind='exhaust'
+                AND exhausted.task_hash IS NULL))
+          {plan_clause}
+        LIMIT 1
+        """,
+        parameters,
+    ).fetchone()
+    return all(
+        value is None for value in (
+            invalid_binding, invalid_terminal, invalid_fact,
+            invalid_edge, invalid_authority,
+        )
+    )
 
 
 def compare_and_set_metadata_outbox(

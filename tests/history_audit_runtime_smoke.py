@@ -544,7 +544,11 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         conn.row_factory = sqlite3.Row
         before_task_authority = tuple(
             migration for migration in history_audit_store.MIGRATIONS
-            if migration.component != "l2-runtime-task-authority"
+            if history_audit_store.MIGRATIONS.index(migration)
+            < next(
+                index for index, item in enumerate(history_audit_store.MIGRATIONS)
+                if item.component == "l2-runtime-task-authority"
+            )
         )
         with mock.patch.object(
             history_audit_store, "MIGRATIONS", before_task_authority
@@ -566,14 +570,61 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         conn.row_factory = sqlite3.Row
         before_task_authority = tuple(
             migration for migration in history_audit_store.MIGRATIONS
-            if migration.component != "l2-runtime-task-authority"
+            if history_audit_store.MIGRATIONS.index(migration)
+            < next(
+                index for index, item in enumerate(history_audit_store.MIGRATIONS)
+                if item.component == "l2-runtime-task-authority"
+            )
         )
         with mock.patch.object(
             history_audit_store, "MIGRATIONS", before_task_authority
         ):
             history_audit_store.init_schema(conn)
             history_execution.persist_plan(conn, self.plan)
-            history_execution.split_task(conn, self.plan["logical_task_keys"][0])
+            parent_key = self.plan["logical_task_keys"][0]
+            conn.execute("BEGIN IMMEDIATE")
+            children = [
+                self._insert_canonical_split_child_without_transition(
+                    conn, self.plan, parent_key, position,
+                    preupgrade_direct=True,
+                )
+                for position in (0, 1)
+            ]
+            history_audit_store.compare_and_set_logical_task(
+                conn, parent_key,
+                expected_state="planned", expected_fence=0,
+                new_state="superseded", new_fence=1,
+            )
+            terminal = {
+                "task_hash": parent_key,
+                "terminal_state": "superseded",
+                "reason": "invalid_parent_split",
+            }
+            conn.execute(
+                "INSERT INTO audit_task_terminal_facts_v2 VALUES(?, ?, ?, ?, ?)",
+                (
+                    parent_key, "superseded", "invalid_parent_split",
+                    history_execution._sha(
+                        "history-task-terminal-v2", terminal
+                    ),
+                    self._now(),
+                ),
+            )
+            for position, child in enumerate(children):
+                edge = {
+                    "parent_task_hash": parent_key,
+                    "child_task_hash": child["task_hash"],
+                    "position": position,
+                }
+                conn.execute(
+                    "INSERT INTO audit_task_edges_v2 VALUES(?, ?, ?, ?, ?)",
+                    (
+                        parent_key, child["task_hash"], position,
+                        history_execution._sha("history-task-edge-v2", edge),
+                        self._now(),
+                    ),
+                )
+            conn.execute("COMMIT")
         history_audit_store.init_schema(conn)
         applied = conn.execute(
             """
@@ -583,6 +634,381 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         ).fetchone()
         conn.close()
         self.assertIsNotNone(applied)
+
+    def _canonical_split_child(self, conn, plan, parent_key, position):
+        parent = history_execution.load_task(conn, parent_key)
+        midpoint = len(parent["assigned_item_ids"]) // 2
+        groups = (
+            parent["assigned_item_ids"][:midpoint],
+            parent["assigned_item_ids"][midpoint:],
+        )
+        child_ids = groups[position]
+        request_material = {
+            "parent_task_hash": parent_key,
+            "position": position,
+            "item_ids": child_ids,
+        }
+        request_text = history_contract_v2.canonical_bytes(
+            request_material
+        ).decode("utf-8")
+        request_sha = hashlib.sha256(request_text.encode("utf-8")).hexdigest()
+        child_key = history_contract_v2.logical_task_key(
+            parent["plan_sha"], parent["stage"],
+            parent["staging_candidate_id"], request_sha,
+        )
+        records = {
+            item["item_id"]: item for item in parent["frozen_records"]
+        }
+        return {
+            "task_hash": child_key,
+            "run_id": parent["run_id"],
+            "stage": parent["stage"],
+            "candidate_id": parent["staging_candidate_id"],
+            "input_id": parent["input_id"] + f".{position}",
+            "plan_sha": parent["plan_sha"],
+            "snapshot_id": parent["snapshot_id"],
+            "snapshot_hash": parent["snapshot_hash"],
+            "request_sha": request_sha,
+            "request_text": request_text,
+            "item_ids": child_ids,
+            "frozen_records": [records[item_id] for item_id in child_ids],
+            "provider_pool": parent["provider_pool"],
+            "split_depth": parent["split_depth"] + 1,
+        }
+
+    def _insert_canonical_split_child_without_transition(
+        self, conn, plan, parent_key, position=0, *, preupgrade_direct=False
+    ):
+        child = self._canonical_split_child(
+            conn, plan, parent_key, position
+        )
+        created_at = self._now()
+        def insert_task():
+            conn.execute(
+                """
+                INSERT INTO audit_logical_tasks(
+                  task_hash, run_id, stage, staging_candidate_id, input_id,
+                  state, fence, claim_token, lease_until, created_at
+                ) VALUES(?, ?, ?, ?, ?, 'planned', 0, NULL, NULL, ?)
+                """,
+                (
+                    child["task_hash"], child["run_id"], child["stage"],
+                    child["candidate_id"], child["input_id"], created_at,
+                ),
+            )
+        if preupgrade_direct:
+            expected = (
+                child["task_hash"], child["run_id"], child["stage"],
+                child["candidate_id"], child["input_id"],
+            )
+            conn.create_function(
+                "audit_l2_split_task_insert_allowed", 5,
+                lambda *values: 1 if tuple(values) == expected else 0,
+            )
+            insert_task()
+            conn.create_function(
+                "audit_l2_split_task_insert_allowed", 5, lambda *_: 0
+            )
+        else:
+            with history_audit_store.l2_split_task_insert_guard(
+                conn,
+                task_hash=child["task_hash"],
+                run_id=child["run_id"],
+                stage=child["stage"],
+                candidate_id=child["candidate_id"],
+                input_id=child["input_id"],
+            ):
+                insert_task()
+        conn.execute(
+            """
+            INSERT INTO audit_task_bindings_v2(
+              task_hash, plan_sha, snapshot_id, snapshot_hash,
+              shard_input_sha, assigned_item_ids_json, frozen_records_json,
+              provider_pool_json, parent_task_hash, split_depth, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                child["task_hash"], child["plan_sha"], child["snapshot_id"],
+                child["snapshot_hash"], child["request_sha"],
+                history_contract_v2.canonical_bytes(child["item_ids"]).decode(),
+                history_contract_v2.canonical_bytes(
+                    child["frozen_records"]
+                ).decode(),
+                history_contract_v2.canonical_bytes(
+                    child["provider_pool"]
+                ).decode(),
+                parent_key, child["split_depth"], created_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_l2_task_inputs_v2(
+              task_hash, input_id, request_sha, request_text,
+              item_ids_json, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (
+                child["task_hash"], child["input_id"], child["request_sha"],
+                child["request_text"],
+                history_contract_v2.canonical_bytes(child["item_ids"]).decode(),
+                created_at,
+            ),
+        )
+        return child
+
+    def test_public_split_guard_cannot_insert_one_canonical_child_without_transition(self):
+        plan = self._install()
+        parent_key = plan["logical_task_keys"][0]
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                self._insert_canonical_split_child_without_transition(
+                    self.conn, plan, parent_key
+                )
+        finally:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+        parent = self.conn.execute(
+            "SELECT state FROM audit_logical_tasks WHERE task_hash=?",
+            (parent_key,),
+        ).fetchone()
+        self.assertEqual(parent["state"], "planned")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_task_bindings_v2 "
+                "WHERE parent_task_hash=?", (parent_key,),
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_upgrade_rejects_canonical_child_without_parent_terminal_or_edge(self):
+        conn = sqlite3.connect(self.root / "forged-split-upgrade.sqlite3")
+        conn.row_factory = sqlite3.Row
+        before_split_authority = tuple(
+            migration for migration in history_audit_store.MIGRATIONS
+            if migration.component != "l2-runtime-split-authority"
+        )
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", before_split_authority
+        ):
+            history_audit_store.init_schema(conn)
+            history_execution.persist_plan(conn, self.plan)
+            conn.execute("BEGIN IMMEDIATE")
+            self._insert_canonical_split_child_without_transition(
+                conn, self.plan, self.plan["logical_task_keys"][0],
+                preupgrade_direct=True,
+            )
+            conn.execute("COMMIT")
+        try:
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.init_schema(conn)
+        finally:
+            conn.close()
+
+    def test_split_requires_live_claim_fence_and_token(self):
+        plan = self._install()
+        parent_key = plan["logical_task_keys"][0]
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("split_task")(self.conn, parent_key)
+        self.assertEqual(caught.exception.code, "split_requires_live_claim")
+        task = self._api("load_task")(self.conn, parent_key)
+        self.assertEqual(task["state"], "planned")
+
+    def test_generic_fenced_cas_cannot_forge_terminal_task_state(self):
+        plan = self._install()
+        parent_key = plan["logical_task_keys"][0]
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                history_audit_store.compare_and_set_logical_task(
+                    self.conn,
+                    parent_key,
+                    expected_state="planned",
+                    expected_fence=0,
+                    new_state="superseded",
+                    new_fence=1,
+                )
+        finally:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+
+    def test_terminal_facts_and_split_edges_require_atomic_transition_authority(self):
+        plan = self._install()
+        parent_key = plan["logical_task_keys"][0]
+        terminal = {
+            "task_hash": parent_key,
+            "terminal_state": "superseded",
+            "reason": "invalid_parent_split",
+        }
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "terminal fact lacks transition authority"
+        ):
+            self.conn.execute(
+                "INSERT INTO audit_task_terminal_facts_v2 VALUES(?, ?, ?, ?, ?)",
+                (
+                    parent_key, "superseded", "invalid_parent_split",
+                    history_execution._sha(
+                        "history-task-terminal-v2", terminal
+                    ),
+                    self._now(),
+                ),
+            )
+        edge = {
+            "parent_task_hash": parent_key,
+            "child_task_hash": parent_key,
+            "position": 0,
+        }
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "split edge lacks transition authority"
+        ):
+            self.conn.execute(
+                "INSERT INTO audit_task_edges_v2 VALUES(?, ?, ?, ?, ?)",
+                (
+                    parent_key, parent_key, 0,
+                    history_execution._sha("history-task-edge-v2", edge),
+                    self._now(),
+                ),
+            )
+
+    def test_split_rejects_expired_claim_even_with_exact_fence_and_token(self):
+        plan = self._install()
+        parent_key = plan["logical_task_keys"][0]
+        claim = self._api("claim_task")(
+            self.conn, parent_key, "worker-a", 1,
+            expected_fence=0, now=self._now(),
+        )
+        with self.assertRaises(history_audit_store.StaleFence):
+            self._api("split_task")(
+                self.conn, parent_key,
+                expected_fence=claim["fence"],
+                claim_token=claim["claim_token"],
+                now=self._now(2),
+            )
+        self.assertEqual(
+            self._api("load_task")(self.conn, parent_key)["state"], "claimed"
+        )
+
+    def test_single_item_split_requires_verified_overflow_completion(self):
+        one_item_plan = self._plan([self.records[0]])
+        self._install(one_item_plan)
+        parent_key = one_item_plan["logical_task_keys"][0]
+        claim = self._api("claim_task")(
+            self.conn, parent_key, "worker-a", 60,
+            expected_fence=0, now=self._now(),
+        )
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("split_task")(
+                self.conn,
+                parent_key,
+                expected_fence=claim["fence"],
+                claim_token=claim["claim_token"],
+                now=self._now(),
+            )
+        self.assertEqual(caught.exception.code, "missing_overflow_evidence")
+        self.assertEqual(
+            self._api("load_task")(self.conn, parent_key)["state"], "claimed"
+        )
+
+    def test_recovery_rejects_orphan_canonical_split_child_graph(self):
+        plan = self._install()
+        parent_key = plan["logical_task_keys"][0]
+        self.conn.execute(
+            "DROP TRIGGER audit_logical_tasks_l2_insert_authority_guard_v2"
+        )
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            child = self._canonical_split_child(
+                self.conn, plan, parent_key, 0
+            )
+            created_at = self._now()
+            self.conn.execute(
+                """
+                INSERT INTO audit_logical_tasks(
+                  task_hash, run_id, stage, staging_candidate_id, input_id,
+                  state, fence, claim_token, lease_until, created_at
+                ) VALUES(?, ?, ?, ?, ?, 'planned', 0, NULL, NULL, ?)
+                """,
+                (
+                    child["task_hash"], child["run_id"], child["stage"],
+                    child["candidate_id"], child["input_id"], created_at,
+                ),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO audit_task_bindings_v2(
+                  task_hash, plan_sha, snapshot_id, snapshot_hash,
+                  shard_input_sha, assigned_item_ids_json, frozen_records_json,
+                  provider_pool_json, parent_task_hash, split_depth, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    child["task_hash"], child["plan_sha"], child["snapshot_id"],
+                    child["snapshot_hash"], child["request_sha"],
+                    history_contract_v2.canonical_bytes(
+                        child["item_ids"]
+                    ).decode(),
+                    history_contract_v2.canonical_bytes(
+                        child["frozen_records"]
+                    ).decode(),
+                    history_contract_v2.canonical_bytes(
+                        child["provider_pool"]
+                    ).decode(),
+                    parent_key, child["split_depth"], created_at,
+                ),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO audit_l2_task_inputs_v2(
+                  task_hash, input_id, request_sha, request_text,
+                  item_ids_json, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    child["task_hash"], child["input_id"], child["request_sha"],
+                    child["request_text"],
+                    history_contract_v2.canonical_bytes(
+                        child["item_ids"]
+                    ).decode(),
+                    created_at,
+                ),
+            )
+            self.conn.execute("COMMIT")
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+            raise
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("recover_run")(
+                self.conn, plan["plan_sha"],
+                cas_root=self.cas_root, now=self._now(),
+            )
+        self.assertEqual(caught.exception.code, "malformed_l2_terminal_graph")
+
+    def test_recovery_rejects_orphan_terminal_fact_on_planned_task(self):
+        plan = self._install()
+        parent_key = plan["logical_task_keys"][0]
+        self.conn.execute(
+            "DROP TRIGGER audit_task_terminal_facts_v2_authority_guard"
+        )
+        terminal = {
+            "task_hash": parent_key,
+            "terminal_state": "superseded",
+            "reason": "invalid_parent_split",
+        }
+        self.conn.execute(
+            "INSERT INTO audit_task_terminal_facts_v2 VALUES(?, ?, ?, ?, ?)",
+            (
+                parent_key, "superseded", "invalid_parent_split",
+                history_execution._sha("history-task-terminal-v2", terminal),
+                self._now(),
+            ),
+        )
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("recover_run")(
+                self.conn, plan["plan_sha"],
+                cas_root=self.cas_root, now=self._now(),
+            )
+        self.assertEqual(caught.exception.code, "malformed_l2_terminal_graph")
 
     def _legacy_l2_connection(
         self, *, through_authority=False, fact_kind="planned"
@@ -844,6 +1270,21 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         self.assertEqual(
             self.conn.execute("SELECT count(*) FROM audit_task_attempts").fetchone()[0], 1
         )
+        replay = self._api("split_task")(self.conn, plan["logical_task_keys"][0])
+        self.assertEqual(replay, result)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_l2_terminal_transition_authority_v2"
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            self._api("recover_run")(
+                self.conn, plan["plan_sha"],
+                cas_root=self.cas_root, now=self._now(),
+            ),
+            [],
+        )
 
     def test_single_item_overflow_exhausts_without_empty_children(self):
         plan = self._plan([self.records[0]])
@@ -858,6 +1299,12 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         )
         self.assertEqual(result["state"], "exhausted")
         self.assertEqual(result["children"], [])
+        self.assertEqual(
+            self._api("split_task")(
+                self.conn, plan["logical_task_keys"][0]
+            ),
+            result,
+        )
 
     def test_missing_duplicate_extra_and_truncated_outputs_never_cover_parent(self):
         cases = {
@@ -1001,7 +1448,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         plan = self._plan(self.records, started_attempt_limit=1)
         self._install(plan)
         parent = plan["logical_task_keys"][0]
-        self._api("claim_task")(
+        claim = self._api("claim_task")(
             self.conn, parent, "worker-a", 60, expected_fence=0, now=self._now()
         )
         self._api("record_attempt")(
@@ -1017,7 +1464,12 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             cas_root=self.cas_root,
             request_bytes=plan["shards"][0]["serialized_request"].encode(),
         )
-        children = self._api("split_task")(self.conn, parent)["children"]
+        children = self._api("split_task")(
+            self.conn, parent,
+            expected_fence=claim["fence"],
+            claim_token=claim["claim_token"],
+            now=self._now(),
+        )["children"]
         child = children[0]["task_hash"]
         self.conn.close()
         self.conn = sqlite3.connect(self.db_path)
@@ -1065,7 +1517,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         plan = self._plan(self.records, started_attempt_limit=1)
         self._install(plan)
         parent = plan["logical_task_keys"][0]
-        self._api("claim_task")(
+        claim = self._api("claim_task")(
             self.conn, parent, "worker-a", 60, expected_fence=0, now=self._now()
         )
         self._api("record_attempt")(
@@ -1076,7 +1528,12 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             cas_root=self.cas_root,
             request_bytes=plan["shards"][0]["serialized_request"].encode(),
         )
-        child_key = self._api("split_task")(self.conn, parent)["children"][0]["task_hash"]
+        child_key = self._api("split_task")(
+            self.conn, parent,
+            expected_fence=claim["fence"],
+            claim_token=claim["claim_token"],
+            now=self._now(),
+        )["children"][0]["task_hash"]
         child = self._api("load_task")(self.conn, child_key)
         forged_attempt = sha("direct-budget-forgery")
         reserved = {
@@ -1112,7 +1569,12 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             self._api("claim_task")(
                 self.conn, task_key, "worker-b", 10, expected_fence=0, now=self._now()
             )
-        self._api("exhaust_task")(self.conn, task_key, "budget_exceeded", expected_fence=1)
+        self._api("exhaust_task")(
+            self.conn, task_key, "budget_exceeded",
+            expected_fence=first["fence"],
+            claim_token=first["claim_token"],
+            now=self._now(),
+        )
         with self.assertRaises(self._api("ExecutionError")):
             self._api("claim_task")(
                 self.conn, task_key, "worker-c", 10, expected_fence=2, now=self._now(20)

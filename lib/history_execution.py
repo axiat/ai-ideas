@@ -940,144 +940,87 @@ def settle_task(conn, task_key, valid_attempts, *, cas_root, now=None):
     return {**decision, "settlement_sha256": settlement_sha}
 
 
-def _terminal_transition(conn, task, state, reason):
-    if state not in {"superseded", "exhausted"}:
-        raise ExecutionError("invalid_terminal_state")
-    fact = {"task_hash": task["task_hash"], "terminal_state": state, "reason": reason}
-    history_audit_store.compare_and_set_logical_task(
-        conn, task["task_hash"],
-        expected_state=task["state"], expected_fence=task["fence"],
-        new_state=state, new_fence=task["fence"] + 1,
-        claim_token=None, lease_until=None,
-    )
-    conn.execute(
-        "INSERT INTO audit_task_terminal_facts_v2 VALUES(?, ?, ?, ?, ?)",
-        (
-            task["task_hash"], state, reason,
-            _sha("history-task-terminal-v2", fact),
-            datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        ),
-    )
-
-
-def exhaust_task(conn, task_key, reason, *, expected_fence=None):
+def exhaust_task(
+    conn, task_key, reason, *, expected_fence=None, claim_token=None, now=None
+):
     task = load_task(conn, task_key)
-    if task["state"] in TERMINAL_STATES:
-        if task["state"] == "exhausted":
-            return {"state": "exhausted", "children": []}
+    if task["state"] in {"settled", "superseded"}:
         raise ExecutionError("terminal_task")
-    if expected_fence is not None and task["fence"] != expected_fence:
-        raise history_audit_store.StaleFence("logical task fence is stale")
+    if task["state"] != "exhausted" and (
+        task["state"] != "claimed"
+        or expected_fence is None
+        or claim_token is None
+    ):
+        raise ExecutionError("exhaust_requires_live_claim")
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        _terminal_transition(conn, task, "exhausted", reason)
-        conn.execute("COMMIT")
-    except Exception:
-        if conn.in_transaction:
-            conn.execute("ROLLBACK")
+        return history_audit_store.transition_l2_exhaust_task(
+            conn,
+            task_key,
+            reason,
+            expected_fence=expected_fence,
+            claim_token=claim_token,
+            now=(now or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+        )
+    except history_audit_store.StaleFence:
         raise
-    return {"state": "exhausted", "children": []}
+    except history_audit_store.AuditMigrationError as exc:
+        code = (
+            "missing_overflow_evidence"
+            if "overflow evidence" in str(exc)
+            else "invalid_exhaust_authority"
+        )
+        raise ExecutionError(code) from exc
 
 
-def _children(conn, parent_key):
-    rows = conn.execute(
-        """
-        SELECT edge.position, binding.task_hash, binding.assigned_item_ids_json
-        FROM audit_task_edges_v2 edge
-        JOIN audit_task_bindings_v2 binding ON binding.task_hash=edge.child_task_hash
-        WHERE edge.parent_task_hash=? ORDER BY edge.position
-        """,
-        (parent_key,),
-    ).fetchall()
-    return [
-        {"position": row["position"], "task_hash": row["task_hash"], "item_ids": _json(row["assigned_item_ids_json"])}
-        for row in rows
-    ]
-
-
-def split_task(conn, parent_key):
+def split_task(
+    conn, parent_key, *, expected_fence=None, claim_token=None, now=None
+):
     """Supersede an invalid parent with stable, nonempty .0/.1 children."""
     parent = load_task(conn, parent_key)
     if parent["state"] == "superseded":
-        return {"state": "superseded", "children": _children(conn, parent_key)}
-    if parent["state"] in {"settled", "exhausted"}:
+        try:
+            return history_audit_store.transition_l2_split_task(
+                conn, parent_key, expected_fence=expected_fence,
+                claim_token=claim_token,
+                now=(now or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+            )
+        except history_audit_store.AuditMigrationError as exc:
+            raise ExecutionError("invalid_split_authority") from exc
+    if parent["state"] == "exhausted":
+        try:
+            return history_audit_store.transition_l2_exhaust_task(
+                conn, parent_key, "single_item_overflow",
+                expected_fence=expected_fence, claim_token=claim_token,
+                now=(now or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+            )
+        except history_audit_store.AuditMigrationError as exc:
+            raise ExecutionError("invalid_exhaust_authority") from exc
+    if parent["state"] == "settled":
         raise ExecutionError("terminal_task")
+    if (
+        parent["state"] != "claimed"
+        or expected_fence is None
+        or claim_token is None
+    ):
+        raise ExecutionError("split_requires_live_claim")
     item_ids = parent["assigned_item_ids"]
     if len(item_ids) == 1:
-        return exhaust_task(conn, parent_key, "single_item_overflow")
-    midpoint = len(item_ids) // 2
-    groups = (item_ids[:midpoint], item_ids[midpoint:])
-    if not all(groups):
-        raise ExecutionError("empty_split_child")
-    records = {item["item_id"]: item for item in parent["frozen_records"]}
-    created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        return exhaust_task(
+            conn, parent_key, "single_item_overflow",
+            expected_fence=expected_fence, claim_token=claim_token, now=now,
+        )
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        _terminal_transition(conn, parent, "superseded", "invalid_parent_split")
-        for position, child_ids in enumerate(groups):
-            child_input = parent["input_id"] + f".{position}"
-            request_material = {"parent_task_hash": parent_key, "position": position, "item_ids": child_ids}
-            input_sha = hashlib.sha256(history_contract_v2.canonical_bytes(request_material)).hexdigest()
-            child_hash = history_contract_v2.logical_task_key(
-                parent["plan_sha"], parent["stage"], parent["staging_candidate_id"], input_sha
-            )
-            with history_audit_store.l2_split_task_insert_guard(
-                conn,
-                task_hash=child_hash,
-                run_id=parent["run_id"],
-                stage=parent["stage"],
-                candidate_id=parent["staging_candidate_id"],
-                input_id=child_input,
-            ):
-                conn.execute(
-                    """
-                    INSERT INTO audit_logical_tasks(
-                      task_hash, run_id, stage, staging_candidate_id, input_id,
-                      state, fence, claim_token, lease_until, created_at
-                    ) VALUES(?, ?, ?, ?, ?, 'planned', 0, NULL, NULL, ?)
-                    """,
-                    (
-                        child_hash, parent["run_id"], parent["stage"],
-                        parent["staging_candidate_id"], child_input, created_at,
-                    ),
-                )
-            conn.execute(
-                """
-                INSERT INTO audit_task_bindings_v2(
-                  task_hash, plan_sha, snapshot_id, snapshot_hash, shard_input_sha,
-                  assigned_item_ids_json, frozen_records_json, provider_pool_json,
-                  parent_task_hash, split_depth, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    child_hash, parent["plan_sha"], parent["snapshot_id"], parent["snapshot_hash"], input_sha,
-                    _canonical(child_ids), _canonical([records[item_id] for item_id in child_ids]),
-                    _canonical(parent["provider_pool"]), parent_key, parent["split_depth"] + 1, created_at,
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO audit_l2_task_inputs_v2(
-                  task_hash, input_id, request_sha, request_text,
-                  item_ids_json, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    child_hash, child_input, input_sha,
-                    _canonical(request_material), _canonical(child_ids), created_at,
-                ),
-            )
-            edge = {"parent_task_hash": parent_key, "child_task_hash": child_hash, "position": position}
-            conn.execute(
-                "INSERT INTO audit_task_edges_v2 VALUES(?, ?, ?, ?, ?)",
-                (parent_key, child_hash, position, _sha("history-task-edge-v2", edge), created_at),
-            )
-        conn.execute("COMMIT")
-    except Exception:
-        if conn.in_transaction:
-            conn.execute("ROLLBACK")
+        return history_audit_store.transition_l2_split_task(
+            conn,
+            parent_key,
+            expected_fence=expected_fence,
+            claim_token=claim_token,
+            now=(now or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+        )
+    except history_audit_store.StaleFence:
         raise
-    return {"state": "superseded", "children": _children(conn, parent_key)}
+    except history_audit_store.AuditMigrationError as exc:
+        raise ExecutionError("invalid_split_authority") from exc
 
 
 def _valid_completions(conn, task_key):
@@ -1105,6 +1048,11 @@ def run_map_task(
     task = load_task(conn, task_key)
     claim_task(conn, task_key, "runtime-worker", lease_seconds, task["fence"], now=now)
     task = load_task(conn, task_key)
+    terminal_transition = {
+        "expected_fence": task["fence"],
+        "claim_token": task["claim_token"],
+        "now": (now or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+    }
     existing_valid = _valid_completions(conn, task_key)
     if existing_valid:
         return settle_task(conn, task_key, existing_valid, cas_root=cas_root, now=now)
@@ -1141,11 +1089,13 @@ def run_map_task(
                 )
             except MapValidationError as exc:
                 if exc.code in {"item_set_mismatch", "truncated", "overflow"}:
-                    return split_task(conn, task_key)
+                    return split_task(conn, task_key, **terminal_transition)
                 if exc.code in {"syntax", "schema", "stale_snapshot"} and ordinal + 1 < MAX_ATTEMPTS:
                     prior_failure = exc.code
                     continue
-                return exhaust_task(conn, task_key, exc.code)
+                return exhaust_task(
+                    conn, task_key, exc.code, **terminal_transition
+                )
             if fault_after_cas:
                 raise ExecutionCrash("fault injected after durable output CAS")
             return settle_task(conn, task_key, [valid], cas_root=cas_root, now=now)
@@ -1154,7 +1104,7 @@ def run_map_task(
             response.get("raw", kind), usage,
         )
         if kind == "overflow":
-            return split_task(conn, task_key)
+            return split_task(conn, task_key, **terminal_transition)
         if kind in {"timeout", "429", "5xx"}:
             provider_index += 1
             prior_failure = kind
@@ -1163,8 +1113,10 @@ def run_map_task(
         elif kind in {"syntax", "schema"} and ordinal + 1 < MAX_ATTEMPTS:
             prior_failure = kind
             continue
-        return exhaust_task(conn, task_key, "provider_exhausted")
-    return exhaust_task(conn, task_key, "attempt_limit")
+        return exhaust_task(
+            conn, task_key, "provider_exhausted", **terminal_transition
+        )
+    return exhaust_task(conn, task_key, "attempt_limit", **terminal_transition)
 
 
 def sha_provider(provider):
@@ -1225,6 +1177,8 @@ def recover_run(conn, plan_sha, *, cas_root, now=None):
     ).fetchone()
     if stranded is not None:
         raise ExecutionError("stranded_l2_authority")
+    if not history_audit_store.validate_l2_terminal_graph(conn, plan_sha):
+        raise ExecutionError("malformed_l2_terminal_graph")
     rows = conn.execute(
         """
         SELECT task.* FROM audit_logical_tasks task
