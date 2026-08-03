@@ -1,0 +1,39 @@
+{
+  "schema_version": "semantic-release-policy-v1",
+  "semantic_policy_profile_id": "semantic-release-v1",
+  "wilson_one_sided_z": 1.6448536269514722,
+  "shadow": {
+    "minimum_positive_lineages": 30,
+    "minimum_negative_lineages": 20,
+    "critical_slices": {
+      "cross_language": 5,
+      "lineage_revision": 5,
+      "low_overlap": 5
+    }
+  },
+  "production": {
+    "minimum_positive_lineages": 300,
+    "aggregate": {
+      "minimum_observations": 300,
+      "minimum_recall_lower_bound": 0.95,
+      "maximum_false_negative_upper_bound": 0.05
+    },
+    "required_slices": {
+      "cross_language": {
+        "minimum_observations": 30,
+        "minimum_recall_lower_bound": 0.9,
+        "maximum_false_negative_upper_bound": 0.1
+      },
+      "lineage_revision": {
+        "minimum_observations": 30,
+        "minimum_recall_lower_bound": 0.9,
+        "maximum_false_negative_upper_bound": 0.1
+      },
+      "low_overlap": {
+        "minimum_observations": 30,
+        "minimum_recall_lower_bound": 0.9,
+        "maximum_false_negative_upper_bound": 0.1
+      }
+    }
+  }
+}

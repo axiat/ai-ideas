@@ -7,11 +7,13 @@ import json
 import re
 
 try:
+    from lib import history_audit_store
     from lib import history_contract_v2 as contract
     from lib import history_metadata
     from lib import history_projection
     from lib import history_store
 except ImportError:  # Direct execution with lib/ on sys.path.
+    import history_audit_store
     import history_contract_v2 as contract
     import history_metadata
     import history_projection
@@ -1231,7 +1233,10 @@ def _validated_verified_hits(values):
     return result
 
 
-def build_l1_receipt(snapshot, retrieval, adjudication, qualification):
+def build_l1_receipt(
+    snapshot, retrieval, adjudication, qualification, *,
+    qualification_conn=None, qualification_dependencies=None, now=None
+):
     """Build a closed v2 L1 receipt without legacy permanence."""
     _require_closed(retrieval, _RETRIEVAL_FIELDS, "retrieval")
     _require_closed(adjudication, _ADJUDICATION_FIELDS, "adjudication")
@@ -1255,6 +1260,27 @@ def build_l1_receipt(snapshot, retrieval, adjudication, qualification):
         raise ValueError("complete L1 coverage contains a coverage fault")
     if qualification["no_match_basis"] == "l2_exhaustive":
         raise ValueError("an L1 receipt cannot claim an L2 no-match basis")
+    durable_qualified = False
+    if qualification["semantic_policy_qualified"] and qualification_conn is not None:
+        required = {
+            "no_match_basis", "policy_sha256", "corpus_snapshot_hash",
+            "evaluation_hash", "dependency_hashes",
+        }
+        if (
+            isinstance(qualification_dependencies, dict)
+            and set(qualification_dependencies) == required
+            and qualification_dependencies["no_match_basis"] == "l1_calibrated"
+        ):
+            durable_qualified = history_audit_store.lookup_semantic_qualification(
+                qualification_conn,
+                semantic_policy_profile_id=qualification["semantic_policy_profile_id"],
+                no_match_basis=qualification_dependencies["no_match_basis"],
+                policy_sha256=qualification_dependencies["policy_sha256"],
+                corpus_snapshot_hash=qualification_dependencies["corpus_snapshot_hash"],
+                evaluation_hash=qualification_dependencies["evaluation_hash"],
+                dependency_hashes=qualification_dependencies["dependency_hashes"],
+                now=now,
+            ) is not None
     identity_valid = not (
         retrieval["invalid_schema"] or retrieval["invalid_anchor"]
     )
@@ -1263,7 +1289,7 @@ def build_l1_receipt(snapshot, retrieval, adjudication, qualification):
         verified_hits=verified_hits,
         coverage_complete=retrieval["coverage_complete"],
         adjudication_complete=adjudication["adjudication_complete"],
-        semantic_policy_qualified=qualification["semantic_policy_qualified"],
+        semantic_policy_qualified=durable_qualified,
         unresolved_conflict=adjudication["unresolved_conflict"],
         exhausted_reason=adjudication["exhausted_reason"],
         no_match_basis=qualification["no_match_basis"],
@@ -1307,7 +1333,7 @@ def build_l1_receipt(snapshot, retrieval, adjudication, qualification):
         "minimum_receipt_sha": retrieval["minimum_receipt_sha"],
         "coverage_complete": retrieval["coverage_complete"],
         "adjudication_complete": adjudication["adjudication_complete"],
-        "semantic_policy_qualified": qualification["semantic_policy_qualified"],
+        "semantic_policy_qualified": durable_qualified,
         "no_match_basis": basis,
         "final_status": final_status,
         "stage_reason_code": stage_reason_code,
@@ -1360,7 +1386,10 @@ def _collapse_l2_exceptional_cards(rows):
     return result
 
 
-def summarize_l2_coverage(plan, settlements, semantic_qualification):
+def summarize_l2_coverage(
+    plan, settlements, semantic_qualification, *, qualification_conn=None,
+    qualification_dependencies=None, now=None
+):
     """Collapse terminal map facts into coverage, cards, gates, and fixed status."""
     if (
         not isinstance(plan, dict)
@@ -1377,6 +1406,27 @@ def summarize_l2_coverage(plan, settlements, semantic_qualification):
         or not semantic_qualification["profile_id"]
     ):
         raise ValueError("semantic qualification is invalid")
+    durable_qualified = False
+    if semantic_qualification["qualified"] and qualification_conn is not None:
+        required = {
+            "no_match_basis", "policy_sha256", "corpus_snapshot_hash",
+            "evaluation_hash", "dependency_hashes",
+        }
+        if (
+            isinstance(qualification_dependencies, dict)
+            and set(qualification_dependencies) == required
+            and qualification_dependencies["no_match_basis"] == "l2_exhaustive"
+        ):
+            durable_qualified = history_audit_store.lookup_semantic_qualification(
+                qualification_conn,
+                semantic_policy_profile_id=semantic_qualification["profile_id"],
+                no_match_basis=qualification_dependencies["no_match_basis"],
+                policy_sha256=qualification_dependencies["policy_sha256"],
+                corpus_snapshot_hash=qualification_dependencies["corpus_snapshot_hash"],
+                evaluation_hash=qualification_dependencies["evaluation_hash"],
+                dependency_hashes=qualification_dependencies["dependency_hashes"],
+                now=now,
+            ) is not None
     expected_ids = sorted(item["item_id"] for item in plan["snapshot"]["records"])
     if len(set(expected_ids)) != len(expected_ids):
         raise ValueError("snapshot asset IDs are duplicated")
@@ -1437,7 +1487,7 @@ def summarize_l2_coverage(plan, settlements, semantic_qualification):
         "l2_exhaustive"
         if coverage_complete
         and adjudication_complete
-        and semantic_qualification["qualified"]
+        and durable_qualified
         and not verified_hits
         and not exceptional
         else None
@@ -1447,7 +1497,7 @@ def summarize_l2_coverage(plan, settlements, semantic_qualification):
         verified_hits=verified_hits,
         coverage_complete=coverage_complete,
         adjudication_complete=adjudication_complete,
-        semantic_policy_qualified=semantic_qualification["qualified"],
+        semantic_policy_qualified=durable_qualified,
         unresolved_conflict=conflicts or semantic_uncertain,
         exhausted_reason=exhausted_reason,
         no_match_basis=no_match_basis,
@@ -1463,7 +1513,7 @@ def summarize_l2_coverage(plan, settlements, semantic_qualification):
         "truncated": False,
         "coverage_complete": coverage_complete,
         "adjudication_complete": adjudication_complete,
-        "semantic_policy_qualified": semantic_qualification["qualified"],
+        "semantic_policy_qualified": durable_qualified,
         "semantic_policy_profile_id": semantic_qualification["profile_id"],
         "no_match_basis": no_match_basis if status == "complete_no_match" else None,
         "final_status": status,

@@ -967,6 +967,39 @@ CREATE TABLE audit_semantic_qualifications(
 """ + _immutable_guards("audit_semantic_qualifications")
 
 
+_SEMANTIC_RELEASE_SQL = """
+CREATE TABLE audit_semantic_qualification_facts_v2(
+  qualification_id TEXT PRIMARY KEY
+    REFERENCES audit_semantic_qualifications(qualification_id),
+  no_match_basis TEXT NOT NULL
+    CHECK(no_match_basis IN ('l1_calibrated','l2_exhaustive')),
+  scope TEXT NOT NULL,
+  policy_sha256 TEXT NOT NULL CHECK(length(policy_sha256) = 64),
+  qrels_hash TEXT NOT NULL CHECK(length(qrels_hash) = 64),
+  evaluation_hash TEXT NOT NULL CHECK(length(evaluation_hash) = 64),
+  metric_report_hash TEXT NOT NULL CHECK(length(metric_report_hash) = 64),
+  dependency_hashes_json TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  vetoes_json TEXT NOT NULL,
+  production_qualified INTEGER NOT NULL CHECK(production_qualified IN (0,1)),
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE audit_semantic_invalidation_facts_v2(
+  invalidation_id TEXT PRIMARY KEY CHECK(length(invalidation_id) = 64),
+  qualification_id TEXT NOT NULL
+    REFERENCES audit_semantic_qualification_facts_v2(qualification_id),
+  changed_dependencies_json TEXT NOT NULL,
+  impacts_json TEXT NOT NULL,
+  invalidated_at TEXT NOT NULL,
+  fact_sha256 TEXT NOT NULL UNIQUE CHECK(length(fact_sha256) = 64)
+);
+""" + _immutable_guards(
+    "audit_semantic_qualification_facts_v2",
+    "audit_semantic_invalidation_facts_v2",
+)
+
+
 _INTEGRITY_GUARDS_SQL = """
 CREATE TABLE audit_integrity_guard_probe(
   value INTEGER NOT NULL CHECK(value = 0)
@@ -2997,6 +3030,7 @@ MIGRATIONS = (
         "metadata-shadow-integrity", 1, _METADATA_SHADOW_INTEGRITY_SQL
     ),
     Migration("semantic-qualification", 1, _SEMANTIC_SQL),
+    Migration("semantic-release", 1, _SEMANTIC_RELEASE_SQL),
     Migration("integrity-guards", 1, _INTEGRITY_GUARDS_SQL),
     Migration(
         "coverage-integrity-guards", 1, _COVERAGE_INTEGRITY_GUARDS_SQL
@@ -4044,6 +4078,321 @@ def init_schema(conn):
     conn.execute("PRAGMA recursive_triggers = ON")
     for migration in MIGRATIONS:
         _apply_migration(conn, migration)
+
+
+def _semantic_decimal_identity(value):
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError("qualification bounds must be finite")
+        return format(value, ".17g")
+    if isinstance(value, list):
+        return [_semantic_decimal_identity(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _semantic_decimal_identity(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _semantic_canonical(value):
+    normalized = _semantic_decimal_identity(value)
+    return history_contract_v2.canonical_bytes(normalized).decode("utf-8").rstrip("\n")
+
+
+def _semantic_sha(domain, value):
+    return history_contract_v2.framed_sha256(
+        domain,
+        history_contract_v2.canonical_bytes(_semantic_decimal_identity(value)),
+    )
+
+
+def _semantic_timestamp(value, name):
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a timezone-aware timestamp")
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a timezone-aware timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{name} must be a timezone-aware timestamp")
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _semantic_dependencies(value):
+    required = {
+        "semantic_policy", "prompt", "schema", "ordered_provider_pools",
+        "capacity", "provider", "fault", "replay",
+    }
+    if (
+        not isinstance(value, dict)
+        or not required.issubset(value)
+        or any(
+            not isinstance(name, str)
+            or not name
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for name, digest in value.items()
+        )
+    ):
+        raise ValueError("qualification dependencies are invalid")
+    return dict(sorted(value.items()))
+
+
+def persist_semantic_qualification(conn, qualification, *, now=None):
+    """Append one immutable semantic evaluation and its exact release bindings."""
+    fields = {
+        "schema_version", "semantic_policy_profile_id", "production_qualified",
+        "no_match_basis", "scope", "policy_sha256", "qrels_hash",
+        "corpus_snapshot_hash", "evaluation_hash", "metric_report_hash",
+        "dependency_hashes", "metrics", "vetoes", "expires_at",
+    }
+    if not isinstance(qualification, dict) or set(qualification) != fields:
+        raise ValueError("semantic qualification fields are invalid")
+    if (
+        qualification["schema_version"] != "semantic-qualification-v2"
+        or not isinstance(qualification["semantic_policy_profile_id"], str)
+        or not qualification["semantic_policy_profile_id"]
+        or type(qualification["production_qualified"]) is not bool
+        or qualification["no_match_basis"] not in {
+            "l1_calibrated", "l2_exhaustive"
+        }
+        or not isinstance(qualification["scope"], str)
+        or not qualification["scope"]
+        or not isinstance(qualification["metrics"], dict)
+        or not isinstance(qualification["vetoes"], list)
+        or qualification["vetoes"] != sorted(set(qualification["vetoes"]))
+        or any(not isinstance(veto, str) or not veto for veto in qualification["vetoes"])
+        or qualification["production_qualified"] == bool(qualification["vetoes"])
+    ):
+        raise ValueError("semantic qualification state is invalid")
+    for name in (
+        "policy_sha256", "qrels_hash", "corpus_snapshot_hash",
+        "evaluation_hash", "metric_report_hash",
+    ):
+        if re.fullmatch(r"[0-9a-f]{64}", qualification[name] or "") is None:
+            raise ValueError(f"{name} is invalid")
+    dependencies = _semantic_dependencies(qualification["dependency_hashes"])
+    if dependencies["semantic_policy"] != qualification["policy_sha256"]:
+        raise ValueError("semantic policy dependency is not exact")
+    created_at = now or _utc_now()
+    _semantic_timestamp(created_at, "created_at")
+    _semantic_timestamp(qualification["expires_at"], "expires_at")
+    material = dict(qualification)
+    material["dependency_hashes"] = dependencies
+    qualification_sha = _semantic_sha(
+        "history-semantic-qualification-v2", material
+    )
+    qualification_id = "semantic-v2-" + qualification_sha
+    qualification_json = _semantic_canonical(material)
+    capacity_bindings = _semantic_canonical(
+        {
+            "capacity": dependencies["capacity"],
+            "provider": dependencies["provider"],
+            "ordered_provider_pools": dependencies["ordered_provider_pools"],
+        }
+    )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO audit_semantic_qualifications(
+              qualification_id, semantic_policy_profile_id,
+              qualification_sha256, corpus_snapshot_hash,
+              provider_capacity_hashes_json, expires_at,
+              qualification_json, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                qualification_id, material["semantic_policy_profile_id"],
+                qualification_sha, material["corpus_snapshot_hash"],
+                capacity_bindings, material["expires_at"], qualification_json,
+                created_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO audit_semantic_qualification_facts_v2(
+              qualification_id, no_match_basis, scope, policy_sha256,
+              qrels_hash, evaluation_hash, metric_report_hash,
+              dependency_hashes_json, metrics_json, vetoes_json,
+              production_qualified, expires_at, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                qualification_id, material["no_match_basis"], material["scope"],
+                material["policy_sha256"], material["qrels_hash"],
+                material["evaluation_hash"], material["metric_report_hash"],
+                _semantic_canonical(dependencies),
+                _semantic_canonical(material["metrics"]),
+                _semantic_canonical(material["vetoes"]),
+                int(material["production_qualified"]), material["expires_at"],
+                created_at,
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT qualification.qualification_sha256,
+                   qualification.qualification_json,
+                   fact.dependency_hashes_json, fact.vetoes_json
+            FROM audit_semantic_qualifications qualification
+            JOIN audit_semantic_qualification_facts_v2 fact
+              USING(qualification_id)
+            WHERE qualification_id=?
+            """,
+            (qualification_id,),
+        ).fetchone()
+        if row is None or tuple(row) != (
+            qualification_sha, qualification_json,
+            _semantic_canonical(dependencies), _semantic_canonical(material["vetoes"]),
+        ):
+            raise ValueError("semantic qualification identity conflicts")
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    return {
+        "qualification_id": qualification_id,
+        "qualification_sha256": qualification_sha,
+        "production_qualified": material["production_qualified"],
+    }
+
+
+def lookup_semantic_qualification(
+    conn, *, semantic_policy_profile_id, no_match_basis, policy_sha256,
+    corpus_snapshot_hash, evaluation_hash, dependency_hashes, now=None
+):
+    """Return only a live, non-invalidated qualification with exact dependencies."""
+    dependencies = _semantic_dependencies(dependency_hashes)
+    if dependencies["semantic_policy"] != policy_sha256:
+        return None
+    current = _semantic_timestamp(now or _utc_now(), "now")
+    row = conn.execute(
+        """
+        SELECT qualification.qualification_id,
+               qualification.qualification_sha256,
+               qualification.semantic_policy_profile_id,
+               fact.no_match_basis, fact.policy_sha256,
+               qualification.corpus_snapshot_hash, fact.evaluation_hash,
+               fact.dependency_hashes_json, fact.expires_at,
+               qualification.qualification_json
+        FROM audit_semantic_qualifications qualification
+        JOIN audit_semantic_qualification_facts_v2 fact
+          USING(qualification_id)
+        WHERE qualification.semantic_policy_profile_id=?
+          AND fact.no_match_basis=?
+          AND fact.policy_sha256=?
+          AND qualification.corpus_snapshot_hash=?
+          AND fact.evaluation_hash=?
+          AND fact.dependency_hashes_json=?
+          AND fact.production_qualified=1
+          AND fact.vetoes_json='[]'
+          AND NOT EXISTS (
+            SELECT 1 FROM audit_semantic_invalidation_facts_v2 invalidation
+            WHERE invalidation.qualification_id=qualification.qualification_id
+          )
+        ORDER BY fact.created_at DESC, qualification.qualification_id DESC
+        """,
+        (
+            semantic_policy_profile_id, no_match_basis, policy_sha256,
+            corpus_snapshot_hash, evaluation_hash,
+            _semantic_canonical(dependencies),
+        ),
+    ).fetchone()
+    if row is None or _semantic_timestamp(row[8], "expires_at") <= current:
+        return None
+    return {
+        "qualification_id": row[0],
+        "qualification_sha256": row[1],
+        "semantic_policy_profile_id": row[2],
+        "no_match_basis": row[3],
+        "policy_sha256": row[4],
+        "corpus_snapshot_hash": row[5],
+        "evaluation_hash": row[6],
+        "dependency_hashes": json.loads(row[7]),
+        "expires_at": row[8],
+    }
+
+
+def record_qualification_invalidation(
+    conn, qualification_id, changed_dependencies, *, now=None
+):
+    """Append a targeted invalidation fact; old profile IDs never revive."""
+    if not isinstance(qualification_id, str) or not qualification_id:
+        raise ValueError("qualification_id is required")
+    changed = _semantic_dependencies({
+        **{
+            "semantic_policy": "0" * 64, "prompt": "0" * 64,
+            "schema": "0" * 64, "ordered_provider_pools": "0" * 64,
+            "capacity": "0" * 64, "provider": "0" * 64,
+            "fault": "0" * 64, "replay": "0" * 64,
+        },
+        **changed_dependencies,
+    })
+    changed = {
+        key: value for key, value in changed.items()
+        if key in changed_dependencies
+    }
+    if not changed:
+        raise ValueError("changed dependencies are required")
+    invalidated_at = now or _utc_now()
+    _semantic_timestamp(invalidated_at, "invalidated_at")
+    bound_row = conn.execute(
+        "SELECT dependency_hashes_json FROM audit_semantic_qualification_facts_v2 WHERE qualification_id=?",
+        (qualification_id,),
+    ).fetchone()
+    if bound_row is None:
+        raise ValueError("qualification does not exist")
+    bound = json.loads(bound_row[0])
+    changed = {
+        key: value for key, value in changed.items()
+        if key in bound and bound[key] != value
+    }
+    if not changed:
+        raise ValueError("changed dependencies do not affect qualification")
+    search_generations = [
+        name for name in ("fts", "metadata", "embedding", "tokenizer")
+        if name in changed
+    ]
+    impacts = {
+        "qualification_stale": True,
+        "adjudication_stale": any(
+            name in {
+                "prompt", "schema", "ordered_provider_pools", "capacity",
+                "provider",
+            }
+            for name in changed
+        ),
+        "search_generations_stale": search_generations,
+        "flat_generation_stale": "fts" in search_generations,
+    }
+    material = {
+        "qualification_id": qualification_id,
+        "changed_dependencies": changed,
+        "impacts": impacts,
+        "invalidated_at": invalidated_at,
+    }
+    fact_sha = _semantic_sha("history-semantic-invalidation-v2", material)
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO audit_semantic_invalidation_facts_v2(
+          invalidation_id, qualification_id, changed_dependencies_json,
+          impacts_json, invalidated_at, fact_sha256
+        ) VALUES(?, ?, ?, ?, ?, ?)
+        """,
+        (
+            fact_sha, qualification_id, _semantic_canonical(changed),
+            _semantic_canonical(impacts),
+            invalidated_at, fact_sha,
+        ),
+    )
+    return {
+        "invalidation_id": fact_sha,
+        "qualification_id": qualification_id,
+        "changed_dependencies": changed,
+        "impacts": impacts,
+    }
 
 
 def _legacy_relation_tokens(receipt_json):

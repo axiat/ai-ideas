@@ -1,0 +1,55 @@
+{
+  "schema_version": "history-risk-policy-v1",
+  "risk_policy_version": "risk-policy-v1",
+  "rules": [
+    {
+      "rule_id": "retriever_uncalibrated",
+      "fact": "retriever_calibrated",
+      "equals": false,
+      "required_route": "exhaustive",
+      "pre_l1": true
+    },
+    {
+      "rule_id": "finalist_or_sa",
+      "fact": "finalist_or_sa",
+      "equals": true,
+      "required_route": "guarded",
+      "pre_l1": false
+    },
+    {
+      "rule_id": "mandatory_channel_failed",
+      "fact": "mandatory_channel_failed",
+      "equals": true,
+      "required_route": "exhaustive",
+      "pre_l1": true
+    },
+    {
+      "rule_id": "comparator_uncertain",
+      "fact": "comparator_uncertain",
+      "equals": true,
+      "required_route": "guarded",
+      "pre_l1": false
+    },
+    {
+      "rule_id": "bad_slice_membership",
+      "fact": "bad_slice_membership",
+      "equals": true,
+      "required_route": "guarded",
+      "pre_l1": false
+    },
+    {
+      "rule_id": "index_profile_recently_changed",
+      "fact": "index_profile_recently_changed",
+      "equals": true,
+      "required_route": "exhaustive",
+      "pre_l1": true
+    },
+    {
+      "rule_id": "permanent_no_match_without_release_gate",
+      "fact": "permanent_no_match_without_release_gate",
+      "equals": true,
+      "required_route": "exhaustive",
+      "pre_l1": true
+    }
+  ]
+}
