@@ -65,17 +65,53 @@ stage = stage_values[0]
 inputs = mirror / "input"
 
 if stage == "generate":
-    ideas_md = (
+    direction = ""
+    direction_extras = ""
+    marker = (
         "Assumption-Removal Attempt: incomplete — fixture; "
-        "blocked by: evidence\n\n"
+        "blocked by: evidence"
+    )
+    form = "new mechanism or new problem"
+    story = "Bounded Test Idea"
+    summary = "Bounded stage contract."
+    experiment = (
+        "128-episode one-H100 baseline compare; kill if the signal is absent."
+    )
+    if (inputs / "direction_constraint.json").is_file():
+        marker = "Assumption-Removal Attempt: complete I1"
+        form = "remove-load-bearing-assumption"
+        direction = (
+            "Direction Axis: memory-representation-update\n"
+            "Target Failure: dynamic-scene-change\n"
+            "Direction Evidence: The repair arm attributes recovery to "
+            "corrected 3D memory.\n"
+        )
+        direction_extras = (
+            "Assumption to Remove: Dense latent updates are required.\n"
+            "Why It Can Be Removed Now: Confidence is calibrated online.\n"
+            "Forcing Constraint: Deployment latency limits dense updates.\n"
+            "Crack Evidence: https://example.com/one | Stable skipped updates.\n"
+            "Crack Evidence: https://example.com/two | Bounded latent drift.\n"
+        )
+        story = "Repair-Aware 3D Memory Updates for Dynamic VLA Scenes"
+        summary = (
+            "Repair persistent 3D memory after dynamic scene changes."
+        )
+        experiment = (
+            "Compare stale and repair-aware 3D memory on dynamic scene "
+            "changes; kill the idea if repaired VLA decisions do not recover."
+        )
+    ideas_md = (
+        f"{marker}\n\n"
         "## I1\n"
-        "One-Sentence Story: Bounded Test Idea\n"
+        f"One-Sentence Story: {story}\n"
         "Theme: World Models - Architecture\n"
-        "Form: new mechanism or new problem\n"
-        "Summary: Bounded stage contract.\n"
-        "Minimal Falsification Experiment: 128-episode one-H100 baseline "
-        "compare; kill if the signal is absent.\n"
+        f"{direction}"
+        f"Form: {form}\n"
+        f"Summary: {summary}\n"
+        f"Minimal Falsification Experiment: {experiment}\n"
         "Why It May Be Novel: Research must test occupation.\n"
+        f"{direction_extras}"
     )
     artifacts = [
         {
@@ -437,8 +473,29 @@ case "$prompt" in
       'Crack Evidence: https://example.com/crack-two | Bounded latent drift permits redundant transitions to be skipped in the fixture evidence.' > tmp/round/ideas.md
     ;;
   *roles/select.md*)
+    if [ "$FAKE_AGENT_MODE" = "selector-failure" ]; then
+      exit 65
+    fi
+    if [ "$FAKE_AGENT_MODE" = "direction-contract-drift" ]; then
+      [ -f "${FAKE_DIRECTION_CONTRACT_REPLACEMENT:-}" ] \
+        && [ -n "${FAKE_DIRECTION_CONTRACT_TARGET:-}" ] \
+        || exit 66
+      cp "$FAKE_DIRECTION_CONTRACT_REPLACEMENT" \
+        "$FAKE_DIRECTION_CONTRACT_TARGET"
+    fi
     record_call select
     printf 'I1\t1\tThe proposition removes a load-bearing fixed-rate assumption.\tA successful repair would support a clear-accept efficiency claim.\tThe experiment names a dense baseline, 128 episodes, and explicit kill thresholds.\tOne researcher can run the comparison on one H100.\n' > tmp/round/select.tsv
+    if [ -f tmp/round/history/direction-constraint.json ] \
+      && [ "$FAKE_AGENT_MODE" != "direction-missing-verdict" ]; then
+      direction_fit=in-scope
+      if [ "$FAKE_AGENT_MODE" = "direction-out-of-scope" ]; then
+        direction_fit=out-of-scope
+      fi
+      printf '%s\n' \
+        $'id\tdirection-fit\tdirection-evidence' \
+        "I1	${direction_fit}	The complete proposition and experiment are classified against the frozen direction contract." \
+        > tmp/round/direction.tsv
+    fi
     ;;
   *roles/prescreen.md*)
     record_call prescreen

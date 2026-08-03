@@ -57,6 +57,17 @@ HISTORY_NEAR_SA=tmp/near-sa-queue.tsv ./hunt.sh
 
 The positional argument changes the failure cooldown in minutes. `SA_TARGET=0` removes the daily target and leaves termination to the operator. `HISTORY_NEAR_SA` participates only in a first-time bootstrap epoch; a missing, unsafe, or semantically mismatched queue fails closed before agents start.
 
+## Directed Run
+
+```bash
+RESEARCH_DIRECTION_FILE='directions/dynamic-spatial-memory-vla-v1.json' \
+  caffeinate -is ./hunt.sh
+```
+
+`RESEARCH_DIRECTION_FILE` names a repository-relative direction contract. The file is canonicalized before any agent invocation. Every raw candidate must provide exact `Direction Axis`, `Target Failure`, and `Direction Evidence` fields, then pass independent selector classification. Any malformed field, selector failure, missing verdict, or `out-of-scope` verdict rejects the whole batch before history retrieval and research. Resume accepts only the same canonical direction identity. Without `RESEARCH_DIRECTION_FILE`, broad generation preserves the existing undirected contract.
+
+The classifier is an independent model judgment inside fail-closed orchestration, not a proof of natural-language meaning.
+
 ## History maintenance
 
 ```bash

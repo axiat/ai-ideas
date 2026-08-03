@@ -20,6 +20,7 @@ import time
 
 try:
     from lib import history_budget
+    from lib import direction_contract as direction_contract_lib
     from lib import history_projection
     from lib import history_retrieval
     from lib import history_runtime
@@ -27,6 +28,7 @@ try:
     from lib import history_stage_proxy
 except ImportError:
     import history_budget
+    import direction_contract as direction_contract_lib
     import history_projection
     import history_retrieval
     import history_runtime
@@ -66,6 +68,7 @@ _INPUT_CAPS = {
     "generation_brief.json": 65536,
     "generation_policy.md": 16384,
     "research_context.md": 65536,
+    "direction_constraint.json": 16384,
     "retrieval_pack.json": 65536,
     "candidate.json": 16384,
     "prior_work.md": 16384,
@@ -120,7 +123,10 @@ _STAGE_PROFILES = {
             "generation_brief.json",
             "generation_policy.md",
         },
-        "optional_inputs": {"research_context.md"},
+        "optional_inputs": {
+            "research_context.md",
+            "direction_constraint.json",
+        },
         "message": "Generate bounded candidates.",
     },
     "history-compare": {
@@ -1044,6 +1050,18 @@ def _parse_stage_inputs(stage, captured, policy):
             and brief.get("research_context") not in (None, "", [])
         ):
             raise StageError("research context has two representations")
+        if "direction_constraint.json" in captured:
+            try:
+                contract, canonical_raw, _ = (
+                    direction_contract_lib.parse_contract_bytes(
+                        captured["direction_constraint.json"]["raw"]
+                    )
+                )
+            except direction_contract_lib.DirectionContractError as exc:
+                raise StageError("direction contract is invalid") from exc
+            if canonical_raw != captured["direction_constraint.json"]["raw"]:
+                raise StageError("direction contract is not canonical")
+            parsed["direction_constraint.json"] = contract
     elif stage == "history-compare":
         if not isinstance(parsed["retrieval_pack.json"], dict):
             raise StageError("retrieval pack must be an object")
@@ -2739,7 +2757,7 @@ def _validate_verdict(text, candidate_id):
     }
 
 
-def _build_generation_tsv_from_markdown(markdown):
+def _build_generation_tsv_from_markdown(markdown, direction_contract=None):
     """Validate generate markdown and return host-projected ideas.tsv text.
 
     Single source of truth: model writes markdown only. The TSV index is
@@ -2778,6 +2796,13 @@ def _build_generation_tsv_from_markdown(markdown):
         "Why It Can Be Removed Now",
         "Forcing Constraint",
     )
+    direction_required = ()
+    if direction_contract is not None:
+        direction_required = (
+            "Direction Axis",
+            "Target Failure",
+            "Direction Evidence",
+        )
     assumption_ids = set()
     # id -> count of Crack Evidence rows that carry a real http(s) URL
     assumption_url_cracks = {}
@@ -2792,7 +2817,11 @@ def _build_generation_tsv_from_markdown(markdown):
         crack_evidence = []
         for line in lines[start + 1:end]:
             stripped = line.strip()
-            for label in (*required, *assumption_required):
+            for label in (
+                *required,
+                *assumption_required,
+                *direction_required,
+            ):
                 prefix = label + ":"
                 if stripped.startswith(prefix):
                     if label in values:
@@ -2823,12 +2852,30 @@ def _build_generation_tsv_from_markdown(markdown):
                         f"{identifier}"
                     )
                 crack_evidence.append(evidence)
-        missing = [label for label in required if label not in values]
+        missing = [
+            label
+            for label in (*required, *direction_required)
+            if label not in values
+        ]
         if missing:
             raise StageError(
                 f"generation field is missing: {identifier} "
                 f"{', '.join(missing)}"
             )
+        if direction_contract is not None:
+            try:
+                direction_contract_lib.validate_candidate_fields(
+                    {
+                        label: values[label]
+                        for label in direction_required
+                    },
+                    direction_contract,
+                    identifier,
+                )
+            except direction_contract_lib.DirectionContractError as exc:
+                raise StageError(
+                    f"generation direction fields are invalid: {identifier}"
+                ) from exc
         story = values["One-Sentence Story"]
         theme = values["Theme"]
         if (
@@ -2890,7 +2937,7 @@ def _build_generation_tsv_from_markdown(markdown):
     return "\n".join(rows) + "\n"
 
 
-def _project_generation_tsv(mirror):
+def _project_generation_tsv(mirror, direction_contract=None):
     """Write output/ideas.tsv from output/ideas.md (host-owned index)."""
     md_path = mirror / "output" / "ideas.md"
     # Use regular-file capture so FIFO/symlink attacks cannot block open().
@@ -2901,7 +2948,9 @@ def _project_generation_tsv(mirror):
         markdown = captured["raw"].decode("utf-8")
     except UnicodeDecodeError as exc:
         raise StageError("generation markdown is not UTF-8") from exc
-    tsv_text = _build_generation_tsv_from_markdown(markdown)
+    tsv_text = _build_generation_tsv_from_markdown(
+        markdown, direction_contract=direction_contract
+    )
     tsv_raw = tsv_text.encode("utf-8")
     tsv_path = mirror / "output" / "ideas.tsv"
     # Replace any agent-written TSV; the host owns this file.
@@ -3097,7 +3146,10 @@ def validate_stage_outputs(mirror, outputs, stage, parsed_inputs, preflight, sea
     if stage == "generate":
         # Host already projected TSV from markdown; re-check equality.
         expected_tsv = _build_generation_tsv_from_markdown(
-            by_kind["generation-ideas-markdown"]["text"]
+            by_kind["generation-ideas-markdown"]["text"],
+            direction_contract=parsed_inputs.get(
+                "direction_constraint.json"
+            ),
         )
         if by_kind["generation-ideas-tsv"]["text"] != expected_tsv:
             raise StageError("generation TSV projection mismatch")
@@ -3599,7 +3651,12 @@ def run_stage(
                 preflight["serialized_sha256"],
             )
         if stage == "generate":
-            _project_generation_tsv(mirror)
+            _project_generation_tsv(
+                mirror,
+                direction_contract=parsed_inputs.get(
+                    "direction_constraint.json"
+                ),
+            )
         if stage == "review":
             _project_review_verdict(
                 mirror,

@@ -1,6 +1,6 @@
 # Role: Bounded Idea Generation
 
-Produce about ten materially distinct embodied-AI research candidates. The supplied `generation_brief.json` and `generation_policy.md` are the complete cross-round evidence for this invocation. `research_context.md`, when mounted, is optional inspiration.
+Produce about ten materially distinct embodied-AI research candidates. The supplied `generation_brief.json` and `generation_policy.md` are the complete cross-round evidence for this invocation. `research_context.md`, when mounted, is optional inspiration. `direction_constraint.json`, when mounted, is an authoritative direction contract.
 
 Use the theme counts, structured failure counts, divergence lens, and optional confirmed parent exactly as supplied. A confirmed parent permits one evolution or recheck candidate; no other candidate may claim inherited lineage. Do not issue verdicts, perform prior-work research, or make academic-novelty claims.
 
@@ -12,6 +12,14 @@ Each candidate must:
 - include an executable minimal falsification experiment with the strongest baseline, data scale, compute, expected signal, attribution control, and kill condition;
 - fit one researcher and one H100 unless the policy explicitly provides a different bound;
 - remain materially distinct from the other candidates in the batch.
+
+When `direction_constraint.json` is mounted, every candidate must satisfy its statement, fixed constraints, and exclusions. Every proposition and minimal falsification experiment must stay within that contract. Its scope overrides broad cross-domain expansion, low-inventory theme coverage, and off-direction divergence-lens use. Include these exact single-value fields in every candidate:
+
+```text
+Direction Axis: <exact allowed_axes id>
+Target Failure: <exact target_failures id>
+Direction Evidence: <one bounded sentence>
+```
 
 At least one candidate must attempt `remove-load-bearing-assumption`. Record exactly one assumption-removal marker before the first candidate:
 

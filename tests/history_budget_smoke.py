@@ -184,6 +184,10 @@ class HistoryBudgetSmoke(unittest.TestCase):
         )
 
     def test_generate_mount_profile_is_exact_and_bounded(self):
+        self.assertEqual(
+            budget._STAGE_REQUIREMENTS["generate"]["optional_mounts"],
+            {"research_context.md", "direction_constraint.json"},
+        )
         required = {
             "generation_brief.json": b'{"schema_version":1}\n',
             "generation_policy.md": b"# Generation policy v1\n",

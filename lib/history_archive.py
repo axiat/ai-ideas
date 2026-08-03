@@ -439,6 +439,11 @@ def verify_archive(
         != _sha256(canonical_bytes(files))
     ):
         raise ArchiveError("archive receipt does not match its tree")
+    if (
+        _reason_class(receipt.get("created_reason"))
+        != receipt.get("archive_class")
+    ):
+        raise ArchiveError("archive lifecycle transition is invalid")
     if reason is not None:
         requested_class = _reason_class(reason)
         if (
@@ -451,6 +456,11 @@ def verify_archive(
                 requested_class == "decision"
                 and receipt.get("created_reason")
                 not in {"decision", "published"}
+            )
+            or (
+                requested_class == "rejection"
+                and receipt.get("created_reason")
+                != "rejected:direction"
             )
         ):
             raise ArchiveError(
@@ -550,6 +560,8 @@ def _fsync_directory(path):
 def _reason_class(reason):
     if reason in {"decision", "published"}:
         return "decision"
+    if reason == "rejected:direction":
+        return "rejection"
     if (
         isinstance(reason, str)
         and reason.startswith("failed:")

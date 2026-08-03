@@ -121,7 +121,10 @@ _STAGE_REQUIREMENTS = {
             "generation_brief.json",
             "generation_policy.md",
         },
-        "optional_mounts": {"research_context.md"},
+        "optional_mounts": {
+            "research_context.md",
+            "direction_constraint.json",
+        },
         "candidate": False,
         "retrieval_payload": False,
     },

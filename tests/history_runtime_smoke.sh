@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
+sha256_file() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
 # Keep the protocol-shape check ahead of the slower Python suite.  A legacy
 # hunt must fail here instead of looking green because only the library tests
 # passed (or looking red because a nested sandbox is unavailable).
@@ -283,20 +287,70 @@ def envelope(request, behavior):
     invocation = json.loads(prompt_text)
     stage = invocation["stage"]
     if stage == "generate":
+        directed = any(
+            item.get("path") == "direction_constraint.json"
+            for item in invocation["mounted_inputs"]
+        )
+        direction = ""
+        direction_extras = ""
+        marker = (
+            "Assumption-Removal Attempt: incomplete — fixture; "
+            "blocked by: evidence"
+        )
+        form = "new mechanism or new problem"
+        story = "Bounded Test Idea"
+        theme = "Evaluation and Diagnostics"
+        summary = "Bounded stage contract."
+        experiment = (
+            "128-episode one-H100 baseline compare; kill if the signal "
+            "is absent."
+        )
+        if directed:
+            marker = "Assumption-Removal Attempt: complete I1"
+            form = "remove-load-bearing-assumption"
+            direction = (
+                "Direction Axis: memory-representation-update\n"
+                "Target Failure: dynamic-scene-change\n"
+                "Direction Evidence: The repair arm attributes recovery "
+                "to corrected 3D memory.\n"
+            )
+            direction_extras = (
+                "Assumption to Remove: Dense latent updates are required.\n"
+                "Why It Can Be Removed Now: Confidence is calibrated "
+                "online.\n"
+                "Forcing Constraint: Deployment latency limits dense "
+                "updates.\n"
+                "Crack Evidence: https://example.com/one | Stable "
+                "skipped updates.\n"
+                "Crack Evidence: https://example.com/two | Bounded "
+                "latent drift.\n"
+            )
+            story = (
+                "Repair-Aware 3D Memory Updates for Dynamic VLA Scenes"
+            )
+            theme = "World Models - Architecture"
+            summary = (
+                "Repair persistent 3D memory after dynamic scene changes."
+            )
+            experiment = (
+                "Compare stale and repair-aware 3D memory on dynamic scene "
+                "changes; kill the idea if repaired VLA decisions do not "
+                "recover."
+            )
         artifacts = [
             {
                 "artifact_kind": "generation-ideas-markdown",
                 "content": (
-                    "Assumption-Removal Attempt: incomplete — fixture; "
-                    "blocked by: evidence\n\n"
+                    f"{marker}\n\n"
                     "## I1\n"
-                    "One-Sentence Story: Bounded Test Idea\n"
-                    "Theme: Evaluation and Diagnostics\n"
-                    "Form: new mechanism or new problem\n"
-                    "Summary: Bounded stage contract.\n"
-                    "Minimal Falsification Experiment: 128-episode one-H100 "
-                    "baseline compare; kill if the signal is absent.\n"
+                    f"One-Sentence Story: {story}\n"
+                    f"Theme: {theme}\n"
+                    f"{direction}"
+                    f"Form: {form}\n"
+                    f"Summary: {summary}\n"
+                    f"Minimal Falsification Experiment: {experiment}\n"
                     "Why It May Be Novel: Research must test occupation.\n"
+                    f"{direction_extras}"
                 ),
             },
         ]
@@ -803,7 +857,10 @@ for archive, root in zip(archives, (reference, observed)):
         reason="decision",
     )
     batch = json.loads((root / "history/batch/batch.json").read_text())
-    if batch.get("schema_version") != 1:
+    if (
+        batch.get("schema_version") != 2
+        or batch.get("direction") is not None
+    ):
         raise SystemExit("invalid archived frozen batch")
     batches.append(batch)
     authority = json.loads(
@@ -873,7 +930,9 @@ status_sets = [
     for comparison in comparisons
 ]
 if status_sets != [{"uncertain"}, {"complete_no_match"}]:
-    raise SystemExit("shadow A/B comparison statuses drifted")
+    raise SystemExit(
+        "shadow A/B comparison statuses drifted: %r" % status_sets
+    )
 for prompt_root in (
     observed / "history/research-view",
     observed / "history/review-attempts/001/review-stages",
@@ -1114,6 +1173,471 @@ if any(
 ):
     raise SystemExit("canonical exchange escaped the local fixture contract")
 PY
+
+# Direction enforcement uses a separate loopback sequence so these extra
+# generate/review calls cannot weaken the exact resume counts above.
+direction_seed="$case_root/direction-seed"
+copy_repo "$direction_seed"
+start_loopback_upstream "$direction_seed"
+set_loopback_behavior complete_no_match valid
+
+prepare_direction_repo() {
+  local repository=$1
+  copy_repo "$repository"
+  : > "$repository/tmp/near-sa-queue.tsv"
+  configure_loopback_codex \
+    "$repository" \
+    "$fake_codex_dir/codex" \
+    "$loopback_port" \
+    "$fake_home"
+}
+
+run_direction_hunt() {
+  local repository=$1 label=$2 mode=$3 direction=$4
+  local round_limit=$5 max_fails=$6 resume_front=$7 theme_min_low=$8
+  local runs=$9
+  (
+    cd "$repository"
+    HOME="$fake_home" \
+    AGENT_CMD="$repository/tests/fake_agent.sh" \
+    FRONT_CMD="$repository/tests/fake_agent.sh" \
+    BACK_CMD="$repository/tests/fake_agent.sh" \
+    HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
+    CONTAINED_AGENT_CMD_JSON="$codex_json" \
+    RESEARCH_DIRECTION_FILE="$direction" \
+    REVIEWERS=1 \
+    RESUME_FRONT="$resume_front" \
+    THEME_MIN_LOW="$theme_min_low" \
+    RESEARCH_RETRY=0 \
+    FAIL_SLEEP_MIN=0 \
+    NO_HIT_SLEEP_MIN_LO=0 \
+    NO_HIT_SLEEP_MIN_HI=0 \
+    ALLOW_ZERO_NO_HIT_SLEEP=1 \
+    MAX_FAILS="$max_fails" \
+    SA_TARGET=0 \
+    ROUND_LIMIT="$round_limit" \
+    RUNS_DIR="$runs" \
+    FAKE_AGENT_MODE="$mode" \
+    FAKE_DIRECTION_CONTRACT_TARGET=\
+"$repository/tmp/round/history/direction-constraint.json" \
+    FAKE_DIRECTION_CONTRACT_REPLACEMENT=\
+"$repository/directions/test-direction-drift.json" \
+    bash ./hunt.sh
+  ) > "$case_root/$label.log" 2>&1
+}
+
+assert_rejection_archive() {
+  local archive=$1
+  python3 - "$archive" <<'PY'
+import json
+import pathlib
+import sys
+
+receipt = json.loads(
+    (
+        pathlib.Path(sys.argv[1])
+        / "round/history/archive-receipt.json"
+    ).read_text(encoding="utf-8")
+)
+if (
+    receipt.get("archive_class") != "rejection"
+    or receipt.get("created_reason") != "rejected:direction"
+):
+    raise SystemExit("direction rejection archive lifecycle is invalid")
+PY
+}
+
+directed_ok_repo="$case_root/directed-all-in-scope"
+directed_ok_runs="$case_root/directed-all-in-scope-runs"
+prepare_direction_repo "$directed_ok_repo"
+if ! run_direction_hunt \
+  "$directed_ok_repo" \
+  directed-all-in-scope \
+  history-summary-forbidden \
+  directions/dynamic-spatial-memory-vla-v1.json \
+  1 1 0 2 \
+  "$directed_ok_runs"; then
+  printf 'history_runtime_smoke: directed all-in-scope failed\n' >&2
+  cat "$case_root/directed-all-in-scope.log" >&2
+  exit 1
+fi
+set -- "$directed_ok_runs"/*
+[ "$#" -eq 1 ] && [ -d "$1/round" ] || {
+  printf 'history_runtime_smoke: directed round was not archived\n' >&2
+  exit 1
+}
+directed_ok_archive=$1
+python3 - \
+  "$directed_ok_repo/directions/dynamic-spatial-memory-vla-v1.json" \
+  "$directed_ok_archive/round/history/direction-constraint.json" <<'PY'
+import json
+import pathlib
+import sys
+source, snapshot = map(pathlib.Path, sys.argv[1:])
+expected = (
+    json.dumps(
+        json.loads(source.read_text(encoding="utf-8")),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    + "\n"
+).encode("utf-8")
+if snapshot.read_bytes() != expected:
+    raise SystemExit("generation did not receive the canonical direction")
+PY
+grep -q 'Repair-Aware 3D Memory Updates' \
+  "$directed_ok_archive/round/history/batch/sources/ideas.md"
+test -s "$directed_ok_archive/round/direction.tsv"
+test -s "$directed_ok_archive/round/history/direction-gate.json"
+test -s "$directed_ok_archive/round/prescreen.md"
+test -s \
+  "$directed_ok_archive/round/history/observations/comparison-index.json"
+
+for direction_mode in \
+  direction-out-of-scope \
+  direction-missing-verdict
+do
+  rejection_repo="$case_root/$direction_mode"
+  rejection_runs="$case_root/$direction_mode-runs"
+  rejection_log="$case_root/$direction_mode.log"
+  prepare_direction_repo "$rejection_repo"
+  ledger_before_rejection=$(sha256_file "$rejection_repo/ledger.tsv")
+  if ! run_direction_hunt \
+    "$rejection_repo" \
+    "$direction_mode" \
+    "$direction_mode" \
+    directions/dynamic-spatial-memory-vla-v1.json \
+    1 1 0 2 \
+    "$rejection_runs"; then
+    printf 'history_runtime_smoke: %s did not exit successfully\n' \
+      "$direction_mode" >&2
+    cat "$rejection_log" >&2
+    exit 1
+  fi
+  set -- "$rejection_runs"/*
+  [ "$#" -eq 1 ] && [ -d "$1/round" ] || {
+    printf 'history_runtime_smoke: %s was not archived once\n' \
+      "$direction_mode" >&2
+    exit 1
+  }
+  rejection_archive=$1
+  assert_rejection_archive "$rejection_archive"
+  [ "$(sha256_file "$rejection_repo/ledger.tsv")" = \
+    "$ledger_before_rejection" ] || {
+    printf 'history_runtime_smoke: direction rejection changed ledger\n' >&2
+    exit 1
+  }
+  for forbidden in \
+    history/observations \
+    prescreen.md \
+    priorwork.md \
+    history/observations/comparison-index.json \
+    history/review-attempts
+  do
+    test ! -e "$rejection_archive/round/$forbidden" || {
+      printf 'history_runtime_smoke: %s reached %s\n' \
+        "$direction_mode" "$forbidden" >&2
+      exit 1
+    }
+  done
+  if grep -Eq '^(prescreen|research|review)	' \
+    "$rejection_archive/round/stages.tsv"; then
+    printf 'history_runtime_smoke: %s invoked downstream stage\n' \
+      "$direction_mode" >&2
+    exit 1
+  fi
+done
+
+gate_drift_repo="$case_root/direction-contract-drift"
+gate_drift_runs="$case_root/direction-contract-drift-runs"
+prepare_direction_repo "$gate_drift_repo"
+python3 - \
+  "$gate_drift_repo/directions/dynamic-spatial-memory-vla-v1.json" \
+  "$gate_drift_repo/directions/test-direction-drift.json" <<'PY'
+import json
+import pathlib
+import sys
+
+source, destination = map(pathlib.Path, sys.argv[1:])
+value = json.loads(source.read_text(encoding="utf-8"))
+value["statement"] += " Deterministic gate drift."
+destination.write_text(
+    json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+if ! run_direction_hunt \
+  "$gate_drift_repo" \
+  direction-contract-drift \
+  direction-contract-drift \
+  directions/dynamic-spatial-memory-vla-v1.json \
+  1 1 0 2 \
+  "$gate_drift_runs"; then
+  printf 'history_runtime_smoke: direction gate drift did not reject cleanly\n' >&2
+  cat "$case_root/direction-contract-drift.log" >&2
+  exit 1
+fi
+set -- "$gate_drift_runs"/*
+[ "$#" -eq 1 ] && [ -d "$1/round" ] || {
+  printf 'history_runtime_smoke: direction gate drift was not archived once\n' >&2
+  exit 1
+}
+gate_drift_archive=$1
+assert_rejection_archive "$gate_drift_archive"
+for forbidden in \
+  history/direction-gate.json \
+  history/observations \
+  prescreen.md \
+  priorwork.md \
+  history/observations/comparison-index.json \
+  history/review-attempts
+do
+  test ! -e "$gate_drift_archive/round/$forbidden" || {
+    printf 'history_runtime_smoke: direction gate drift reached %s\n' \
+      "$forbidden" >&2
+    exit 1
+  }
+done
+if grep -Eq '^(prescreen|research|review)	' \
+  "$gate_drift_archive/round/stages.tsv"; then
+  printf 'history_runtime_smoke: direction gate drift invoked downstream stage\n' \
+    >&2
+  exit 1
+fi
+
+undirected_repo="$case_root/undirected-selector-failure"
+undirected_runs="$case_root/undirected-selector-failure-runs"
+prepare_direction_repo "$undirected_repo"
+if ! run_direction_hunt \
+  "$undirected_repo" \
+  undirected-selector-failure \
+  selector-failure \
+  "" \
+  1 1 0 0 \
+  "$undirected_runs"; then
+  printf 'history_runtime_smoke: undirected selector fallback failed\n' >&2
+  cat "$case_root/undirected-selector-failure.log" >&2
+  exit 1
+fi
+grep -q 'Selector failed; sealed selection will use generation order' \
+  "$case_root/undirected-selector-failure.log"
+grep -q '^prescreen	' "$undirected_repo/tmp/round/stages.tsv"
+test -s "$undirected_repo/tmp/round/history/selection.json"
+
+resume_removed_repo="$case_root/directed-resume-removed"
+prepare_direction_repo "$resume_removed_repo"
+run_direction_hunt \
+  "$resume_removed_repo" \
+  directed-resume-removed-seed \
+  history-summary-forbidden \
+  directions/dynamic-spatial-memory-vla-v1.json \
+  1 1 0 2 \
+  "$case_root/directed-resume-removed-seed-runs" || {
+  cat "$case_root/directed-resume-removed-seed.log" >&2
+  exit 1
+}
+if ! run_direction_hunt \
+  "$resume_removed_repo" \
+  directed-resume-removed \
+  history-summary-forbidden \
+  "" \
+  1 1 1 0 \
+  "$case_root/directed-resume-removed-runs"; then
+  cat "$case_root/directed-resume-removed.log" >&2
+  exit 1
+fi
+grep -q 'Discarding stale or incomplete front state' \
+  "$case_root/directed-resume-removed.log"
+if grep -q 'Resuming sealed front artifacts' \
+  "$case_root/directed-resume-removed.log"; then
+  printf 'history_runtime_smoke: removed direction consumed sealed front\n' >&2
+  exit 1
+fi
+python3 - "$resume_removed_repo/tmp/round/history/batch/batch.json" <<'PY'
+import json
+import pathlib
+import sys
+if json.loads(pathlib.Path(sys.argv[1]).read_text())["direction"] is not None:
+    raise SystemExit("removed direction did not generate a new undirected batch")
+PY
+
+resume_changed_repo="$case_root/directed-resume-changed"
+prepare_direction_repo "$resume_changed_repo"
+run_direction_hunt \
+  "$resume_changed_repo" \
+  directed-resume-changed-seed \
+  history-summary-forbidden \
+  directions/dynamic-spatial-memory-vla-v1.json \
+  1 1 0 2 \
+  "$case_root/directed-resume-changed-seed-runs" || {
+  cat "$case_root/directed-resume-changed-seed.log" >&2
+  exit 1
+}
+python3 - \
+  "$resume_changed_repo/directions/dynamic-spatial-memory-vla-v1.json" \
+  "$resume_changed_repo/directions/changed-direction.json" <<'PY'
+import json
+import pathlib
+import sys
+source, destination = map(pathlib.Path, sys.argv[1:])
+value = json.loads(source.read_text(encoding="utf-8"))
+value["statement"] += " The copied contract has a distinct identity."
+destination.write_text(
+    json.dumps(value, indent=2, ensure_ascii=False) + "\n",
+    encoding="utf-8",
+)
+PY
+if ! run_direction_hunt \
+  "$resume_changed_repo" \
+  directed-resume-changed \
+  history-summary-forbidden \
+  directions/changed-direction.json \
+  1 1 1 2 \
+  "$case_root/directed-resume-changed-runs"; then
+  cat "$case_root/directed-resume-changed.log" >&2
+  exit 1
+fi
+grep -q 'Discarding stale or incomplete front state' \
+  "$case_root/directed-resume-changed.log"
+if grep -q 'Resuming sealed front artifacts' \
+  "$case_root/directed-resume-changed.log"; then
+  printf 'history_runtime_smoke: changed direction consumed sealed front\n' >&2
+  exit 1
+fi
+python3 - \
+  "$resume_changed_repo/directions/changed-direction.json" \
+  "$resume_changed_repo/tmp/round/history/batch/batch.json" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+contract_path, batch_path = map(pathlib.Path, sys.argv[1:])
+canonical = (
+    json.dumps(
+        json.loads(contract_path.read_text(encoding="utf-8")),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    + "\n"
+).encode("utf-8")
+direction = json.loads(batch_path.read_text())["direction"]
+if direction["sha256"] != hashlib.sha256(canonical).hexdigest():
+    raise SystemExit("changed direction did not generate a new bound batch")
+PY
+
+invalid_field_repo="$case_root/direction-invalid-field"
+prepare_direction_repo "$invalid_field_repo"
+python3 - \
+  "$invalid_field_repo/directions/dynamic-spatial-memory-vla-v1.json" \
+  "$invalid_field_repo/directions/invalid-field.json" <<'PY'
+import json
+import pathlib
+import sys
+source, destination = map(pathlib.Path, sys.argv[1:])
+value = json.loads(source.read_text(encoding="utf-8"))
+value["unknown"] = "forbidden"
+destination.write_text(json.dumps(value) + "\n", encoding="utf-8")
+PY
+if run_direction_hunt \
+  "$invalid_field_repo" \
+  direction-invalid-field \
+  default \
+  directions/invalid-field.json \
+  1 1 0 2 \
+  "$case_root/direction-invalid-field-runs"; then
+  printf 'history_runtime_smoke: invalid direction contract started\n' >&2
+  exit 1
+fi
+test ! -e "$invalid_field_repo/.ai-ideas/history.sqlite3"
+test ! -e "$invalid_field_repo/tmp/fake-agent.calls"
+test ! -e "$invalid_field_repo/tmp/round/history/generate-output"
+
+symlink_repo="$case_root/direction-symlink"
+prepare_direction_repo "$symlink_repo"
+ln -s dynamic-spatial-memory-vla-v1.json \
+  "$symlink_repo/directions/symlink-direction.json"
+if run_direction_hunt \
+  "$symlink_repo" \
+  direction-symlink \
+  default \
+  directions/symlink-direction.json \
+  1 1 0 2 \
+  "$case_root/direction-symlink-runs"; then
+  printf 'history_runtime_smoke: symlinked direction contract started\n' >&2
+  exit 1
+fi
+test ! -e "$symlink_repo/.ai-ideas/history.sqlite3"
+test ! -e "$symlink_repo/tmp/fake-agent.calls"
+test ! -e "$symlink_repo/tmp/round/history/generate-output"
+
+two_rejections_repo="$case_root/two-direction-rejections"
+two_rejections_runs="$case_root/two-direction-rejections-runs"
+prepare_direction_repo "$two_rejections_repo"
+if ! run_direction_hunt \
+  "$two_rejections_repo" \
+  two-direction-rejections \
+  direction-out-of-scope \
+  directions/dynamic-spatial-memory-vla-v1.json \
+  2 1 0 2 \
+  "$two_rejections_runs"; then
+  cat "$case_root/two-direction-rejections.log" >&2
+  exit 1
+fi
+rejection_count=0
+for rejection_archive in "$two_rejections_runs"/*; do
+  [ -d "$rejection_archive/round" ] || continue
+  assert_rejection_archive "$rejection_archive"
+  rejection_count=$((rejection_count + 1))
+done
+[ "$rejection_count" -eq 2 ] || {
+  printf 'history_runtime_smoke: expected two direction rejections\n' >&2
+  exit 1
+}
+test "$(grep -c 'Retrying in 0 minutes' \
+  "$case_root/two-direction-rejections.log")" -eq 1
+if grep -q 'Round failed' "$case_root/two-direction-rejections.log"; then
+  printf 'history_runtime_smoke: direction rejection consumed failure budget\n' >&2
+  exit 1
+fi
+
+archive_failure_repo="$case_root/direction-archive-failure"
+prepare_direction_repo "$archive_failure_repo"
+python3 - "$archive_failure_repo/lib/history_archive.py" <<'PY'
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+old = 'if __name__ == "__main__":\n    raise SystemExit(_main())\n'
+new = 'if __name__ == "__main__":\n    raise SystemExit(73)\n'
+if source.count(old) != 1:
+    raise SystemExit("history_archive main dispatch fixture drifted")
+path.write_text(source.replace(old, new), encoding="utf-8")
+PY
+if run_direction_hunt \
+  "$archive_failure_repo" \
+  direction-archive-failure \
+  direction-out-of-scope \
+  directions/dynamic-spatial-memory-vla-v1.json \
+  2 1 0 2 \
+  "$case_root/direction-archive-failure-runs"; then
+  printf 'history_runtime_smoke: rejection archive failure was ignored\n' >&2
+  exit 1
+fi
+grep -q 'Direction rejection archive failed' \
+  "$case_root/direction-archive-failure.log"
+test -d "$archive_failure_repo/tmp/round"
+test "$(grep -c '^select	' \
+  "$archive_failure_repo/tmp/round/stages.tsv")" -eq 1
+
+stop_loopback_upstream
 
 [ "$fresh_start_failed" -eq 0 ] || {
   printf 'history_runtime_smoke: fresh shadow startup requires a missing optional near-SA snapshot\n' >&2
