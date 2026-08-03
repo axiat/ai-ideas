@@ -796,6 +796,20 @@ def searchable_candidate_ids(conn):
     )]
 
 
+def candidate_ids_as_of(conn, source_watermark):
+    """Return canonical corpus IDs visible at one source-sequence boundary."""
+    if type(source_watermark) is not int or source_watermark < 0:
+        raise ValueError("source watermark must be a non-negative integer")
+    return [
+        row[0]
+        for row in conn.execute(
+            "SELECT candidate_id FROM candidates WHERE source_sequence <= ? "
+            "ORDER BY candidate_id",
+            (source_watermark,),
+        )
+    ]
+
+
 def exact_lookup(conn, query, depth):
     """Return canonical exact-story matches from the active projection."""
     _init(conn)
@@ -882,6 +896,109 @@ def search(conn, query, policy):
             scores[candidate_id] = scores.get(candidate_id, 0.0) + 1.0 / (int(policy["rrf_k"]) + rank)
     ranked = [candidate_id for candidate_id, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:int(policy["max_matches"])]]
     return {"candidate_ids": ranked, "channels": channels}
+
+
+def l1_rankings_as_of(conn, query, depth, source_watermark):
+    """Read v1 flat indexes through one frozen source-sequence predicate."""
+    _init(conn)
+    if type(depth) is not int or depth < 1:
+        raise ValueError("L1 depth must be a positive integer")
+    if type(source_watermark) is not int or source_watermark < 0:
+        raise ValueError("source watermark must be a non-negative integer")
+    canonical = history_store.canonical_story_v1(query)
+    exact = [
+        {
+            "candidate_id": row["candidate_id"],
+            "query_view_id": "story",
+            "score": 1.0,
+        }
+        for row in conn.execute(
+            """
+            SELECT c.candidate_id
+            FROM story_aliases alias
+            JOIN candidates c ON c.lineage_id = alias.lineage_id
+            JOIN search_index_entries entry ON entry.candidate_id = c.candidate_id
+            WHERE alias.canonical_version = ? AND alias.canonical_story = ?
+              AND entry.active = 1 AND c.source_sequence <= ?
+            ORDER BY c.source_sequence DESC, c.candidate_id
+            LIMIT ?
+            """,
+            (
+                history_store.CANONICAL_VERSION,
+                canonical,
+                source_watermark,
+                depth,
+            ),
+        )
+    ]
+    terms = _tokens(canonical)
+    fts = []
+    if terms:
+        expression = " OR ".join(
+            '"' + term.replace('"', '') + '"' for term in terms
+        )
+        for facet in FACETS:
+            for rank, row in enumerate(
+                conn.execute(
+                    """
+                    SELECT f.candidate_id, bm25(search_fts) AS raw_rank
+                    FROM search_fts f
+                    JOIN search_index_entries entry
+                      ON entry.candidate_id = f.candidate_id
+                    JOIN candidates c ON c.candidate_id = f.candidate_id
+                    WHERE entry.active = 1 AND f.facet = ?
+                      AND search_fts MATCH ? AND c.source_sequence <= ?
+                    ORDER BY raw_rank, f.candidate_id
+                    LIMIT ?
+                    """,
+                    (facet, expression, source_watermark, depth),
+                ),
+                1,
+            ):
+                fts.append(
+                    {
+                        "candidate_id": row["candidate_id"],
+                        "query_view_id": "facet:" + facet,
+                        "score": 1.0 / rank,
+                    }
+                )
+    vector, norm = embed(canonical)
+    dense_best = {}
+    if norm:
+        for facet in FACETS:
+            values = []
+            for row in conn.execute(
+                """
+                SELECT vector.candidate_id, vector.vector
+                FROM search_vectors vector
+                JOIN search_index_entries entry
+                  ON entry.candidate_id = vector.candidate_id
+                JOIN candidates c ON c.candidate_id = vector.candidate_id
+                WHERE entry.active = 1 AND vector.facet = ?
+                  AND c.source_sequence <= ?
+                """,
+                (facet, source_watermark),
+            ):
+                values.append(
+                    (row["candidate_id"], _cosine(vector, _unblob(row["vector"])))
+                )
+            for rank, (candidate_id, _) in enumerate(
+                sorted(values, key=lambda item: (-item[1], item[0]))[:depth], 1
+            ):
+                dense_best[candidate_id] = max(
+                    1.0 / rank, dense_best.get(candidate_id, 0.0)
+                )
+    hash_dense = [
+        {
+            "candidate_id": candidate_id,
+            "query_view_id": "hash-ngram-v1",
+            "score": score,
+        }
+        for candidate_id, score in sorted(
+            dense_best.items(), key=lambda item: (-item[1], item[0])
+        )[:depth]
+    ]
+    return {"exact": exact, "fts": fts, "hash_dense": hash_dense}
 
 
 def failure_code(verdict, category, reason):

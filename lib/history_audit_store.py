@@ -609,6 +609,124 @@ END;
 """
 
 
+_L1_FROZEN_IDENTITY_SQL = """
+ALTER TABLE audit_snapshots ADD COLUMN run_id TEXT
+  REFERENCES audit_run_manifests(run_id);
+ALTER TABLE audit_snapshots ADD COLUMN batch_id TEXT;
+CREATE UNIQUE INDEX audit_snapshots_run_batch_unique
+  ON audit_snapshots(run_id, batch_id);
+CREATE TRIGGER audit_snapshots_run_batch_required
+BEFORE INSERT ON audit_snapshots
+WHEN length(NEW.snapshot_id) = 64
+  AND NEW.snapshot_id NOT GLOB '*[^0-9a-f]*'
+  AND (NEW.run_id IS NULL OR NEW.batch_id IS NULL OR NEW.batch_id = '')
+BEGIN
+  SELECT RAISE(ABORT, 'snapshot run and batch ownership is required');
+END;
+
+CREATE TABLE audit_batch_pair_receipts(
+  run_id TEXT NOT NULL REFERENCES audit_run_manifests(run_id),
+  batch_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL REFERENCES audit_snapshots(snapshot_id),
+  pair_plan_sha TEXT NOT NULL CHECK(length(pair_plan_sha) = 64),
+  pair_result_sha TEXT NOT NULL CHECK(length(pair_result_sha) = 64),
+  pair_count INTEGER NOT NULL CHECK(pair_count >= 0),
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY(run_id, batch_id),
+  UNIQUE(pair_plan_sha, pair_result_sha)
+);
+CREATE TABLE audit_activation_receipts(
+  activation_receipt_sha TEXT PRIMARY KEY CHECK(length(activation_receipt_sha) = 64),
+  staging_candidate_id TEXT NOT NULL UNIQUE
+    REFERENCES audit_batch_staging(staging_candidate_id),
+  receipt_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+""" + _immutable_guards(
+    "audit_batch_pair_receipts", "audit_activation_receipts"
+) + """
+DROP TRIGGER IF EXISTS audit_activation_maps_evidence_guard;
+CREATE TRIGGER audit_batch_pairs_owner_and_order_guard
+BEFORE INSERT ON audit_batch_pairs
+BEGIN
+  SELECT CASE WHEN NEW.left_staging_candidate_id
+      >= NEW.right_staging_candidate_id
+    THEN RAISE(ABORT, 'batch pair endpoints must be canonically ordered') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_staging left_item
+    JOIN audit_batch_staging right_item
+      ON right_item.staging_candidate_id = NEW.right_staging_candidate_id
+    WHERE left_item.staging_candidate_id = NEW.left_staging_candidate_id
+      AND left_item.run_id = NEW.run_id
+      AND left_item.batch_id = NEW.batch_id
+      AND right_item.run_id = NEW.run_id
+      AND right_item.batch_id = NEW.batch_id
+  ) THEN RAISE(ABORT, 'batch pair endpoints do not share one batch') END;
+  SELECT CASE WHEN NEW.left_staging_candidate_id GLOB 'stg-v2-*'
+    AND NOT EXISTS (
+    SELECT 1 FROM audit_batch_pair_receipts receipt
+    WHERE receipt.run_id = NEW.run_id
+      AND receipt.batch_id = NEW.batch_id
+      AND receipt.pair_plan_sha = NEW.pair_plan_sha
+      AND receipt.pair_result_sha = NEW.pair_result_sha
+  ) THEN RAISE(ABORT, 'batch pair is not bound to its completed receipt') END;
+END;
+CREATE TRIGGER audit_activation_maps_evidence_guard
+BEFORE INSERT ON audit_activation_maps
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_batch_staging staging
+    WHERE staging.staging_candidate_id = NEW.staging_candidate_id
+      AND staging.raw_artifact_sha = NEW.raw_artifact_sha
+  ) THEN RAISE(ABORT, 'activation staging artifact mismatch') END;
+  SELECT CASE WHEN NEW.staging_candidate_id GLOB 'stg-v2-*'
+    AND NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_staging staging
+    JOIN audit_batch_pair_receipts receipt
+      ON receipt.run_id = staging.run_id
+     AND receipt.batch_id = staging.batch_id
+    JOIN audit_snapshots snapshot
+      ON snapshot.snapshot_id = receipt.snapshot_id
+    WHERE staging.staging_candidate_id = NEW.staging_candidate_id
+      AND receipt.pair_plan_sha = NEW.pair_plan_sha
+      AND receipt.pair_result_sha = NEW.pair_result_sha
+      AND NEW.source_sequence > snapshot.history_as_of_watermark
+  ) THEN RAISE(ABORT, 'activation pair or watermark evidence mismatch') END;
+  SELECT CASE WHEN NEW.staging_candidate_id NOT GLOB 'stg-v2-*'
+    AND NOT EXISTS (
+    SELECT 1
+    FROM audit_batch_staging staging
+    JOIN audit_batch_pairs pair
+      ON pair.run_id = staging.run_id AND pair.batch_id = staging.batch_id
+     AND (
+       pair.left_staging_candidate_id = staging.staging_candidate_id
+       OR pair.right_staging_candidate_id = staging.staging_candidate_id
+     )
+    WHERE staging.staging_candidate_id = NEW.staging_candidate_id
+      AND pair.pair_plan_sha = NEW.pair_plan_sha
+      AND pair.pair_result_sha = NEW.pair_result_sha
+  ) THEN RAISE(ABORT, 'legacy activation pair evidence mismatch') END;
+  SELECT CASE WHEN NEW.staging_candidate_id GLOB 'stg-v2-*'
+    AND NOT EXISTS (
+    SELECT 1 FROM audit_activation_receipts receipt
+    WHERE receipt.staging_candidate_id = NEW.staging_candidate_id
+      AND receipt.activation_receipt_sha = NEW.activation_receipt_sha
+  ) THEN RAISE(ABORT, 'activation receipt is missing') END;
+END;
+CREATE TRIGGER audit_receipts_snapshot_run_guard
+BEFORE INSERT ON audit_receipts
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_snapshots snapshot
+    WHERE snapshot.snapshot_id = NEW.snapshot_id
+      AND snapshot.run_id = NEW.run_id
+  ) THEN RAISE(ABORT, 'receipt snapshot run ownership mismatch') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
@@ -621,6 +739,7 @@ MIGRATIONS = (
     Migration(
         "coverage-integrity-guards", 1, _COVERAGE_INTEGRITY_GUARDS_SQL
     ),
+    Migration("l1-frozen-identity", 1, _L1_FROZEN_IDENTITY_SQL),
 )
 
 

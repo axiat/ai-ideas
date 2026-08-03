@@ -1,0 +1,43 @@
+{
+  "schema_version": "history-audit-policy-v2",
+  "exclusion_policy": {
+    "policy_version": "history-audit-exclusion-v2",
+    "prior_history_predicate": "source_sequence_lte_watermark",
+    "current_batch_id_namespace": "history-v2-staging-v1",
+    "batch_internal_comparison": "separate_before_activation"
+  },
+  "l1": {
+    "flat_families": [
+      "exact",
+      "authoritative_alias",
+      "declared_parent",
+      "lineage",
+      "fts",
+      "near_duplicate",
+      "hash_dense"
+    ],
+    "mandatory_families": [
+      "exact",
+      "authoritative_alias",
+      "declared_parent"
+    ],
+    "automatic_positive_sources": [
+      "normalized_exact",
+      "confirmed_typed_relation"
+    ],
+    "hash_dense_semantics": "lexical_approximation",
+    "semantic_score_mandatory": false,
+    "metadata_mode": "additive_shadow"
+  },
+  "no_match_release": {
+    "required_gates": [
+      "coverage_complete",
+      "adjudication_complete",
+      "semantic_policy_qualified"
+    ],
+    "allowed_bases": [
+      "l1_calibrated",
+      "l2_exhaustive"
+    ]
+  }
+}
