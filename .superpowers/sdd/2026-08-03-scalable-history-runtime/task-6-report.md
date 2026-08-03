@@ -32,3 +32,13 @@ Checkpoint verification: evaluation 30 passed; runtime 45 passed; CAS 11 passed;
 - Queue latency is derived from durable task-ready or predecessor-terminal time to attempt launch. Run latency is derived from launch to terminal settlement. Injected timestamps are checked against those durable boundaries; legacy unknown latency is omitted from totals.
 
 Checkpoint verification: 199 Python tests passed across evaluation, runtime, contract, migration, provider, plan, L1, metadata, and store suites; the 80-test shell runtime suite passed; strict OpenSpec validation passed; Python compilation and `git diff --check` passed. Production `complete_no_match` remains fail-closed with `production_runtime_authority_unavailable`.
+
+## Review fix round 3 checkpoint
+
+- Candidate route issuance now precedes the entire L2 lifecycle. Any existing L2 plan, budget reservation, or attempt for the run rejects the public route writer. Idempotent plan persistence verifies existing route material without reopening issuance; a legacy plan cannot acquire route facts retroactively.
+- The route cohort equals the complete frozen batch member set. Omitting any frozen candidate rejects plan persistence, so zero-attempt and non-dispatched candidates remain in the denominator without a separate selected-cohort claim.
+- L2 dispatch consumes a one-shot connection-local issuance held only around insertion of one new exact plan in the same transaction. Public dispatch calls and existing plans cannot activate the guard or retrofit attempt authority. Existing plan replay verifies the durable dispatch and never issues a replacement.
+- Raw router and risk-slice inputs carry an immutable `host_issued_shadow` observation boundary with `production_authority=0`. Caller-supplied `release_qualified=true` is rejected because current durable production runtime authority is unavailable. Summaries expose the shadow boundary explicitly; it cannot authorize production `complete_no_match`.
+- Databases upgraded from pre-boundary route and dispatch facts receive no fabricated boundary. Their route summaries report `candidate_route_observation_boundary_unavailable`, and old dispatch facts cannot launch new attempts.
+
+Checkpoint verification: 205 Python tests passed across evaluation, runtime, contract, migration, provider, plan, L1, metadata, and store suites; the 80-test shell runtime suite passed; strict OpenSpec validation passed; Python compilation and `git diff --check` passed. Production `complete_no_match` remains fail-closed with `production_runtime_authority_unavailable`.

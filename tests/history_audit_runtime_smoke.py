@@ -326,6 +326,59 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         ):
             history_execution.persist_plan(conn, plan, route_authority={})
 
+    def _seed_route_prerequisites(
+        self, conn, plan, candidates, *, run_created_at=None,
+        staging_created_at=None,
+    ):
+        material = history_audit_plan.build_runtime_plan_material(plan)
+        snapshot = plan["snapshot"]
+        run_created_at = run_created_at or self._now(10)
+        staging_created_at = staging_created_at or self._now()
+        conn.execute(
+            "INSERT INTO audit_run_manifests VALUES(?,?,?,?,?)",
+            (
+                plan["run_id"], "history-audit-manifest-v2",
+                plan["plan_sha"], history_execution._canonical(material),
+                run_created_at,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO audit_snapshots VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                snapshot["snapshot_id"], snapshot["snapshot_hash"],
+                snapshot["history_as_of_watermark"],
+                snapshot["current_batch_id_namespace"],
+                snapshot["current_batch_ids_hash"],
+                snapshot["exclusion_policy_sha"],
+                snapshot["expected_asset_ids_hash"], staging_created_at,
+                plan["run_id"], plan["batch_id"],
+            ),
+        )
+        conn.execute(
+            "INSERT INTO audit_snapshot_batch_sets VALUES(?,?,?,?,?,?,?)",
+            (
+                snapshot["snapshot_id"], plan["run_id"], plan["batch_id"],
+                snapshot["current_batch_ids_hash"],
+                json.dumps(
+                    snapshot["current_batch_ids"], sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                len(snapshot["current_batch_ids"]), staging_created_at,
+            ),
+        )
+        for candidate in candidates:
+            conn.execute(
+                "INSERT INTO audit_batch_staging VALUES(?,?,?,?,?,?,?)",
+                (
+                    candidate["candidate_id"], plan["run_id"],
+                    plan["batch_id"], candidate["candidate_hash"],
+                    candidate["raw_artifact_sha"], candidate["source_order"],
+                    staging_created_at,
+                ),
+            )
+        conn.commit()
+        return run_created_at
+
     def test_persist_plan_requires_bound_route_authority(self):
         with self.assertRaises(self._api("ExecutionError")) as caught:
             self._api("persist_plan")(self.conn, self.plan)
@@ -363,6 +416,116 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             self._api("persist_plan")(
                 self.conn, self.plan, route_authority=authority
             )
+
+    def test_route_cohort_cannot_omit_a_frozen_batch_candidate(self):
+        second = {
+            "candidate_id": "stg-v2-" + sha("omitted-frozen-candidate"),
+            "candidate_hash": "",
+            "raw_artifact_sha": sha("omitted-frozen-candidate-raw"),
+            "source_order": 1,
+        }
+        second["candidate_hash"] = history_audit_plan.runtime_candidate_hash(
+            second
+        )
+        plan = self._plan(self.records, additional_candidates=[second])
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("persist_plan")(
+                self.conn, plan,
+                route_authority=self._route_authority(plan),
+            )
+        self.assertEqual(caught.exception.code, "invalid_route_authority")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_candidate_route_facts_v2"
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_route_rejects_caller_claimed_release_qualification(self):
+        authority = self._route_authority(
+            facts=self._router_facts(release_qualified=True)
+        )
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("persist_plan")(
+                self.conn, self.plan, route_authority=authority
+            )
+        self.assertEqual(caught.exception.code, "invalid_route_authority")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_candidate_route_facts_v2"
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_legacy_plan_cannot_receive_retroactive_route_facts(self):
+        plan = self.plan
+        self._persist_pre_route_plan(self.conn, plan)
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.record_candidate_route_facts(
+                    self.conn, plan["run_id"], plan["batch_id"],
+                    plan["intent"], self._route_authority(plan),
+                    created_at=self._now(),
+                )
+        finally:
+            self.conn.execute("ROLLBACK")
+        summary = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]
+        self.assertFalse(summary["route_facts_complete"])
+        self.assertEqual(
+            summary["expected_unavailable_reason"],
+            "candidate_route_facts_unavailable",
+        )
+
+    def test_public_dispatch_cannot_retrofit_plan_or_open_attempt_gate(self):
+        plan = self.plan
+        created_at = self._seed_route_prerequisites(
+            self.conn, plan, [plan["candidate"]]
+        )
+        self.conn.execute("BEGIN IMMEDIATE")
+        history_audit_store.record_candidate_route_facts(
+            self.conn, plan["run_id"], plan["batch_id"], plan["intent"],
+            self._route_authority(plan), created_at=created_at,
+        )
+        self.conn.execute("COMMIT")
+        self._persist_pre_route_plan(self.conn, plan)
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.record_candidate_l2_dispatch_fact(
+                    self.conn, plan["plan_sha"], created_at=created_at
+                )
+        finally:
+            self.conn.execute("ROLLBACK")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_candidate_l2_dispatch_facts_v2"
+            ).fetchone()[0],
+            0,
+        )
+        task_key = plan["logical_task_keys"][0]
+        self._api("claim_task")(
+            self.conn, task_key, "worker", 60, 0, now=self._now()
+        )
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("record_attempt")(
+                self.conn, task_key, plan["provider_capabilities"]["codex"],
+                {"attempt_kind": "initial"}, cas_root=self.cas_root,
+                request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            )
+        self.assertEqual(caught.exception.code, "missing_route_dispatch_authority")
+
+    def test_route_summary_marks_inputs_as_host_issued_shadow(self):
+        plan = self._install()
+        summary = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]
+        self.assertEqual(
+            summary["route_observation_scope"], "host_issued_shadow"
+        )
+        self.assertFalse(summary["route_observations_authorize_production"])
 
     def _output(self, plan=None, *, relations=None, item_ids=None, truncated=False):
         plan = plan or self.plan
@@ -1869,6 +2032,62 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             summary["risk_slices_unavailable_reason"],
             "candidate_route_facts_unavailable",
         )
+        legacy.close()
+
+    def test_pre_observation_dispatch_cannot_launch_new_attempt_after_upgrade(self):
+        legacy_path = self.root / "legacy-route-observation.sqlite3"
+        legacy = sqlite3.connect(legacy_path)
+        legacy.row_factory = sqlite3.Row
+        migrations = history_audit_store.MIGRATIONS
+        target = next(
+            index for index, migration in enumerate(migrations)
+            if migration.component == "candidate-route-observation-boundary"
+        )
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", migrations[:target]
+        ):
+            history_audit_store.init_schema(legacy)
+            legacy.execute(
+                """
+                CREATE TABLE audit_candidate_route_observation_boundaries_v2(
+                  run_id TEXT, candidate_id TEXT, route_fact_sha256 TEXT,
+                  observation_scope TEXT, production_authority INTEGER,
+                  boundary_sha256 TEXT, created_at TEXT
+                )
+                """
+            )
+            plan = self._plan(self.records)
+            history_execution.persist_plan(
+                legacy, plan, route_authority=self._route_authority(plan)
+            )
+            legacy.execute(
+                "DROP TABLE audit_candidate_route_observation_boundaries_v2"
+            )
+            legacy.commit()
+        legacy.close()
+        legacy = sqlite3.connect(legacy_path)
+        legacy.row_factory = sqlite3.Row
+        history_audit_store.init_schema(legacy)
+        summary = history_audit_eval_v2.summarize_realized_cost(
+            legacy, plan["run_id"]
+        )["intents"][plan["intent"]]
+        self.assertFalse(summary["route_facts_complete"])
+        self.assertEqual(
+            summary["route_observation_unavailable_reason"],
+            "candidate_route_observation_boundary_unavailable",
+        )
+        task_key = plan["logical_task_keys"][0]
+        history_execution.claim_task(
+            legacy, task_key, "legacy-worker", 60, 0, now=self._now()
+        )
+        with self.assertRaises(history_execution.ExecutionError) as caught:
+            history_execution.record_attempt(
+                legacy, task_key, plan["provider_capabilities"]["codex"],
+                {"attempt_kind": "initial"},
+                cas_root=self.root / "legacy-route-observation-cas",
+                request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            )
+        self.assertEqual(caught.exception.code, "missing_route_dispatch_authority")
         legacy.close()
 
     def test_cancel_attempt_is_exact_once_and_keeps_unknown_currency_out(self):

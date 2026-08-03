@@ -207,13 +207,34 @@ def persist_plan(conn, plan, *, route_authority=None):
                 records_json, created_at,
             ),
         )
-        try:
-            history_audit_store.record_candidate_route_facts(
+        plan_values = (
+            plan["plan_sha"], plan["run_id"],
+            plan["candidate"]["candidate_id"],
+            plan["candidate"]["candidate_hash"],
+            snapshot["snapshot_id"], snapshot["snapshot_hash"],
+            plan["shard_plan_sha"], material["budget_policy_sha"],
+            plan["intent"], plan_json, created_at,
+        )
+        stored_l2_plan = conn.execute(
+            "SELECT * FROM audit_l2_plans_v2 WHERE run_id=?",
+            (plan["run_id"],),
+        ).fetchone()
+        if stored_l2_plan is None:
+            try:
+                history_audit_store.record_candidate_route_facts(
+                    conn, plan["run_id"], plan["batch_id"], plan["intent"],
+                    route_authority, created_at=created_at,
+                )
+            except (history_audit_store.AuditMigrationError, ValueError) as exc:
+                raise ExecutionError("invalid_route_authority") from exc
+        elif (
+            tuple(stored_l2_plan) != plan_values
+            or not history_audit_store.candidate_route_authority_replay_matches(
                 conn, plan["run_id"], plan["batch_id"], plan["intent"],
-                route_authority, created_at=created_at,
+                route_authority,
             )
-        except (history_audit_store.AuditMigrationError, ValueError) as exc:
-            raise ExecutionError("invalid_route_authority") from exc
+        ):
+            raise ExecutionError("invalid_route_authority")
         conn.execute(
             """
             INSERT OR IGNORE INTO audit_shard_plans(
@@ -226,27 +247,17 @@ def persist_plan(conn, plan, *, route_authority=None):
                 snapshot["expected_asset_ids_hash"], _canonical(plan["shards"]), created_at,
             ),
         )
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO audit_l2_plans_v2(
-              plan_sha, run_id, candidate_id, candidate_hash, snapshot_id,
-              snapshot_hash, shard_plan_sha, budget_policy_sha, intent,
-              plan_json, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                plan["plan_sha"], plan["run_id"], plan["candidate"]["candidate_id"],
-                plan["candidate"]["candidate_hash"], snapshot["snapshot_id"],
-                snapshot["snapshot_hash"], plan["shard_plan_sha"],
-                material["budget_policy_sha"], plan["intent"], plan_json, created_at,
-            ),
-        )
-        try:
-            history_audit_store.record_candidate_l2_dispatch_fact(
-                conn, plan["plan_sha"], created_at=created_at,
-            )
-        except history_audit_store.AuditMigrationError as exc:
-            raise ExecutionError("invalid_route_dispatch") from exc
+        if stored_l2_plan is None:
+            try:
+                history_audit_store._insert_new_l2_plan_with_dispatch(
+                    conn, plan_values,
+                )
+            except history_audit_store.AuditMigrationError as exc:
+                raise ExecutionError("invalid_route_dispatch") from exc
+        elif not history_audit_store.candidate_l2_dispatch_replay_matches(
+            conn, plan["plan_sha"], created_at=created_at,
+        ):
+            raise ExecutionError("invalid_route_dispatch")
         for task_hash, shard in zip(plan["logical_task_keys"], plan["shards"]):
             _require_sha(task_hash, "task_hash")
             item_ids = shard.get("item_ids")
@@ -538,7 +549,17 @@ def _settle_budget(conn, attempt_id, usage):
 
 def _has_route_dispatch_authority(conn, plan_sha):
     return conn.execute(
-        "SELECT 1 FROM audit_candidate_l2_dispatch_facts_v2 WHERE plan_sha=?",
+        """
+        SELECT 1
+        FROM audit_candidate_l2_dispatch_facts_v2 dispatch
+        JOIN audit_candidate_route_observation_boundaries_v2 observation
+          ON observation.run_id=dispatch.run_id
+         AND observation.candidate_id=dispatch.candidate_id
+         AND observation.route_fact_sha256=dispatch.route_fact_sha256
+        WHERE dispatch.plan_sha=?
+          AND observation.observation_scope='host_issued_shadow'
+          AND observation.production_authority=0
+        """,
         (plan_sha,),
     ).fetchone() is not None
 

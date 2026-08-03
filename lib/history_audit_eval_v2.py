@@ -692,6 +692,10 @@ def summarize_realized_cost(conn, run_id):
     route_rows = conn.execute(
         """
         SELECT route.*,
+               observation.observation_scope,
+               observation.production_authority,
+               observation.boundary_sha256,
+               observation.created_at AS observation_created_at,
                CASE WHEN dispatch.plan_sha IS NULL THEN 0 ELSE 1 END
                  AS actual_l2_dispatch,
                dispatch.plan_sha AS dispatch_plan_sha,
@@ -700,6 +704,10 @@ def summarize_realized_cost(conn, run_id):
                     WHEN plan.plan_sha IS NOT NULL THEN 1 ELSE 0 END
                  AS dispatch_plan_valid
         FROM audit_candidate_route_facts_v2 route
+        LEFT JOIN audit_candidate_route_observation_boundaries_v2 observation
+          ON observation.run_id=route.run_id
+         AND observation.candidate_id=route.candidate_id
+         AND observation.route_fact_sha256=route.fact_sha256
         LEFT JOIN audit_candidate_l2_dispatch_facts_v2 dispatch
          ON dispatch.run_id=route.run_id
          AND dispatch.candidate_id=route.candidate_id
@@ -714,6 +722,7 @@ def summarize_realized_cost(conn, run_id):
         (run_id,),
     ).fetchall()
     route_facts_complete = False
+    observation_boundaries_complete = cohort is not None
     if cohort is not None:
         try:
             candidate_ids = contract.parse_json_bytes(
@@ -792,6 +801,28 @@ def summarize_realized_cost(conn, run_id):
                     != route["fact_sha256"]
             ):
                 raise ValueError("candidate route fact authority is inconsistent")
+            if route["boundary_sha256"] is None:
+                observation_boundaries_complete = False
+            else:
+                observation_material = {
+                    "run_id": run_id,
+                    "candidate_id": route["candidate_id"],
+                    "route_fact_sha256": route["fact_sha256"],
+                    "observation_scope": "host_issued_shadow",
+                    "production_authority": False,
+                    "created_at": route["observation_created_at"],
+                }
+                if (
+                    route["observation_scope"] != "host_issued_shadow"
+                    or route["production_authority"] != 0
+                    or _hash(
+                        "history-candidate-route-observation-boundary-v1",
+                        observation_material,
+                    ) != route["boundary_sha256"]
+                ):
+                    raise ValueError(
+                        "candidate route observation boundary is inconsistent"
+                    )
             if route["actual_l2_dispatch"]:
                 dispatch_material = {
                     "plan_sha": route["dispatch_plan_sha"], "run_id": run_id,
@@ -806,7 +837,7 @@ def summarize_realized_cost(conn, run_id):
                         != route["dispatch_sha256"]
                 ):
                     raise ValueError("candidate route dispatch authority is inconsistent")
-        route_facts_complete = True
+        route_facts_complete = observation_boundaries_complete
     candidate_rows = route_rows or conn.execute(
         "SELECT intent, candidate_id FROM audit_l2_plans_v2 "
         "WHERE run_id=? ORDER BY candidate_id", (run_id,),
@@ -819,7 +850,7 @@ def summarize_realized_cost(conn, run_id):
         candidates.setdefault(candidate["intent"], set()).add(
             candidate["candidate_id"]
         )
-        if route_rows:
+        if route_facts_complete:
             route_by_candidate[(candidate["intent"], candidate["candidate_id"])] = candidate
     latency_complete = {}
     currency_complete = {}
@@ -1082,6 +1113,16 @@ def summarize_realized_cost(conn, run_id):
             ),
             "providers": providers,
             "route_facts_complete": route_facts_complete,
+            "route_observation_scope": (
+                "host_issued_shadow" if route_facts_complete else None
+            ),
+            "route_observations_authorize_production": (
+                False if route_facts_complete else None
+            ),
+            "route_observation_unavailable_reason": (
+                None if route_facts_complete
+                else "candidate_route_observation_boundary_unavailable"
+            ),
             "attempt_kind_availability": {
                 "initial": "durable", "retry": "durable",
                 "failover": "durable", "split": "durable",
