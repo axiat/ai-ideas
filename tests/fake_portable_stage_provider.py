@@ -36,17 +36,37 @@ def _inner_request(request):
 
 
 def _generation_markdown():
+    directed = (pathlib.Path("input") / "direction_constraint.json").is_file()
+    direction = ""
+    story = "Constraint-Driven Sparse World Models"
+    summary = "Gate latent updates with model confidence."
+    experiment = (
+        "Compare dense and gated updates on 128 held-out episodes using one "
+        "H100; kill the idea if success drops by more than two points or "
+        "latency improves by less than thirty percent."
+    )
+    if directed:
+        story = "Repair-Aware 3D Memory Updates for Dynamic VLA Scenes"
+        summary = "Repair persistent 3D memory after dynamic scene changes."
+        experiment = (
+            "Compare stale and repair-aware 3D memory on dynamic scene "
+            "changes; kill the idea if repaired VLA decisions do not recover."
+        )
+        direction = (
+            "Direction Axis: memory-representation-update\n"
+            "Target Failure: dynamic-scene-change\n"
+            "Direction Evidence: The repair arm attributes recovery to "
+            "corrected 3D memory.\n"
+        )
     return (
         "Assumption-Removal Attempt: complete I1\n\n"
         "## I1\n"
-        "One-Sentence Story: Constraint-Driven Sparse World Models\n"
+        f"One-Sentence Story: {story}\n"
         "Theme: World Models - Architecture\n"
+        f"{direction}"
         "Form: remove-load-bearing-assumption\n"
-        "Summary: Gate latent updates with model confidence.\n"
-        "Minimal Falsification Experiment: Compare dense and gated updates "
-        "on 128 held-out episodes using one H100; kill the idea if success "
-        "drops by more than two points or latency improves by less than "
-        "thirty percent.\n"
+        f"Summary: {summary}\n"
+        f"Minimal Falsification Experiment: {experiment}\n"
         "Why It May Be Novel: Independent research must test occupation.\n"
         "Assumption to Remove: Dense latent updates are required.\n"
         "Why It Can Be Removed Now: Confidence is calibrated online.\n"
@@ -225,6 +245,7 @@ def main():
             "GIT_WORK_TREE",
             "HISTORY_RUNTIME_ABI",
             "HISTORY_DB",
+            "RESEARCH_DIRECTION_FILE",
             "AGENT_CMD",
             "FRONT_CMD",
             "BACK_CMD",

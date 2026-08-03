@@ -197,6 +197,19 @@ archives = [path for path in runs.iterdir() if (path / "round").is_dir()]
 if len(archives) != 1:
     raise SystemExit(f"expected one archived round, got {archives}")
 round_root = archives[0] / "round"
+batch = json.loads(
+    (round_root / "history/frozen-candidates/batch.json").read_text(
+        encoding="utf-8"
+    )
+)
+direction = batch.get("direction")
+if (
+    batch.get("schema_version") != 2
+    or not isinstance(direction, dict)
+    or direction.get("direction_id") != "dynamic-spatial-memory-vla-v1"
+    or not isinstance(direction.get("sha256"), str)
+):
+    raise SystemExit(f"portable Hunt lost the hard direction identity: {batch}")
 shadow_plans = []
 for path in round_root.rglob("*.json"):
     try:
@@ -407,6 +420,7 @@ run_hunt_v2() {
       "HISTORY_AUDIT_CLI_CALL_LOG=$cli_log" \
       FAKE_PORTABLE_STAGE_MODE=mirror-audit \
       HISTORY_RUNTIME_ABI=v2 \
+      RESEARCH_DIRECTION_FILE=directions/dynamic-spatial-memory-vla-v1.json \
       HUNT_PROVIDER=kimi \
       HUNT_REVIEW_PROVIDER_1=grok \
       "AGENT_CMD=$repo/tests/fake_agent.sh" \
