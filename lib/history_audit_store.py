@@ -3287,6 +3287,93 @@ FROM audit_task_attempts;
 """
 
 
+_CANDIDATE_ROUTE_FACTS_SQL = """
+CREATE UNIQUE INDEX audit_batch_staging_run_candidate_v2
+  ON audit_batch_staging(run_id, staging_candidate_id);
+CREATE TABLE audit_candidate_route_cohorts_v2(
+  run_id TEXT PRIMARY KEY REFERENCES audit_run_manifests(run_id),
+  batch_id TEXT NOT NULL,
+  intent TEXT NOT NULL,
+  candidate_ids_json TEXT NOT NULL,
+  risk_policy_json TEXT NOT NULL,
+  risk_policy_sha256 TEXT NOT NULL CHECK(length(risk_policy_sha256) = 64),
+  risk_slice_policy_json TEXT NOT NULL,
+  risk_slice_policy_sha256 TEXT NOT NULL CHECK(length(risk_slice_policy_sha256) = 64),
+  cohort_sha256 TEXT NOT NULL UNIQUE CHECK(length(cohort_sha256) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE(run_id, cohort_sha256)
+);
+CREATE TABLE audit_candidate_route_facts_v2(
+  run_id TEXT NOT NULL REFERENCES audit_candidate_route_cohorts_v2(run_id),
+  candidate_id TEXT NOT NULL REFERENCES audit_batch_staging(staging_candidate_id),
+  intent TEXT NOT NULL,
+  cohort_sha256 TEXT NOT NULL REFERENCES audit_candidate_route_cohorts_v2(cohort_sha256),
+  router_facts_json TEXT NOT NULL,
+  risk_slices_json TEXT NOT NULL,
+  matched_rule_ids_json TEXT NOT NULL,
+  route TEXT NOT NULL CHECK(route IN ('routine','guarded','exhaustive')),
+  call_l1_model INTEGER NOT NULL CHECK(call_l1_model IN (0,1)),
+  dispatch_allowed INTEGER NOT NULL CHECK(dispatch_allowed IN (0,1)),
+  rule_table_sha256 TEXT NOT NULL CHECK(length(rule_table_sha256) = 64),
+  risk_policy_version TEXT NOT NULL,
+  fact_sha256 TEXT NOT NULL UNIQUE CHECK(length(fact_sha256) = 64),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(run_id, candidate_id),
+  UNIQUE(run_id, candidate_id, fact_sha256),
+  FOREIGN KEY(run_id, cohort_sha256)
+    REFERENCES audit_candidate_route_cohorts_v2(run_id, cohort_sha256),
+  FOREIGN KEY(run_id, candidate_id)
+    REFERENCES audit_batch_staging(run_id, staging_candidate_id)
+);
+CREATE TABLE audit_candidate_l2_dispatch_facts_v2(
+  plan_sha TEXT PRIMARY KEY REFERENCES audit_l2_plans_v2(plan_sha),
+  run_id TEXT NOT NULL,
+  candidate_id TEXT NOT NULL,
+  route_fact_sha256 TEXT NOT NULL REFERENCES audit_candidate_route_facts_v2(fact_sha256),
+  dispatch_sha256 TEXT NOT NULL UNIQUE CHECK(length(dispatch_sha256) = 64),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(run_id, candidate_id)
+    REFERENCES audit_candidate_route_facts_v2(run_id, candidate_id),
+  FOREIGN KEY(run_id, candidate_id, route_fact_sha256)
+    REFERENCES audit_candidate_route_facts_v2(run_id, candidate_id, fact_sha256)
+);
+""" + _immutable_guards(
+    "audit_candidate_route_cohorts_v2",
+    "audit_candidate_route_facts_v2",
+    "audit_candidate_l2_dispatch_facts_v2",
+) + """
+CREATE TRIGGER audit_candidate_route_cohorts_v2_guard
+BEFORE INSERT ON audit_candidate_route_cohorts_v2
+BEGIN
+  SELECT CASE WHEN audit_candidate_cohort_insert_allowed(
+    NEW.run_id, NEW.batch_id, NEW.intent, NEW.candidate_ids_json,
+    NEW.risk_policy_json, NEW.risk_policy_sha256,
+    NEW.risk_slice_policy_json, NEW.risk_slice_policy_sha256,
+    NEW.cohort_sha256, NEW.created_at
+  ) <> 1 THEN RAISE(ABORT, 'candidate route cohort requires host authority') END;
+END;
+CREATE TRIGGER audit_candidate_route_facts_v2_guard
+BEFORE INSERT ON audit_candidate_route_facts_v2
+BEGIN
+  SELECT CASE WHEN audit_candidate_route_insert_allowed(
+    NEW.run_id, NEW.candidate_id, NEW.intent, NEW.cohort_sha256,
+    NEW.router_facts_json, NEW.risk_slices_json, NEW.matched_rule_ids_json,
+    NEW.route, NEW.call_l1_model, NEW.dispatch_allowed,
+    NEW.rule_table_sha256, NEW.risk_policy_version, NEW.fact_sha256,
+    NEW.created_at
+  ) <> 1 THEN RAISE(ABORT, 'candidate route fact requires host authority') END;
+END;
+CREATE TRIGGER audit_candidate_l2_dispatch_facts_v2_guard
+BEFORE INSERT ON audit_candidate_l2_dispatch_facts_v2
+BEGIN
+  SELECT CASE WHEN audit_candidate_dispatch_insert_allowed(
+    NEW.plan_sha, NEW.run_id, NEW.candidate_id, NEW.route_fact_sha256,
+    NEW.dispatch_sha256, NEW.created_at
+  ) <> 1 THEN RAISE(ABORT, 'candidate L2 dispatch requires host authority') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("migration-ledger-guard", 1, _MIGRATION_LEDGER_GUARD_SQL),
@@ -3338,6 +3425,7 @@ MIGRATIONS = (
         _SEMANTIC_RELEASE_AUTHORIZATION_SQL,
     ),
     Migration("durable-cost-facts", 1, _DURABLE_COST_FACTS_SQL),
+    Migration("candidate-route-facts", 1, _CANDIDATE_ROUTE_FACTS_SQL),
 )
 
 
@@ -4421,7 +4509,10 @@ def _initialize_schema(conn, *, verify):
     _clear_semantic_release_guard(release_guard)
     _SEMANTIC_RELEASE_GUARDS[id(conn)] = release_guard
     _SEMANTIC_EVALUATION_GUARDS[id(conn)] = {"expected": None}
-    cost_guard = {"launch": None, "settlement": None}
+    cost_guard = {
+        "launch": None, "settlement": None, "cohort": None,
+        "route": None, "dispatch": None,
+    }
     _COST_FACT_GUARDS[id(conn)] = cost_guard
     ledger_guard = {"expected": None}
     _MIGRATION_LEDGER_GUARDS[id(conn)] = ledger_guard
@@ -4436,6 +4527,18 @@ def _initialize_schema(conn, *, verify):
     conn.create_function(
         "audit_cost_settlement_insert_allowed", 10,
         lambda *values: 1 if cost_guard["settlement"] == tuple(values) else 0,
+    )
+    conn.create_function(
+        "audit_candidate_route_insert_allowed", 14,
+        lambda *values: 1 if cost_guard["route"] == tuple(values) else 0,
+    )
+    conn.create_function(
+        "audit_candidate_cohort_insert_allowed", 10,
+        lambda *values: 1 if cost_guard["cohort"] == tuple(values) else 0,
+    )
+    conn.create_function(
+        "audit_candidate_dispatch_insert_allowed", 6,
+        lambda *values: 1 if cost_guard["dispatch"] == tuple(values) else 0,
     )
     conn.create_function(
         "audit_fenced_cas_allowed", 0, lambda: 1 if guard["active"] else 0
@@ -4595,13 +4698,15 @@ def init_schema(conn):
 
 
 def record_attempt_launch_cost_fact(
-    conn, attempt_id, *, queued_at, queue_latency_ms=None, created_at=None
+    conn, attempt_id, *, queued_at=None, queue_latency_ms=None, created_at=None
 ):
     if not conn.in_transaction:
         raise AuditMigrationError("attempt launch cost fact requires a transaction")
     authority = conn.execute(
         """
         SELECT attempt.task_hash, attempt.ordinal, attempt.provenance_json,
+               attempt.created_at AS started_at,
+               task.created_at AS task_ready_at,
                task.state, task.claim_token, task.fence,
                reservation.attempt_kind
         FROM audit_task_attempts attempt
@@ -4631,13 +4736,34 @@ def record_attempt_launch_cost_fact(
         or provenance.get("attempt_kind") != authority["attempt_kind"]
     ):
         raise AuditMigrationError("attempt launch authority is inconsistent")
-    created_at = created_at or queued_at
-    _semantic_timestamp(queued_at, "queued_at")
+    if authority["ordinal"] == 0:
+        durable_queued_at = authority["task_ready_at"]
+    else:
+        prior = conn.execute(
+            """
+            SELECT terminal.completed_at
+            FROM audit_task_attempts attempt
+            JOIN audit_attempt_cost_settlements_v2 terminal USING(attempt_id)
+            WHERE attempt.task_hash=? AND attempt.ordinal=?
+            """,
+            (authority["task_hash"], authority["ordinal"] - 1),
+        ).fetchone()
+        if prior is None:
+            raise AuditMigrationError("prior terminal ready time is missing")
+        durable_queued_at = prior["completed_at"]
+    if queued_at is not None and queued_at != durable_queued_at:
+        raise AuditMigrationError("attempt queued time conflicts with durable authority")
+    queued_at = durable_queued_at
+    started = _semantic_timestamp(authority["started_at"], "started_at")
+    ready = _semantic_timestamp(queued_at, "queued_at")
+    derived_queue_latency_ms = int((started - ready).total_seconds() * 1000)
+    if derived_queue_latency_ms < 0:
+        raise AuditMigrationError("attempt launch precedes durable ready time")
+    if queue_latency_ms is not None and queue_latency_ms != derived_queue_latency_ms:
+        raise AuditMigrationError("queue latency conflicts with durable timestamps")
+    queue_latency_ms = derived_queue_latency_ms
+    created_at = created_at or authority["started_at"]
     _semantic_timestamp(created_at, "created_at")
-    if queue_latency_ms is not None and (
-        type(queue_latency_ms) is not int or queue_latency_ms < 0
-    ):
-        raise ValueError("queue latency is invalid")
     material = {
         "attempt_id": attempt_id, "queued_at": queued_at,
         "queue_latency_ms": queue_latency_ms, "created_at": created_at,
@@ -4675,8 +4801,10 @@ def record_attempt_terminal_cost_fact(
         raise AuditMigrationError("attempt terminal cost fact requires a transaction")
     authority = conn.execute(
         """
-        SELECT budget.usage_verified, completion.outcome
+        SELECT budget.usage_verified, completion.outcome,
+               attempt.created_at AS started_at
         FROM audit_runtime_budget_settlements_v2 budget
+        JOIN audit_task_attempts attempt USING(attempt_id)
         LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
         WHERE budget.attempt_id=?
         """,
@@ -4700,11 +4828,14 @@ def record_attempt_terminal_cost_fact(
     )
     price_source = None
     currency = None
-    if run_latency_ms is not None and (
-        type(run_latency_ms) is not int or run_latency_ms < 0
-    ):
-        raise ValueError("run latency is invalid")
-    _semantic_timestamp(completed_at, "completed_at")
+    completed = _semantic_timestamp(completed_at, "completed_at")
+    started = _semantic_timestamp(authority["started_at"], "started_at")
+    derived_run_latency_ms = int((completed - started).total_seconds() * 1000)
+    if derived_run_latency_ms < 0:
+        raise AuditMigrationError("attempt terminal precedes launch")
+    if run_latency_ms is not None and run_latency_ms != derived_run_latency_ms:
+        raise AuditMigrationError("run latency conflicts with durable timestamps")
+    run_latency_ms = derived_run_latency_ms
     material = {
         "attempt_id": attempt_id, "outcome": outcome,
         "error_class": error_class, "billing_state": billing_state,
@@ -4737,6 +4868,292 @@ def record_attempt_terminal_cost_fact(
     finally:
         guard["settlement"] = None
     return values[8]
+
+
+def record_candidate_route_facts(
+    conn, run_id, batch_id, intent, route_authority, *, created_at
+):
+    """Persist one selected cohort and replayable host-issued route decisions."""
+    if not conn.in_transaction:
+        raise AuditMigrationError("candidate route facts require a transaction")
+    if not isinstance(route_authority, dict) or set(route_authority) != {
+        "risk_policy", "risk_slice_policy", "candidate_routes"
+    }:
+        raise AuditMigrationError("candidate route authority is invalid")
+    try:
+        from lib import history_audit_eval_v2
+    except ImportError:
+        import history_audit_eval_v2
+    slice_policy = route_authority["risk_slice_policy"]
+    if not isinstance(slice_policy, dict) or set(slice_policy) != {
+        "schema_version", "policy_version", "allowed_slices"
+    } or slice_policy["schema_version"] != "history-risk-slice-policy-v1":
+        raise AuditMigrationError("risk slice policy is invalid")
+    allowed_slices = slice_policy["allowed_slices"]
+    if (
+        not isinstance(slice_policy["policy_version"], str)
+        or not slice_policy["policy_version"]
+        or not isinstance(allowed_slices, list)
+        or allowed_slices != sorted(allowed_slices)
+        or len(set(allowed_slices)) != len(allowed_slices)
+        or any(
+            not isinstance(value, str)
+            or re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", value) is None
+            for value in allowed_slices
+        )
+        or slice_policy != history_audit_eval_v2.RISK_SLICE_POLICY_V1
+    ):
+        raise AuditMigrationError("risk slice policy is invalid")
+    routes = route_authority["candidate_routes"]
+    if not isinstance(routes, list) or not routes:
+        raise AuditMigrationError("selected route cohort is empty")
+    candidates = [
+        item.get("candidate") if isinstance(item, dict) else None
+        for item in routes
+    ]
+    candidate_ids = [
+        item.get("candidate_id") if isinstance(item, dict) else None
+        for item in candidates
+    ]
+    try:
+        candidates_valid = all(
+            isinstance(candidate, dict)
+            and set(candidate) == {
+                "candidate_id", "candidate_hash", "raw_artifact_sha",
+                "source_order",
+            }
+            and history_audit_plan.runtime_candidate_hash(candidate)
+                == candidate["candidate_hash"]
+            for candidate in candidates
+        )
+    except (KeyError, TypeError, ValueError, history_audit_plan.AuditPlanError):
+        candidates_valid = False
+    if (
+        candidate_ids != sorted(candidate_ids)
+        or len(set(candidate_ids)) != len(candidate_ids)
+        or any(not isinstance(value, str) or not value for value in candidate_ids)
+        or not candidates_valid
+        or len({candidate["source_order"] for candidate in candidates})
+            != len(candidates)
+    ):
+        raise AuditMigrationError("selected route cohort is invalid")
+    run = conn.execute(
+        "SELECT manifest_json FROM audit_run_manifests WHERE run_id=?", (run_id,)
+    ).fetchone()
+    batch_set = conn.execute(
+        """
+        SELECT member_ids_json, member_count, current_batch_ids_hash
+        FROM audit_snapshot_batch_sets
+        WHERE run_id=? AND batch_id=?
+        """,
+        (run_id, batch_id),
+    ).fetchone()
+    if run is None or batch_set is None:
+        raise AuditMigrationError("selected route cohort authority is missing")
+    try:
+        plan = history_audit_plan.validate_runtime_plan_material(
+            _closed_json(run["manifest_json"])
+        )
+        durable_ids = json.loads(batch_set["member_ids_json"])
+        durable_ids_sha = _current_batch_ids_sha(batch_set["member_ids_json"])
+    except (TypeError, ValueError, history_audit_plan.AuditPlanError) as exc:
+        raise AuditMigrationError("selected route cohort authority is invalid") from exc
+    if (
+        intent != plan["intent"]
+        or batch_id != plan["batch_id"]
+        or durable_ids_sha != batch_set["current_batch_ids_hash"]
+        or not isinstance(durable_ids, list)
+        or durable_ids != sorted(durable_ids)
+        or len(set(durable_ids)) != len(durable_ids)
+        or not set(candidate_ids).issubset(durable_ids)
+        or batch_set["member_count"] != len(durable_ids)
+    ):
+        raise AuditMigrationError("selected route cohort does not match frozen batch")
+    for candidate in candidates:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO audit_batch_staging(
+              staging_candidate_id, run_id, batch_id, candidate_hash,
+              raw_artifact_sha, source_order, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                candidate["candidate_id"], run_id, batch_id,
+                candidate["candidate_hash"], candidate["raw_artifact_sha"],
+                candidate["source_order"], created_at,
+            ),
+        )
+        stored = conn.execute(
+            "SELECT run_id, batch_id, candidate_hash, raw_artifact_sha, "
+            "source_order FROM audit_batch_staging "
+            "WHERE staging_candidate_id=?",
+            (candidate["candidate_id"],),
+        ).fetchone()
+        if stored is None or tuple(stored) != (
+            run_id, batch_id, candidate["candidate_hash"],
+            candidate["raw_artifact_sha"], candidate["source_order"],
+        ):
+            raise AuditMigrationError("selected route candidate staging conflicts")
+    if conn.execute(
+        "SELECT count(*) FROM audit_batch_staging WHERE run_id=? "
+        "AND batch_id=? AND staging_candidate_id IN (%s)" % (
+            ",".join("?" for _ in candidate_ids)
+        ),
+        (run_id, batch_id, *candidate_ids),
+    ).fetchone()[0] != len(candidate_ids):
+        raise AuditMigrationError("selected route cohort staging is incomplete")
+    risk_policy = route_authority["risk_policy"]
+    risk_policy_sha = _semantic_sha("history-risk-policy-v1", risk_policy)
+    if risk_policy_sha != plan["risk_policy_sha"]:
+        raise AuditMigrationError("route risk policy does not match frozen plan")
+    slice_policy_sha = _semantic_sha(
+        "history-risk-slice-policy-v1", slice_policy
+    )
+    candidate_ids_json = _semantic_canonical(candidate_ids)
+    risk_policy_json = _semantic_canonical(risk_policy)
+    slice_policy_json = _semantic_canonical(slice_policy)
+    cohort_material = {
+        "run_id": run_id, "batch_id": batch_id, "intent": intent,
+        "candidate_ids": candidate_ids,
+        "risk_policy_sha256": risk_policy_sha,
+        "risk_slice_policy_sha256": slice_policy_sha,
+        "created_at": created_at,
+    }
+    cohort_sha = _semantic_sha(
+        "history-candidate-route-cohort-v2", cohort_material
+    )
+    cohort_values = (
+        run_id, batch_id, intent, candidate_ids_json, risk_policy_json,
+        risk_policy_sha, slice_policy_json, slice_policy_sha, cohort_sha,
+        created_at,
+    )
+    guard = _COST_FACT_GUARDS.get(id(conn))
+    if guard is None or any(
+        guard[name] is not None for name in ("cohort", "route")
+    ):
+        raise AuditMigrationError("candidate route guard is unavailable")
+    existing = conn.execute(
+        "SELECT * FROM audit_candidate_route_cohorts_v2 WHERE run_id=?",
+        (run_id,),
+    ).fetchone()
+    if existing is None:
+        guard["cohort"] = cohort_values
+        try:
+            conn.execute(
+                "INSERT INTO audit_candidate_route_cohorts_v2 "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)", cohort_values,
+            )
+        finally:
+            guard["cohort"] = None
+    elif tuple(existing) != cohort_values:
+        raise AuditMigrationError("candidate route cohort conflicts")
+    fact_shas = []
+    for item in routes:
+        if set(item) != {"candidate", "router_facts", "risk_slices"}:
+            raise AuditMigrationError("candidate route input is invalid")
+        risk_slices = item["risk_slices"]
+        if (
+            not isinstance(risk_slices, list)
+            or risk_slices != sorted(risk_slices)
+            or len(set(risk_slices)) != len(risk_slices)
+            or any(value not in allowed_slices for value in risk_slices)
+        ):
+            raise AuditMigrationError("candidate risk slices are invalid")
+        route = history_audit_eval_v2.route_candidate(
+            item["router_facts"], risk_policy
+        )
+        if bool(risk_slices) != item["router_facts"]["bad_slice_membership"]:
+            raise AuditMigrationError("candidate risk slices contradict router facts")
+        material = {
+            "run_id": run_id, "candidate_id": item["candidate"]["candidate_id"],
+            "intent": intent, "cohort_sha256": cohort_sha,
+            "router_facts": item["router_facts"],
+            "risk_slices": risk_slices,
+            "matched_rule_ids": route["matched_rule_ids"],
+            "route": route["route"],
+            "call_l1_model": route["call_l1_model"],
+            "dispatch_allowed": route["dispatch_allowed"],
+            "rule_table_sha256": route["rule_table_sha256"],
+            "risk_policy_version": route["receipt_risk_policy_version"],
+            "created_at": created_at,
+        }
+        fact_sha = _semantic_sha("history-candidate-route-fact-v2", material)
+        values = (
+            run_id, item["candidate"]["candidate_id"], intent, cohort_sha,
+            _semantic_canonical(item["router_facts"]),
+            _semantic_canonical(risk_slices),
+            _semantic_canonical(route["matched_rule_ids"]), route["route"],
+            int(route["call_l1_model"]), int(route["dispatch_allowed"]),
+            route["rule_table_sha256"], route["receipt_risk_policy_version"],
+            fact_sha, created_at,
+        )
+        existing = conn.execute(
+            "SELECT * FROM audit_candidate_route_facts_v2 "
+            "WHERE run_id=? AND candidate_id=?",
+            (run_id, item["candidate"]["candidate_id"]),
+        ).fetchone()
+        if existing is None:
+            guard["route"] = values
+            try:
+                conn.execute(
+                    "INSERT INTO audit_candidate_route_facts_v2 "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values,
+                )
+            finally:
+                guard["route"] = None
+        elif tuple(existing) != values:
+            raise AuditMigrationError("candidate route fact conflicts")
+        fact_shas.append(fact_sha)
+    return {"cohort_sha256": cohort_sha, "route_fact_sha256": fact_shas[0]}
+
+
+def record_candidate_l2_dispatch_fact(conn, plan_sha, *, created_at):
+    """Bind an authorized route decision to the exact durable L2 plan."""
+    if not conn.in_transaction:
+        raise AuditMigrationError("candidate dispatch fact requires a transaction")
+    row = conn.execute(
+        """
+        SELECT plan.plan_sha, plan.run_id, plan.candidate_id,
+               route.fact_sha256, route.dispatch_allowed, route.intent
+        FROM audit_l2_plans_v2 plan
+        JOIN audit_candidate_route_facts_v2 route
+          ON route.run_id=plan.run_id AND route.candidate_id=plan.candidate_id
+         AND route.intent=plan.intent
+        WHERE plan.plan_sha=?
+        """,
+        (plan_sha,),
+    ).fetchone()
+    if row is None or row["dispatch_allowed"] != 1:
+        raise AuditMigrationError("L2 plan lacks an authorized route decision")
+    material = {
+        "plan_sha": plan_sha, "run_id": row["run_id"],
+        "candidate_id": row["candidate_id"],
+        "route_fact_sha256": row["fact_sha256"], "created_at": created_at,
+    }
+    values = (
+        plan_sha, row["run_id"], row["candidate_id"], row["fact_sha256"],
+        _semantic_sha("history-candidate-l2-dispatch-v2", material), created_at,
+    )
+    existing = conn.execute(
+        "SELECT * FROM audit_candidate_l2_dispatch_facts_v2 WHERE plan_sha=?",
+        (plan_sha,),
+    ).fetchone()
+    if existing is not None:
+        if tuple(existing) != values:
+            raise AuditMigrationError("candidate L2 dispatch fact conflicts")
+        return values[4]
+    guard = _COST_FACT_GUARDS.get(id(conn))
+    if guard is None or guard["dispatch"] is not None:
+        raise AuditMigrationError("candidate dispatch guard is unavailable")
+    guard["dispatch"] = values
+    try:
+        conn.execute(
+            "INSERT INTO audit_candidate_l2_dispatch_facts_v2 "
+            "VALUES(?,?,?,?,?,?)", values,
+        )
+    finally:
+        guard["dispatch"] = None
+    return values[4]
 
 
 def _semantic_decimal_identity(value):

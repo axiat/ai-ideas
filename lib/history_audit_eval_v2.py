@@ -52,6 +52,11 @@ _ONE_SIDED_95_Z = 1.6448536269514722
 _CRITICAL_SLICES = frozenset(
     {"low_overlap", "cross_language", "lineage_revision"}
 )
+RISK_SLICE_POLICY_V1 = {
+    "schema_version": "history-risk-slice-policy-v1",
+    "policy_version": "critical-semantic-slices-v1",
+    "allowed_slices": sorted(_CRITICAL_SLICES),
+}
 
 
 def _hash(domain, value):
@@ -680,20 +685,147 @@ def summarize_realized_cost(conn, run_id):
     ).fetchone()[0]
     if reservation_count != len(rows):
         raise ValueError("durable cost launch parity is incomplete")
-    candidate_rows = conn.execute(
-        "SELECT intent, candidate_id FROM audit_l2_plans_v2 "
-        "WHERE run_id=? ORDER BY candidate_id",
+    cohort = conn.execute(
+        "SELECT * FROM audit_candidate_route_cohorts_v2 WHERE run_id=?",
         (run_id,),
+    ).fetchone()
+    route_rows = conn.execute(
+        """
+        SELECT route.*,
+               CASE WHEN dispatch.plan_sha IS NULL THEN 0 ELSE 1 END
+                 AS actual_l2_dispatch,
+               dispatch.plan_sha AS dispatch_plan_sha,
+               dispatch.dispatch_sha256, dispatch.created_at AS dispatch_created_at,
+               CASE WHEN dispatch.plan_sha IS NULL THEN 1
+                    WHEN plan.plan_sha IS NOT NULL THEN 1 ELSE 0 END
+                 AS dispatch_plan_valid
+        FROM audit_candidate_route_facts_v2 route
+        LEFT JOIN audit_candidate_l2_dispatch_facts_v2 dispatch
+         ON dispatch.run_id=route.run_id
+         AND dispatch.candidate_id=route.candidate_id
+         AND dispatch.route_fact_sha256=route.fact_sha256
+        LEFT JOIN audit_l2_plans_v2 plan
+          ON plan.plan_sha=dispatch.plan_sha
+         AND plan.run_id=dispatch.run_id
+         AND plan.candidate_id=dispatch.candidate_id
+         AND plan.intent=route.intent
+        WHERE route.run_id=? ORDER BY route.intent, route.candidate_id
+        """,
+        (run_id,),
+    ).fetchall()
+    route_facts_complete = False
+    if cohort is not None:
+        try:
+            candidate_ids = contract.parse_json_bytes(
+                (cohort["candidate_ids_json"] + "\n").encode("utf-8")
+            )
+            risk_policy = contract.parse_json_bytes(
+                (cohort["risk_policy_json"] + "\n").encode("utf-8")
+            )
+            slice_policy = contract.parse_json_bytes(
+                (cohort["risk_slice_policy_json"] + "\n").encode("utf-8")
+            )
+        except (TypeError, ValueError, contract.ContractV2Error) as exc:
+            raise ValueError("candidate route cohort is not canonical") from exc
+        risk_policy_sha = _hash("history-risk-policy-v1", risk_policy)
+        slice_policy_sha = _hash("history-risk-slice-policy-v1", slice_policy)
+        cohort_material = {
+            "run_id": run_id, "batch_id": cohort["batch_id"],
+            "intent": cohort["intent"], "candidate_ids": candidate_ids,
+            "risk_policy_sha256": risk_policy_sha,
+            "risk_slice_policy_sha256": slice_policy_sha,
+            "created_at": cohort["created_at"],
+        }
+        if (
+            not isinstance(candidate_ids, list)
+            or not candidate_ids
+            or candidate_ids != sorted(candidate_ids)
+            or len(set(candidate_ids)) != len(candidate_ids)
+            or risk_policy_sha != cohort["risk_policy_sha256"]
+            or slice_policy != RISK_SLICE_POLICY_V1
+            or slice_policy_sha != cohort["risk_slice_policy_sha256"]
+            or _hash("history-candidate-route-cohort-v2", cohort_material)
+                != cohort["cohort_sha256"]
+            or [row["candidate_id"] for row in route_rows] != candidate_ids
+            or any(row["intent"] != cohort["intent"] for row in route_rows)
+        ):
+            raise ValueError("candidate route cohort authority is inconsistent")
+        for route in route_rows:
+            try:
+                router_facts = contract.parse_json_bytes(
+                    (route["router_facts_json"] + "\n").encode("utf-8")
+                )
+                risk_slices = contract.parse_json_bytes(
+                    (route["risk_slices_json"] + "\n").encode("utf-8")
+                )
+                matched_rule_ids = contract.parse_json_bytes(
+                    (route["matched_rule_ids_json"] + "\n").encode("utf-8")
+                )
+                replay = route_candidate(router_facts, risk_policy)
+            except (TypeError, ValueError, contract.ContractV2Error) as exc:
+                raise ValueError("candidate route fact is not replayable") from exc
+            route_material = {
+                "run_id": run_id, "candidate_id": route["candidate_id"],
+                "intent": route["intent"],
+                "cohort_sha256": cohort["cohort_sha256"],
+                "router_facts": router_facts, "risk_slices": risk_slices,
+                "matched_rule_ids": matched_rule_ids,
+                "route": replay["route"],
+                "call_l1_model": replay["call_l1_model"],
+                "dispatch_allowed": replay["dispatch_allowed"],
+                "rule_table_sha256": replay["rule_table_sha256"],
+                "risk_policy_version": replay["receipt_risk_policy_version"],
+                "created_at": route["created_at"],
+            }
+            if (
+                not isinstance(risk_slices, list)
+                or any(value not in _CRITICAL_SLICES for value in risk_slices)
+                or bool(risk_slices) != router_facts["bad_slice_membership"]
+                or matched_rule_ids != replay["matched_rule_ids"]
+                or route["route"] != replay["route"]
+                or route["call_l1_model"] != int(replay["call_l1_model"])
+                or route["dispatch_allowed"] != int(replay["dispatch_allowed"])
+                or route["rule_table_sha256"] != replay["rule_table_sha256"]
+                or route["risk_policy_version"]
+                    != replay["receipt_risk_policy_version"]
+                or _hash("history-candidate-route-fact-v2", route_material)
+                    != route["fact_sha256"]
+            ):
+                raise ValueError("candidate route fact authority is inconsistent")
+            if route["actual_l2_dispatch"]:
+                dispatch_material = {
+                    "plan_sha": route["dispatch_plan_sha"], "run_id": run_id,
+                    "candidate_id": route["candidate_id"],
+                    "route_fact_sha256": route["fact_sha256"],
+                    "created_at": route["dispatch_created_at"],
+                }
+                if (
+                    not replay["dispatch_allowed"]
+                    or route["dispatch_plan_valid"] != 1
+                    or _hash("history-candidate-l2-dispatch-v2", dispatch_material)
+                        != route["dispatch_sha256"]
+                ):
+                    raise ValueError("candidate route dispatch authority is inconsistent")
+        route_facts_complete = True
+    candidate_rows = route_rows or conn.execute(
+        "SELECT intent, candidate_id FROM audit_l2_plans_v2 "
+        "WHERE run_id=? ORDER BY candidate_id", (run_id,),
     ).fetchall()
     per_intent = {}
     candidates = {}
+    route_by_candidate = {}
     for candidate in candidate_rows:
         per_intent.setdefault(candidate["intent"], _empty_cost())
         candidates.setdefault(candidate["intent"], set()).add(
             candidate["candidate_id"]
         )
+        if route_rows:
+            route_by_candidate[(candidate["intent"], candidate["candidate_id"])] = candidate
     latency_complete = {}
     currency_complete = {}
+    provider_groups = {}
+    slice_groups = {}
+    group_completeness = {}
     prior_by_task = {}
     for row in rows:
         if (
@@ -770,28 +902,57 @@ def summarize_realized_cost(conn, run_id):
         realized = per_intent.setdefault(intent, _empty_cost())
         latency_complete.setdefault(intent, True)
         currency_complete.setdefault(intent, True)
-        realized["calls"] += 1
-        if row["outcome"] == "failed":
-            realized["failed_calls"] += 1
-        if row["outcome"] == "cancelled" and row["billing_state"] == "billable":
-            realized["billable_cancelled_calls"] += 1
+        provider = provenance.get("provider")
+        if not isinstance(provider, str) or not provider:
+            raise ValueError("durable cost provider is invalid")
+        pool = json.loads(row["provider_pool_json"])
+        if row["ordinal"] == 0 and provider != pool[0]:
+            raise ValueError("durable cost initial provider is inconsistent")
+        provider_target = provider_groups.setdefault((intent, provider), _empty_cost())
+        route_fact = route_by_candidate.get((intent, row["candidate_id"]))
+        slice_ids = json.loads(route_fact["risk_slices_json"]) if route_fact else []
+        slice_targets = [
+            slice_groups.setdefault((intent, slice_id), _empty_cost())
+            for slice_id in slice_ids
+        ]
+        targets = [realized, provider_target] + slice_targets
+        group_keys = [("intent", intent), ("provider", intent, provider)] + [
+            ("slice", intent, slice_id) for slice_id in slice_ids
+        ]
+        for key in group_keys:
+            group_completeness.setdefault(
+                key, {"latency": True, "currency": True}
+            )
+        for target in targets:
+            target["calls"] += 1
+            if row["outcome"] == "failed":
+                target["failed_calls"] += 1
+            if row["outcome"] == "cancelled" and row["billing_state"] == "billable":
+                target["billable_cancelled_calls"] += 1
         counter = row["attempt_kind"] + "_calls"
         if counter in realized:
-            realized[counter] += 1
+            for target in targets:
+                target[counter] += 1
         for field in (
             "input_tokens", "output_tokens", "cache_tokens",
             "provider_usage_units",
         ):
-            realized[field] += usage.get(field, 0)
+            for target in targets:
+                target[field] += usage.get(field, 0)
         if row["queue_latency_ms"] is None or (
             row["outcome"] is not None and row["run_latency_ms"] is None
         ):
             latency_complete[intent] = False
+            for key in group_keys:
+                group_completeness[key]["latency"] = False
         else:
-            realized["queue_latency_ms"] += row["queue_latency_ms"]
-            realized["run_latency_ms"] += row["run_latency_ms"] or 0
+            for target in targets:
+                target["queue_latency_ms"] += row["queue_latency_ms"]
+                target["run_latency_ms"] += row["run_latency_ms"] or 0
         if row["outcome"] is None:
             currency_complete[intent] = False
+            for key in group_keys:
+                group_completeness[key]["currency"] = False
         elif row["billing_state"] != "nonbillable":
             if (
                 row["billing_state"] != "billable"
@@ -800,15 +961,21 @@ def summarize_realized_cost(conn, run_id):
                 or "currency_micros" not in usage
             ):
                 currency_complete[intent] = False
+                for key in group_keys:
+                    group_completeness[key]["currency"] = False
             else:
-                realized.setdefault("currency_micros", 0)
-                realized["currency_micros"] += usage["currency_micros"]
-        realized["inflight_calls"] = realized.get("inflight_calls", 0) + int(
-            row["outcome"] is None
-        )
-        realized["unverified_usage_calls"] = realized.get(
-            "unverified_usage_calls", 0
-        ) + int(row["outcome"] is None or row["usage_source"] == "reservation")
+                for target in targets:
+                    target.setdefault("currency_micros", 0)
+                    target["currency_micros"] += usage["currency_micros"]
+        for target in targets:
+            target["inflight_calls"] = target.get("inflight_calls", 0) + int(
+                row["outcome"] is None
+            )
+            target["unverified_usage_calls"] = target.get(
+                "unverified_usage_calls", 0
+            ) + int(
+                row["outcome"] is None or row["usage_source"] == "reservation"
+            )
         prior_by_task[row["task_hash"]] = {
             "ordinal": row["ordinal"],
             "outcome": (
@@ -819,25 +986,107 @@ def summarize_realized_cost(conn, run_id):
         }
     result = {"run_id": run_id, "intents": {}}
     for intent, realized in sorted(per_intent.items()):
+        latency_complete.setdefault(intent, True)
+        currency_complete.setdefault(intent, True)
         if not latency_complete[intent]:
             realized.pop("queue_latency_ms", None)
             realized.pop("run_latency_ms", None)
         if not currency_complete[intent]:
             realized.pop("currency_micros", None)
         candidate_count = len(candidates[intent])
+        facts = [
+            row for row in route_rows if row["intent"] == intent
+        ]
+        escalated = sum(row["actual_l2_dispatch"] for row in facts)
+        escalation_rate = escalated / candidate_count if candidate_count else 0.0
+        expected = None
+        expected_reason = "candidate_route_facts_unavailable"
+        if route_facts_complete and any(row["call_l1_model"] for row in facts):
+            expected_reason = "durable_l1_attempt_facts_unavailable"
+        elif route_facts_complete and escalated and realized["calls"] == 0:
+            expected_reason = "durable_l2_cost_sample_unavailable"
+        elif route_facts_complete:
+            expected = _empty_cost()
+            for field in (
+                "calls", "input_tokens", "output_tokens", "cache_tokens",
+                "provider_usage_units", "queue_latency_ms", "run_latency_ms",
+            ):
+                if field in realized:
+                    expected[field] = realized[field] / candidate_count
+                else:
+                    expected.pop(field, None)
+            expected["formula"] = "0 + escalation_rate * L2_per_escalation"
+            if "currency_micros" in realized:
+                expected["currency_micros"] = (
+                    realized["currency_micros"] / candidate_count
+                )
+            expected_reason = None
+        providers = {}
+        for (group_intent, provider), cost in sorted(provider_groups.items()):
+            if group_intent != intent:
+                continue
+            completeness = group_completeness[("provider", intent, provider)]
+            if not completeness["latency"]:
+                cost.pop("queue_latency_ms", None)
+                cost.pop("run_latency_ms", None)
+            if not completeness["currency"]:
+                cost.pop("currency_micros", None)
+            providers[provider] = {"realized": cost}
+        risk_slices = None
+        if route_facts_complete:
+            risk_slices = {}
+            slice_ids = sorted({
+                slice_id for fact in facts
+                for slice_id in json.loads(fact["risk_slices_json"])
+            })
+            for slice_id in slice_ids:
+                slice_facts = [
+                    fact for fact in facts
+                    if slice_id in json.loads(fact["risk_slices_json"])
+                ]
+                cost = slice_groups.get((intent, slice_id), _empty_cost())
+                completeness = group_completeness.get(
+                    ("slice", intent, slice_id),
+                    {"latency": True, "currency": True},
+                )
+                if not completeness["latency"]:
+                    cost.pop("queue_latency_ms", None)
+                    cost.pop("run_latency_ms", None)
+                if not completeness["currency"]:
+                    cost.pop("currency_micros", None)
+                risk_slices[slice_id] = {
+                    "candidate_count": len(slice_facts),
+                    "escalated_candidate_count": sum(
+                        fact["actual_l2_dispatch"] for fact in slice_facts
+                    ),
+                    "realized": cost,
+                }
         result["intents"][intent] = {
             "candidate_count": candidate_count,
+            "escalated_candidate_count": escalated,
+            "escalation_rate": escalation_rate,
             "realized": realized,
             "accounting_complete": (
-                realized["inflight_calls"] == 0
-                and realized["unverified_usage_calls"] == 0
+                realized.get("inflight_calls", 0) == 0
+                and realized.get("unverified_usage_calls", 0) == 0
                 and currency_complete[intent]
             ),
             "latency_complete": latency_complete[intent],
             "currency_complete": currency_complete[intent],
-            "expected_per_candidate": None,
-            "expected_unavailable_reason": "candidate_route_facts_unavailable",
-            "risk_slices": None,
-            "risk_slices_unavailable_reason": "candidate_slice_facts_unavailable",
+            "expected_per_candidate": expected,
+            "expected_unavailable_reason": expected_reason,
+            "risk_slices": risk_slices,
+            "risk_slices_unavailable_reason": (
+                None if route_facts_complete
+                else "candidate_route_facts_unavailable"
+            ),
+            "providers": providers,
+            "route_facts_complete": route_facts_complete,
+            "attempt_kind_availability": {
+                "initial": "durable", "retry": "durable",
+                "failover": "durable", "split": "durable",
+                "detail": "producer_unavailable",
+                "reduce": "producer_unavailable",
+            },
         }
     return result

@@ -85,8 +85,10 @@ def _require_sha(value, name):
         raise ExecutionError("invalid_identity", name)
 
 
-def persist_plan(conn, plan):
+def persist_plan(conn, plan, *, route_authority=None):
     """Persist frozen plan/task bindings once before any claim or attempt."""
+    if route_authority is None:
+        raise ExecutionError("route_authority_required")
     required = {
         "run_id", "batch_id", "plan_sha", "candidate", "snapshot",
         "provider_pools_ordered", "shard_plan_sha", "shards", "logical_task_keys",
@@ -122,7 +124,8 @@ def persist_plan(conn, plan):
     try:
         conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute(
-            "SELECT plan_hash, manifest_json FROM audit_run_manifests WHERE run_id=?",
+            "SELECT plan_hash, manifest_json, created_at "
+            "FROM audit_run_manifests WHERE run_id=?",
             (plan["run_id"],),
         ).fetchone()
         if existing is None:
@@ -133,8 +136,10 @@ def persist_plan(conn, plan):
                     plan_json, created_at,
                 ),
             )
-        elif tuple(existing) != (plan["plan_sha"], plan_json):
-            raise ExecutionError("run_plan_conflict")
+        else:
+            if tuple(existing)[:2] != (plan["plan_sha"], plan_json):
+                raise ExecutionError("run_plan_conflict")
+            created_at = existing["created_at"]
         stored_snapshot = conn.execute(
             "SELECT snapshot_hash, run_id FROM audit_snapshots WHERE snapshot_id=?",
             (snapshot["snapshot_id"],),
@@ -202,6 +207,13 @@ def persist_plan(conn, plan):
                 records_json, created_at,
             ),
         )
+        try:
+            history_audit_store.record_candidate_route_facts(
+                conn, plan["run_id"], plan["batch_id"], plan["intent"],
+                route_authority, created_at=created_at,
+            )
+        except (history_audit_store.AuditMigrationError, ValueError) as exc:
+            raise ExecutionError("invalid_route_authority") from exc
         conn.execute(
             """
             INSERT OR IGNORE INTO audit_shard_plans(
@@ -229,6 +241,12 @@ def persist_plan(conn, plan):
                 material["budget_policy_sha"], plan["intent"], plan_json, created_at,
             ),
         )
+        try:
+            history_audit_store.record_candidate_l2_dispatch_fact(
+                conn, plan["plan_sha"], created_at=created_at,
+            )
+        except history_audit_store.AuditMigrationError as exc:
+            raise ExecutionError("invalid_route_dispatch") from exc
         for task_hash, shard in zip(plan["logical_task_keys"], plan["shards"]):
             _require_sha(task_hash, "task_hash")
             item_ids = shard.get("item_ids")
@@ -518,11 +536,21 @@ def _settle_budget(conn, attempt_id, usage):
     return actual if actual is not None else _json(reservation["reserved_json"])
 
 
+def _has_route_dispatch_authority(conn, plan_sha):
+    return conn.execute(
+        "SELECT 1 FROM audit_candidate_l2_dispatch_facts_v2 WHERE plan_sha=?",
+        (plan_sha,),
+    ).fetchone() is not None
+
+
 def record_attempt(
-    conn, task_key, capability, usage_reservation, *, cas_root, request_bytes, ordinal=None
+    conn, task_key, capability, usage_reservation, *, cas_root, request_bytes,
+    ordinal=None, now=None,
 ):
     """Append a started attempt after its request CAS descriptor is durable."""
     task = load_task(conn, task_key)
+    if not _has_route_dispatch_authority(conn, task["plan_sha"]):
+        raise ExecutionError("missing_route_dispatch_authority")
     if task["state"] != "claimed":
         raise ExecutionError("task_not_claimed")
     if not isinstance(capability, dict) or not isinstance(capability.get("provider"), str):
@@ -615,7 +643,7 @@ def record_attempt(
     try:
         conn.execute("BEGIN IMMEDIATE")
         _assert_budget_available(conn, task, reserved)
-        created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        created_at = _now(now).isoformat()
         conn.execute(
             """
             INSERT INTO audit_runtime_budget_reservations_v2(
@@ -642,7 +670,7 @@ def record_attempt(
             ),
         )
         history_audit_store.record_attempt_launch_cost_fact(
-            conn, attempt_id, queued_at=created_at, created_at=created_at
+            conn, attempt_id, created_at=created_at
         )
         _budget_event(conn, task, attempt_id + ":reserved", "reserved", reserved)
         conn.execute("COMMIT")
@@ -768,9 +796,11 @@ def validate_map_output(task, raw_output, snapshot):
     }
 
 
-def _insert_completion(conn, task, attempt_id, output_id, outcome, normalized, usage):
+def _insert_completion(
+    conn, task, attempt_id, output_id, outcome, normalized, usage, *, now=None
+):
     encoded = _canonical(normalized) if normalized is not None else None
-    completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    completed_at = _now(now).isoformat()
     conn.execute(
         """
         INSERT OR IGNORE INTO audit_attempt_completions_v2(
@@ -801,7 +831,8 @@ def _insert_completion(conn, task, attempt_id, output_id, outcome, normalized, u
 
 
 def complete_attempt(
-    conn, cas_root, task_key, attempt_id, raw_output, snapshot, *, usage=None
+    conn, cas_root, task_key, attempt_id, raw_output, snapshot, *, usage=None,
+    now=None,
 ):
     """CAS-write output before validation, then append one completion fact."""
     task = load_task(conn, task_key)
@@ -845,7 +876,10 @@ def complete_attempt(
     usage = usage or {}
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _insert_completion(conn, task, attempt_id, output["object_id"], outcome, normalized, usage)
+        _insert_completion(
+            conn, task, attempt_id, output["object_id"], outcome, normalized,
+            usage, now=now,
+        )
         conn.execute("COMMIT")
     except Exception:
         if conn.in_transaction:
@@ -857,7 +891,9 @@ def complete_attempt(
     return {"attempt_id": attempt_id, "output_cas_object_id": output["object_id"], "normalized": normalized}
 
 
-def _failed_completion(conn, cas_root, task, attempt_id, outcome, raw, usage):
+def _failed_completion(
+    conn, cas_root, task, attempt_id, outcome, raw, usage, *, now=None
+):
     payload = raw if isinstance(raw, bytes) else str(raw).encode("utf-8")
     output = history_cas.put_object(
         conn,
@@ -868,7 +904,10 @@ def _failed_completion(conn, cas_root, task, attempt_id, outcome, raw, usage):
     )
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _insert_completion(conn, task, attempt_id, output["object_id"], outcome, None, usage)
+        _insert_completion(
+            conn, task, attempt_id, output["object_id"], outcome, None, usage,
+            now=now,
+        )
         conn.execute("COMMIT")
     except Exception:
         if conn.in_transaction:

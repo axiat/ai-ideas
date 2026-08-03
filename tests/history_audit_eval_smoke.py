@@ -622,7 +622,9 @@ class StorageReleaseAuthorizationTests(unittest.TestCase):
             for provider in ("codex", "grok", "reviewer")
         }
         plan = helper._plan(helper.records)
-        history_execution.persist_plan(self.conn, plan)
+        history_execution.persist_plan(
+            self.conn, plan, route_authority=helper._route_authority(plan)
+        )
         output = helper._output(plan)
 
         def provider(*_):
@@ -631,9 +633,13 @@ class StorageReleaseAuthorizationTests(unittest.TestCase):
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             }
 
+        ready_at = self.conn.execute(
+            "SELECT created_at FROM audit_logical_tasks WHERE task_hash=?",
+            (plan["logical_task_keys"][0],),
+        ).fetchone()[0]
         history_execution.run_map_task(
             self.conn, self.root / "cas", plan, plan["logical_task_keys"][0],
-            provider, now="2026-08-02T23:59:58+00:00",
+            provider, now=ready_at,
         )
         profile_hashes = sorted(plan["provider_capability_profile_hashes"].values())
         self.conn.execute(

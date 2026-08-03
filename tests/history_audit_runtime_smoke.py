@@ -81,7 +81,57 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         base = datetime.datetime(2026, 8, 3, tzinfo=datetime.timezone.utc)
         return (base + datetime.timedelta(seconds=seconds)).isoformat()
 
-    def _plan(self, records, *, shards=None, started_attempt_limit=100):
+    def _risk_policy(self):
+        return json.loads(
+            (ROOT / "history/risk-policy-v1.json").read_text(encoding="utf-8")
+        )
+
+    def _router_facts(self, **overrides):
+        facts = {
+            "retriever_calibrated": False,
+            "finalist_or_sa": True,
+            "mandatory_channel_failed": False,
+            "comparator_uncertain": False,
+            "bad_slice_membership": True,
+            "index_profile_recently_changed": False,
+            "permanent_no_match_requested": False,
+            "release_qualified": False,
+            "candidate_budget_available": True,
+            "attempt_budget_available": True,
+        }
+        facts.update(overrides)
+        return facts
+
+    def _route_authority(
+        self, plan=None, *, risk_slices=None, facts=None, candidate_routes=None
+    ):
+        plan = plan or self.plan
+        return {
+            "risk_policy": self._risk_policy(),
+            "risk_slice_policy": {
+                "schema_version": "history-risk-slice-policy-v1",
+                "policy_version": "critical-semantic-slices-v1",
+                "allowed_slices": [
+                    "cross_language", "lineage_revision", "low_overlap",
+                ],
+            },
+            "candidate_routes": candidate_routes or [{
+                "candidate": copy.deepcopy(plan["candidate"]),
+                "router_facts": facts or self._router_facts(),
+                "risk_slices": sorted(
+                    ["low_overlap"] if risk_slices is None else risk_slices
+                ),
+            }],
+        }
+
+    def _plan(
+        self, records, *, shards=None, started_attempt_limit=100,
+        additional_candidates=None,
+    ):
+        risk_policy_sha = history_contract_v2.framed_sha256(
+            "history-risk-policy-v1",
+            history_contract_v2.canonical_bytes(self._risk_policy()),
+        )
         candidate_id = "stg-v2-" + sha("runtime-candidate-id")
         candidate = {
             "candidate_id": candidate_id,
@@ -100,7 +150,13 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             ),
         )
         expected_ids = sorted(item["item_id"] for item in records)
-        current_ids = [candidate_id]
+        current_ids = sorted([
+            candidate_id,
+            *[
+                item["candidate_id"]
+                for item in (additional_candidates or [])
+            ],
+        ])
         expected_hash = history_contract_v2.ordered_set_sha256(
             "history-snapshot-assets-v2", expected_ids
         )
@@ -172,7 +228,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             "risk_policy_version": "risk-v1",
             "matched_router_rule_ids": ["rule-l2"],
             "settlement_policy_sha": sha("settlement"),
-            "risk_policy_sha": sha("risk-policy"),
+            "risk_policy_sha": risk_policy_sha,
             "capacity_profile": {
                 "profile_id": "fake-safe-24k-v1",
                 "item_cap": 12,
@@ -181,7 +237,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             "budget_policy": {
                 "schema_version": "l2-budget-v1",
                 "settlement_policy_sha": sha("settlement"),
-                "risk_policy_sha": sha("risk-policy"),
+                "risk_policy_sha": risk_policy_sha,
                 "intents": {
                     "duplicate_search": {
                         "round": {
@@ -253,10 +309,60 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         ]
         return plan
 
-    def _install(self, plan=None):
+    def _install(self, plan=None, *, route_authority=None):
         plan = plan or self.plan
-        self._api("persist_plan")(self.conn, plan)
+        self._api("persist_plan")(
+            self.conn, plan,
+            route_authority=(route_authority or self._route_authority(plan)),
+        )
         return plan
+
+    def _persist_pre_route_plan(self, conn, plan):
+        """Build an old-schema fixture without weakening current runtime gates."""
+        with mock.patch.object(
+            history_audit_store, "record_candidate_route_facts"
+        ), mock.patch.object(
+            history_audit_store, "record_candidate_l2_dispatch_fact"
+        ):
+            history_execution.persist_plan(conn, plan, route_authority={})
+
+    def test_persist_plan_requires_bound_route_authority(self):
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("persist_plan")(self.conn, self.plan)
+        self.assertEqual(caught.exception.code, "route_authority_required")
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM audit_l2_plans_v2").fetchone()[0],
+            0,
+        )
+
+    def test_cost_summary_handles_zero_candidate_denominator(self):
+        self.assertEqual(
+            history_audit_eval_v2.summarize_realized_cost(
+                self.conn, "run-without-candidates"
+            ),
+            {"run_id": "run-without-candidates", "intents": {}},
+        )
+
+    def test_route_authority_rejects_unselected_intent_and_unknown_slice(self):
+        authority = self._route_authority()
+        authority["intent"] = "arbitrary_intent"
+        with self.assertRaises(self._api("ExecutionError")):
+            self._api("persist_plan")(
+                self.conn, self.plan, route_authority=authority
+            )
+        authority = self._route_authority(risk_slices=["invented_slice"])
+        with self.assertRaises(self._api("ExecutionError")):
+            self._api("persist_plan")(
+                self.conn, self.plan, route_authority=authority
+            )
+        authority["risk_slice_policy"]["allowed_slices"].append(
+            "invented_slice"
+        )
+        authority["risk_slice_policy"]["allowed_slices"].sort()
+        with self.assertRaises(self._api("ExecutionError")):
+            self._api("persist_plan")(
+                self.conn, self.plan, route_authority=authority
+            )
 
     def _output(self, plan=None, *, relations=None, item_ids=None, truncated=False):
         plan = plan or self.plan
@@ -555,7 +661,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             history_audit_store, "MIGRATIONS", before_task_authority
         ):
             history_audit_store.init_schema(conn)
-            history_execution.persist_plan(conn, self.plan)
+            self._persist_pre_route_plan(conn, self.plan)
             self._insert_forged_task_binding_chain(
                 conn, self.plan, self.root / "forged-upgrade-cas"
             )
@@ -581,7 +687,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             history_audit_store, "MIGRATIONS", before_task_authority
         ):
             history_audit_store.init_schema(conn)
-            history_execution.persist_plan(conn, self.plan)
+            self._persist_pre_route_plan(conn, self.plan)
             parent_key = self.plan["logical_task_keys"][0]
             conn.execute("BEGIN IMMEDIATE")
             children = [
@@ -798,7 +904,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             history_audit_store.MIGRATIONS[:split_authority_index],
         ):
             history_audit_store.init_schema(conn)
-            history_execution.persist_plan(conn, self.plan)
+            self._persist_pre_route_plan(conn, self.plan)
             conn.execute("BEGIN IMMEDIATE")
             self._insert_canonical_split_child_without_transition(
                 conn, self.plan, self.plan["logical_task_keys"][0],
@@ -825,7 +931,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             history_audit_store.MIGRATIONS[:split_authority_index],
         ):
             history_audit_store.init_schema(conn)
-            history_execution.persist_plan(conn, self.plan)
+            self._persist_pre_route_plan(conn, self.plan)
             parent_key = self.plan["logical_task_keys"][0]
             conn.execute("DROP TRIGGER audit_l2_task_inputs_v2_guard")
             conn.execute(
@@ -1324,14 +1430,21 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         self.assertEqual(realized["output_tokens"], 5)
         self.assertEqual(realized["cache_tokens"], 3)
         self.assertNotIn("currency_micros", realized)
-        self.assertNotIn("queue_latency_ms", realized)
+        self.assertGreaterEqual(realized["queue_latency_ms"], 0)
+        self.assertGreaterEqual(realized["run_latency_ms"], 0)
+        self.assertTrue(first["intents"]["duplicate_search"]["latency_complete"])
         self.assertFalse(
             first["intents"]["duplicate_search"]["accounting_complete"]
         )
-        self.assertIsNone(
-            first["intents"]["duplicate_search"]["expected_per_candidate"]
+        self.assertEqual(
+            first["intents"]["duplicate_search"]["expected_per_candidate"]["calls"],
+            1.0,
         )
-        self.assertIsNone(first["intents"]["duplicate_search"]["risk_slices"])
+        self.assertEqual(
+            first["intents"]["duplicate_search"]["risk_slices"]
+                ["low_overlap"]["candidate_count"],
+            1,
+        )
         self.assertEqual(
             self.conn.execute(
                 "SELECT count(*) FROM audit_attempt_launch_facts_v2"
@@ -1360,6 +1473,237 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             ).fetchone()[0], 1,
         )
 
+    def test_route_facts_include_zero_attempt_candidates_and_overlapping_slices(self):
+        second = {
+            "candidate_id": "stg-v2-" + sha("zero-attempt-candidate"),
+            "candidate_hash": "",
+            "raw_artifact_sha": sha("zero-attempt-candidate-raw"),
+            "source_order": 1,
+        }
+        second["candidate_hash"] = history_audit_plan.runtime_candidate_hash(
+            second
+        )
+        plan = self._plan(self.records, additional_candidates=[second])
+        candidate_routes = sorted([
+            {
+                "candidate": copy.deepcopy(plan["candidate"]),
+                "router_facts": self._router_facts(),
+                "risk_slices": ["cross_language", "low_overlap"],
+            },
+            {
+                "candidate": copy.deepcopy(second),
+                "router_facts": self._router_facts(
+                    candidate_budget_available=False,
+                    attempt_budget_available=False,
+                ),
+                "risk_slices": ["low_overlap"],
+            },
+        ], key=lambda item: item["candidate"]["candidate_id"])
+        authority = self._route_authority(
+            plan, candidate_routes=candidate_routes
+        )
+        plan = self._install(plan, route_authority=authority)
+        before = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]
+        self.assertEqual(before["candidate_count"], 2)
+        self.assertEqual(before["realized"]["calls"], 0)
+        self.assertEqual(before["escalated_candidate_count"], 1)
+        self.assertEqual(before["escalation_rate"], 0.5)
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            lambda *_: {
+                "kind": "success", "output": self._output(plan),
+                "usage": {
+                    "input_tokens": 10, "output_tokens": 6,
+                    "cache_tokens": 2, "provider_usage_units": 16,
+                },
+            },
+            now=self._now(2),
+        )
+
+        summary = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]
+        attempt_rows = [
+            tuple(row) for row in self.conn.execute(
+                "SELECT attempt.ordinal, completion.outcome "
+                "FROM audit_task_attempts attempt "
+                "LEFT JOIN audit_attempt_completions_v2 completion "
+                "USING(attempt_id) ORDER BY attempt.ordinal"
+            )
+        ]
+        self.assertEqual(attempt_rows, [(0, "valid")])
+        self.assertEqual(summary["candidate_count"], 2)
+        self.assertEqual(summary["escalated_candidate_count"], 1)
+        self.assertEqual(summary["escalation_rate"], 0.5)
+        self.assertEqual(summary["realized"]["calls"], 1)
+        self.assertEqual(summary["expected_per_candidate"]["calls"], 0.5)
+        self.assertEqual(summary["expected_per_candidate"]["input_tokens"], 5)
+        self.assertEqual(
+            summary["risk_slices"]["low_overlap"]["candidate_count"], 2
+        )
+        self.assertEqual(
+            summary["risk_slices"]["cross_language"]["candidate_count"], 1
+        )
+        self.assertEqual(summary["providers"]["codex"]["realized"]["calls"], 1)
+
+    def test_call_l1_without_durable_l1_attempt_makes_expected_unavailable(self):
+        facts = self._router_facts(
+            retriever_calibrated=True,
+            finalist_or_sa=False,
+            bad_slice_membership=False,
+        )
+        plan = self._install(
+            route_authority=self._route_authority(
+                facts=facts, risk_slices=[]
+            )
+        )
+        summary = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]
+        self.assertIsNone(summary["expected_per_candidate"])
+        self.assertEqual(
+            summary["expected_unavailable_reason"],
+            "durable_l1_attempt_facts_unavailable",
+        )
+
+    def test_route_facts_reject_direct_sql_mutation_and_conflicting_reissue(self):
+        plan = self._install()
+        self._api("persist_plan")(
+            self.conn, plan, route_authority=self._route_authority(plan)
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_candidate_route_facts_v2"
+            ).fetchone()[0],
+            1,
+        )
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.conn.execute(
+                "UPDATE audit_candidate_route_facts_v2 SET route='routine'"
+            )
+        self.conn.rollback()
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.conn.execute("DELETE FROM audit_candidate_l2_dispatch_facts_v2")
+        self.conn.rollback()
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.conn.execute(
+                "INSERT INTO audit_candidate_route_cohorts_v2 "
+                "SELECT * FROM audit_candidate_route_cohorts_v2"
+            )
+        self.conn.rollback()
+        with self.assertRaises(self._api("ExecutionError")):
+            self._api("persist_plan")(
+                self.conn, plan,
+                route_authority=self._route_authority(
+                    risk_slices=["cross_language", "low_overlap"]
+                ),
+            )
+        self.conn.close()
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        history_audit_store.init_schema(self.conn)
+        row = self.conn.execute(
+            "SELECT route.call_l1_model, route.risk_slices_json, "
+            "dispatch.plan_sha IS NOT NULL AS actual_l2_dispatch "
+            "FROM audit_candidate_route_facts_v2 route "
+            "LEFT JOIN audit_candidate_l2_dispatch_facts_v2 dispatch "
+            "ON dispatch.route_fact_sha256=route.fact_sha256"
+        ).fetchone()
+        self.assertEqual(tuple(row), (0, '["low_overlap"]', 1))
+
+    def test_route_facts_accept_frozen_candidate_staged_at_earlier_time(self):
+        plan = self.plan
+        material = history_audit_plan.build_runtime_plan_material(plan)
+        snapshot = plan["snapshot"]
+        self.conn.execute(
+            "INSERT INTO audit_run_manifests VALUES(?,?,?,?,?)",
+            (
+                plan["run_id"], "history-audit-manifest-v2",
+                plan["plan_sha"], history_execution._canonical(material),
+                self._now(10),
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO audit_snapshots VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                snapshot["snapshot_id"], snapshot["snapshot_hash"],
+                snapshot["history_as_of_watermark"],
+                snapshot["current_batch_id_namespace"],
+                snapshot["current_batch_ids_hash"],
+                snapshot["exclusion_policy_sha"],
+                snapshot["expected_asset_ids_hash"], self._now(),
+                plan["run_id"], plan["batch_id"],
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO audit_snapshot_batch_sets VALUES(?,?,?,?,?,?,?)",
+            (
+                snapshot["snapshot_id"], plan["run_id"], plan["batch_id"],
+                snapshot["current_batch_ids_hash"],
+                json.dumps(
+                    snapshot["current_batch_ids"], sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                len(snapshot["current_batch_ids"]), self._now(),
+            ),
+        )
+        candidate = plan["candidate"]
+        self.conn.execute(
+            "INSERT INTO audit_batch_staging VALUES(?,?,?,?,?,?,?)",
+            (
+                candidate["candidate_id"], plan["run_id"], plan["batch_id"],
+                candidate["candidate_hash"], candidate["raw_artifact_sha"],
+                candidate["source_order"], self._now(),
+            ),
+        )
+        self.conn.commit()
+        self._api("persist_plan")(
+            self.conn, plan, route_authority=self._route_authority(plan)
+        )
+        row = self.conn.execute(
+            "SELECT staging.created_at, route.created_at "
+            "FROM audit_batch_staging staging "
+            "JOIN audit_candidate_route_facts_v2 route "
+            "ON route.candidate_id=staging.staging_candidate_id"
+        ).fetchone()
+        self.assertEqual(tuple(row), (self._now(), self._now(10)))
+
+    def test_queue_and_run_latency_are_derived_from_injected_timestamps(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        ready_at = self.conn.execute(
+            "SELECT created_at FROM audit_logical_tasks WHERE task_hash=?",
+            (task_key,),
+        ).fetchone()[0]
+        ready = datetime.datetime.fromisoformat(ready_at)
+        started_at = (ready + datetime.timedelta(seconds=10)).isoformat()
+        completed_at = (ready + datetime.timedelta(seconds=14)).isoformat()
+        self._api("claim_task")(
+            self.conn, task_key, "worker", 60, 0, now=ready_at
+        )
+        attempt = self._api("record_attempt")(
+            self.conn, task_key, plan["provider_capabilities"]["codex"],
+            {"attempt_kind": "initial"}, cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            now=started_at,
+        )
+        self._api("complete_attempt")(
+            self.conn, self.cas_root, task_key, attempt["attempt_id"],
+            self._output(), plan["snapshot"],
+            usage={
+                "input_tokens": 10, "output_tokens": 5,
+                "provider_usage_units": 15,
+            },
+            now=completed_at,
+        )
+        realized = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]["realized"]
+        self.assertEqual(realized["queue_latency_ms"], 10000)
+        self.assertEqual(realized["run_latency_ms"], 4000)
+
     def test_cost_fact_tables_reject_direct_writes_and_mutation(self):
         with self.assertRaises(sqlite3.DatabaseError):
             self.conn.execute(
@@ -1377,6 +1721,10 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             plan["provider_capabilities"]["codex"],
             {"attempt_kind": "initial"}, cas_root=self.cas_root,
             request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            now=self.conn.execute(
+                "SELECT created_at FROM audit_logical_tasks WHERE task_hash=?",
+                (plan["logical_task_keys"][0],),
+            ).fetchone()[0],
         )
         with self.assertRaises(sqlite3.DatabaseError):
             self.conn.execute(
@@ -1453,12 +1801,15 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         ):
             history_audit_store.init_schema(legacy)
         plan = self._plan(self.records)
-        history_execution.persist_plan(legacy, plan)
+        self._persist_pre_route_plan(legacy, plan)
         history_execution.claim_task(
             legacy, plan["logical_task_keys"][0], "legacy-worker", 60, 0,
             now=self._now(),
         )
         with mock.patch.object(
+            history_execution, "_has_route_dispatch_authority",
+            return_value=True,
+        ), mock.patch.object(
             history_audit_store, "record_attempt_launch_cost_fact",
             return_value="legacy-unaccounted",
         ):
@@ -1485,21 +1836,65 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             )
         legacy.close()
 
+    def test_legacy_plan_without_route_facts_is_explicitly_unavailable(self):
+        legacy_path = self.root / "legacy-route.sqlite3"
+        legacy = sqlite3.connect(legacy_path)
+        legacy.row_factory = sqlite3.Row
+        migrations = history_audit_store.MIGRATIONS
+        target = next(
+            index for index, migration in enumerate(migrations)
+            if migration.component == "candidate-route-facts"
+        )
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", migrations[:target]
+        ):
+            history_audit_store.init_schema(legacy)
+            plan = self._plan(self.records)
+            self._persist_pre_route_plan(legacy, plan)
+        legacy.close()
+        legacy = sqlite3.connect(legacy_path)
+        legacy.row_factory = sqlite3.Row
+        history_audit_store.init_schema(legacy)
+        summary = history_audit_eval_v2.summarize_realized_cost(
+            legacy, plan["run_id"]
+        )["intents"][plan["intent"]]
+        self.assertFalse(summary["route_facts_complete"])
+        self.assertIsNone(summary["expected_per_candidate"])
+        self.assertEqual(
+            summary["expected_unavailable_reason"],
+            "candidate_route_facts_unavailable",
+        )
+        self.assertIsNone(summary["risk_slices"])
+        self.assertEqual(
+            summary["risk_slices_unavailable_reason"],
+            "candidate_route_facts_unavailable",
+        )
+        legacy.close()
+
     def test_cancel_attempt_is_exact_once_and_keeps_unknown_currency_out(self):
         plan = self._install()
         task_key = plan["logical_task_keys"][0]
         self._api("claim_task")(
             self.conn, task_key, "worker", 60, 0, now=self._now()
         )
+        ready_at = self.conn.execute(
+            "SELECT created_at FROM audit_logical_tasks WHERE task_hash=?",
+            (task_key,),
+        ).fetchone()[0]
+        cancel_at = (
+            datetime.datetime.fromisoformat(ready_at)
+            + datetime.timedelta(seconds=1)
+        ).isoformat()
         attempt = self._api("record_attempt")(
             self.conn, task_key, plan["provider_capabilities"]["codex"],
             {"attempt_kind": "reduce"}, cas_root=self.cas_root,
             request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            now=ready_at,
         )
         with self.assertRaises(self._api("ExecutionError")):
             self._api("cancel_attempt")(
                 self.conn, attempt["attempt_id"], billing_state="billable",
-                now=self._now(1),
+                now=cancel_at,
             )
         for _ in range(2):
             self._api("cancel_attempt")(
@@ -1508,7 +1903,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                     "input_tokens": 2, "output_tokens": 0,
                     "cache_tokens": 1, "provider_usage_units": 2,
                 },
-                now=self._now(1),
+                now=cancel_at,
             )
         summary = history_audit_eval_v2.summarize_realized_cost(
             self.conn, plan["run_id"]
@@ -1548,6 +1943,33 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                     )
                 ]
                 self.assertEqual(providers, ["codex", "grok"])
+                cost = history_audit_eval_v2.summarize_realized_cost(
+                    self.conn, plan["run_id"]
+                )["intents"][plan["intent"]]
+                self.assertEqual(cost["realized"]["calls"], 2)
+                self.assertEqual(cost["realized"]["failover_calls"], 1)
+                self.assertEqual(cost["providers"]["codex"]["realized"]["calls"], 1)
+                self.assertEqual(cost["providers"]["grok"]["realized"]["calls"], 1)
+
+    def test_syntax_retry_cost_stays_on_initial_provider(self):
+        plan = self._install()
+
+        def provider(_task_key, _provider_name, ordinal, _request):
+            if ordinal == 0:
+                return {"kind": "syntax", "raw": "syntax", "usage": {}}
+            return {"kind": "success", "output": self._output(), "usage": {}}
+
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            provider, now=self._now(),
+        )
+        cost = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]
+        self.assertEqual(cost["realized"]["calls"], 2)
+        self.assertEqual(cost["realized"]["retry_calls"], 1)
+        self.assertEqual(cost["realized"]["failover_calls"], 0)
+        self.assertEqual(cost["providers"]["codex"]["realized"]["calls"], 2)
 
     def test_equal_duplicate_completions_are_arrival_order_independent(self):
         output = self._output()
@@ -1605,6 +2027,23 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             ),
             [],
         )
+        child = result["children"][0]
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, child["task_hash"],
+            lambda *_: {
+                "kind": "success",
+                "output": self._output(plan, item_ids=child["item_ids"]),
+                "usage": {},
+            },
+            now=self._now(1),
+        )
+        cost = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]
+        self.assertEqual(cost["realized"]["calls"], 2)
+        self.assertEqual(cost["realized"]["split_calls"], 1)
+        self.assertEqual(cost["attempt_kind_availability"]["detail"], "producer_unavailable")
+        self.assertEqual(cost["attempt_kind_availability"]["reduce"], "producer_unavailable")
 
     def test_single_item_overflow_exhausts_without_empty_children(self):
         plan = self._plan([self.records[0]])
