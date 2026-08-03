@@ -398,6 +398,31 @@ class PortableAgentSmoke(unittest.TestCase):
                     "max_bytes": 64,
                 }])
 
+    def test_source_path_rejects_symlink_ancestor_and_allows_normal_nested_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source_root = root / "declared"
+            nested = source_root / "real" / "nested"
+            nested.mkdir(parents=True)
+            source = nested / "records.json"
+            source.write_text("declared\n")
+            common = {
+                "source_root": str(source_root),
+                "provenance": "declared-input-v1",
+                "path": "input/records.json",
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "max_bytes": 64,
+            }
+
+            allowed = dict(common, source_path="real/nested/records.json")
+            result = self._run(root / "normal-state", "success", inputs=[allowed])
+            self.assertEqual(result["value"]["status"], "ok")
+
+            (source_root / "link").symlink_to(source_root / "real", target_is_directory=True)
+            bypass = dict(common, source_path="link/nested/records.json")
+            with self.assertRaises(self._error()):
+                self._run(root / "symlink-state", "success", inputs=[bypass])
+
     def test_invalid_outputs_are_never_imported(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

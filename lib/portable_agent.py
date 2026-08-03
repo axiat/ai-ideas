@@ -91,6 +91,98 @@ def _open_read_stable(path, maximum, code, *, require_owner_only=False):
     return raw
 
 
+def _open_directory_at(parent_descriptor, component, code):
+    if not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+        raise PortableAgentError("no_follow_traversal_unavailable")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(component, flags, dir_fd=parent_descriptor)
+    except OSError as exc:
+        raise PortableAgentError(code) from exc
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise PortableAgentError(code)
+    return descriptor
+
+
+def _open_absolute_directory_no_follow(path, code):
+    path = pathlib.Path(path)
+    if not path.is_absolute():
+        raise PortableAgentError(code)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(os.path.sep, flags)
+    try:
+        for component in path.parts[1:]:
+            child = _open_directory_at(descriptor, component, code)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _read_declared_source(resolved_root, root_info, source_relative, maximum):
+    directory_descriptor = _open_absolute_directory_no_follow(
+        resolved_root, "unsafe_source_root"
+    )
+    try:
+        opened_root = os.fstat(directory_descriptor)
+        if (opened_root.st_dev, opened_root.st_ino) != (
+            root_info.st_dev,
+            root_info.st_ino,
+        ):
+            raise PortableAgentError("unstable_source_root")
+        for component in source_relative.parts[:-1]:
+            child = _open_directory_at(
+                directory_descriptor, component, "source_boundary_violation"
+            )
+            os.close(directory_descriptor)
+            directory_descriptor = child
+        flags = os.O_RDONLY | os.O_NOFOLLOW
+        try:
+            source_descriptor = os.open(
+                source_relative.parts[-1], flags, dir_fd=directory_descriptor
+            )
+        except OSError as exc:
+            raise PortableAgentError("unsafe_input") from exc
+        try:
+            before = os.fstat(source_descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise PortableAgentError("unsafe_input")
+            chunks = []
+            total = 0
+            while True:
+                chunk = os.read(
+                    source_descriptor,
+                    min(65536, maximum + 1 - total),
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > maximum:
+                    raise PortableAgentError("oversize")
+            after = os.fstat(source_descriptor)
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            ):
+                raise PortableAgentError("unstable_input")
+            return b"".join(chunks)
+        finally:
+            os.close(source_descriptor)
+    finally:
+        os.close(directory_descriptor)
+
+
 def _ensure_owner_tree(root, directory):
     root = pathlib.Path(root)
     directory = pathlib.Path(directory)
@@ -160,15 +252,16 @@ def _copy_inputs(inputs, mirror):
             raise PortableAgentError("unsafe_source_root")
         try:
             resolved_root = source_root.resolve(strict=True)
-            source = source_root.joinpath(*source_relative.parts)
-            resolved_source = source.resolve(strict=True)
-            resolved_source.relative_to(resolved_root)
         except (OSError, RuntimeError, ValueError) as exc:
             raise PortableAgentError("source_boundary_violation") from exc
-        resolved_parts = pathlib.PurePosixPath(resolved_source.as_posix())
+        resolved_parts = pathlib.PurePosixPath(resolved_root.as_posix()).joinpath(
+            source_relative
+        )
         if _reserved(resolved_parts):
             raise PortableAgentError("reserved_input")
-        raw = _open_read_stable(source, maximum, "unsafe_input")
+        raw = _read_declared_source(
+            resolved_root, root_info, source_relative, maximum
+        )
         if hashlib.sha256(raw).hexdigest() != item["sha256"]:
             raise PortableAgentError("input_sha_mismatch")
         target = mirror.joinpath(*relative.parts)
