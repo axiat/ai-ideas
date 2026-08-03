@@ -29,7 +29,8 @@ def sha(label):
 class HistoryAuditStoreSmoke(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.cas_root = pathlib.Path(self.temporary.name) / "cas"
+        self.root = pathlib.Path(self.temporary.name).resolve()
+        self.cas_root = self.root / "cas"
         self.conn = sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
         history_audit_store.init_schema(self.conn)
@@ -332,6 +333,16 @@ class HistoryAuditStoreSmoke(unittest.TestCase):
         os.truncate(self._path(sparse), sparse["compressed_length"])
         with self.assertRaises(history_cas.CASIntegrityError):
             history_cas.verify_object(self.conn, self.cas_root, sparse["object_id"])
+
+    def test_cas_rejects_root_reached_through_symlink_ancestor(self):
+        real_parent = self.root / "real-parent"
+        real_parent.mkdir()
+        linked_parent = self.root / "linked-parent"
+        os.symlink(real_parent, linked_parent)
+        with self.assertRaises(history_cas.CASError):
+            history_cas.put_object(
+                self.conn, linked_parent / "cas", b"must not follow", "transient-test"
+            )
 
 
 if __name__ == "__main__":

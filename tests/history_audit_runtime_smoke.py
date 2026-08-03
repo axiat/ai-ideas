@@ -41,8 +41,10 @@ def record(item_id, content, lineage_id):
 class HistoryAuditRuntimeSmoke(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.cas_root = pathlib.Path(self.temporary.name) / "cas"
-        self.conn = sqlite3.connect(":memory:")
+        self.root = pathlib.Path(self.temporary.name).resolve()
+        self.cas_root = self.root / "cas"
+        self.db_path = self.root / "runtime.sqlite3"
+        self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         history_audit_store.init_schema(self.conn)
         self.records = [
@@ -64,15 +66,64 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         base = datetime.datetime(2026, 8, 3, tzinfo=datetime.timezone.utc)
         return (base + datetime.timedelta(seconds=seconds)).isoformat()
 
-    def _plan(self, records, *, shards=None):
-        snapshot = {
-            "snapshot_id": sha("snapshot-id"),
-            "snapshot_hash": sha("snapshot"),
+    def _plan(self, records, *, shards=None, started_attempt_limit=100):
+        candidate_id = "stg-v2-" + sha("runtime-candidate-id")
+        candidate = {
+            "candidate_id": candidate_id,
+            "candidate_hash": "",
+            "raw_artifact_sha": sha("runtime-candidate-raw"),
+            "source_order": 0,
+        }
+        candidate["candidate_hash"] = history_contract_v2.framed_sha256(
+            "history-runtime-candidate-v2",
+            history_contract_v2.canonical_bytes(
+                {
+                    "candidate_id": candidate_id,
+                    "raw_artifact_sha": candidate["raw_artifact_sha"],
+                    "source_order": 0,
+                }
+            ),
+        )
+        expected_ids = sorted(item["item_id"] for item in records)
+        current_ids = [candidate_id]
+        expected_hash = history_contract_v2.ordered_set_sha256(
+            "history-snapshot-assets-v2", expected_ids
+        )
+        current_hash = history_contract_v2.ordered_set_sha256(
+            "history-current-batch-ids-v2", current_ids
+        )
+        snapshot_material = {
+            "run_id": "run-runtime-smoke",
+            "batch_id": "batch-1",
             "history_as_of_watermark": 550,
             "current_batch_id_namespace": "history-v2-staging-v1",
-            "current_batch_ids_hash": sha("batch"),
+            "current_batch_ids_hash": current_hash,
             "exclusion_policy_sha": sha("exclusion"),
-            "expected_asset_ids_hash": sha("expected"),
+            "expected_asset_ids_hash": expected_hash,
+        }
+        snapshot_hash = history_contract_v2.framed_sha256(
+            "history-snapshot-v2",
+            history_contract_v2.canonical_bytes(snapshot_material),
+        )
+        snapshot = {
+            "snapshot_id": history_contract_v2.framed_sha256(
+                "history-snapshot-id-v2",
+                history_contract_v2.canonical_bytes(
+                    {
+                        "run_id": "run-runtime-smoke",
+                        "batch_id": "batch-1",
+                        "snapshot_hash": snapshot_hash,
+                    }
+                ),
+            ),
+            "snapshot_hash": snapshot_hash,
+            "history_as_of_watermark": 550,
+            "current_batch_id_namespace": "history-v2-staging-v1",
+            "current_batch_ids_hash": current_hash,
+            "current_batch_ids": current_ids,
+            "exclusion_policy_sha": sha("exclusion"),
+            "expected_asset_ids_hash": expected_hash,
+            "expected_asset_ids": expected_ids,
             "records": copy.deepcopy(records),
         }
         if shards is None:
@@ -84,21 +135,11 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             shard["request_sha256"] = hashlib.sha256(
                 shard["serialized_request"].encode("utf-8")
             ).hexdigest()
-        task_keys = [
-            history_contract_v2.logical_task_key(
-                sha("runtime-plan" + str(len(shards))),
-                "map",
-                "staging-1",
-                shard["request_sha256"],
-            )
-            for shard in shards
-        ]
-        return {
-            "schema_version": "history-audit-plan-v1",
+        plan = {
+            "schema_version": "history-audit-plan-v2",
             "run_id": "run-runtime-smoke",
             "batch_id": "batch-1",
-            "plan_sha": sha("runtime-plan" + str(len(shards))),
-            "candidate": {"candidate_id": "staging-1", "candidate_hash": sha("candidate")},
+            "candidate": candidate,
             "snapshot": snapshot,
             "provider_pools_ordered": {
                 "comparator": ["codex"],
@@ -112,11 +153,85 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             "risk_policy_version": "risk-v1",
             "matched_router_rule_ids": ["rule-l2"],
             "settlement_policy_sha": sha("settlement"),
-            "shard_plan_sha": sha("shard-plan" + str(len(shards))),
+            "risk_policy_sha": sha("risk-policy"),
+            "capacity_profile": {
+                "profile_id": "fake-safe-24k-v1",
+                "item_cap": 12,
+                "max_output_tokens": 64,
+            },
+            "budget_policy": {
+                "schema_version": "l2-budget-v1",
+                "settlement_policy_sha": sha("settlement"),
+                "risk_policy_sha": sha("risk-policy"),
+                "intents": {
+                    "duplicate_search": {
+                        "round": {
+                            "candidates": 8,
+                            "started_attempts": started_attempt_limit,
+                            "input_tokens": 100000,
+                            "output_tokens": 100000,
+                            "provider_usage_units": 200000,
+                        },
+                        "candidate": {
+                            "started_attempts": started_attempt_limit,
+                            "input_tokens": 100000,
+                            "output_tokens": 100000,
+                            "provider_usage_units": 200000,
+                        },
+                    }
+                },
+            },
             "shards": shards,
-            "logical_task_keys": task_keys,
             "intent": "duplicate_search",
         }
+        plan["shard_plan_sha"] = history_contract_v2.framed_sha256(
+            "history-shard-plan-v2",
+            history_contract_v2.canonical_bytes(
+                sorted(copy.deepcopy(shards), key=lambda shard: shard["shard_id"])
+            ),
+        )
+        snapshot_for_plan = copy.deepcopy(snapshot)
+        snapshot_for_plan.pop("records")
+        snapshot_for_plan["records_sha"] = history_contract_v2.framed_sha256(
+            "history-l2-snapshot-records-v2",
+            history_contract_v2.canonical_bytes(
+                sorted(copy.deepcopy(records), key=lambda item: item["item_id"])
+            ),
+        )
+        budget_sha = history_contract_v2.framed_sha256(
+            "history-budget-policy-v1",
+            history_contract_v2.canonical_bytes(plan["budget_policy"]),
+        )
+        plan_material = {
+            "schema_version": "history-audit-plan-v2",
+            "run_id": plan["run_id"],
+            "batch_id": plan["batch_id"],
+            "candidate": copy.deepcopy(candidate),
+            "snapshot": snapshot_for_plan,
+            "provider_pools_ordered": copy.deepcopy(plan["provider_pools_ordered"]),
+            "provider_capability_profile_hashes": copy.deepcopy(
+                plan["provider_capability_profile_hashes"]
+            ),
+            "capacity_profile": copy.deepcopy(plan["capacity_profile"]),
+            "budget_policy": copy.deepcopy(plan["budget_policy"]),
+            "budget_policy_sha": budget_sha,
+            "intent": plan["intent"],
+            "risk_policy_sha": plan["risk_policy_sha"],
+            "settlement_policy_sha": plan["settlement_policy_sha"],
+            "shard_plan_sha": plan["shard_plan_sha"],
+            "shards": sorted(copy.deepcopy(shards), key=lambda shard: shard["shard_id"]),
+        }
+        plan["plan_sha"] = history_contract_v2.framed_sha256(
+            "history-audit-plan-v2",
+            history_contract_v2.canonical_bytes(plan_material),
+        )
+        plan["logical_task_keys"] = [
+            history_contract_v2.logical_task_key(
+                plan["plan_sha"], "map", candidate_id, shard["request_sha256"]
+            )
+            for shard in shards
+        ]
+        return plan
 
     def _install(self, plan=None):
         plan = plan or self.plan
@@ -205,6 +320,40 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         with self.assertRaises(self._api("MapValidationError")) as caught:
             self._api("validate_map_output")(task, extra, plan["snapshot"])
         self.assertEqual(caught.exception.code, "item_set_mismatch")
+
+    def test_consistent_looking_hash_labels_cannot_forge_frozen_identity(self):
+        forged = copy.deepcopy(self.plan)
+        forged["plan_sha"] = sha("forged-plan-label")
+        forged["candidate"]["candidate_hash"] = sha("forged-candidate-label")
+        forged["snapshot"]["snapshot_hash"] = sha("forged-snapshot-label")
+        forged["snapshot"]["expected_asset_ids_hash"] = sha("forged-assets-label")
+        forged["logical_task_keys"] = [
+            history_contract_v2.logical_task_key(
+                forged["plan_sha"],
+                "map",
+                forged["candidate"]["candidate_id"],
+                shard["request_sha256"],
+            )
+            for shard in forged["shards"]
+        ]
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._install(forged)
+        self.assertEqual(caught.exception.code, "frozen_identity_mismatch")
+
+    def test_anchor_authority_comes_only_from_durable_frozen_records(self):
+        plan = self._install()
+        task = self._api("load_task")(self.conn, plan["logical_task_keys"][0])
+        replacement = copy.deepcopy(plan["snapshot"])
+        replacement["records"][0]["content"] = "omega replacement"
+        replacement["records"][0]["artifact_sha"] = sha("omega replacement")
+        forged = self._output()
+        forged["items"][0]["anchor"].update(
+            artifact_sha=sha("omega replacement"),
+            quote="omega",
+        )
+        with self.assertRaises(self._api("MapValidationError")) as caught:
+            self._api("validate_map_output")(task, forged, replacement)
+        self.assertEqual(caught.exception.code, "snapshot_authority_mismatch")
 
     def test_timeout_then_success_commits_one_logical_result(self):
         plan = self._install()
@@ -452,6 +601,110 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             totals(events),
             {"started_attempts": 5, "input_tokens": 50, "output_tokens": 10, "provider_usage_units": 60},
         )
+
+    def test_durable_budget_rejects_split_child_after_reopen_without_partial_event(self):
+        plan = self._plan(self.records, started_attempt_limit=1)
+        self._install(plan)
+        parent = plan["logical_task_keys"][0]
+        self._api("claim_task")(
+            self.conn, parent, "worker-a", 60, expected_fence=0, now=self._now()
+        )
+        self._api("record_attempt")(
+            self.conn,
+            parent,
+            {"provider": "codex", "profile_hash": sha("codex")},
+            {
+                "attempt_kind": "initial",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "provider_usage_units": 2,
+            },
+            cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+        )
+        children = self._api("split_task")(self.conn, parent)["children"]
+        child = children[0]["task_hash"]
+        self.conn.close()
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        history_audit_store.init_schema(self.conn)
+        self._api("claim_task")(
+            self.conn, child, "worker-b", 60, expected_fence=0, now=self._now()
+        )
+        before = {
+            "attempts": self.conn.execute("SELECT count(*) FROM audit_task_attempts").fetchone()[0],
+            "events": self.conn.execute("SELECT count(*) FROM audit_budget_events").fetchone()[0],
+            "objects": self.conn.execute("SELECT count(*) FROM audit_cas_objects").fetchone()[0],
+        }
+        task = self._api("load_task")(self.conn, child)
+        request_bytes = history_contract_v2.canonical_bytes(
+            {
+                "parent_task_hash": task["parent_task_hash"],
+                "position": 0,
+                "item_ids": task["assigned_item_ids"],
+            }
+        )
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("record_attempt")(
+                self.conn,
+                child,
+                {"provider": "codex", "profile_hash": sha("codex")},
+                {
+                    "attempt_kind": "split",
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "provider_usage_units": 2,
+                },
+                cas_root=self.cas_root,
+                request_bytes=request_bytes,
+            )
+        self.assertEqual(caught.exception.code, "attempt_budget_exceeded")
+        after = {
+            "attempts": self.conn.execute("SELECT count(*) FROM audit_task_attempts").fetchone()[0],
+            "events": self.conn.execute("SELECT count(*) FROM audit_budget_events").fetchone()[0],
+            "objects": self.conn.execute("SELECT count(*) FROM audit_cas_objects").fetchone()[0],
+        }
+        self.assertEqual(after, before)
+
+    def test_database_rejects_direct_budget_reservation_past_candidate_limit(self):
+        plan = self._plan(self.records, started_attempt_limit=1)
+        self._install(plan)
+        parent = plan["logical_task_keys"][0]
+        self._api("claim_task")(
+            self.conn, parent, "worker-a", 60, expected_fence=0, now=self._now()
+        )
+        self._api("record_attempt")(
+            self.conn,
+            parent,
+            {"provider": "codex", "profile_hash": sha("codex")},
+            {"attempt_kind": "initial"},
+            cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+        )
+        child_key = self._api("split_task")(self.conn, parent)["children"][0]["task_hash"]
+        child = self._api("load_task")(self.conn, child_key)
+        forged_attempt = sha("direct-budget-forgery")
+        reserved = {
+            "input_tokens": len(child["durable_request_text"].encode()),
+            "output_tokens": plan["capacity_profile"]["max_output_tokens"],
+            "provider_usage_units": len(child["durable_request_text"].encode())
+            + plan["capacity_profile"]["max_output_tokens"],
+        }
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_runtime_budget_reservations_v2(
+                  attempt_id, task_hash, plan_sha, candidate_id, intent,
+                  attempt_kind, reserved_json, created_at
+                ) VALUES(?, ?, ?, ?, ?, 'split', ?, ?)
+                """,
+                (
+                    forged_attempt, child_key, plan["plan_sha"],
+                    plan["candidate"]["candidate_id"], plan["intent"],
+                    json.dumps(reserved, sort_keys=True, separators=(",", ":")) + "\n",
+                    self._now(),
+                ),
+            )
 
     def test_claims_are_fenced_and_terminal_states_do_not_reopen(self):
         plan = self._install()

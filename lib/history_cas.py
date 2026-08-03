@@ -81,9 +81,8 @@ def _ensure_directory(path):
 
 def _bounded_target(root, object_id):
     configured_root = pathlib.Path(root).absolute()
-    if configured_root.is_symlink():
-        raise CASError("CAS root must not be a symlink")
-    root = configured_root.resolve(strict=False)
+    _reject_symlink_ancestors(configured_root)
+    root = configured_root
     _ensure_directory(root)
     relative = _relative_path(object_id)
     target = root / relative

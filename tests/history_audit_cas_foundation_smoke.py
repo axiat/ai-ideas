@@ -52,7 +52,7 @@ SHA = "0" * 64
 class HistoryAuditCasFoundationSmoke(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = pathlib.Path(self.temp.name)
+        self.root = pathlib.Path(self.temp.name).resolve()
         self.cas_root = self.root / "cas"
         self.db = self.root / "history.sqlite3"
         self.conn = history_store.connect(self.db)

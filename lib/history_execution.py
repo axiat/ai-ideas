@@ -95,40 +95,45 @@ def persist_plan(conn, plan):
         raise ExecutionError("invalid_plan")
     if len(plan["shards"]) != len(plan["logical_task_keys"]):
         raise ExecutionError("invalid_plan")
-    _require_sha(plan["plan_sha"], "plan_sha")
+    try:
+        material = history_audit_plan.build_runtime_plan_material(plan)
+        computed_plan_sha = history_audit_plan.runtime_plan_sha_from_material(material)
+        records = history_audit_plan.runtime_snapshot_records(
+            plan["snapshot"]["records"]
+        )
+    except history_audit_plan.AuditPlanError as exc:
+        raise ExecutionError("frozen_identity_mismatch", exc.code) from exc
+    if (
+        plan.get("plan_sha") != computed_plan_sha
+        or plan.get("shard_plan_sha") != material["shard_plan_sha"]
+        or sorted(item["item_id"] for item in records)
+        != material["snapshot"]["expected_asset_ids"]
+        or plan["candidate"]["candidate_id"]
+        not in material["snapshot"]["current_batch_ids"]
+    ):
+        raise ExecutionError("frozen_identity_mismatch")
     snapshot = plan["snapshot"]
-    records = snapshot.get("records")
-    if not isinstance(records, list):
-        raise ExecutionError("invalid_snapshot")
-    record_by_id = {}
-    for item in records:
-        if not isinstance(item, dict) or set(item) != {
-            "item_id", "artifact_sha", "content", "lineage_id"
-        }:
-            raise ExecutionError("invalid_snapshot")
-        _require_sha(item["artifact_sha"], "artifact_sha")
-        if hashlib.sha256(item["content"].encode("utf-8")).hexdigest() != item["artifact_sha"]:
-            raise ExecutionError("snapshot_artifact_hash_mismatch")
-        if item["item_id"] in record_by_id:
-            raise ExecutionError("invalid_snapshot")
-        record_by_id[item["item_id"]] = copy.deepcopy(item)
+    record_by_id = {item["item_id"]: copy.deepcopy(item) for item in records}
+    plan_json = _canonical(material)
+    records_json = _canonical(records)
     created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     if conn.in_transaction:
         raise ExecutionError("persist_plan_requires_idle_connection")
     try:
         conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute(
-            "SELECT plan_hash FROM audit_run_manifests WHERE run_id=?", (plan["run_id"],)
+            "SELECT plan_hash, manifest_json FROM audit_run_manifests WHERE run_id=?",
+            (plan["run_id"],),
         ).fetchone()
         if existing is None:
             conn.execute(
                 "INSERT INTO audit_run_manifests VALUES(?, ?, ?, ?, ?)",
                 (
                     plan["run_id"], "history-audit-manifest-v2", plan["plan_sha"],
-                    _canonical({"plan_sha": plan["plan_sha"]}), created_at,
+                    plan_json, created_at,
                 ),
             )
-        elif existing[0] != plan["plan_sha"]:
+        elif tuple(existing) != (plan["plan_sha"], plan_json):
             raise ExecutionError("run_plan_conflict")
         stored_snapshot = conn.execute(
             "SELECT snapshot_hash, run_id FROM audit_snapshots WHERE snapshot_id=?",
@@ -157,6 +162,48 @@ def persist_plan(conn, plan):
             raise ExecutionError("snapshot_conflict")
         conn.execute(
             """
+            INSERT OR IGNORE INTO audit_snapshot_batch_sets(
+              snapshot_id, run_id, batch_id, current_batch_ids_hash,
+              member_ids_json, member_count, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot["snapshot_id"], plan["run_id"], plan["batch_id"],
+                snapshot["current_batch_ids_hash"],
+                json.dumps(
+                    snapshot["current_batch_ids"], sort_keys=True,
+                    separators=(",", ":"), ensure_ascii=False,
+                ),
+                len(snapshot["current_batch_ids"]), created_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO audit_batch_staging(
+              staging_candidate_id, run_id, batch_id, candidate_hash,
+              raw_artifact_sha, source_order, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                plan["candidate"]["candidate_id"], plan["run_id"], plan["batch_id"],
+                plan["candidate"]["candidate_hash"],
+                plan["candidate"]["raw_artifact_sha"],
+                plan["candidate"]["source_order"], created_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO audit_l2_snapshot_records_v2(
+              snapshot_id, records_sha, records_json, created_at
+            ) VALUES(?, ?, ?, ?)
+            """,
+            (
+                snapshot["snapshot_id"], material["snapshot"]["records_sha"],
+                records_json, created_at,
+            ),
+        )
+        conn.execute(
+            """
             INSERT OR IGNORE INTO audit_shard_plans(
               shard_plan_sha, run_id, snapshot_id, expected_asset_ids_hash,
               plan_json, created_at
@@ -165,6 +212,21 @@ def persist_plan(conn, plan):
             (
                 plan["shard_plan_sha"], plan["run_id"], snapshot["snapshot_id"],
                 snapshot["expected_asset_ids_hash"], _canonical(plan["shards"]), created_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO audit_l2_plans_v2(
+              plan_sha, run_id, candidate_id, candidate_hash, snapshot_id,
+              snapshot_hash, shard_plan_sha, budget_policy_sha, intent,
+              plan_json, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                plan["plan_sha"], plan["run_id"], plan["candidate"]["candidate_id"],
+                plan["candidate"]["candidate_hash"], snapshot["snapshot_id"],
+                snapshot["snapshot_hash"], plan["shard_plan_sha"],
+                material["budget_policy_sha"], plan["intent"], plan_json, created_at,
             ),
         )
         for task_hash, shard in zip(plan["logical_task_keys"], plan["shards"]):
@@ -215,6 +277,18 @@ def persist_plan(conn, plan):
                     created_at,
                 ),
             )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO audit_l2_task_inputs_v2(
+                  task_hash, input_id, request_sha, request_text,
+                  item_ids_json, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_hash, shard["shard_id"], request_sha,
+                    shard["serialized_request"], _canonical(item_ids), created_at,
+                ),
+            )
         conn.execute("COMMIT")
     except Exception:
         if conn.in_transaction:
@@ -229,9 +303,24 @@ def load_task(conn, task_key):
         SELECT task.*, binding.plan_sha, binding.snapshot_id, binding.snapshot_hash,
                binding.shard_input_sha, binding.assigned_item_ids_json,
                binding.frozen_records_json, binding.provider_pool_json,
-               binding.parent_task_hash, binding.split_depth
+               binding.parent_task_hash, binding.split_depth,
+               snapshot.history_as_of_watermark,
+               snapshot.current_batch_id_namespace,
+               snapshot.current_batch_ids_hash,
+               snapshot.exclusion_policy_sha,
+               snapshot.expected_asset_ids_hash,
+               records.records_json AS durable_snapshot_records_json,
+               plan.plan_json AS durable_plan_json,
+               task_input.request_text AS durable_request_text,
+               task_input.request_sha AS durable_request_sha
         FROM audit_logical_tasks task
         JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
+        JOIN audit_snapshots snapshot ON snapshot.snapshot_id=binding.snapshot_id
+        JOIN audit_l2_snapshot_records_v2 records
+          ON records.snapshot_id=binding.snapshot_id
+        JOIN audit_l2_plans_v2 plan ON plan.plan_sha=binding.plan_sha
+        JOIN audit_l2_task_inputs_v2 task_input
+          ON task_input.task_hash=task.task_hash
         WHERE task.task_hash=?
         """,
         (task_key,),
@@ -242,6 +331,10 @@ def load_task(conn, task_key):
     result["assigned_item_ids"] = _json(result.pop("assigned_item_ids_json"))
     result["frozen_records"] = _json(result.pop("frozen_records_json"))
     result["provider_pool"] = _json(result.pop("provider_pool_json"))
+    result["durable_snapshot_records"] = _json(
+        result.pop("durable_snapshot_records_json")
+    )
+    result["durable_plan"] = _json(result.pop("durable_plan_json"))
     return result
 
 
@@ -305,6 +398,116 @@ def _budget_event(conn, task, event_id, event_type, counters):
     )
 
 
+_BUDGET_RESOURCE_FIELDS = (
+    "input_tokens", "output_tokens", "provider_usage_units", "currency_micros"
+)
+_ATTEMPT_KINDS = frozenset(
+    {"initial", "retry", "failover", "split", "detail", "reduce", "cancel"}
+)
+
+
+def _effective_budget_totals(conn, task, *, candidate_only):
+    """Read durable reservations, replacing them only with verified actual usage."""
+    sql = """
+        SELECT reservation.reserved_json, settlement.usage_verified,
+               settlement.actual_json
+        FROM audit_runtime_budget_reservations_v2 reservation
+        JOIN audit_l2_plans_v2 plan ON plan.plan_sha=reservation.plan_sha
+        LEFT JOIN audit_runtime_budget_settlements_v2 settlement
+          ON settlement.attempt_id=reservation.attempt_id
+        WHERE plan.run_id=? AND reservation.intent=?
+    """
+    parameters = [task["run_id"], task["durable_plan"]["intent"]]
+    if candidate_only:
+        sql += " AND reservation.candidate_id=?"
+        parameters.append(task["staging_candidate_id"])
+    totals = {
+        "started_attempts": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "provider_usage_units": 0,
+    }
+    for row in conn.execute(sql, parameters):
+        totals["started_attempts"] += 1
+        usage = _json(row["reserved_json"])
+        if row["usage_verified"] == 1:
+            usage = _json(row["actual_json"])
+        for field in _BUDGET_RESOURCE_FIELDS:
+            if field in usage:
+                totals[field] = totals.get(field, 0) + usage[field]
+    return totals
+
+
+def _derived_reservation(task, request_bytes):
+    capacity = task["durable_plan"]["capacity_profile"]
+    maximum = capacity.get("max_output_tokens")
+    if type(maximum) is not int or maximum < 0:
+        raise ExecutionError("invalid_capacity_profile")
+    input_tokens = len(request_bytes)
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": maximum,
+        "provider_usage_units": input_tokens + maximum,
+    }
+
+
+def _assert_budget_available(conn, task, reserved):
+    try:
+        policy = history_audit_plan._intent_policy(
+            task["durable_plan"]["budget_policy"],
+            task["durable_plan"]["intent"],
+        )
+    except history_audit_plan.AuditPlanError as exc:
+        raise ExecutionError("invalid_budget_policy") from exc
+    requested = {"started_attempts": 1, **reserved}
+    for scope, candidate_only in (("round", False), ("candidate", True)):
+        totals = _effective_budget_totals(
+            conn, task, candidate_only=candidate_only
+        )
+        for field, amount in requested.items():
+            if field not in policy[scope] or totals.get(field, 0) + amount > policy[scope][field]:
+                raise ExecutionError("attempt_budget_exceeded")
+
+
+def _verified_usage(usage):
+    required = {"input_tokens", "output_tokens", "provider_usage_units"}
+    if not isinstance(usage, dict) or not required.issubset(usage):
+        return None
+    if set(usage).difference(required | {"currency_micros"}):
+        raise ExecutionError("invalid_verified_usage")
+    if any(type(value) is not int or value < 0 for value in usage.values()):
+        raise ExecutionError("invalid_verified_usage")
+    return copy.deepcopy(usage)
+
+
+def _settle_budget(conn, attempt_id, usage):
+    actual = _verified_usage(usage)
+    created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO audit_runtime_budget_settlements_v2(
+          attempt_id, usage_verified, actual_json, created_at
+        ) VALUES(?, ?, ?, ?)
+        """,
+        (attempt_id, int(actual is not None), _canonical(actual) if actual is not None else None, created_at),
+    )
+    stored = conn.execute(
+        """
+        SELECT usage_verified, actual_json
+        FROM audit_runtime_budget_settlements_v2 WHERE attempt_id=?
+        """,
+        (attempt_id,),
+    ).fetchone()
+    expected = (int(actual is not None), _canonical(actual) if actual is not None else None)
+    if stored is None or tuple(stored) != expected:
+        raise ExecutionError("conflicting_budget_settlement")
+    reservation = conn.execute(
+        "SELECT reserved_json FROM audit_runtime_budget_reservations_v2 WHERE attempt_id=?",
+        (attempt_id,),
+    ).fetchone()
+    return actual if actual is not None else _json(reservation["reserved_json"])
+
+
 def record_attempt(
     conn, task_key, capability, usage_reservation, *, cas_root, request_bytes, ordinal=None
 ):
@@ -317,8 +520,12 @@ def record_attempt(
     _require_sha(capability["profile_hash"], "profile_hash")
     if capability["provider"] not in task["provider_pool"]:
         raise ExecutionError("provider_outside_pool")
-    required_usage = {"attempt_kind", "input_tokens", "output_tokens", "provider_usage_units"}
-    if not isinstance(usage_reservation, dict) or not required_usage.issubset(usage_reservation):
+    if not isinstance(request_bytes, bytes):
+        raise ExecutionError("invalid_attempt_request")
+    if not isinstance(usage_reservation, dict):
+        raise ExecutionError("invalid_usage_reservation")
+    attempt_kind = usage_reservation.get("attempt_kind")
+    if attempt_kind not in _ATTEMPT_KINDS:
         raise ExecutionError("invalid_usage_reservation")
     count = conn.execute(
         "SELECT count(*) FROM audit_task_attempts WHERE task_hash=?", (task_key,)
@@ -326,6 +533,23 @@ def record_attempt(
     ordinal = count if ordinal is None else ordinal
     if type(ordinal) is not int or ordinal != count or ordinal >= MAX_ATTEMPTS:
         raise ExecutionError("attempt_limit")
+    request_sha = hashlib.sha256(request_bytes).hexdigest()
+    if (
+        request_sha != task["durable_request_sha"]
+        or request_bytes.decode("utf-8", errors="strict") != task["durable_request_text"]
+    ):
+        raise ExecutionError("attempt_request_hash_mismatch")
+    reserved = _derived_reservation(task, request_bytes)
+    _assert_budget_available(conn, task, reserved)
+    provenance = {
+        "provider": capability["provider"],
+        "capability_profile_hash": capability["profile_hash"],
+        "attempt_kind": attempt_kind,
+        "ordinal": ordinal,
+        "claim_token": task["claim_token"],
+        "claim_fence": task["fence"],
+    }
+    attempt_id = history_contract_v2.attempt_id(task_key, ordinal, provenance)
     request = history_cas.put_object(
         conn,
         cas_root,
@@ -335,17 +559,23 @@ def record_attempt(
     )
     if request["object_id"] != task["shard_input_sha"]:
         raise ExecutionError("attempt_request_hash_mismatch")
-    provenance = {
-        "provider": capability["provider"],
-        "capability_profile_hash": capability["profile_hash"],
-        "attempt_kind": usage_reservation["attempt_kind"],
-        "ordinal": ordinal,
-        "claim_token": task["claim_token"],
-        "claim_fence": task["fence"],
-    }
-    attempt_id = history_contract_v2.attempt_id(task_key, ordinal, provenance)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _assert_budget_available(conn, task, reserved)
+        created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT INTO audit_runtime_budget_reservations_v2(
+              attempt_id, task_hash, plan_sha, candidate_id, intent,
+              attempt_kind, reserved_json, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                attempt_id, task_key, task["plan_sha"], task["staging_candidate_id"],
+                task["durable_plan"]["intent"], attempt_kind,
+                _canonical(reserved), created_at,
+            ),
+        )
         conn.execute(
             """
             INSERT INTO audit_task_attempts(
@@ -355,14 +585,10 @@ def record_attempt(
             """,
             (
                 attempt_id, task_key, ordinal, _canonical(provenance),
-                request["object_id"], datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                request["object_id"], created_at,
             ),
         )
-        counters = {
-            key: usage_reservation[key]
-            for key in ("input_tokens", "output_tokens", "provider_usage_units")
-        }
-        _budget_event(conn, task, attempt_id + ":reserved", "reserved", counters)
+        _budget_event(conn, task, attempt_id + ":reserved", "reserved", reserved)
         conn.execute("COMMIT")
     except Exception:
         if conn.in_transaction:
@@ -407,6 +633,26 @@ def validate_map_output(task, raw_output, snapshot):
         raise MapValidationError("schema")
     if output["truncated"]:
         raise MapValidationError("truncated")
+    durable_records = task.get("durable_snapshot_records")
+    if durable_records is not None:
+        durable_plan_snapshot = task["durable_plan"]["snapshot"]
+        durable_snapshot = copy.deepcopy(durable_plan_snapshot)
+        durable_snapshot.pop("records_sha")
+        durable_snapshot["records"] = copy.deepcopy(durable_records)
+        if history_contract_v2.canonical_bytes(snapshot) != history_contract_v2.canonical_bytes(durable_snapshot):
+            raise MapValidationError("snapshot_authority_mismatch")
+        snapshot = durable_snapshot
+    elif task.get("frozen_records") is not None:
+        supplied = {
+            item["item_id"]: item for item in snapshot.get("records", [])
+        }
+        if any(
+            supplied.get(item["item_id"]) != item for item in task["frozen_records"]
+        ):
+            raise MapValidationError("snapshot_authority_mismatch")
+        durable_records = task["frozen_records"]
+    else:
+        durable_records = snapshot.get("records", [])
     if output["snapshot_id"] != snapshot.get("snapshot_id") or output["snapshot_hash"] != snapshot.get("snapshot_hash"):
         raise MapValidationError("stale_snapshot")
     if task.get("snapshot_id") is not None and (
@@ -422,7 +668,7 @@ def validate_map_output(task, raw_output, snapshot):
     ids = [item.get("item_id") if isinstance(item, dict) else None for item in output["items"]]
     if sorted(ids) != sorted(assigned) or len(set(ids)) != len(ids):
         raise MapValidationError("item_set_mismatch")
-    records = {item["item_id"]: item for item in snapshot.get("records", [])}
+    records = {item["item_id"]: item for item in durable_records}
     normalized = []
     for item in output["items"]:
         if set(item) != {"item_id", "semantic_relation", "lineage_relation", "anchor"}:
@@ -490,7 +736,8 @@ def _insert_completion(conn, task, attempt_id, output_id, outcome, normalized, u
     expected = (output_id, outcome, encoded, _canonical(usage))
     if stored is None or tuple(stored) != expected:
         raise ExecutionError("conflicting_attempt_completion")
-    _budget_event(conn, task, attempt_id + ":settled", "settled", usage)
+    effective = _settle_budget(conn, attempt_id, usage)
+    _budget_event(conn, task, attempt_id + ":settled", "settled", effective)
 
 
 def complete_attempt(
@@ -774,6 +1021,18 @@ def split_task(conn, parent_key):
                     _canonical(parent["provider_pool"]), parent_key, parent["split_depth"] + 1, created_at,
                 ),
             )
+            conn.execute(
+                """
+                INSERT INTO audit_l2_task_inputs_v2(
+                  task_hash, input_id, request_sha, request_text,
+                  item_ids_json, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    child_hash, child_input, input_sha,
+                    _canonical(request_material), _canonical(child_ids), created_at,
+                ),
+            )
             edge = {"parent_task_hash": parent_key, "child_task_hash": child_hash, "position": position}
             conn.execute(
                 "INSERT INTO audit_task_edges_v2 VALUES(?, ?, ?, ?, ?)",
@@ -815,27 +1074,7 @@ def run_map_task(
     existing_valid = _valid_completions(conn, task_key)
     if existing_valid:
         return settle_task(conn, task_key, existing_valid, cas_root=cas_root, now=now)
-    matching = [
-        shard for shard in plan["shards"] if shard["shard_id"] == task["input_id"]
-    ]
-    if matching:
-        request_bytes = matching[0]["serialized_request"].encode("utf-8")
-    elif task["parent_task_hash"] is not None:
-        try:
-            position = int(task["input_id"].rsplit(".", 1)[1])
-        except (IndexError, ValueError) as exc:
-            raise ExecutionError("invalid_split_input") from exc
-        request_bytes = history_contract_v2.canonical_bytes(
-            {
-                "parent_task_hash": task["parent_task_hash"],
-                "position": position,
-                "item_ids": task["assigned_item_ids"],
-            }
-        )
-        if hashlib.sha256(request_bytes).hexdigest() != task["shard_input_sha"]:
-            raise ExecutionError("split_input_hash_mismatch")
-    else:
-        raise ExecutionError("task_input_missing")
+    request_bytes = task["durable_request_text"].encode("utf-8")
     pool = task["provider_pool"]
     provider_index = 0
     prior_failure = None

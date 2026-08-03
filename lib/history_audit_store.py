@@ -10,8 +10,10 @@ import sqlite3
 import contextlib
 
 try:
+    from lib import history_audit_plan
     from lib import history_contract_v2
 except ImportError:
+    import history_audit_plan
     import history_contract_v2
 
 
@@ -1946,6 +1948,212 @@ END;
 """
 
 
+_L2_RUNTIME_AUTHORITY_SQL = """
+CREATE TABLE audit_l2_plans_v2(
+  plan_sha TEXT PRIMARY KEY CHECK(length(plan_sha) = 64),
+  run_id TEXT NOT NULL UNIQUE REFERENCES audit_run_manifests(run_id),
+  candidate_id TEXT NOT NULL UNIQUE REFERENCES audit_batch_staging(staging_candidate_id),
+  candidate_hash TEXT NOT NULL CHECK(length(candidate_hash) = 64),
+  snapshot_id TEXT NOT NULL UNIQUE REFERENCES audit_snapshots(snapshot_id),
+  snapshot_hash TEXT NOT NULL CHECK(length(snapshot_hash) = 64),
+  shard_plan_sha TEXT NOT NULL UNIQUE CHECK(length(shard_plan_sha) = 64),
+  budget_policy_sha TEXT NOT NULL CHECK(length(budget_policy_sha) = 64),
+  intent TEXT NOT NULL,
+  plan_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE audit_l2_snapshot_records_v2(
+  snapshot_id TEXT PRIMARY KEY REFERENCES audit_snapshots(snapshot_id),
+  records_sha TEXT NOT NULL UNIQUE CHECK(length(records_sha) = 64),
+  records_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE audit_l2_task_inputs_v2(
+  task_hash TEXT PRIMARY KEY REFERENCES audit_logical_tasks(task_hash),
+  input_id TEXT NOT NULL,
+  request_sha TEXT NOT NULL CHECK(length(request_sha) = 64),
+  request_text TEXT NOT NULL,
+  item_ids_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE audit_runtime_budget_reservations_v2(
+  attempt_id TEXT PRIMARY KEY CHECK(length(attempt_id) = 64),
+  task_hash TEXT NOT NULL REFERENCES audit_logical_tasks(task_hash),
+  plan_sha TEXT NOT NULL REFERENCES audit_l2_plans_v2(plan_sha),
+  candidate_id TEXT NOT NULL,
+  intent TEXT NOT NULL,
+  attempt_kind TEXT NOT NULL CHECK(attempt_kind IN (
+    'initial','retry','failover','split','detail','reduce','cancel'
+  )),
+  reserved_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE audit_runtime_budget_settlements_v2(
+  attempt_id TEXT PRIMARY KEY
+    REFERENCES audit_runtime_budget_reservations_v2(attempt_id),
+  usage_verified INTEGER NOT NULL CHECK(usage_verified IN (0,1)),
+  actual_json TEXT,
+  created_at TEXT NOT NULL,
+  CHECK((usage_verified = 1) = (actual_json IS NOT NULL))
+);
+""" + _immutable_guards(
+    "audit_l2_plans_v2",
+    "audit_l2_snapshot_records_v2",
+    "audit_l2_task_inputs_v2",
+    "audit_runtime_budget_reservations_v2",
+    "audit_runtime_budget_settlements_v2",
+) + """
+CREATE TRIGGER audit_l2_plans_v2_canonical_guard
+BEFORE INSERT ON audit_l2_plans_v2
+BEGIN
+  SELECT CASE WHEN audit_l2_plan_valid(
+    NEW.plan_json, NEW.plan_sha, NEW.run_id, NEW.candidate_id,
+    NEW.candidate_hash, NEW.snapshot_id, NEW.snapshot_hash,
+    NEW.shard_plan_sha, NEW.budget_policy_sha, NEW.intent
+  ) <> 1 THEN RAISE(ABORT, 'L2 plan canonical identity mismatch') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_run_manifests run
+    JOIN audit_batch_staging candidate
+      ON candidate.staging_candidate_id = NEW.candidate_id
+    JOIN audit_snapshots snapshot ON snapshot.snapshot_id = NEW.snapshot_id
+    JOIN audit_l2_snapshot_records_v2 records
+      ON records.snapshot_id = snapshot.snapshot_id
+    WHERE run.run_id = NEW.run_id
+      AND run.plan_hash = NEW.plan_sha
+      AND run.manifest_json = NEW.plan_json
+      AND candidate.run_id = NEW.run_id
+      AND candidate.candidate_hash = NEW.candidate_hash
+      AND snapshot.run_id = NEW.run_id
+      AND snapshot.snapshot_hash = NEW.snapshot_hash
+      AND json_extract(NEW.plan_json, '$.snapshot.records_sha') = records.records_sha
+  ) THEN RAISE(ABORT, 'L2 plan authority facts mismatch') END;
+END;
+CREATE TRIGGER audit_l2_snapshot_records_v2_guard
+BEFORE INSERT ON audit_l2_snapshot_records_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_snapshots snapshot
+    WHERE snapshot.snapshot_id = NEW.snapshot_id
+      AND audit_l2_records_valid(
+        NEW.records_json, NEW.records_sha, snapshot.expected_asset_ids_hash
+      ) = 1
+  ) THEN RAISE(ABORT, 'L2 snapshot records mismatch') END;
+END;
+CREATE TRIGGER audit_l2_task_inputs_v2_guard
+BEFORE INSERT ON audit_l2_task_inputs_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_task_bindings_v2 binding
+    JOIN audit_l2_plans_v2 plan ON plan.plan_sha = binding.plan_sha
+    WHERE binding.task_hash = NEW.task_hash
+      AND audit_l2_task_input_valid(
+        plan.plan_json, binding.parent_task_hash, NEW.input_id,
+        NEW.request_text, NEW.request_sha, NEW.item_ids_json
+      ) = 1
+      AND NEW.input_id = (
+        SELECT task.input_id FROM audit_logical_tasks task
+        WHERE task.task_hash = NEW.task_hash
+      )
+      AND NEW.request_sha = binding.shard_input_sha
+      AND NEW.item_ids_json = binding.assigned_item_ids_json
+  ) THEN RAISE(ABORT, 'L2 task input mismatch') END;
+END;
+CREATE TRIGGER audit_task_attempts_budget_reservation_guard
+BEFORE INSERT ON audit_task_attempts
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_runtime_budget_reservations_v2 reservation
+    WHERE reservation.attempt_id = NEW.attempt_id
+      AND reservation.task_hash = NEW.task_hash
+  ) THEN RAISE(ABORT, 'attempt lacks durable budget reservation') END;
+END;
+CREATE TRIGGER audit_runtime_budget_reservations_v2_guard
+BEFORE INSERT ON audit_runtime_budget_reservations_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_logical_tasks task
+    JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
+    JOIN audit_l2_plans_v2 plan ON plan.plan_sha=binding.plan_sha
+    JOIN audit_l2_task_inputs_v2 task_input ON task_input.task_hash=task.task_hash
+    WHERE task.task_hash=NEW.task_hash
+      AND plan.plan_sha=NEW.plan_sha
+      AND plan.candidate_id=NEW.candidate_id
+      AND plan.intent=NEW.intent
+      AND audit_l2_budget_reservation_valid(
+        plan.plan_json, NEW.candidate_id, NEW.intent,
+        NEW.reserved_json, task_input.request_text
+      )=1
+  ) THEN RAISE(ABORT, 'budget reservation authority mismatch') END;
+  SELECT CASE WHEN (
+    SELECT count(*) FROM audit_runtime_budget_reservations_v2 prior
+    JOIN audit_l2_plans_v2 prior_plan ON prior_plan.plan_sha=prior.plan_sha
+    WHERE prior_plan.run_id=(
+      SELECT run_id FROM audit_l2_plans_v2 WHERE plan_sha=NEW.plan_sha
+    ) AND prior.intent=NEW.intent
+  ) + 1 > (
+    SELECT audit_l2_budget_limit(plan_json, NEW.intent, 'round', 'started_attempts')
+    FROM audit_l2_plans_v2 WHERE plan_sha=NEW.plan_sha
+  ) THEN RAISE(ABORT, 'round attempt budget exceeded') END;
+  SELECT CASE WHEN (
+    SELECT count(*) FROM audit_runtime_budget_reservations_v2 prior
+    WHERE prior.candidate_id=NEW.candidate_id AND prior.intent=NEW.intent
+  ) + 1 > (
+    SELECT audit_l2_budget_limit(plan_json, NEW.intent, 'candidate', 'started_attempts')
+    FROM audit_l2_plans_v2 WHERE plan_sha=NEW.plan_sha
+  ) THEN RAISE(ABORT, 'candidate attempt budget exceeded') END;
+  SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM json_each(NEW.reserved_json) requested
+    WHERE requested.value + COALESCE((
+      SELECT sum(audit_l2_budget_effective(
+        prior.reserved_json, settlement.usage_verified,
+        settlement.actual_json, requested.key
+      ))
+      FROM audit_runtime_budget_reservations_v2 prior
+      JOIN audit_l2_plans_v2 prior_plan ON prior_plan.plan_sha=prior.plan_sha
+      LEFT JOIN audit_runtime_budget_settlements_v2 settlement
+        ON settlement.attempt_id=prior.attempt_id
+      WHERE prior_plan.run_id=(
+        SELECT run_id FROM audit_l2_plans_v2 WHERE plan_sha=NEW.plan_sha
+      ) AND prior.intent=NEW.intent
+    ), 0) > (
+      SELECT audit_l2_budget_limit(plan_json, NEW.intent, 'round', requested.key)
+      FROM audit_l2_plans_v2 WHERE plan_sha=NEW.plan_sha
+    )
+  ) THEN RAISE(ABORT, 'round resource budget exceeded') END;
+  SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM json_each(NEW.reserved_json) requested
+    WHERE requested.value + COALESCE((
+      SELECT sum(audit_l2_budget_effective(
+        prior.reserved_json, settlement.usage_verified,
+        settlement.actual_json, requested.key
+      ))
+      FROM audit_runtime_budget_reservations_v2 prior
+      LEFT JOIN audit_runtime_budget_settlements_v2 settlement
+        ON settlement.attempt_id=prior.attempt_id
+      WHERE prior.candidate_id=NEW.candidate_id AND prior.intent=NEW.intent
+    ), 0) > (
+      SELECT audit_l2_budget_limit(plan_json, NEW.intent, 'candidate', requested.key)
+      FROM audit_l2_plans_v2 WHERE plan_sha=NEW.plan_sha
+    )
+  ) THEN RAISE(ABORT, 'candidate resource budget exceeded') END;
+END;
+CREATE TRIGGER audit_runtime_budget_settlements_v2_owner_guard
+BEFORE INSERT ON audit_runtime_budget_settlements_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_task_attempts attempt
+    WHERE attempt.attempt_id = NEW.attempt_id
+  ) THEN RAISE(ABORT, 'budget settlement attempt is missing') END;
+  SELECT CASE WHEN audit_l2_budget_settlement_valid(
+    NEW.usage_verified, NEW.actual_json
+  ) <> 1 THEN RAISE(ABORT, 'budget settlement usage is invalid') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
@@ -1978,6 +2186,7 @@ MIGRATIONS = (
         _STRICT_PAIR_COMPLETION_SQL,
     ),
     Migration("l2-runtime", 1, _L2_RUNTIME_SQL),
+    Migration("l2-runtime-authority", 1, _L2_RUNTIME_AUTHORITY_SQL),
 )
 
 
@@ -2057,6 +2266,157 @@ def _metadata_annotation_ids_sha(annotation_ids_json):
         "history-metadata-annotation-set-v1",
         history_contract_v2.canonical_bytes(values),
     )
+
+
+def _closed_json(text):
+    if not isinstance(text, str):
+        raise ValueError("canonical JSON must be text")
+
+    def pairs(values):
+        result = {}
+        for key, value in values:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    value = json.loads(text, object_pairs_hook=pairs)
+    if history_contract_v2.canonical_bytes(value).decode("utf-8") != text:
+        raise ValueError("JSON is not canonical")
+    return value
+
+
+def _l2_plan_valid(
+    plan_json, plan_sha, run_id, candidate_id, candidate_hash,
+    snapshot_id, snapshot_hash, shard_plan_sha, budget_policy_sha, intent,
+):
+    try:
+        material = _closed_json(plan_json)
+        normalized = history_audit_plan.validate_runtime_plan_material(material)
+        return 1 if (
+            history_audit_plan.runtime_plan_sha_from_material(normalized) == plan_sha
+            and normalized["run_id"] == run_id
+            and normalized["candidate"]["candidate_id"] == candidate_id
+            and normalized["candidate"]["candidate_hash"] == candidate_hash
+            and normalized["snapshot"]["snapshot_id"] == snapshot_id
+            and normalized["snapshot"]["snapshot_hash"] == snapshot_hash
+            and normalized["shard_plan_sha"] == shard_plan_sha
+            and normalized["budget_policy_sha"] == budget_policy_sha
+            and normalized["intent"] == intent
+        ) else 0
+    except (ValueError, TypeError, history_audit_plan.AuditPlanError):
+        return 0
+
+
+def _l2_records_valid(records_json, records_sha, expected_asset_ids_hash):
+    try:
+        records = history_audit_plan.runtime_snapshot_records(
+            _closed_json(records_json)
+        )
+        asset_ids = [item["item_id"] for item in records]
+        return 1 if (
+            history_audit_plan.runtime_snapshot_records_sha(records) == records_sha
+            and history_contract_v2.ordered_set_sha256(
+                "history-snapshot-assets-v2", asset_ids
+            ) == expected_asset_ids_hash
+        ) else 0
+    except (ValueError, TypeError, history_audit_plan.AuditPlanError):
+        return 0
+
+
+def _l2_task_input_valid(
+    plan_json, parent_task_hash, input_id, request_text, request_sha, item_ids_json
+):
+    try:
+        material = _closed_json(plan_json)
+        item_ids = _closed_json(item_ids_json)
+        if (
+            not isinstance(input_id, str)
+            or not isinstance(request_text, str)
+            or hashlib.sha256(request_text.encode("utf-8")).hexdigest() != request_sha
+        ):
+            return 0
+        if parent_task_hash is None:
+            matches = [
+                shard for shard in material["shards"]
+                if shard["shard_id"] == input_id
+            ]
+            return 1 if len(matches) == 1 and (
+                matches[0]["serialized_request"] == request_text
+                and matches[0]["request_sha256"] == request_sha
+                and matches[0]["item_ids"] == item_ids
+            ) else 0
+        request = _closed_json(request_text)
+        try:
+            position = int(input_id.rsplit(".", 1)[1])
+        except (IndexError, ValueError):
+            return 0
+        return 1 if request == {
+            "parent_task_hash": parent_task_hash,
+            "position": position,
+            "item_ids": item_ids,
+        } else 0
+    except (ValueError, TypeError, KeyError, history_audit_plan.AuditPlanError):
+        return 0
+
+
+def _l2_budget_reservation_valid(
+    plan_json, candidate_id, intent, reserved_json, request_text
+):
+    try:
+        plan = _closed_json(plan_json)
+        reserved = _closed_json(reserved_json)
+        history_audit_plan._intent_policy(plan["budget_policy"], intent)
+        maximum = plan["capacity_profile"]["max_output_tokens"]
+        expected_input = len(request_text.encode("utf-8"))
+        return 1 if (
+            candidate_id == plan["candidate"]["candidate_id"]
+            and intent == plan["intent"]
+            and type(maximum) is int
+            and maximum >= 0
+            and reserved == {
+                "input_tokens": expected_input,
+                "output_tokens": maximum,
+                "provider_usage_units": expected_input + maximum,
+            }
+        ) else 0
+    except (ValueError, TypeError, KeyError, history_audit_plan.AuditPlanError):
+        return 0
+
+
+def _l2_budget_limit(plan_json, intent, scope, field):
+    try:
+        plan = _closed_json(plan_json)
+        policy = history_audit_plan._intent_policy(plan["budget_policy"], intent)
+        value = policy[scope][field]
+        return value if type(value) is int and value >= 0 else -1
+    except (ValueError, TypeError, KeyError, history_audit_plan.AuditPlanError):
+        return -1
+
+
+def _l2_budget_effective(reserved_json, usage_verified, actual_json, field):
+    try:
+        usage = _closed_json(actual_json) if usage_verified == 1 else _closed_json(reserved_json)
+        value = usage.get(field, 0)
+        return value if type(value) is int and value >= 0 else 2 ** 63 - 1
+    except (ValueError, TypeError, KeyError):
+        return 2 ** 63 - 1
+
+
+def _l2_budget_settlement_valid(usage_verified, actual_json):
+    try:
+        if usage_verified == 0:
+            return 1 if actual_json is None else 0
+        usage = _closed_json(actual_json)
+        required = {"input_tokens", "output_tokens", "provider_usage_units"}
+        return 1 if (
+            usage_verified == 1
+            and required.issubset(usage)
+            and not set(usage).difference(required | {"currency_micros"})
+            and all(type(value) is int and value >= 0 for value in usage.values())
+        ) else 0
+    except (ValueError, TypeError):
+        return 0
 
 
 def _clear_metadata_guard(guard):
@@ -2266,6 +2626,17 @@ def init_schema(conn):
     conn.create_function(
         "audit_metadata_annotation_ids_sha", 1,
         _metadata_annotation_ids_sha,
+    )
+    conn.create_function("audit_l2_plan_valid", 10, _l2_plan_valid)
+    conn.create_function("audit_l2_records_valid", 3, _l2_records_valid)
+    conn.create_function("audit_l2_task_input_valid", 6, _l2_task_input_valid)
+    conn.create_function(
+        "audit_l2_budget_reservation_valid", 5, _l2_budget_reservation_valid
+    )
+    conn.create_function("audit_l2_budget_limit", 4, _l2_budget_limit)
+    conn.create_function("audit_l2_budget_effective", 4, _l2_budget_effective)
+    conn.create_function(
+        "audit_l2_budget_settlement_valid", 2, _l2_budget_settlement_valid
     )
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA recursive_triggers = ON")
