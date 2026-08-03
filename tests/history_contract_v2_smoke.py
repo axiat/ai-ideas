@@ -240,6 +240,27 @@ class HistoryContractV2Smoke(unittest.TestCase):
             )
             self.assertEqual(contract.validate_receipt(value), value)
 
+    def test_complete_no_match_rejects_invalid_or_truncated_evidence(self):
+        for fault in ("invalid_schema", "invalid_anchor", "truncated"):
+            value = valid_receipt()
+            value.update(
+                final_status="complete_no_match",
+                no_match_basis="l2_exhaustive",
+                semantic_policy_qualified=True,
+            )
+            value[fault] = True
+            with self.subTest(fault=fault):
+                with self.assertRaises(contract.ContractV2Error):
+                    contract.validate_receipt(value)
+
+    def test_coverage_complete_rejects_invalid_or_truncated_evidence(self):
+        for fault in ("invalid_schema", "invalid_anchor", "truncated"):
+            value = valid_receipt()
+            value[fault] = True
+            with self.subTest(fault=fault):
+                with self.assertRaises(contract.ContractV2Error):
+                    contract.validate_receipt(value)
+
 
 if __name__ == "__main__":
     unittest.main()

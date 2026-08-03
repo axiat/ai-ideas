@@ -274,6 +274,92 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
             history_audit_store.init_schema(legacy)
         legacy.close()
 
+    def test_storage_rejects_fault_flags_with_complete_coverage(self):
+        descriptor = history_cas.put_object(
+            self.conn, self.cas_root, b"coverage fault evidence", "permanent"
+        )
+        cases = (
+            ("complete_no_match", "invalid_schema"),
+            ("complete_no_match", "invalid_anchor"),
+            ("complete_no_match", "truncated"),
+            ("uncertain", "invalid_schema"),
+            ("uncertain", "invalid_anchor"),
+            ("uncertain", "truncated"),
+        )
+        for status, fault in cases:
+            receipt = self._receipt([descriptor["object_id"]])
+            if status == "complete_no_match":
+                receipt.update(
+                    final_status=status,
+                    no_match_basis="l2_exhaustive",
+                    semantic_policy_qualified=True,
+                )
+            receipt[fault] = True
+            receipt["minimum_receipt_sha"] = hashlib.sha256(
+                f"{status}:{fault}".encode("utf-8")
+            ).hexdigest()
+            with self.subTest(status=status, fault=fault):
+                with mock.patch.object(
+                    history_contract_v2, "validate_receipt", return_value=receipt
+                ):
+                    with self.assertRaises(history_cas.CASError):
+                        history_cas.write_minimum_receipt(self.conn, receipt)
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM audit_receipts").fetchone()[0], 0
+        )
+
+    def test_coverage_guard_migration_rejects_preexisting_fault_receipt(self):
+        legacy_db = self.root / "pre-coverage-guard.sqlite3"
+        legacy = history_store.connect(legacy_db)
+        history_store.init_schema(legacy)
+        pre_guard = tuple(
+            migration
+            for migration in history_audit_store.MIGRATIONS
+            if migration.component != "coverage-integrity-guards"
+        )
+        with mock.patch.object(history_audit_store, "MIGRATIONS", pre_guard):
+            history_audit_store.init_schema(legacy)
+        legacy.execute(
+            """
+            INSERT INTO audit_run_manifests(
+              run_id, manifest_schema_version, plan_hash, manifest_json, created_at
+            ) VALUES('run-1', 'history-audit-manifest-v2', ?, '{}',
+                     '2026-08-03T00:00:00Z')
+            """,
+            (SHA,),
+        )
+        legacy.execute(
+            """
+            INSERT INTO audit_snapshots(
+              snapshot_id, snapshot_hash, history_as_of_watermark,
+              current_batch_id_namespace, current_batch_ids_hash,
+              exclusion_policy_sha, expected_asset_ids_hash, created_at
+            ) VALUES('snapshot-1', ?, 7, 'history-v2-staging-v1', ?, ?, ?,
+                     '2026-08-03T00:00:00Z')
+            """,
+            (SHA, SHA, SHA, SHA),
+        )
+        descriptor = history_cas.put_object(
+            legacy,
+            self.root / "pre-coverage-guard-cas",
+            b"preexisting coverage fault",
+            "permanent",
+        )
+        receipt = self._receipt([descriptor["object_id"]])
+        receipt.update(
+            final_status="complete_no_match",
+            no_match_basis="l2_exhaustive",
+            semantic_policy_qualified=True,
+            invalid_schema=True,
+        )
+        with mock.patch.object(
+            history_contract_v2, "validate_receipt", return_value=receipt
+        ):
+            history_cas.write_minimum_receipt(legacy, receipt)
+        with self.assertRaises(history_audit_store.AuditMigrationError):
+            history_audit_store.init_schema(legacy)
+        legacy.close()
+
     def test_crash_after_cas_publish_before_receipt_can_recover_descriptor(self):
         raw = b"published before descriptor transaction"
         compressed = zlib.compress(raw, level=9)

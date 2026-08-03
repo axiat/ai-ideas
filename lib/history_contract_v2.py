@@ -321,6 +321,12 @@ def validate_receipt(value):
     ):
         if type(normalized[name]) is not bool:
             raise ContractV2Error(f"{name} must be boolean")
+    coverage_fault = any(
+        normalized[field]
+        for field in ("invalid_schema", "invalid_anchor", "truncated")
+    )
+    if normalized["coverage_complete"] and coverage_fault:
+        raise ContractV2Error("complete coverage cannot contain coverage faults")
     if not isinstance(normalized["evidence_anchors"], list):
         raise ContractV2Error("evidence_anchors must be an array")
 

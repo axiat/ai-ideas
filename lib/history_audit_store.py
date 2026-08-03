@@ -576,6 +576,39 @@ END;
 """
 
 
+_COVERAGE_INTEGRITY_GUARDS_SQL = """
+CREATE TABLE audit_coverage_integrity_probe(
+  value INTEGER NOT NULL CHECK(value = 0)
+);
+INSERT INTO audit_coverage_integrity_probe(value)
+SELECT 1 FROM audit_receipts receipt
+WHERE (
+    receipt.coverage_complete = 1
+    OR receipt.final_status = 'complete_no_match'
+  )
+  AND (
+    receipt.invalid_schema = 1
+    OR receipt.invalid_anchor = 1
+    OR receipt.truncated = 1
+  );
+DROP TABLE audit_coverage_integrity_probe;
+CREATE TRIGGER audit_receipts_coverage_fault_guard
+BEFORE INSERT ON audit_receipts
+WHEN (
+    NEW.coverage_complete = 1
+    OR NEW.final_status = 'complete_no_match'
+  )
+  AND (
+    NEW.invalid_schema = 1
+    OR NEW.invalid_anchor = 1
+    OR NEW.truncated = 1
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'complete coverage cannot contain coverage faults');
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
@@ -585,6 +618,9 @@ MIGRATIONS = (
     Migration("metadata", 1, _METADATA_SQL),
     Migration("semantic-qualification", 1, _SEMANTIC_SQL),
     Migration("integrity-guards", 1, _INTEGRITY_GUARDS_SQL),
+    Migration(
+        "coverage-integrity-guards", 1, _COVERAGE_INTEGRITY_GUARDS_SQL
+    ),
 )
 
 
