@@ -117,6 +117,48 @@ class ProviderAdaptersSmoke(unittest.TestCase):
         with self.assertRaises(dataclasses.FrozenInstanceError):
             capability.provider = "grok"
 
+    def test_command_intent_is_distinct_from_verified_hard_capability(self):
+        strict = self._resolve(
+            "hunt",
+            "codex",
+            probe_fn=lambda *args: probe(
+                *args,
+                effective_model="observed-model",
+                effective_reasoning="high",
+                immutable_capacity_identity="observed-capacity",
+            ),
+        )
+        self.assertIsInstance(strict, provider_adapters.ProviderCapability)
+        self.assertTrue(strict.hard_complete_eligible)
+        self.assertEqual(strict.authority, "hard-complete")
+        self.assertEqual(strict.model_identity, "observed-model")
+        self.assertEqual(strict.reasoning_identity, "high")
+
+        resolve_intent = self._api(
+            provider_adapters, "resolve_command_intent"
+        )
+        intent = resolve_intent(
+            self._registry(),
+            "hunt",
+            "codex",
+            model="requested-model",
+            reasoning="unverified-spelling",
+            executable_lookup=lambda _: str(FAKE),
+        )
+        intent_type = getattr(
+            provider_adapters, "ProviderCommandIntent", None
+        )
+        self.assertIs(type(intent), intent_type)
+        self.assertNotIsInstance(intent, provider_adapters.ProviderCapability)
+        self.assertEqual(intent.requested_model, "requested-model")
+        self.assertEqual(intent.requested_reasoning, "unverified-spelling")
+        self.assertIsNone(intent.effective_model)
+        self.assertIsNone(intent.effective_reasoning)
+        self.assertIsNone(intent.model_override_applied)
+        self.assertIsNone(intent.reasoning_override_applied)
+        self.assertEqual(intent.provider_validation, "unverified")
+        self.assertFalse(intent.hard_complete_eligible)
+
     def test_default_model_reasoning_or_cli_drift_stales_capability(self):
         resolve = self._api(provider_adapters, "resolve_provider")
         current = self._resolve(
@@ -333,6 +375,7 @@ class PortableAgentSmoke(unittest.TestCase):
                 (hardlink, "input/b.txt"),
                 (real, "ledger.tsv"),
                 (real, ".git/config"),
+                (real, ".claude/settings.json"),
                 (real, "history.sqlite3"),
             ):
                 with self.assertRaises(self._error()):
@@ -350,6 +393,7 @@ class PortableAgentSmoke(unittest.TestCase):
                 root / "ledger.tsv",
                 root / "history.sqlite3",
                 root / ".git" / "config",
+                root / ".claude" / "settings.json",
                 root / ".ai-ideas" / "durable-state.json",
             )
             for source in reserved_sources:

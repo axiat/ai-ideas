@@ -393,6 +393,53 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
         attempt = self._api("attempt_manifest")(plan, 0, 0, capabilities["codex"])
         self.assertEqual(attempt["provenance"]["provider"], "codex")
 
+    def test_grammar_only_command_intent_cannot_enter_hard_complete_plan(self):
+        resolve_intent = getattr(
+            provider_adapters, "resolve_command_intent", None
+        )
+        self.assertTrue(
+            callable(resolve_intent),
+            "missing behavior: provider_adapters.resolve_command_intent",
+        )
+        registry = provider_adapters.load_registry(
+            ROOT / "history/provider-adapters-v1.json"
+        )
+        intent = resolve_intent(
+            registry,
+            "hunt",
+            "codex",
+            model="requested-model",
+            reasoning="unverified-effort-spelling",
+            executable_lookup=lambda _: str(
+                ROOT / "tests/fake_portable_stage_provider.py"
+            ),
+        )
+        self.assertEqual(intent.requested_model, "requested-model")
+        self.assertEqual(
+            intent.requested_reasoning,
+            "unverified-effort-spelling",
+        )
+        self.assertIsNone(intent.effective_model)
+        self.assertIsNone(intent.effective_reasoning)
+        self.assertIsNone(intent.model_override_applied)
+        self.assertIsNone(intent.reasoning_override_applied)
+        self.assertEqual(intent.provider_validation, "unverified")
+        self.assertFalse(intent.hard_complete_eligible)
+        argv, environment = provider_adapters.render_command(
+            intent, "/portable-mirror", "PROMPT"
+        )
+        self.assertIn("requested-model", argv)
+        self.assertIn(
+            "model_reasoning_effort=unverified-effort-spelling", argv
+        )
+        self.assertEqual(environment, {})
+
+        capabilities = dict(self.capabilities)
+        capabilities["codex"] = intent
+        with self.assertRaises(self._error()) as caught:
+            self._build(records(1), capabilities=capabilities)
+        self.assertEqual(caught.exception.code, "unbudgetable_provider")
+
     def test_build_plan_reserves_every_worst_case_pool_attempt(self):
         events = []
         plan = self._build_with_events(events, records(13))

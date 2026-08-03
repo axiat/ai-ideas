@@ -109,15 +109,28 @@ class ProviderCommandCliSmoke(unittest.TestCase):
             "schema_version": "provider-command-v1",
             "surface": "hunt",
             "provider": "codex",
-            "model_override": "gpt-5.6-sol",
-            "reasoning_override": "xhigh",
+            "requested_model": "gpt-5.6-sol",
+            "requested_reasoning": "xhigh",
+            "effective_model": None,
+            "effective_reasoning": None,
+            "model_override_applied": None,
+            "reasoning_override_applied": None,
             "model_default": False,
             "reasoning_default": False,
             "hard_complete_eligible": False,
             "authority": "shadow-only",
             "execution_boundary": "portable-mirror-v1",
+            "diagnostic_scope": "grammar-only",
+            "grammar_status": "accepted",
+            "provider_validation": "unverified",
         }.items():
             self.assertEqual(payload.get(field), expected, field)
+        self.assertRegex(
+            payload.get("execution_request_profile_hash", ""),
+            r"^[0-9a-f]{64}$",
+        )
+        self.assertNotIn("model_override", payload)
+        self.assertNotIn("reasoning_override", payload)
         self.assertEqual(payload.get("environment"), {})
 
     def test_provider_command_enforces_closed_surface_sets_before_launch(self):
@@ -137,6 +150,40 @@ class ProviderCommandCliSmoke(unittest.TestCase):
                 completed = self._run(surface, provider)
                 self.assertNotEqual(completed.returncode, 0)
                 self.assertEqual(completed.stdout, "")
+        self.assertFalse(self.launch_log.exists())
+
+    def test_complete_audit_v2_command_surface_is_exposed_without_launch(self):
+        environment = os.environ.copy()
+        environment["PATH"] = (
+            str(self.bin) + os.pathsep + environment.get("PATH", "")
+        )
+        environment["PROVIDER_LAUNCH_LOG"] = str(self.launch_log)
+        for command in (
+            "init",
+            "plan",
+            "run",
+            "resume",
+            "verify",
+            "evaluate",
+        ):
+            with self.subTest(command=command):
+                completed = subprocess.run(
+                    [sys.executable, str(CLI), command, "--help"],
+                    cwd=ROOT,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                self.assertEqual(
+                    completed.returncode,
+                    0,
+                    f"missing audit-v2 CLI command {command}: "
+                    f"{completed.stderr}",
+                )
         self.assertFalse(self.launch_log.exists())
 
     def test_provider_command_emits_exact_override_argv_and_default_markers(self):
@@ -209,8 +256,11 @@ class ProviderCommandCliSmoke(unittest.TestCase):
         default = self._payload("hunt", "codex")
         self.assertTrue(default.get("model_default"))
         self.assertTrue(default.get("reasoning_default"))
-        self.assertEqual(default.get("model_identity"), "provider-default")
-        self.assertEqual(default.get("reasoning_identity"), "provider-default")
+        self.assertIsNone(default.get("requested_model"))
+        self.assertIsNone(default.get("requested_reasoning"))
+        self.assertIsNone(default.get("effective_model"))
+        self.assertIsNone(default.get("effective_reasoning"))
+        self.assertEqual(default.get("provider_validation"), "unverified")
         self.assertNotIn("-m", default["argv"])
         self.assertFalse(
             any("model_reasoning_effort=" in item for item in default["argv"])
@@ -224,6 +274,27 @@ class ProviderCommandCliSmoke(unittest.TestCase):
         self.assertEqual(completed.stdout, "")
         self.assertIn("kimi", completed.stderr.lower())
         self.assertIn("reasoning", completed.stderr.lower())
+        self.assertFalse(self.launch_log.exists())
+
+    def test_codex_reasoning_spelling_is_grammar_only_not_provider_validated(self):
+        payload = self._payload(
+            "hunt",
+            "codex",
+            model="MODEL",
+            reasoning="not-a-confirmed-provider-effort",
+        )
+        self.assertEqual(payload.get("grammar_status"), "accepted")
+        self.assertEqual(payload.get("provider_validation"), "unverified")
+        self.assertEqual(
+            payload.get("requested_reasoning"),
+            "not-a-confirmed-provider-effort",
+        )
+        self.assertIsNone(payload.get("effective_reasoning"))
+        self.assertIsNot(payload.get("reasoning_override_applied"), True)
+        self.assertIn(
+            "model_reasoning_effort=not-a-confirmed-provider-effort",
+            payload["argv"],
+        )
         self.assertFalse(self.launch_log.exists())
 
 

@@ -241,6 +241,7 @@ run_hunt_external_legacy_regression() {
   sed -n '1p' "$repo/ledger.tsv" > "$repo/ledger.tsv.empty"
   mv "$repo/ledger.tsv.empty" "$repo/ledger.tsv"
   install_fake_providers "$repo"
+  git -C "$repo" config core.hooksPath .githooks
   log="$SANDBOX_ROOT/hunt-v2-external-legacy.log"
   marker="$SANDBOX_ROOT/hunt-v2-external-legacy.provider-launched"
   before=$(state_digest "$repo")
@@ -249,21 +250,19 @@ run_hunt_external_legacy_regression() {
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
       HISTORY_RUNTIME_ABI=v2 \
-      AGENT_CMD=/usr/bin/false FRONT_CMD=/usr/bin/false BACK_CMD=/usr/bin/false \
+      AGENT_CMD=/usr/bin/false \
+      MAX_FAILS=bad \
       bash ./hunt.sh
   status=$?
   after=$(state_digest "$repo")
   if [ "$status" -ne 2 ] \
-    || ! grep -Eqi 'not wired|unsupported' "$log" \
-    || ! grep -q '"provider":"codex"' "$log" \
-    || ! grep -q '"model_identity":"provider-default"' "$log" \
-    || ! grep -q '"reasoning_identity":"provider-default"' "$log" \
-    || grep -Eq '(AGENT_CMD|FRONT_CMD|BACK_CMD).*(mixed|legacy|forbidden)' "$log"; then
-    record_failure "valid Hunt v2 did not fail closed after preserving external controls"
+    || ! grep -q 'MAX_FAILS must' "$log" \
+    || grep -Eq 'AGENT_CMD.*(mixed|legacy|forbidden|required)' "$log"; then
+    record_failure "Hunt v2 external fallback did not reach normal validation"
   elif [ "$after" != "$before" ] || [ -e "$marker" ]; then
     record_failure "v2 external-stage regression mutated state or launched a provider"
   else
-    printf 'ok: valid Hunt v2 defaults to Codex and cannot fall through to v1\n'
+    printf 'ok: Hunt v2 retains AGENT_CMD only as the external-stage fallback\n'
   fi
 }
 
@@ -276,6 +275,7 @@ run_hunt_review_isolation() {
   sed -n '1p' "$repo/ledger.tsv" > "$repo/ledger.tsv.empty"
   mv "$repo/ledger.tsv.empty" "$repo/ledger.tsv"
   install_fake_providers "$repo"
+  git -C "$repo" config core.hooksPath .githooks
   log="$SANDBOX_ROOT/hunt-v2-review-isolation.log"
   marker="$SANDBOX_ROOT/hunt-v2-review-isolation.provider-launched"
   before=$(state_digest "$repo")
@@ -287,10 +287,11 @@ run_hunt_review_isolation() {
       HUNT_PROVIDER=codex HUNT_MODEL=gpt-5.6-sol HUNT_REASONING_EFFORT=xhigh \
       HUNT_REVIEW_PROVIDER_1=kimi \
       HUNT_REVIEW_MODEL_1= HUNT_REVIEW_REASONING_EFFORT_1= \
+      MAX_FAILS=bad \
       bash ./hunt.sh
   status=$?
   after=$(state_digest "$repo")
-  if [ "$status" -ne 2 ] || ! grep -Eqi 'not wired|unsupported' "$log"; then
+  if [ "$status" -ne 2 ] || ! grep -q 'MAX_FAILS must' "$log"; then
     record_failure "Hunt review provider inherited incompatible base overrides"
   elif [ "$after" != "$before" ] || [ -e "$marker" ]; then
     record_failure "Hunt review isolation mutated state or launched a provider"
@@ -345,14 +346,13 @@ run_awr_valid_v2_no_fallback() {
     env \
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
-      HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode \
+      HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode SIDE_POLL_SEC=bad \
       bash ./awr-side.sh
   status=$?
   after=$(state_digest "$repo")
   if [ "$status" -ne 2 ] \
-    || ! grep -Eqi 'not wired|unsupported' "$log" \
-    || ! grep -q '"provider":"opencode"' "$log"; then
-    record_failure "valid AwR v2 did not stop at the unwired portable boundary"
+    || ! grep -q 'must be nonnegative integers' "$log"; then
+    record_failure "valid AwR v2 did not reach normal sidecar validation"
   elif [ "$after" != "$before" ] || [ -e "$marker" ]; then
     record_failure "valid AwR v2 mutated state or launched a provider"
   else
@@ -380,10 +380,11 @@ run_awr_role_isolation() {
       AWR_PROVIDER=codex AWR_MODEL=gpt-5.6-sol AWR_REASONING_EFFORT=xhigh \
       AWR_RESEARCH_PROVIDER=kimi \
       AWR_RESEARCH_MODEL= AWR_RESEARCH_REASONING_EFFORT= \
+      SIDE_POLL_SEC=bad \
       bash ./awr-side.sh
   status=$?
   after=$(state_digest "$repo")
-  if [ "$status" -ne 2 ] || ! grep -Eqi 'not wired|unsupported' "$log"; then
+  if [ "$status" -ne 2 ] || ! grep -q 'must be nonnegative integers' "$log"; then
     record_failure "AwR role provider inherited incompatible base overrides"
   elif [ "$after" != "$before" ] || [ -e "$marker" ]; then
     record_failure "AwR role isolation mutated state or launched a provider"
