@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from lib import history_audit_plan
 from lib import history_audit_store
+from lib import history_audit_eval_v2
 from lib import history_contract_v2
 
 try:
@@ -1297,6 +1298,232 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             ).fetchone()[0],
             3,
         )
+
+    def test_durable_cost_facts_survive_reopen_without_double_counting(self):
+        plan = self._install()
+
+        def provider(*_):
+            return {
+                "kind": "success", "output": self._output(),
+                "usage": {
+                    "input_tokens": 10, "output_tokens": 5,
+                    "cache_tokens": 3, "provider_usage_units": 15,
+                },
+            }
+
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            provider, now=self._now(),
+        )
+        first = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )
+        realized = first["intents"]["duplicate_search"]["realized"]
+        self.assertEqual(realized["calls"], 1)
+        self.assertEqual(realized["input_tokens"], 10)
+        self.assertEqual(realized["output_tokens"], 5)
+        self.assertEqual(realized["cache_tokens"], 3)
+        self.assertNotIn("currency_micros", realized)
+        self.assertNotIn("queue_latency_ms", realized)
+        self.assertFalse(
+            first["intents"]["duplicate_search"]["accounting_complete"]
+        )
+        self.assertIsNone(
+            first["intents"]["duplicate_search"]["expected_per_candidate"]
+        )
+        self.assertIsNone(first["intents"]["duplicate_search"]["risk_slices"])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_attempt_launch_facts_v2"
+            ).fetchone()[0], 1,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_attempt_cost_settlements_v2"
+            ).fetchone()[0], 1,
+        )
+        self.conn.close()
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        history_audit_store.init_schema(self.conn)
+        self._api("recover_run")(
+            self.conn, plan["plan_sha"], cas_root=self.cas_root,
+            now=self._now(120),
+        )
+        second = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )
+        self.assertEqual(second, first)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_attempt_launch_facts_v2"
+            ).fetchone()[0], 1,
+        )
+
+    def test_cost_fact_tables_reject_direct_writes_and_mutation(self):
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.conn.execute(
+                "INSERT INTO audit_attempt_launch_facts_v2 VALUES(?,?,?,?,?)",
+                ("f" * 64, self._now(), None, "e" * 64, self._now()),
+            )
+        self.conn.rollback()
+        plan = self._install()
+        self._api("claim_task")(
+            self.conn, plan["logical_task_keys"][0], "worker", 60, 0,
+            now=self._now(),
+        )
+        self._api("record_attempt")(
+            self.conn, plan["logical_task_keys"][0],
+            plan["provider_capabilities"]["codex"],
+            {"attempt_kind": "initial"}, cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+        )
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.conn.execute(
+                "UPDATE audit_attempt_launch_facts_v2 SET queued_at=?",
+                (self._now(1),),
+            )
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.conn.execute("DELETE FROM audit_attempt_launch_facts_v2")
+
+    def test_planned_task_arbitrary_attempt_cannot_gain_cost_authority(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        task = self._api("load_task")(self.conn, task_key)
+        request = history_execution.history_cas.put_object(
+            self.conn, self.cas_root,
+            plan["shards"][0]["serialized_request"].encode(),
+            "attempt-transient-7d",
+        )
+        provenance = {
+            **copy.deepcopy(plan["provider_capabilities"]["codex"]),
+            "attempt_kind": "initial", "ordinal": 0,
+            "claim_token": "forged", "claim_fence": 999,
+        }
+        attempt_id = "f" * 64
+        reserved = history_execution._derived_reservation(
+            task, plan["shards"][0]["serialized_request"].encode()
+        )
+        self.conn.execute(
+            "INSERT INTO audit_runtime_budget_reservations_v2 VALUES(?,?,?,?,?,?,?,?)",
+            (
+                attempt_id, task_key, plan["plan_sha"],
+                plan["candidate"]["candidate_id"], plan["intent"], "initial",
+                history_execution._canonical(reserved), self._now(),
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO audit_task_attempts VALUES(?,?,?,?,?,NULL,'started',?)",
+            (
+                attempt_id, task_key, 0,
+                history_execution._canonical(provenance),
+                request["object_id"], self._now(),
+            ),
+        )
+        self.conn.commit()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.record_attempt_launch_cost_fact(
+                    self.conn, attempt_id, queued_at=self._now()
+                )
+        finally:
+            self.conn.execute("ROLLBACK")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_attempt_launch_facts_v2"
+            ).fetchone()[0], 0,
+        )
+        with self.assertRaisesRegex(ValueError, "launch parity"):
+            history_audit_eval_v2.summarize_realized_cost(
+                self.conn, plan["run_id"]
+            )
+
+    def test_nonempty_legacy_attempt_upgrade_is_quarantined_not_fabricated(self):
+        legacy_path = self.root / "legacy-cost.sqlite3"
+        legacy = sqlite3.connect(legacy_path)
+        legacy.row_factory = sqlite3.Row
+        migrations = history_audit_store.MIGRATIONS
+        target = next(
+            index for index, migration in enumerate(migrations)
+            if migration.component == "durable-cost-facts"
+        )
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", migrations[:target]
+        ):
+            history_audit_store.init_schema(legacy)
+        plan = self._plan(self.records)
+        history_execution.persist_plan(legacy, plan)
+        history_execution.claim_task(
+            legacy, plan["logical_task_keys"][0], "legacy-worker", 60, 0,
+            now=self._now(),
+        )
+        with mock.patch.object(
+            history_audit_store, "record_attempt_launch_cost_fact",
+            return_value="legacy-unaccounted",
+        ):
+            attempt = history_execution.record_attempt(
+                legacy, plan["logical_task_keys"][0],
+                plan["provider_capabilities"]["codex"],
+                {"attempt_kind": "initial"},
+                cas_root=self.root / "legacy-cas",
+                request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            )
+        legacy.close()
+        legacy = sqlite3.connect(legacy_path)
+        legacy.row_factory = sqlite3.Row
+        history_audit_store.init_schema(legacy)
+        quarantined = legacy.execute(
+            "SELECT reason FROM audit_legacy_unaccounted_attempts_v2 "
+            "WHERE attempt_id=?",
+            (attempt["attempt_id"],),
+        ).fetchone()
+        self.assertEqual(quarantined[0], "pre_durable_cost_facts")
+        with self.assertRaisesRegex(ValueError, "launch parity"):
+            history_audit_eval_v2.summarize_realized_cost(
+                legacy, plan["run_id"]
+            )
+        legacy.close()
+
+    def test_cancel_attempt_is_exact_once_and_keeps_unknown_currency_out(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        self._api("claim_task")(
+            self.conn, task_key, "worker", 60, 0, now=self._now()
+        )
+        attempt = self._api("record_attempt")(
+            self.conn, task_key, plan["provider_capabilities"]["codex"],
+            {"attempt_kind": "reduce"}, cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+        )
+        with self.assertRaises(self._api("ExecutionError")):
+            self._api("cancel_attempt")(
+                self.conn, attempt["attempt_id"], billing_state="billable",
+                now=self._now(1),
+            )
+        for _ in range(2):
+            self._api("cancel_attempt")(
+                self.conn, attempt["attempt_id"], billing_state="unknown",
+                usage={
+                    "input_tokens": 2, "output_tokens": 0,
+                    "cache_tokens": 1, "provider_usage_units": 2,
+                },
+                now=self._now(1),
+            )
+        summary = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"]["duplicate_search"]
+        self.assertEqual(summary["realized"]["calls"], 1)
+        self.assertEqual(summary["realized"]["billable_cancelled_calls"], 0)
+        self.assertNotIn("currency_micros", summary["realized"])
+        self.assertFalse(summary["accounting_complete"])
+        provenance = json.loads(
+            self.conn.execute(
+                "SELECT provenance_json FROM audit_task_attempts WHERE attempt_id=?",
+                (attempt["attempt_id"],),
+            ).fetchone()[0]
+        )
+        self.assertEqual(provenance["attempt_kind"], "initial")
 
     def test_429_or_5xx_fails_over_in_declared_pool_order(self):
         for failure in ("429", "5xx"):

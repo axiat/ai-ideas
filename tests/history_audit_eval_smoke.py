@@ -2,10 +2,13 @@
 """Behavioral smoke tests for semantic release, routing, and cost accounting."""
 
 import copy
+import hashlib
 import json
 import pathlib
+import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -15,7 +18,11 @@ sys.path.insert(0, str(ROOT))
 
 from lib import history_audit
 from lib import history_audit_store
+from lib import history_cas
+from lib import history_contract_v2 as contract
+from lib import history_execution
 from lib import history_store
+from tests import history_audit_runtime_smoke as runtime_fixture
 
 try:
     from lib import history_audit_eval_v2 as subject
@@ -41,6 +48,7 @@ def qrel(index, *, positive=True, partition="test", slices=(), scope="real"):
         "as_of_sequence": 1000 + index,
         "historical_sequence": index,
         "semantic_relation": relation,
+        "lineage_relation": "same_revision" if positive else "none",
         "historical_text": "prefix %s suffix" % quote,
         "evidence_anchors": [quote],
         "adjudication_state": "adjudicated",
@@ -114,13 +122,19 @@ def policy():
 
 
 def evidence(*, basis="l2_exhaustive"):
+    pools = {name: ["fake"] for name in ("comparator", "map", "detail", "reduce")}
     dependencies = {
         "semantic_policy": subject.semantic_policy_sha256(policy()) if subject else "1" * 64,
+        "plan": "1" * 64,
         "prompt": "2" * 64,
         "schema": "3" * 64,
-        "ordered_provider_pools": "4" * 64,
+        "ordered_provider_pools": contract.framed_sha256(
+            "history-provider-pools-v2", contract.canonical_bytes(pools)
+        ),
         "capacity": "5" * 64,
-        "provider": "6" * 64,
+        "provider": contract.framed_sha256(
+            "history-provider-capabilities-v2", contract.canonical_bytes(["7" * 64])
+        ),
         "fault": "7" * 64,
         "replay": "8" * 64,
     }
@@ -151,6 +165,22 @@ class QrelsAndReleaseTests(unittest.TestCase):
         rows[1]["query_lineage_id"] = rows[0]["query_lineage_id"]
         with self.assertRaises(ValueError):
             self.api("validate_qrels")(rows, partitions(rows), scope="real")
+
+    def test_qrels_reject_role_swapped_lineage_partition_leakage(self):
+        rows = [qrel(0, partition="train"), qrel(1, partition="test")]
+        rows[1]["historical_lineage_id"] = rows[0]["query_lineage_id"]
+        with self.assertRaises(ValueError):
+            self.api("validate_qrels")(rows, partitions(rows), scope="real")
+
+    def test_qrels_require_closed_independent_lineage_relation(self):
+        missing = qrel(0)
+        missing.pop("lineage_relation")
+        with self.assertRaises(ValueError):
+            self.validated([missing])
+        invalid = qrel(1)
+        invalid["lineage_relation"] = "blocking_duplicate"
+        with self.assertRaises(ValueError):
+            self.validated([invalid])
         rows = [qrel(0, partition="train"), qrel(1, partition="test")]
         rows[1]["temporal_group"] = rows[0]["temporal_group"]
         with self.assertRaises(ValueError):
@@ -278,8 +308,13 @@ class QrelsAndReleaseTests(unittest.TestCase):
             qualification = self.api("evaluate_production_qualification")(
                 self.validated(rows), outputs(rows), policy(), evidence()
             )
+            history_audit_store.publish_semantic_dependency_heads(
+                conn, qualification["dependency_hashes"],
+                now="2026-08-02T23:59:59+00:00",
+            )
             stored = history_audit_store.persist_semantic_qualification(
-                conn, qualification, now="2026-08-03T00:00:00+00:00"
+                conn, self.validated(rows), outputs(rows), policy(), evidence(),
+                now="2026-08-03T00:00:00+00:00",
             )
             found = history_audit_store.lookup_semantic_qualification(
                 conn,
@@ -457,37 +492,458 @@ class RouterAndCostTests(unittest.TestCase):
             "permanent_no_match_without_release_gate", result["matched_rule_ids"]
         )
 
-    def test_cost_counts_every_attempt_and_omits_unknown_currency(self):
-        ledger = {
-            "attempt_events": [
-                {"event_id": "s1", "event_type": "attempt_started", "attempt_id": "a1", "intent": "hunt", "candidate_id": "c1", "stage": "l1", "attempt_kind": "initial"},
-                {"event_id": "s2", "event_type": "attempt_started", "attempt_id": "a2", "intent": "hunt", "candidate_id": "c1", "stage": "l2", "attempt_kind": "retry"},
-                {"event_id": "s3", "event_type": "attempt_started", "attempt_id": "a3", "intent": "hunt", "candidate_id": "c1", "stage": "l2", "attempt_kind": "split"},
-                {"event_id": "s4", "event_type": "attempt_started", "attempt_id": "a4", "intent": "hunt", "candidate_id": "c2", "stage": "l1", "attempt_kind": "detail"},
-                {"event_id": "s5", "event_type": "attempt_started", "attempt_id": "a5", "intent": "hunt", "candidate_id": "c2", "stage": "l2", "attempt_kind": "reduce"},
-                {"event_id": "s6", "event_type": "attempt_started", "attempt_id": "a6", "intent": "hunt", "candidate_id": "c2", "stage": "l2", "attempt_kind": "failover"},
-            ],
-            "budget_events": [
-                {"event_id": "r" + str(i), "event_type": "attempt_reserved", "attempt_id": "a" + str(i), "reserved": {"input_tokens": 10, "output_tokens": 2, "provider_usage_units": 1}}
-                for i in range(1, 7)
-            ],
-            "settlement_events": [
-                {"event_id": "x1", "event_type": "attempt_settled", "attempt_id": "a1", "outcome": "failed", "billable": True, "usage_verified": True, "actual": {"input_tokens": 10, "output_tokens": 1, "cache_tokens": 3, "provider_usage_units": 1}, "queue_latency_ms": 2, "run_latency_ms": 3},
-                {"event_id": "x2", "event_type": "attempt_settled", "attempt_id": "a2", "outcome": "failed", "billable": True, "usage_verified": False, "actual": None, "queue_latency_ms": 4, "run_latency_ms": 5},
-                {"event_id": "x3", "event_type": "attempt_settled", "attempt_id": "a3", "outcome": "success", "billable": True, "usage_verified": True, "actual": {"input_tokens": 8, "output_tokens": 2, "cache_tokens": 0, "provider_usage_units": 1}, "queue_latency_ms": 1, "run_latency_ms": 7},
-                {"event_id": "x4", "event_type": "attempt_settled", "attempt_id": "a4", "outcome": "cancelled", "billable": True, "usage_verified": True, "actual": {"input_tokens": 1, "output_tokens": 0, "cache_tokens": 0, "provider_usage_units": 1}, "queue_latency_ms": 1, "run_latency_ms": 1},
-                {"event_id": "x5", "event_type": "attempt_settled", "attempt_id": "a5", "outcome": "success", "billable": True, "usage_verified": True, "actual": {"input_tokens": 5, "output_tokens": 2, "cache_tokens": 1, "provider_usage_units": 1, "currency_micros": 9}, "price_source": "verified-price-v1", "queue_latency_ms": 2, "run_latency_ms": 4},
-                {"event_id": "x6", "event_type": "attempt_settled", "attempt_id": "a6", "outcome": "failed", "billable": True, "usage_verified": True, "actual": {"input_tokens": 3, "output_tokens": 0, "cache_tokens": 0, "provider_usage_units": 1}, "queue_latency_ms": 2, "run_latency_ms": 2},
-            ],
+    def test_cost_summary_rejects_caller_constructed_event_lists(self):
+        with self.assertRaises(TypeError):
+            self.api("summarize_realized_cost")(
+                {"attempt_events": [], "budget_events": [], "settlement_events": []},
+                "run",
+            )
+
+
+class StorageReleaseAuthorizationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.temp.name).resolve()
+        self.conn = history_store.connect(self.root / "history.sqlite3")
+        history_store.init_schema(self.conn)
+        history_audit_store.init_schema(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        self.temp.cleanup()
+
+    def receipt(
+        self, *, receipt_sha="d" * 64, snapshot_hash="9" * 64,
+        basis="l2_exhaustive",
+    ):
+        receipt = {
+            "manifest_schema_version": "history-audit-manifest-v2",
+            "canonical_codec_version": "history-canonical-json-v2",
+            "run_id": "release-run", "plan_hash": "1" * 64,
+            "candidate_hash": "2" * 64, "snapshot_id": "3" * 64,
+            "snapshot_hash": snapshot_hash, "history_as_of_watermark": 1,
+            "current_batch_id_namespace": "history-v2-staging-v1",
+            "current_batch_ids_hash": "4" * 64,
+            "exclusion_policy_sha": "5" * 64,
+            "expected_asset_ids_hash": "6" * 64,
+            "observed_asset_ids_hash": "6" * 64,
+            "missing_ids": [], "duplicate_ids": [], "extra_ids": [],
+            "invalid_schema": False, "invalid_anchor": False,
+            "truncated": False,
+            "provider_pools_ordered": {
+                name: ["fake"] for name in ("comparator", "map", "detail", "reduce")
+            },
+            "provider_capability_profile_hashes": ["7" * 64],
+            "capacity_profile_id": "capacity", "semantic_policy_profile_id": "semantic-test-v1",
+            "risk_policy_version": "risk", "matched_router_rule_ids": [],
+            "settlement_policy_sha": "8" * 64, "shard_plan_sha": "a" * 64,
+            "logical_task_hashes": [], "attempt_manifest_hashes": [],
+            "raw_request_output_cas_hashes": [], "minimum_receipt_sha": receipt_sha,
+            "coverage_complete": True, "adjudication_complete": True,
+            "semantic_policy_qualified": True, "no_match_basis": basis,
+            "final_status": "complete_no_match", "stage_reason_code": "complete_no_match",
+            "evidence_anchors": [],
         }
-        result = self.api("summarize_realized_cost")(ledger, [])
-        hunt = result["intents"]["hunt"]
-        self.assertEqual(hunt["realized"]["calls"], 6)
-        self.assertEqual(hunt["realized"]["failed_calls"], 3)
-        self.assertEqual(hunt["realized"]["billable_cancelled_calls"], 1)
-        self.assertNotIn("currency_micros", hunt["realized"])
-        self.assertEqual(hunt["escalation_rate"], 1.0)
-        self.assertEqual(hunt["expected_per_candidate"]["formula"], "L1 + escalation_rate * L2")
+        return contract.validate_receipt(receipt)
+
+    def install_owner(self, receipt):
+        self.conn.execute(
+            "INSERT OR IGNORE INTO audit_capacity_profiles(capacity_profile_id,profile_sha256,profile_json,created_at) VALUES(?,?,?,?)",
+            (receipt["capacity_profile_id"], "5" * 64, "{}", "2026-08-03T00:00:00+00:00"),
+        )
+        for profile_hash in receipt["provider_capability_profile_hashes"]:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO audit_provider_profiles(profile_hash,provider,profile_json,created_at) VALUES(?,?,?,?)",
+                (profile_hash, "fake", "{}", "2026-08-03T00:00:00+00:00"),
+            )
+        self.conn.execute(
+            "INSERT INTO audit_run_manifests(run_id,manifest_schema_version,plan_hash,manifest_json,created_at) "
+            "VALUES(?, 'history-audit-manifest-v2', ?, '{}', '2026-08-03T00:00:00+00:00')",
+            (receipt["run_id"], receipt["plan_hash"]),
+        )
+        self.conn.execute(
+            """INSERT INTO audit_snapshots(
+                 snapshot_id,snapshot_hash,history_as_of_watermark,
+                 current_batch_id_namespace,current_batch_ids_hash,
+                 exclusion_policy_sha,expected_asset_ids_hash,created_at,
+                 run_id,batch_id
+               ) VALUES(?,?,?,?,?,?,?,'2026-08-03T00:00:00+00:00',?,?)""",
+            (
+                receipt["snapshot_id"], receipt["snapshot_hash"],
+                receipt["history_as_of_watermark"], receipt["current_batch_id_namespace"],
+                receipt["current_batch_ids_hash"], receipt["exclusion_policy_sha"],
+                receipt["expected_asset_ids_hash"], receipt["run_id"], "batch",
+            ),
+        )
+
+    def direct_insert(self, receipt):
+        fields = tuple(receipt)
+        encoded = history_cas._receipt_row(receipt)
+        self.conn.execute(
+            "INSERT INTO audit_receipts(" + ",".join(fields) + ") VALUES(" +
+            ",".join("?" for _ in fields) + ")",
+            tuple(encoded[field] for field in fields),
+        )
+
+    def qualification(self, evidence_value=None):
+        rows = qrels(300, 20, slice_count=30)
+        return subject.evaluate_production_qualification(
+            subject.validate_qrels(rows, partitions(rows), scope="real"),
+            outputs(rows), policy(), evidence_value or evidence(),
+        )
+
+    def persist_qualification(self, *, now, evidence_value=None):
+        rows = qrels(300, 20, slice_count=30)
+        return history_audit_store.persist_semantic_qualification(
+            self.conn,
+            subject.validate_qrels(rows, partitions(rows), scope="real"),
+            outputs(rows), policy(), evidence_value or evidence(), now=now,
+        )
+
+    def install_l2_execution(self):
+        helper = runtime_fixture.HistoryAuditRuntimeSmoke(methodName="runTest")
+        helper.records = [
+            runtime_fixture.record("asset-1", "alpha evidence", "lineage-a"),
+            runtime_fixture.record("asset-2", "beta evidence", "lineage-b"),
+        ]
+        helper.capabilities = {
+            provider: {
+                "provider": provider,
+                "capability_profile_hash": runtime_fixture.sha(
+                    "capability-" + provider
+                ),
+                "model_identity": "fake-model-" + provider,
+                "reasoning_identity": "high",
+                "model_default": False,
+                "reasoning_default": False,
+                "executable": provider,
+                "cli_revision": "fake-cli-v1",
+            }
+            for provider in ("codex", "grok", "reviewer")
+        }
+        plan = helper._plan(helper.records)
+        history_execution.persist_plan(self.conn, plan)
+        output = helper._output(plan)
+
+        def provider(*_):
+            return {
+                "kind": "success", "output": output,
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            }
+
+        history_execution.run_map_task(
+            self.conn, self.root / "cas", plan, plan["logical_task_keys"][0],
+            provider, now="2026-08-02T23:59:58+00:00",
+        )
+        profile_hashes = sorted(plan["provider_capability_profile_hashes"].values())
+        self.conn.execute(
+            "INSERT INTO audit_capacity_profiles VALUES(?,?,?,?)",
+            (plan["capacity_profile_id"], "5" * 64, "{}",
+             "2026-08-02T23:59:58+00:00"),
+        )
+        for provider_name, profile_hash in plan[
+            "provider_capability_profile_hashes"
+        ].items():
+            self.conn.execute(
+                "INSERT INTO audit_provider_profiles VALUES(?,?,?,?)",
+                (profile_hash, provider_name, "{}",
+                 "2026-08-02T23:59:58+00:00"),
+            )
+        self.conn.commit()
+        dependencies = evidence()["dependency_hashes"]
+        dependencies.update({
+            "plan": plan["plan_sha"],
+            "ordered_provider_pools": contract.framed_sha256(
+                "history-provider-pools-v2",
+                contract.canonical_bytes(plan["provider_pools_ordered"]),
+            ),
+            "capacity": "5" * 64,
+            "provider": contract.framed_sha256(
+                "history-provider-capabilities-v2",
+                contract.canonical_bytes(profile_hashes),
+            ),
+        })
+        evidence_value = evidence()
+        evidence_value["corpus_snapshot_hash"] = plan["snapshot"]["snapshot_hash"]
+        evidence_value["dependency_hashes"] = dependencies
+        receipt = self.receipt(
+            snapshot_hash=plan["snapshot"]["snapshot_hash"]
+        )
+        receipt.update({
+            "run_id": plan["run_id"], "plan_hash": plan["plan_sha"],
+            "candidate_hash": plan["candidate"]["candidate_hash"],
+            "snapshot_id": plan["snapshot"]["snapshot_id"],
+            "history_as_of_watermark": plan["snapshot"]["history_as_of_watermark"],
+            "current_batch_ids_hash": plan["snapshot"]["current_batch_ids_hash"],
+            "exclusion_policy_sha": plan["snapshot"]["exclusion_policy_sha"],
+            "expected_asset_ids_hash": plan["snapshot"]["expected_asset_ids_hash"],
+            "observed_asset_ids_hash": contract.ordered_set_sha256(
+                "history-observed-assets-v2",
+                sorted(item["item_id"] for item in plan["snapshot"]["records"]),
+            ),
+            "provider_pools_ordered": plan["provider_pools_ordered"],
+            "provider_capability_profile_hashes": profile_hashes,
+            "capacity_profile_id": plan["capacity_profile_id"],
+            "risk_policy_version": plan["risk_policy_version"],
+            "matched_router_rule_ids": plan["matched_router_rule_ids"],
+            "settlement_policy_sha": plan["settlement_policy_sha"],
+            "shard_plan_sha": plan["shard_plan_sha"],
+            "logical_task_hashes": sorted(plan["logical_task_keys"]),
+        })
+        attempts = self.conn.execute(
+            "SELECT attempt_id,request_cas_object_id FROM audit_task_attempts "
+            "ORDER BY attempt_id"
+        ).fetchall()
+        outputs_rows = self.conn.execute(
+            "SELECT output_cas_object_id FROM audit_attempt_completions_v2"
+        ).fetchall()
+        receipt["attempt_manifest_hashes"] = [row[0] for row in attempts]
+        receipt["raw_request_output_cas_hashes"] = sorted(
+            {row[1] for row in attempts} | {row[0] for row in outputs_rows}
+        )
+        return plan, evidence_value, contract.validate_receipt(receipt)
+
+    def context(self, qualification):
+        return {
+            "scope": qualification["scope"],
+            "policy_sha256": qualification["policy_sha256"],
+            "corpus_snapshot_hash": qualification["corpus_snapshot_hash"],
+            "evaluation_hash": qualification["evaluation_hash"],
+            "dependency_hashes": qualification["dependency_hashes"],
+        }
+
+    def test_direct_complete_no_match_insert_requires_durable_authorization(self):
+        receipt = self.receipt()
+        self.install_owner(receipt)
+        with self.assertRaises(Exception):
+            self.direct_insert(receipt)
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM audit_receipts").fetchone()[0], 0
+        )
+
+    def test_all_current_no_match_bases_fail_closed_on_public_and_private_paths(self):
+        for index, basis in enumerate(("l1_calibrated", "l2_exhaustive")):
+            receipt = self.receipt(
+                receipt_sha=hashlib.sha256(basis.encode()).hexdigest(), basis=basis
+            )
+            if index == 0:
+                self.install_owner(receipt)
+            with self.subTest(basis=basis):
+                with self.assertRaises(history_cas.CASError):
+                    history_cas.write_minimum_receipt(
+                        self.conn, receipt, release_context={},
+                        now="2026-08-03T00:00:00+00:00",
+                    )
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError, "production_runtime_authority_unavailable"
+                    ):
+                        history_audit_store._authorize_complete_no_match_receipt(
+                            self.conn, receipt, {},
+                            now="2026-08-03T00:00:00+00:00",
+                        )
+                finally:
+                    self.conn.execute("ROLLBACK")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_semantic_release_authorizations_v2"
+            ).fetchone()[0], 0,
+        )
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM audit_receipts").fetchone()[0], 0
+        )
+
+    def test_production_receipt_vetoes_without_runtime_authority(self):
+        _, evidence_value, receipt = self.install_l2_execution()
+        qualification = self.qualification(evidence_value)
+        history_audit_store.publish_semantic_dependency_heads(
+            self.conn, qualification["dependency_hashes"],
+            now="2026-08-02T23:59:59+00:00",
+        )
+        self.persist_qualification(
+            now="2026-08-03T00:00:00+00:00", evidence_value=evidence_value
+        )
+        with self.assertRaises(history_cas.CASError) as caught:
+            history_cas.write_minimum_receipt(
+                self.conn, receipt, release_context=self.context(qualification),
+                now="2026-08-03T00:00:01+00:00",
+            )
+        self.assertEqual(
+            str(caught.exception.__cause__),
+            "production_runtime_authority_unavailable",
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_semantic_release_authorizations_v2"
+            ).fetchone()[0], 0,
+        )
+
+    def test_forged_qualification_material_cannot_create_release_authority(self):
+        qualification = self.qualification()
+        history_audit_store.publish_semantic_dependency_heads(
+            self.conn, qualification["dependency_hashes"],
+            now="2026-08-02T23:59:59+00:00",
+        )
+        forged = copy.deepcopy(qualification)
+        forged["metrics"] = {}
+        forged["evaluation_hash"] = "f" * 64
+        with self.assertRaises(ValueError):
+            history_audit_store.persist_semantic_qualification(
+                self.conn, forged, now="2026-08-03T00:00:00+00:00"
+            )
+        with self.assertRaises(ValueError):
+            history_audit_store._persist_semantic_qualification(
+                self.conn, forged, now="2026-08-03T00:00:00+00:00"
+            )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_semantic_qualifications"
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_dependency_head_change_vetoes_old_qualification_without_profile_revival(self):
+        _, evidence_value, receipt = self.install_l2_execution()
+        qualification = self.qualification(evidence_value)
+        history_audit_store.publish_semantic_dependency_heads(
+            self.conn, qualification["dependency_hashes"],
+            now="2026-08-02T23:59:59+00:00",
+        )
+        self.persist_qualification(
+            now="2026-08-03T00:00:00+00:00", evidence_value=evidence_value
+        )
+        history_audit_store.publish_semantic_dependency_heads(
+            self.conn, {"provider": "e" * 64}, now="2026-08-03T00:00:01+00:00"
+        )
+        with self.assertRaises(history_cas.CASError):
+            history_cas.write_minimum_receipt(
+                self.conn, receipt, release_context=self.context(qualification),
+                now="2026-08-03T00:00:02+00:00",
+            )
+
+    def test_no_unavailable_runtime_receipt_can_enter_replay(self):
+        _, evidence_value, receipt = self.install_l2_execution()
+        qualification = self.qualification(evidence_value)
+        history_audit_store.publish_semantic_dependency_heads(
+            self.conn, qualification["dependency_hashes"],
+            now="2026-08-02T23:59:59+00:00",
+        )
+        self.persist_qualification(
+            now="2026-08-03T00:00:00+00:00", evidence_value=evidence_value
+        )
+        with self.assertRaises(history_cas.CASIntegrityError):
+            history_cas.verify_minimum_receipt(
+                self.conn, self.root / "cas", receipt["minimum_receipt_sha"],
+                require_current_release=True,
+                now="2026-08-03T00:00:03+00:00",
+            )
+
+    def test_empty_execution_sets_cannot_mint_complete_no_match(self):
+        _, evidence_value, receipt = self.install_l2_execution()
+        qualification = self.qualification(evidence_value)
+        history_audit_store.publish_semantic_dependency_heads(
+            self.conn, qualification["dependency_hashes"],
+            now="2026-08-02T23:59:59+00:00",
+        )
+        self.persist_qualification(
+            now="2026-08-03T00:00:00+00:00", evidence_value=evidence_value
+        )
+        forged = copy.deepcopy(receipt)
+        forged["logical_task_hashes"] = []
+        forged["attempt_manifest_hashes"] = []
+        forged["raw_request_output_cas_hashes"] = []
+        with self.assertRaises(history_cas.CASError):
+            history_cas.write_minimum_receipt(
+                self.conn, forged, release_context=self.context(qualification),
+                now="2026-08-03T00:00:01+00:00",
+            )
+
+    def test_stale_qualification_cannot_publish_old_heads_or_revive(self):
+        qualification = self.qualification()
+        history_audit_store.publish_semantic_dependency_heads(
+            self.conn, qualification["dependency_hashes"],
+            now="2026-08-03T00:00:00+00:00",
+        )
+        history_audit_store.publish_semantic_dependency_heads(
+            self.conn, {"provider": "e" * 64},
+            now="2026-08-03T00:00:01+00:00",
+        )
+        with self.assertRaises(ValueError):
+            rows = qrels(300, 20, slice_count=30)
+            history_audit_store.persist_semantic_qualification(
+                self.conn,
+                subject.validate_qrels(rows, partitions(rows), scope="real"),
+                outputs(rows), policy(), evidence(),
+                now="2026-08-03T00:00:02+00:00",
+            )
+        heads = history_audit_store.current_semantic_dependency_heads(self.conn)
+        self.assertEqual(heads["provider"], "e" * 64)
+
+    def test_upgrade_rejects_preexisting_unbound_complete_no_match(self):
+        prior = history_store.connect(self.root / "prior.sqlite3")
+        history_store.init_schema(prior)
+        migrations = history_audit_store.MIGRATIONS
+        target = next(
+            index for index, migration in enumerate(migrations)
+            if migration.component == "semantic-release-authorization"
+        )
+        with mock.patch.object(history_audit_store, "MIGRATIONS", migrations[:target]):
+            history_audit_store.init_schema(prior)
+        receipt = self.receipt(receipt_sha="e" * 64)
+        self.conn.close()
+        self.conn = prior
+        self.install_owner(receipt)
+        self.direct_insert(receipt)
+        with self.assertRaises(history_audit_store.AuditMigrationError):
+            history_audit_store.init_schema(self.conn)
+
+
+class MigrationLedgerHardeningTests(unittest.TestCase):
+    def test_matching_sha_preseed_cannot_skip_guard_migration(self):
+        with tempfile.TemporaryDirectory() as root:
+            conn = history_store.connect(pathlib.Path(root) / "history.sqlite3")
+            history_store.init_schema(conn)
+            conn.executescript(history_audit_store._LEDGER_SQL)
+            migration = next(
+                item for item in history_audit_store.MIGRATIONS
+                if item.component == "migration-ledger-guard"
+            )
+            conn.execute(
+                "INSERT INTO audit_schema_migrations VALUES(?,?,?,?)",
+                (migration.component, migration.version, migration.sha256,
+                 "2026-08-03T00:00:00+00:00"),
+            )
+            conn.commit()
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.init_schema(conn)
+            conn.close()
+
+    def test_migration_ledger_is_host_guarded_and_immutable(self):
+        with tempfile.TemporaryDirectory() as root:
+            conn = history_store.connect(pathlib.Path(root) / "history.sqlite3")
+            history_store.init_schema(conn)
+            history_audit_store.init_schema(conn)
+            with self.assertRaises(sqlite3.DatabaseError):
+                conn.execute(
+                    "INSERT INTO audit_schema_migrations VALUES('forged',1,?,?)",
+                    ("f" * 64, "2026-08-03T00:00:00+00:00"),
+                )
+            with self.assertRaises(sqlite3.DatabaseError):
+                conn.execute(
+                    "UPDATE audit_schema_migrations SET applied_at='forged'"
+                )
+            with self.assertRaises(sqlite3.DatabaseError):
+                conn.execute("DELETE FROM audit_schema_migrations")
+            conn.close()
+
+    def test_public_init_cannot_disable_schema_postconditions(self):
+        with tempfile.TemporaryDirectory() as root:
+            conn = history_store.connect(pathlib.Path(root) / "history.sqlite3")
+            history_store.init_schema(conn)
+            with self.assertRaises(TypeError):
+                history_audit_store.init_schema(conn, _verify_structure=False)
+            conn.close()
 
 
 if __name__ == "__main__":

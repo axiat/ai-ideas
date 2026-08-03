@@ -229,12 +229,14 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
         legacy_db = self.root / "pre-guard.sqlite3"
         legacy = history_store.connect(legacy_db)
         history_store.init_schema(legacy)
-        pre_guard = tuple(
-            migration
-            for migration in history_audit_store.MIGRATIONS
-            if migration.component != "integrity-guards"
+        migrations = history_audit_store.MIGRATIONS
+        target = next(
+            index for index, migration in enumerate(migrations)
+            if migration.component == "integrity-guards"
         )
-        with mock.patch.object(history_audit_store, "MIGRATIONS", pre_guard):
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", migrations[:target]
+        ):
             history_audit_store.init_schema(legacy)
         legacy.execute(
             """
@@ -250,10 +252,9 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
             INSERT INTO audit_snapshots(
               snapshot_id, snapshot_hash, history_as_of_watermark,
               current_batch_id_namespace, current_batch_ids_hash,
-              exclusion_policy_sha, expected_asset_ids_hash, created_at,
-              run_id, batch_id
+              exclusion_policy_sha, expected_asset_ids_hash, created_at
             ) VALUES('snapshot-1', ?, 7, 'history-v2-staging-v1', ?, ?, ?,
-                     '2026-08-03T00:00:00Z', 'run-1', 'batch-1')
+                     '2026-08-03T00:00:00Z')
             """,
             (SHA, SHA, SHA, SHA),
         )
@@ -268,10 +269,14 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
             adjudication_complete=False,
             semantic_policy_qualified=False,
         )
-        with mock.patch.object(
-            history_contract_v2, "validate_receipt", return_value=receipt
-        ):
-            history_cas.write_minimum_receipt(legacy, receipt)
+        encoded = history_cas._receipt_row(receipt)
+        fields = tuple(receipt)
+        legacy.execute(
+            "INSERT INTO audit_receipts(" + ",".join(fields) + ") VALUES(" +
+            ",".join("?" for _ in fields) + ")",
+            tuple(encoded[field] for field in fields),
+        )
+        legacy.commit()
         with self.assertRaises(history_audit_store.AuditMigrationError):
             history_audit_store.init_schema(legacy)
         legacy.close()
@@ -314,12 +319,14 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
         legacy_db = self.root / "pre-coverage-guard.sqlite3"
         legacy = history_store.connect(legacy_db)
         history_store.init_schema(legacy)
-        pre_guard = tuple(
-            migration
-            for migration in history_audit_store.MIGRATIONS
-            if migration.component != "coverage-integrity-guards"
+        migrations = history_audit_store.MIGRATIONS
+        target = next(
+            index for index, migration in enumerate(migrations)
+            if migration.component == "coverage-integrity-guards"
         )
-        with mock.patch.object(history_audit_store, "MIGRATIONS", pre_guard):
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", migrations[:target]
+        ):
             history_audit_store.init_schema(legacy)
         legacy.execute(
             """
@@ -335,10 +342,9 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
             INSERT INTO audit_snapshots(
               snapshot_id, snapshot_hash, history_as_of_watermark,
               current_batch_id_namespace, current_batch_ids_hash,
-              exclusion_policy_sha, expected_asset_ids_hash, created_at,
-              run_id, batch_id
+              exclusion_policy_sha, expected_asset_ids_hash, created_at
             ) VALUES('snapshot-1', ?, 7, 'history-v2-staging-v1', ?, ?, ?,
-                     '2026-08-03T00:00:00Z', 'run-1', 'batch-1')
+                     '2026-08-03T00:00:00Z')
             """,
             (SHA, SHA, SHA, SHA),
         )
@@ -355,10 +361,14 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
             semantic_policy_qualified=True,
             invalid_schema=True,
         )
-        with mock.patch.object(
-            history_contract_v2, "validate_receipt", return_value=receipt
-        ):
-            history_cas.write_minimum_receipt(legacy, receipt)
+        encoded = history_cas._receipt_row(receipt)
+        fields = tuple(receipt)
+        legacy.execute(
+            "INSERT INTO audit_receipts(" + ",".join(fields) + ") VALUES(" +
+            ",".join("?" for _ in fields) + ")",
+            tuple(encoded[field] for field in fields),
+        )
+        legacy.commit()
         with self.assertRaises(history_audit_store.AuditMigrationError):
             history_audit_store.init_schema(legacy)
         legacy.close()

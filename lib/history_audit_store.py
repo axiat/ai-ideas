@@ -43,6 +43,39 @@ _KNOWN_LEGACY_RELATIONS = frozenset(
 _FENCE_GUARDS = {}
 _L2_TASK_INSERT_GUARDS = {}
 _L2_TERMINAL_TRANSITION_GUARDS = {}
+_SEMANTIC_RELEASE_GUARDS = {}
+_SEMANTIC_EVALUATION_GUARDS = {}
+_COST_FACT_GUARDS = {}
+_MIGRATION_LEDGER_GUARDS = {}
+_EXPECTED_MANAGED_SCHEMA = {}
+_RELEASE_RECEIPT_FIELDS = (
+    "manifest_schema_version", "canonical_codec_version", "run_id", "plan_hash",
+    "candidate_hash", "snapshot_id", "snapshot_hash", "history_as_of_watermark",
+    "current_batch_id_namespace", "current_batch_ids_hash", "exclusion_policy_sha",
+    "expected_asset_ids_hash", "observed_asset_ids_hash", "missing_ids",
+    "duplicate_ids", "extra_ids", "invalid_schema", "invalid_anchor", "truncated",
+    "provider_pools_ordered", "provider_capability_profile_hashes",
+    "capacity_profile_id", "semantic_policy_profile_id", "risk_policy_version",
+    "matched_router_rule_ids", "settlement_policy_sha", "shard_plan_sha",
+    "logical_task_hashes", "attempt_manifest_hashes",
+    "raw_request_output_cas_hashes", "minimum_receipt_sha", "coverage_complete",
+    "adjudication_complete", "semantic_policy_qualified", "no_match_basis",
+    "final_status", "stage_reason_code", "evidence_anchors",
+)
+_RELEASE_JSON_FIELDS = frozenset(
+    {
+        "missing_ids", "duplicate_ids", "extra_ids", "provider_pools_ordered",
+        "provider_capability_profile_hashes", "matched_router_rule_ids",
+        "logical_task_hashes", "attempt_manifest_hashes",
+        "raw_request_output_cas_hashes", "evidence_anchors",
+    }
+)
+_RELEASE_BOOLEAN_FIELDS = frozenset(
+    {
+        "invalid_schema", "invalid_anchor", "truncated", "coverage_complete",
+        "adjudication_complete", "semantic_policy_qualified",
+    }
+)
 
 
 class AuditMigrationError(RuntimeError):
@@ -998,6 +1031,168 @@ CREATE TABLE audit_semantic_invalidation_facts_v2(
     "audit_semantic_qualification_facts_v2",
     "audit_semantic_invalidation_facts_v2",
 )
+
+
+_SEMANTIC_RELEASE_AUTHORIZATION_SQL = """
+CREATE TABLE audit_semantic_dependency_head_events_v2(
+  head_event_id TEXT PRIMARY KEY CHECK(length(head_event_id) = 64),
+  dependency_kind TEXT NOT NULL CHECK(dependency_kind IN (
+    'semantic_policy','plan','prompt','schema','ordered_provider_pools',
+    'capacity','provider','fault','replay','fts','metadata','embedding','tokenizer'
+  )),
+  sequence INTEGER NOT NULL CHECK(sequence >= 1),
+  dependency_sha256 TEXT NOT NULL CHECK(length(dependency_sha256) = 64),
+  created_at TEXT NOT NULL,
+  UNIQUE(dependency_kind, sequence)
+);
+CREATE TABLE audit_semantic_release_authorizations_v2(
+  authorization_id TEXT PRIMARY KEY CHECK(length(authorization_id) = 64),
+  receipt_id TEXT NOT NULL UNIQUE CHECK(length(receipt_id) = 64),
+  receipt_material_sha256 TEXT NOT NULL UNIQUE
+    CHECK(length(receipt_material_sha256) = 64),
+  qualification_id TEXT NOT NULL
+    REFERENCES audit_semantic_qualification_facts_v2(qualification_id),
+  qualification_sha256 TEXT NOT NULL CHECK(length(qualification_sha256) = 64),
+  semantic_policy_profile_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  no_match_basis TEXT NOT NULL
+    CHECK(no_match_basis IN ('l1_calibrated','l2_exhaustive')),
+  policy_sha256 TEXT NOT NULL CHECK(length(policy_sha256) = 64),
+  corpus_snapshot_hash TEXT NOT NULL CHECK(length(corpus_snapshot_hash) = 64),
+  evaluation_hash TEXT NOT NULL CHECK(length(evaluation_hash) = 64),
+  dependency_hashes_json TEXT NOT NULL,
+  dependency_heads_json TEXT NOT NULL,
+  authorized_at TEXT NOT NULL,
+  FOREIGN KEY(receipt_id) REFERENCES audit_receipts(minimum_receipt_sha)
+    DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TABLE audit_semantic_qualification_head_bindings_v2(
+  qualification_id TEXT PRIMARY KEY
+    REFERENCES audit_semantic_qualification_facts_v2(qualification_id),
+  dependency_head_events_json TEXT NOT NULL,
+  bound_at TEXT NOT NULL
+);
+""" + _immutable_guards(
+    "audit_semantic_dependency_head_events_v2",
+    "audit_semantic_release_authorizations_v2",
+    "audit_semantic_qualification_head_bindings_v2",
+) + """
+CREATE TRIGGER audit_semantic_dependency_head_events_v2_guard
+BEFORE INSERT ON audit_semantic_dependency_head_events_v2
+BEGIN
+  SELECT CASE WHEN audit_semantic_head_insert_allowed(
+    NEW.head_event_id, NEW.dependency_kind, NEW.sequence,
+    NEW.dependency_sha256, NEW.created_at
+  ) <> 1 THEN RAISE(ABORT, 'semantic dependency head requires host authority') END;
+END;
+CREATE TRIGGER audit_semantic_qualifications_host_guard
+BEFORE INSERT ON audit_semantic_qualifications
+BEGIN
+  SELECT CASE WHEN audit_semantic_qualification_insert_allowed(
+    NEW.qualification_id, NEW.semantic_policy_profile_id,
+    NEW.qualification_sha256, NEW.corpus_snapshot_hash,
+    NEW.provider_capacity_hashes_json, NEW.expires_at,
+    NEW.qualification_json, NEW.created_at
+  ) <> 1 THEN RAISE(ABORT, 'semantic qualification requires host authority') END;
+END;
+CREATE TRIGGER audit_semantic_qualification_facts_v2_host_guard
+BEFORE INSERT ON audit_semantic_qualification_facts_v2
+BEGIN
+  SELECT CASE WHEN audit_semantic_qualification_fact_insert_allowed(
+    NEW.qualification_id, NEW.no_match_basis, NEW.scope, NEW.policy_sha256,
+    NEW.qrels_hash, NEW.evaluation_hash, NEW.metric_report_hash,
+    NEW.dependency_hashes_json, NEW.metrics_json, NEW.vetoes_json,
+    NEW.production_qualified, NEW.expires_at, NEW.created_at
+  ) <> 1 THEN RAISE(ABORT, 'semantic qualification fact requires host authority') END;
+END;
+CREATE TRIGGER audit_semantic_qualification_head_bindings_v2_guard
+BEFORE INSERT ON audit_semantic_qualification_head_bindings_v2
+BEGIN
+  SELECT CASE WHEN audit_semantic_qualification_binding_insert_allowed(
+    NEW.qualification_id, NEW.dependency_head_events_json, NEW.bound_at
+  ) <> 1 THEN RAISE(ABORT, 'qualification head binding requires host authority') END;
+END;
+CREATE TRIGGER audit_semantic_release_authorizations_v2_guard
+BEFORE INSERT ON audit_semantic_release_authorizations_v2
+BEGIN
+  SELECT CASE WHEN audit_semantic_authorization_insert_allowed(
+    NEW.authorization_id, NEW.receipt_id, NEW.receipt_material_sha256,
+    NEW.qualification_id, NEW.qualification_sha256,
+    NEW.semantic_policy_profile_id, NEW.scope,
+    NEW.no_match_basis, NEW.policy_sha256, NEW.corpus_snapshot_hash,
+    NEW.evaluation_hash, NEW.dependency_hashes_json,
+    NEW.dependency_heads_json, NEW.authorized_at
+  ) <> 1 THEN RAISE(ABORT, 'semantic release authorization requires host authority') END;
+END;
+
+CREATE TABLE audit_semantic_release_upgrade_probe(
+  value INTEGER NOT NULL CHECK(value = 0)
+);
+INSERT INTO audit_semantic_release_upgrade_probe(value)
+SELECT 1 FROM audit_receipts receipt
+WHERE receipt.final_status = 'complete_no_match'
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_semantic_release_authorizations_v2 authorization
+    WHERE authorization.receipt_id = receipt.minimum_receipt_sha
+  );
+DROP TABLE audit_semantic_release_upgrade_probe;
+
+DROP TRIGGER audit_receipts_release_and_identity_guard;
+CREATE TRIGGER audit_receipts_release_and_identity_guard
+BEFORE INSERT ON audit_receipts
+BEGIN
+  SELECT CASE WHEN NEW.final_status = 'complete_no_match' AND NOT (
+    NEW.coverage_complete = 1
+    AND NEW.adjudication_complete = 1
+    AND NEW.semantic_policy_qualified = 1
+  ) THEN RAISE(ABORT, 'complete_no_match release gates are incomplete') END;
+  SELECT CASE WHEN NEW.final_status = 'complete_no_match' AND (
+    audit_semantic_receipt_insert_allowed(
+      NEW.manifest_schema_version, NEW.canonical_codec_version, NEW.run_id,
+      NEW.plan_hash, NEW.candidate_hash, NEW.snapshot_id, NEW.snapshot_hash,
+      NEW.history_as_of_watermark, NEW.current_batch_id_namespace,
+      NEW.current_batch_ids_hash, NEW.exclusion_policy_sha,
+      NEW.expected_asset_ids_hash, NEW.observed_asset_ids_hash,
+      NEW.missing_ids, NEW.duplicate_ids, NEW.extra_ids, NEW.invalid_schema,
+      NEW.invalid_anchor, NEW.truncated, NEW.provider_pools_ordered,
+      NEW.provider_capability_profile_hashes, NEW.capacity_profile_id,
+      NEW.semantic_policy_profile_id, NEW.risk_policy_version,
+      NEW.matched_router_rule_ids, NEW.settlement_policy_sha,
+      NEW.shard_plan_sha, NEW.logical_task_hashes,
+      NEW.attempt_manifest_hashes, NEW.raw_request_output_cas_hashes,
+      NEW.minimum_receipt_sha, NEW.coverage_complete,
+      NEW.adjudication_complete, NEW.semantic_policy_qualified,
+      NEW.no_match_basis, NEW.final_status, NEW.stage_reason_code,
+      NEW.evidence_anchors
+    ) <> 1
+    OR NOT EXISTS (
+      SELECT 1 FROM audit_semantic_release_authorizations_v2 authorization
+      WHERE authorization.receipt_id = NEW.minimum_receipt_sha
+        AND authorization.receipt_material_sha256
+            = audit_semantic_receipt_material_sha()
+        AND authorization.qualification_id
+            = audit_semantic_receipt_qualification_id()
+        AND authorization.no_match_basis = NEW.no_match_basis
+        AND authorization.semantic_policy_profile_id
+            = NEW.semantic_policy_profile_id
+    )
+  ) THEN RAISE(ABORT, 'complete_no_match lacks durable release authorization') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_run_manifests r
+    WHERE r.run_id = NEW.run_id AND r.plan_hash = NEW.plan_hash
+  ) THEN RAISE(ABORT, 'receipt run and plan identity mismatch') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_snapshots s
+    WHERE s.snapshot_id = NEW.snapshot_id
+      AND s.snapshot_hash = NEW.snapshot_hash
+      AND s.history_as_of_watermark = NEW.history_as_of_watermark
+      AND s.current_batch_id_namespace = NEW.current_batch_id_namespace
+      AND s.current_batch_ids_hash = NEW.current_batch_ids_hash
+      AND s.exclusion_policy_sha = NEW.exclusion_policy_sha
+      AND s.expected_asset_ids_hash = NEW.expected_asset_ids_hash
+  ) THEN RAISE(ABORT, 'receipt frozen snapshot identity mismatch') END;
+END;
+"""
 
 
 _INTEGRITY_GUARDS_SQL = """
@@ -3015,8 +3210,86 @@ END;
 """
 
 
+_MIGRATION_LEDGER_GUARD_SQL = """
+CREATE TRIGGER audit_schema_migrations_insert_guard
+BEFORE INSERT ON audit_schema_migrations
+BEGIN
+  SELECT CASE WHEN audit_migration_ledger_insert_allowed(
+    NEW.component, NEW.version, NEW.migration_sha256, NEW.applied_at
+  ) != 1 THEN RAISE(ABORT, 'migration ledger insert lacks host authority') END;
+END;
+CREATE TRIGGER audit_schema_migrations_immutable_update
+BEFORE UPDATE ON audit_schema_migrations
+BEGIN
+  SELECT RAISE(ABORT, 'migration ledger is immutable');
+END;
+CREATE TRIGGER audit_schema_migrations_immutable_delete
+BEFORE DELETE ON audit_schema_migrations
+BEGIN
+  SELECT RAISE(ABORT, 'migration ledger is immutable');
+END;
+"""
+
+
+_DURABLE_COST_FACTS_SQL = """
+CREATE TABLE audit_attempt_launch_facts_v2(
+  attempt_id TEXT PRIMARY KEY REFERENCES audit_task_attempts(attempt_id),
+  queued_at TEXT NOT NULL,
+  queue_latency_ms INTEGER CHECK(queue_latency_ms IS NULL OR queue_latency_ms >= 0),
+  fact_sha256 TEXT NOT NULL UNIQUE CHECK(length(fact_sha256) = 64),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE audit_attempt_cost_settlements_v2(
+  attempt_id TEXT PRIMARY KEY REFERENCES audit_attempt_launch_facts_v2(attempt_id),
+  outcome TEXT NOT NULL CHECK(outcome IN ('success','failed','cancelled')),
+  error_class TEXT,
+  billing_state TEXT NOT NULL CHECK(billing_state IN ('billable','nonbillable','unknown')),
+  usage_source TEXT NOT NULL CHECK(usage_source IN ('verified_actual','reservation')),
+  price_source TEXT,
+  currency TEXT,
+  run_latency_ms INTEGER CHECK(run_latency_ms IS NULL OR run_latency_ms >= 0),
+  fact_sha256 TEXT NOT NULL UNIQUE CHECK(length(fact_sha256) = 64),
+  completed_at TEXT NOT NULL,
+  CHECK((price_source IS NULL) = (currency IS NULL))
+);
+CREATE TABLE audit_legacy_unaccounted_attempts_v2(
+  attempt_id TEXT PRIMARY KEY REFERENCES audit_task_attempts(attempt_id),
+  reason TEXT NOT NULL CHECK(reason = 'pre_durable_cost_facts'),
+  quarantined_at TEXT NOT NULL
+);
+""" + _immutable_guards(
+    "audit_attempt_launch_facts_v2",
+    "audit_attempt_cost_settlements_v2",
+    "audit_legacy_unaccounted_attempts_v2",
+) + """
+CREATE TRIGGER audit_attempt_launch_facts_v2_guard
+BEFORE INSERT ON audit_attempt_launch_facts_v2
+BEGIN
+  SELECT CASE WHEN audit_cost_launch_insert_allowed(
+    NEW.attempt_id, NEW.queued_at, NEW.queue_latency_ms,
+    NEW.fact_sha256, NEW.created_at
+  ) <> 1 THEN RAISE(ABORT, 'attempt launch fact requires host authority') END;
+END;
+CREATE TRIGGER audit_attempt_cost_settlements_v2_guard
+BEFORE INSERT ON audit_attempt_cost_settlements_v2
+BEGIN
+  SELECT CASE WHEN audit_cost_settlement_insert_allowed(
+    NEW.attempt_id, NEW.outcome, NEW.error_class, NEW.billing_state,
+    NEW.usage_source, NEW.price_source, NEW.currency,
+    NEW.run_latency_ms, NEW.fact_sha256, NEW.completed_at
+  ) <> 1 THEN RAISE(ABORT, 'attempt cost settlement requires host authority') END;
+END;
+INSERT INTO audit_legacy_unaccounted_attempts_v2(
+  attempt_id, reason, quarantined_at
+)
+SELECT attempt_id, 'pre_durable_cost_facts', CURRENT_TIMESTAMP
+FROM audit_task_attempts;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
+    Migration("migration-ledger-guard", 1, _MIGRATION_LEDGER_GUARD_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
     Migration("cas-foundation", 1, _CAS_SQL),
     Migration("execution", 1, _EXECUTION_SQL),
@@ -3060,6 +3333,11 @@ MIGRATIONS = (
         "l2-runtime-split-input-authority", 1,
         _L2_RUNTIME_SPLIT_INPUT_AUTHORITY_SQL,
     ),
+    Migration(
+        "semantic-release-authorization", 1,
+        _SEMANTIC_RELEASE_AUTHORIZATION_SQL,
+    ),
+    Migration("durable-cost-facts", 1, _DURABLE_COST_FACTS_SQL),
 )
 
 
@@ -3285,7 +3563,9 @@ def _l2_budget_settlement_valid(usage_verified, actual_json):
         return 1 if (
             usage_verified == 1
             and required.issubset(usage)
-            and not set(usage).difference(required | {"currency_micros"})
+            and not set(usage).difference(
+                required | {"cache_tokens", "currency_micros"}
+            )
             and all(type(value) is int and value >= 0 for value in usage.values())
         ) else 0
     except (ValueError, TypeError):
@@ -3806,6 +4086,51 @@ def _clear_metadata_guard(guard):
     )
 
 
+def _clear_semantic_release_guard(guard):
+    guard.update(
+        expected_head_events=frozenset(),
+        expected_qualification_binding=None,
+        expected_qualification=None,
+        expected_qualification_fact=None,
+        expected_authorization=None,
+        receipt_id=None,
+        receipt_material_sha256=None,
+        qualification_id=None,
+    )
+
+
+def _semantic_receipt_from_sql(values):
+    if len(values) != len(_RELEASE_RECEIPT_FIELDS):
+        raise ValueError("receipt SQL tuple is invalid")
+    receipt = dict(zip(_RELEASE_RECEIPT_FIELDS, values))
+    for field in _RELEASE_JSON_FIELDS:
+        raw = receipt[field]
+        if not isinstance(raw, str):
+            raise ValueError("receipt JSON field is invalid")
+        receipt[field] = history_contract_v2.parse_json_bytes(raw.encode("utf-8"))
+    for field in _RELEASE_BOOLEAN_FIELDS:
+        if receipt[field] not in (0, 1):
+            raise ValueError("receipt Boolean field is invalid")
+        receipt[field] = bool(receipt[field])
+    return history_contract_v2.validate_receipt(receipt)
+
+
+def _semantic_receipt_insert_allowed(guard, *values):
+    try:
+        receipt = _semantic_receipt_from_sql(values)
+        material_sha = history_contract_v2.framed_sha256(
+            "history-semantic-release-receipt-v2",
+            history_contract_v2.canonical_bytes(receipt),
+        )
+        return 1 if (
+            guard["receipt_id"] == receipt["minimum_receipt_sha"]
+            and guard["receipt_material_sha256"] == material_sha
+            and guard["qualification_id"] is not None
+        ) else 0
+    except (ValueError, TypeError, history_contract_v2.ContractV2Error):
+        return 0
+
+
 @contextlib.contextmanager
 def _metadata_transition_guard(
     conn, *, operation, now, outbox_id, claim_token, claim_fence
@@ -3918,6 +4243,9 @@ def _execute_sql_script(conn, source):
 
 
 def _apply_migration(conn, migration):
+    ledger_guard = _MIGRATION_LEDGER_GUARDS.get(id(conn))
+    if ledger_guard is None or ledger_guard["expected"] is not None:
+        raise AuditMigrationError("migration ledger guard is unavailable")
     try:
         conn.execute("BEGIN IMMEDIATE")
         ledger_exists = conn.execute(
@@ -3938,18 +4266,26 @@ def _apply_migration(conn, migration):
                 conn.execute("COMMIT")
                 return
         _execute_sql_script(conn, migration.sql)
-        conn.execute(
-            "INSERT INTO audit_schema_migrations(" 
-            "component, version, migration_sha256, applied_at) VALUES(?, ?, ?, ?)",
-            (
-                migration.component,
-                migration.version,
-                migration.sha256,
-                _utc_now(),
-            ),
+        applied_at = _utc_now()
+        ledger_guard["expected"] = (
+            migration.component, migration.version, migration.sha256, applied_at
         )
+        try:
+            conn.execute(
+                "INSERT INTO audit_schema_migrations("
+                "component, version, migration_sha256, applied_at) VALUES(?, ?, ?, ?)",
+                (
+                    migration.component,
+                    migration.version,
+                    migration.sha256,
+                    applied_at,
+                ),
+            )
+        finally:
+            ledger_guard["expected"] = None
         conn.execute("COMMIT")
     except Exception as exc:
+        ledger_guard["expected"] = None
         if conn.in_transaction:
             conn.execute("ROLLBACK")
         if isinstance(exc, AuditMigrationError):
@@ -3959,7 +4295,116 @@ def _apply_migration(conn, migration):
         ) from exc
 
 
-def init_schema(conn):
+def _managed_schema_rows(conn):
+    return {
+        (row[0], row[1]): (row[2], row[3])
+        for row in conn.execute(
+            """
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_master
+            WHERE name GLOB 'audit_*' AND sql IS NOT NULL
+            ORDER BY type, name
+            """
+        )
+    }
+
+
+def _expected_managed_schema():
+    migration_key = tuple(
+        (migration.component, migration.version, migration.sha256)
+        for migration in MIGRATIONS
+    )
+    expected = _EXPECTED_MANAGED_SCHEMA.get(migration_key)
+    if expected is not None:
+        return expected
+    try:
+        from lib import history_store
+    except ImportError:
+        import history_store
+    reference = sqlite3.connect(":memory:")
+    try:
+        history_store.init_schema(reference)
+        reference.commit()
+        _initialize_schema(reference, verify=False)
+        expected = _managed_schema_rows(reference)
+    finally:
+        reference.close()
+    _EXPECTED_MANAGED_SCHEMA[migration_key] = expected
+    return expected
+
+
+def _verify_managed_schema(conn):
+    expected = _expected_managed_schema()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        observed = _managed_schema_rows(conn)
+        missing = sorted(set(expected).difference(observed))
+        mismatched = sorted(
+            key for key in set(expected).intersection(observed)
+            if observed[key] != expected[key]
+        )
+        if missing or mismatched:
+            detail = []
+            if missing:
+                detail.append("missing=" + ",".join(name for _, name in missing))
+            if mismatched:
+                detail.append(
+                    "mismatched=" + ",".join(name for _, name in mismatched)
+                )
+            raise AuditMigrationError(
+                "managed audit schema postcondition failed: " + " ".join(detail)
+            )
+        for migration in MIGRATIONS:
+            row = conn.execute(
+                "SELECT migration_sha256 FROM audit_schema_migrations "
+                "WHERE component=? AND version=?",
+                (migration.component, migration.version),
+            ).fetchone()
+            if row is None or row[0] != migration.sha256:
+                raise AuditMigrationError(
+                    f"migration ledger postcondition failed: "
+                    f"{migration.component} v{migration.version}"
+                )
+        _replay_migration_probes(conn)
+        foreign_key_faults = [
+            row for row in conn.execute("PRAGMA foreign_key_check").fetchall()
+            if isinstance(row[0], str) and row[0].startswith("audit_")
+        ]
+        if foreign_key_faults:
+            raise AuditMigrationError(
+                "audit schema foreign-key postcondition failed"
+            )
+        conn.execute("COMMIT")
+    except Exception as exc:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        if isinstance(exc, AuditMigrationError):
+            raise
+        raise AuditMigrationError(
+            "audit migration invariant probe failed"
+        ) from exc
+
+
+def _replay_migration_probes(conn):
+    pattern = re.compile(
+        r"(CREATE TABLE (audit_[A-Za-z0-9_]+_probe)\s*\(.*?"
+        r"DROP TABLE \2;)",
+        re.DOTALL,
+    )
+    probe_index = 0
+    for migration in MIGRATIONS:
+        for match in pattern.finditer(migration.sql):
+            probe_index += 1
+            savepoint = f"audit_migration_probe_{probe_index}"
+            conn.execute("SAVEPOINT " + savepoint)
+            try:
+                _execute_sql_script(conn, match.group(1))
+            finally:
+                conn.execute("ROLLBACK TO SAVEPOINT " + savepoint)
+                conn.execute("RELEASE SAVEPOINT " + savepoint)
+
+
+def _initialize_schema(conn, *, verify):
     """Apply every v2 component migration without invoking v1 initialization."""
     if not isinstance(conn, sqlite3.Connection):
         raise TypeError("conn must be a sqlite3 connection")
@@ -3972,6 +4417,26 @@ def init_schema(conn):
     _clear_l2_terminal_transition_guard(split_guard)
     _L2_TASK_INSERT_GUARDS[id(conn)] = split_guard
     _L2_TERMINAL_TRANSITION_GUARDS[id(conn)] = split_guard
+    release_guard = {}
+    _clear_semantic_release_guard(release_guard)
+    _SEMANTIC_RELEASE_GUARDS[id(conn)] = release_guard
+    _SEMANTIC_EVALUATION_GUARDS[id(conn)] = {"expected": None}
+    cost_guard = {"launch": None, "settlement": None}
+    _COST_FACT_GUARDS[id(conn)] = cost_guard
+    ledger_guard = {"expected": None}
+    _MIGRATION_LEDGER_GUARDS[id(conn)] = ledger_guard
+    conn.create_function(
+        "audit_migration_ledger_insert_allowed", 4,
+        lambda *values: 1 if ledger_guard["expected"] == tuple(values) else 0,
+    )
+    conn.create_function(
+        "audit_cost_launch_insert_allowed", 5,
+        lambda *values: 1 if cost_guard["launch"] == tuple(values) else 0,
+    )
+    conn.create_function(
+        "audit_cost_settlement_insert_allowed", 10,
+        lambda *values: 1 if cost_guard["settlement"] == tuple(values) else 0,
+    )
     conn.create_function(
         "audit_fenced_cas_allowed", 0, lambda: 1 if guard["active"] else 0
     )
@@ -4074,10 +4539,204 @@ def init_schema(conn):
             and split_guard["expected_authority"] == tuple(values)
         ) else 0,
     )
+    conn.create_function(
+        "audit_semantic_head_insert_allowed", 5,
+        lambda *values: 1 if (
+            tuple(values) in release_guard["expected_head_events"]
+        ) else 0,
+    )
+    conn.create_function(
+        "audit_semantic_authorization_insert_allowed", 14,
+        lambda *values: 1 if (
+            release_guard["expected_authorization"] == tuple(values)
+        ) else 0,
+    )
+    conn.create_function(
+        "audit_semantic_qualification_binding_insert_allowed", 3,
+        lambda *values: 1 if (
+            release_guard["expected_qualification_binding"] == tuple(values)
+        ) else 0,
+    )
+    conn.create_function(
+        "audit_semantic_qualification_insert_allowed", 8,
+        lambda *values: 1 if (
+            release_guard["expected_qualification"] == tuple(values)
+        ) else 0,
+    )
+    conn.create_function(
+        "audit_semantic_qualification_fact_insert_allowed", 13,
+        lambda *values: 1 if (
+            release_guard["expected_qualification_fact"] == tuple(values)
+        ) else 0,
+    )
+    conn.create_function(
+        "audit_semantic_receipt_insert_allowed", len(_RELEASE_RECEIPT_FIELDS),
+        lambda *values: _semantic_receipt_insert_allowed(release_guard, *values),
+    )
+    conn.create_function(
+        "audit_semantic_receipt_material_sha", 0,
+        lambda: release_guard["receipt_material_sha256"],
+    )
+    conn.create_function(
+        "audit_semantic_receipt_qualification_id", 0,
+        lambda: release_guard["qualification_id"],
+    )
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA recursive_triggers = ON")
     for migration in MIGRATIONS:
         _apply_migration(conn, migration)
+    if verify:
+        _verify_managed_schema(conn)
+
+
+def init_schema(conn):
+    """Apply and independently verify every managed v2 audit migration."""
+    return _initialize_schema(conn, verify=True)
+
+
+def record_attempt_launch_cost_fact(
+    conn, attempt_id, *, queued_at, queue_latency_ms=None, created_at=None
+):
+    if not conn.in_transaction:
+        raise AuditMigrationError("attempt launch cost fact requires a transaction")
+    authority = conn.execute(
+        """
+        SELECT attempt.task_hash, attempt.ordinal, attempt.provenance_json,
+               task.state, task.claim_token, task.fence,
+               reservation.attempt_kind
+        FROM audit_task_attempts attempt
+        JOIN audit_logical_tasks task ON task.task_hash=attempt.task_hash
+        JOIN audit_runtime_budget_reservations_v2 reservation
+          ON reservation.attempt_id=attempt.attempt_id
+        WHERE attempt.attempt_id=?
+        """,
+        (attempt_id,),
+    ).fetchone()
+    if authority is None:
+        raise AuditMigrationError("attempt launch authority is missing")
+    try:
+        provenance = history_contract_v2.parse_json_bytes(
+            authority["provenance_json"].encode("utf-8")
+        )
+        expected_attempt_id = history_contract_v2.attempt_id(
+            authority["task_hash"], authority["ordinal"], provenance
+        )
+    except history_contract_v2.ContractV2Error as exc:
+        raise AuditMigrationError("attempt launch identity is invalid") from exc
+    if (
+        expected_attempt_id != attempt_id
+        or authority["state"] != "claimed"
+        or provenance.get("claim_token") != authority["claim_token"]
+        or provenance.get("claim_fence") != authority["fence"]
+        or provenance.get("attempt_kind") != authority["attempt_kind"]
+    ):
+        raise AuditMigrationError("attempt launch authority is inconsistent")
+    created_at = created_at or queued_at
+    _semantic_timestamp(queued_at, "queued_at")
+    _semantic_timestamp(created_at, "created_at")
+    if queue_latency_ms is not None and (
+        type(queue_latency_ms) is not int or queue_latency_ms < 0
+    ):
+        raise ValueError("queue latency is invalid")
+    material = {
+        "attempt_id": attempt_id, "queued_at": queued_at,
+        "queue_latency_ms": queue_latency_ms, "created_at": created_at,
+    }
+    values = (
+        attempt_id, queued_at, queue_latency_ms,
+        _semantic_sha("history-attempt-launch-cost-v2", material), created_at,
+    )
+    existing = conn.execute(
+        "SELECT * FROM audit_attempt_launch_facts_v2 WHERE attempt_id=?",
+        (attempt_id,),
+    ).fetchone()
+    if existing is not None:
+        if tuple(existing) != values:
+            raise AuditMigrationError("attempt launch cost fact conflicts")
+        return values[3]
+    guard = _COST_FACT_GUARDS.get(id(conn))
+    if guard is None or guard["launch"] is not None:
+        raise AuditMigrationError("cost fact guard is unavailable")
+    guard["launch"] = values
+    try:
+        conn.execute(
+            "INSERT INTO audit_attempt_launch_facts_v2 VALUES(?,?,?,?,?)", values
+        )
+    finally:
+        guard["launch"] = None
+    return values[3]
+
+
+def record_attempt_terminal_cost_fact(
+    conn, attempt_id, *, completed_at, cancellation=False,
+    error_class=None, run_latency_ms=None,
+):
+    if not conn.in_transaction:
+        raise AuditMigrationError("attempt terminal cost fact requires a transaction")
+    authority = conn.execute(
+        """
+        SELECT budget.usage_verified, completion.outcome
+        FROM audit_runtime_budget_settlements_v2 budget
+        LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+        WHERE budget.attempt_id=?
+        """,
+        (attempt_id,),
+    ).fetchone()
+    if authority is None:
+        raise AuditMigrationError("attempt terminal cost authority is missing")
+    if cancellation:
+        if authority["outcome"] is not None:
+            raise AuditMigrationError("completed attempt cannot be cancelled")
+        outcome = "cancelled"
+        error_class = error_class or "cancelled"
+    else:
+        if authority["outcome"] is None:
+            raise AuditMigrationError("attempt completion authority is missing")
+        outcome = "success" if authority["outcome"] == "valid" else "failed"
+        error_class = None if outcome == "success" else authority["outcome"]
+    billing_state = "unknown"
+    usage_source = (
+        "verified_actual" if authority["usage_verified"] == 1 else "reservation"
+    )
+    price_source = None
+    currency = None
+    if run_latency_ms is not None and (
+        type(run_latency_ms) is not int or run_latency_ms < 0
+    ):
+        raise ValueError("run latency is invalid")
+    _semantic_timestamp(completed_at, "completed_at")
+    material = {
+        "attempt_id": attempt_id, "outcome": outcome,
+        "error_class": error_class, "billing_state": billing_state,
+        "usage_source": usage_source, "price_source": price_source,
+        "currency": currency, "run_latency_ms": run_latency_ms,
+        "completed_at": completed_at,
+    }
+    values = (
+        attempt_id, outcome, error_class, billing_state, usage_source,
+        price_source, currency, run_latency_ms,
+        _semantic_sha("history-attempt-terminal-cost-v2", material), completed_at,
+    )
+    existing = conn.execute(
+        "SELECT * FROM audit_attempt_cost_settlements_v2 WHERE attempt_id=?",
+        (attempt_id,),
+    ).fetchone()
+    if existing is not None:
+        if tuple(existing) != values:
+            raise AuditMigrationError("attempt terminal cost fact conflicts")
+        return values[8]
+    guard = _COST_FACT_GUARDS.get(id(conn))
+    if guard is None or guard["settlement"] is not None:
+        raise AuditMigrationError("cost fact guard is unavailable")
+    guard["settlement"] = values
+    try:
+        conn.execute(
+            "INSERT INTO audit_attempt_cost_settlements_v2 VALUES(?,?,?,?,?,?,?,?,?,?)",
+            values,
+        )
+    finally:
+        guard["settlement"] = None
+    return values[8]
 
 
 def _semantic_decimal_identity(value):
@@ -4121,12 +4780,14 @@ def _semantic_timestamp(value, name):
 
 def _semantic_dependencies(value):
     required = {
-        "semantic_policy", "prompt", "schema", "ordered_provider_pools",
+        "semantic_policy", "plan", "prompt", "schema", "ordered_provider_pools",
         "capacity", "provider", "fault", "replay",
     }
+    allowed = required | {"fts", "metadata", "embedding", "tokenizer"}
     if (
         not isinstance(value, dict)
         or not required.issubset(value)
+        or set(value).difference(allowed)
         or any(
             not isinstance(name, str)
             or not name
@@ -4139,8 +4800,166 @@ def _semantic_dependencies(value):
     return dict(sorted(value.items()))
 
 
-def persist_semantic_qualification(conn, qualification, *, now=None):
-    """Append one immutable semantic evaluation and its exact release bindings."""
+def _current_semantic_dependency_heads(conn, dependency_kinds=None):
+    rows = conn.execute(
+        """
+        SELECT event.dependency_kind, event.dependency_sha256
+        FROM audit_semantic_dependency_head_events_v2 event
+        JOIN (
+          SELECT dependency_kind, max(sequence) AS sequence
+          FROM audit_semantic_dependency_head_events_v2
+          GROUP BY dependency_kind
+        ) head
+          ON head.dependency_kind=event.dependency_kind
+         AND head.sequence=event.sequence
+        ORDER BY event.dependency_kind
+        """
+    ).fetchall()
+    result = {row[0]: row[1] for row in rows}
+    if dependency_kinds is not None:
+        result = {
+            kind: result[kind] for kind in sorted(dependency_kinds)
+            if kind in result
+        }
+    return result
+
+
+def _current_semantic_dependency_head_events(conn, dependency_kinds=None):
+    rows = conn.execute(
+        """
+        SELECT event.dependency_kind, event.sequence, event.head_event_id,
+               event.dependency_sha256
+        FROM audit_semantic_dependency_head_events_v2 event
+        JOIN (
+          SELECT dependency_kind, max(sequence) AS sequence
+          FROM audit_semantic_dependency_head_events_v2
+          GROUP BY dependency_kind
+        ) head
+          ON head.dependency_kind=event.dependency_kind
+         AND head.sequence=event.sequence
+        ORDER BY event.dependency_kind
+        """
+    ).fetchall()
+    result = [
+        {
+            "dependency_kind": row[0], "sequence": row[1],
+            "head_event_id": row[2], "dependency_sha256": row[3],
+        }
+        for row in rows
+    ]
+    if dependency_kinds is not None:
+        allowed = set(dependency_kinds)
+        result = [item for item in result if item["dependency_kind"] in allowed]
+    return result
+
+
+def current_semantic_dependency_heads(conn):
+    """Return the current closed dependency digests for diagnostics."""
+    return _current_semantic_dependency_heads(conn)
+
+
+def _publish_semantic_dependency_heads_in_transaction(
+    conn, dependencies, created_at
+):
+    if not conn.in_transaction:
+        raise AuditMigrationError("semantic dependency publication requires a transaction")
+    dependencies = _semantic_dependencies(dependencies)
+    current = _current_semantic_dependency_heads(conn)
+    events = []
+    for kind, digest in dependencies.items():
+        if current.get(kind) == digest:
+            continue
+        sequence = conn.execute(
+            "SELECT COALESCE(max(sequence),0)+1 FROM audit_semantic_dependency_head_events_v2 WHERE dependency_kind=?",
+            (kind,),
+        ).fetchone()[0]
+        material = {
+            "dependency_kind": kind,
+            "sequence": sequence,
+            "dependency_sha256": digest,
+            "created_at": created_at,
+        }
+        event_id = _semantic_sha("history-semantic-dependency-head-v2", material)
+        events.append((event_id, kind, sequence, digest, created_at))
+    guard = _SEMANTIC_RELEASE_GUARDS.get(id(conn))
+    if guard is None or guard["expected_head_events"]:
+        raise AuditMigrationError("semantic dependency guard is unavailable")
+    guard["expected_head_events"] = frozenset(events)
+    try:
+        for event in events:
+            conn.execute(
+                """
+                INSERT INTO audit_semantic_dependency_head_events_v2(
+                  head_event_id, dependency_kind, sequence,
+                  dependency_sha256, created_at
+                ) VALUES(?,?,?,?,?)
+                """,
+                event,
+            )
+    finally:
+        guard["expected_head_events"] = frozenset()
+    return [event[0] for event in events]
+
+
+def publish_semantic_dependency_heads(conn, changed_dependencies, *, now=None):
+    """Append changed closed dependency heads under one host-owned transaction."""
+    if conn.in_transaction:
+        raise AuditMigrationError("semantic dependency publication requires an idle connection")
+    if not isinstance(changed_dependencies, dict) or not changed_dependencies:
+        raise ValueError("changed dependencies are required")
+    created_at = now or _utc_now()
+    _semantic_timestamp(created_at, "created_at")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = _current_semantic_dependency_heads(conn)
+        merged = dict(current)
+        merged.update(changed_dependencies)
+        dependencies = _semantic_dependencies(merged)
+        event_ids = _publish_semantic_dependency_heads_in_transaction(
+            conn, dependencies, created_at
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    return {"event_ids": event_ids, "heads": _current_semantic_dependency_heads(conn)}
+
+
+def persist_semantic_qualification(
+    conn, qrels, outputs=None, policy=None, evidence=None, *, now=None
+):
+    """Recompute and append one immutable semantic release qualification."""
+    if outputs is None or policy is None or evidence is None:
+        raise ValueError("raw evaluation materials are required")
+    try:
+        from lib import history_audit_eval_v2
+    except ImportError:
+        import history_audit_eval_v2
+    qualification = history_audit_eval_v2.evaluate_production_qualification(
+        qrels, outputs, policy, evidence
+    )
+    evaluation_guard = _SEMANTIC_EVALUATION_GUARDS.get(id(conn))
+    if evaluation_guard is None or evaluation_guard["expected"] is not None:
+        raise AuditMigrationError("semantic evaluator guard is unavailable")
+    evaluation_guard["expected"] = _semantic_sha(
+        "history-semantic-evaluator-issuance-v2", qualification
+    )
+    try:
+        return _persist_semantic_qualification(conn, qualification, now=now)
+    finally:
+        evaluation_guard["expected"] = None
+
+
+def _persist_semantic_qualification(conn, qualification, *, now=None):
+    """Persist only a qualification recomputed by the host-owned evaluator."""
+    evaluation_guard = _SEMANTIC_EVALUATION_GUARDS.get(id(conn))
+    expected = _semantic_sha(
+        "history-semantic-evaluator-issuance-v2", qualification
+    )
+    if evaluation_guard is None or evaluation_guard["expected"] != expected:
+        raise ValueError("qualification lacks evaluator issuance authority")
+    evaluation_guard["expected"] = None
     fields = {
         "schema_version", "semantic_policy_profile_id", "production_qualified",
         "no_match_basis", "scope", "policy_sha256", "qrels_hash",
@@ -4194,6 +5013,27 @@ def persist_semantic_qualification(conn, qualification, *, now=None):
     )
     conn.execute("BEGIN IMMEDIATE")
     try:
+        release_guard = _SEMANTIC_RELEASE_GUARDS.get(id(conn))
+        if release_guard is None:
+            raise AuditMigrationError("semantic release guard is unavailable")
+        qualification_values = (
+            qualification_id, material["semantic_policy_profile_id"],
+            qualification_sha, material["corpus_snapshot_hash"],
+            capacity_bindings, material["expires_at"], qualification_json,
+            created_at,
+        )
+        fact_values = (
+            qualification_id, material["no_match_basis"], material["scope"],
+            material["policy_sha256"], material["qrels_hash"],
+            material["evaluation_hash"], material["metric_report_hash"],
+            _semantic_canonical(dependencies),
+            _semantic_canonical(material["metrics"]),
+            _semantic_canonical(material["vetoes"]),
+            int(material["production_qualified"]), material["expires_at"],
+            created_at,
+        )
+        release_guard["expected_qualification"] = qualification_values
+        release_guard["expected_qualification_fact"] = fact_values
         conn.execute(
             """
             INSERT OR IGNORE INTO audit_semantic_qualifications(
@@ -4203,12 +5043,7 @@ def persist_semantic_qualification(conn, qualification, *, now=None):
               qualification_json, created_at
             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                qualification_id, material["semantic_policy_profile_id"],
-                qualification_sha, material["corpus_snapshot_hash"],
-                capacity_bindings, material["expires_at"], qualification_json,
-                created_at,
-            ),
+            qualification_values,
         )
         conn.execute(
             """
@@ -4219,36 +5054,66 @@ def persist_semantic_qualification(conn, qualification, *, now=None):
               production_qualified, expires_at, created_at
             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                qualification_id, material["no_match_basis"], material["scope"],
-                material["policy_sha256"], material["qrels_hash"],
-                material["evaluation_hash"], material["metric_report_hash"],
-                _semantic_canonical(dependencies),
-                _semantic_canonical(material["metrics"]),
-                _semantic_canonical(material["vetoes"]),
-                int(material["production_qualified"]), material["expires_at"],
-                created_at,
-            ),
+            fact_values,
         )
-        row = conn.execute(
+        release_guard["expected_qualification"] = None
+        release_guard["expected_qualification_fact"] = None
+        base_row = conn.execute(
             """
-            SELECT qualification.qualification_sha256,
-                   qualification.qualification_json,
-                   fact.dependency_hashes_json, fact.vetoes_json
-            FROM audit_semantic_qualifications qualification
-            JOIN audit_semantic_qualification_facts_v2 fact
-              USING(qualification_id)
-            WHERE qualification_id=?
+            SELECT qualification_id, semantic_policy_profile_id,
+                   qualification_sha256, corpus_snapshot_hash,
+                   provider_capacity_hashes_json, expires_at,
+                   qualification_json, created_at
+            FROM audit_semantic_qualifications WHERE qualification_id=?
             """,
             (qualification_id,),
         ).fetchone()
-        if row is None or tuple(row) != (
-            qualification_sha, qualification_json,
-            _semantic_canonical(dependencies), _semantic_canonical(material["vetoes"]),
+        fact_row = conn.execute(
+            """
+            SELECT qualification_id, no_match_basis, scope, policy_sha256,
+                   qrels_hash, evaluation_hash, metric_report_hash,
+                   dependency_hashes_json, metrics_json, vetoes_json,
+                   production_qualified, expires_at, created_at
+            FROM audit_semantic_qualification_facts_v2 WHERE qualification_id=?
+            """,
+            (qualification_id,),
+        ).fetchone()
+        if (
+            base_row is None or tuple(base_row) != qualification_values
+            or fact_row is None or tuple(fact_row) != fact_values
         ):
             raise ValueError("semantic qualification identity conflicts")
+        if _current_semantic_dependency_heads(conn, dependencies) != dependencies:
+            raise ValueError("qualification dependencies are not current")
+        head_events_json = _semantic_canonical(
+            _current_semantic_dependency_head_events(conn, dependencies)
+        )
+        expected_binding = (qualification_id, head_events_json, created_at)
+        release_guard["expected_qualification_binding"] = expected_binding
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO audit_semantic_qualification_head_bindings_v2(
+                  qualification_id, dependency_head_events_json, bound_at
+                ) VALUES(?,?,?)
+                """,
+                expected_binding,
+            )
+        finally:
+            release_guard["expected_qualification_binding"] = None
+        binding = conn.execute(
+            "SELECT dependency_head_events_json FROM audit_semantic_qualification_head_bindings_v2 WHERE qualification_id=?",
+            (qualification_id,),
+        ).fetchone()
+        if binding is None or binding[0] != head_events_json:
+            raise ValueError("semantic qualification head binding conflicts")
         conn.execute("COMMIT")
     except Exception:
+        release_guard = _SEMANTIC_RELEASE_GUARDS.get(id(conn))
+        if release_guard is not None:
+            release_guard["expected_qualification"] = None
+            release_guard["expected_qualification_fact"] = None
+            release_guard["expected_qualification_binding"] = None
         if conn.in_transaction:
             conn.execute("ROLLBACK")
         raise
@@ -4276,9 +5141,15 @@ def lookup_semantic_qualification(
                fact.no_match_basis, fact.policy_sha256,
                qualification.corpus_snapshot_hash, fact.evaluation_hash,
                fact.dependency_hashes_json, fact.expires_at,
-               qualification.qualification_json
+               qualification.qualification_json,
+               binding.dependency_head_events_json,
+               fact.scope, fact.qrels_hash, fact.metric_report_hash,
+               fact.metrics_json, fact.vetoes_json,
+               fact.production_qualified, qualification.expires_at
         FROM audit_semantic_qualifications qualification
         JOIN audit_semantic_qualification_facts_v2 fact
+          USING(qualification_id)
+        JOIN audit_semantic_qualification_head_bindings_v2 binding
           USING(qualification_id)
         WHERE qualification.semantic_policy_profile_id=?
           AND fact.no_match_basis=?
@@ -4302,6 +5173,37 @@ def lookup_semantic_qualification(
     ).fetchone()
     if row is None or _semantic_timestamp(row[8], "expires_at") <= current:
         return None
+    if (
+        _current_semantic_dependency_heads(conn, dependencies) != dependencies
+        or row[10] != _semantic_canonical(
+            _current_semantic_dependency_head_events(conn, dependencies)
+        )
+    ):
+        return None
+    try:
+        qualification_material = json.loads(row[9])
+    except (TypeError, ValueError):
+        return None
+    if (
+        _semantic_sha("history-semantic-qualification-v2", qualification_material)
+        != row[1]
+        or row[0] != "semantic-v2-" + row[1]
+        or qualification_material.get("semantic_policy_profile_id") != row[2]
+        or qualification_material.get("no_match_basis") != row[3]
+        or qualification_material.get("policy_sha256") != row[4]
+        or qualification_material.get("corpus_snapshot_hash") != row[5]
+        or qualification_material.get("evaluation_hash") != row[6]
+        or qualification_material.get("dependency_hashes") != json.loads(row[7])
+        or qualification_material.get("expires_at") != row[8]
+        or qualification_material.get("scope") != row[11]
+        or qualification_material.get("qrels_hash") != row[12]
+        or qualification_material.get("metric_report_hash") != row[13]
+        or _semantic_canonical(qualification_material.get("metrics")) != row[14]
+        or _semantic_canonical(qualification_material.get("vetoes")) != row[15]
+        or int(bool(qualification_material.get("production_qualified"))) != row[16]
+        or qualification_material.get("expires_at") != row[17]
+    ):
+        return None
     return {
         "qualification_id": row[0],
         "qualification_sha256": row[1],
@@ -4311,7 +5213,174 @@ def lookup_semantic_qualification(
         "corpus_snapshot_hash": row[5],
         "evaluation_hash": row[6],
         "dependency_hashes": json.loads(row[7]),
+        "dependency_head_events_json": row[10],
+        "scope": row[11],
         "expires_at": row[8],
+    }
+
+
+def _authorize_complete_no_match_receipt(
+    conn, receipt, release_context, *, now=None
+):
+    """Fail closed until production runtime authority is durably available."""
+    if not conn.in_transaction:
+        raise AuditMigrationError("semantic release authorization requires a transaction")
+    try:
+        normalized = history_contract_v2.validate_receipt(receipt)
+    except history_contract_v2.ContractV2Error as exc:
+        raise ValueError("semantic release receipt is invalid") from exc
+    if normalized["final_status"] != "complete_no_match":
+        raise ValueError("semantic release receipt is not complete_no_match")
+    raise ValueError("production_runtime_authority_unavailable")
+
+
+def clear_semantic_receipt_authorization(conn):
+    guard = _SEMANTIC_RELEASE_GUARDS.get(id(conn))
+    if guard is not None:
+        guard.update(
+            expected_authorization=None,
+            receipt_id=None,
+            receipt_material_sha256=None,
+            qualification_id=None,
+        )
+
+
+def insert_authorized_complete_no_match_receipt(
+    conn, receipt, release_context, *, now=None
+):
+    """Atomically authorize and insert one exact complete-no-match receipt."""
+    if not conn.in_transaction:
+        raise AuditMigrationError("authorized receipt insert requires a transaction")
+    normalized = history_contract_v2.validate_receipt(receipt)
+    if normalized["final_status"] != "complete_no_match":
+        raise ValueError("authorized receipt insert is only for complete_no_match")
+    fields = _RELEASE_RECEIPT_FIELDS
+    values = []
+    for field in fields:
+        value = normalized[field]
+        if field in _RELEASE_JSON_FIELDS:
+            value = history_contract_v2.canonical_bytes(value).decode("utf-8")
+        elif field in _RELEASE_BOOLEAN_FIELDS:
+            value = int(value)
+        values.append(value)
+    conn.execute("SAVEPOINT semantic_release_receipt")
+    try:
+        authorization = _authorize_complete_no_match_receipt(
+            conn, normalized, release_context, now=now
+        )
+        conn.execute(
+            "INSERT INTO audit_receipts(" + ",".join(fields) + ") VALUES(" +
+            ",".join("?" for _ in fields) + ")",
+            tuple(values),
+        )
+        conn.execute("RELEASE SAVEPOINT semantic_release_receipt")
+        return authorization
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT semantic_release_receipt")
+        conn.execute("RELEASE SAVEPOINT semantic_release_receipt")
+        raise
+    finally:
+        clear_semantic_receipt_authorization(conn)
+
+
+def verify_semantic_release_authorization(
+    conn, receipt, *, require_current=False, expected_context=None, now=None
+):
+    """Verify historical issuance and optionally current no-match authority."""
+    normalized = history_contract_v2.validate_receipt(receipt)
+    if normalized["final_status"] != "complete_no_match":
+        return {"historically_authorized": False, "current_authority": False}
+    material_sha = history_contract_v2.framed_sha256(
+        "history-semantic-release-receipt-v2",
+        history_contract_v2.canonical_bytes(normalized),
+    )
+    authorization = conn.execute(
+        """
+        SELECT * FROM audit_semantic_release_authorizations_v2
+        WHERE receipt_id=?
+        """,
+        (normalized["minimum_receipt_sha"],),
+    ).fetchone()
+    if (
+        authorization is None
+        or authorization["receipt_material_sha256"] != material_sha
+        or authorization["semantic_policy_profile_id"]
+            != normalized["semantic_policy_profile_id"]
+        or authorization["no_match_basis"] != normalized["no_match_basis"]
+        or authorization["corpus_snapshot_hash"] != normalized["snapshot_hash"]
+    ):
+        raise ValueError("receipt release authorization is missing or substituted")
+    qualification = conn.execute(
+        """
+        SELECT qualification.qualification_sha256,
+               qualification.qualification_json,
+               qualification.semantic_policy_profile_id,
+               qualification.corpus_snapshot_hash,
+               fact.no_match_basis, fact.scope, fact.policy_sha256,
+               fact.evaluation_hash, fact.dependency_hashes_json,
+               fact.production_qualified, fact.vetoes_json, fact.expires_at,
+               binding.dependency_head_events_json
+        FROM audit_semantic_qualifications qualification
+        JOIN audit_semantic_qualification_facts_v2 fact USING(qualification_id)
+        JOIN audit_semantic_qualification_head_bindings_v2 binding
+          USING(qualification_id)
+        WHERE qualification.qualification_id=?
+        """,
+        (authorization["qualification_id"],),
+    ).fetchone()
+    if qualification is None:
+        raise ValueError("receipt qualification is missing")
+    try:
+        material = history_contract_v2.parse_json_bytes(
+            (qualification["qualification_json"] + "\n").encode("utf-8")
+        )
+    except history_contract_v2.ContractV2Error as exc:
+        raise ValueError("receipt qualification is not canonical") from exc
+    if (
+        set(material) != {
+            "schema_version", "semantic_policy_profile_id", "production_qualified",
+            "no_match_basis", "scope", "policy_sha256", "qrels_hash",
+            "corpus_snapshot_hash", "evaluation_hash", "metric_report_hash",
+            "dependency_hashes", "metrics", "vetoes", "expires_at",
+        }
+        or type(material.get("production_qualified")) is not bool
+        or not material["production_qualified"]
+        or material.get("vetoes") != []
+        or _semantic_sha("history-semantic-qualification-v2", material)
+            != qualification["qualification_sha256"]
+        or authorization["qualification_sha256"]
+            != qualification["qualification_sha256"]
+        or authorization["qualification_id"]
+            != "semantic-v2-" + qualification["qualification_sha256"]
+        or material.get("semantic_policy_profile_id") != qualification["semantic_policy_profile_id"]
+        or material.get("corpus_snapshot_hash") != qualification["corpus_snapshot_hash"]
+        or material.get("no_match_basis") != qualification["no_match_basis"]
+        or material.get("scope") != qualification["scope"]
+        or material.get("policy_sha256") != qualification["policy_sha256"]
+        or material.get("evaluation_hash") != qualification["evaluation_hash"]
+        or material.get("dependency_hashes") != json.loads(qualification["dependency_hashes_json"])
+        or qualification["production_qualified"] != 1
+        or qualification["vetoes_json"] != "[]"
+        or material.get("expires_at") != qualification["expires_at"]
+        or authorization["policy_sha256"] != qualification["policy_sha256"]
+        or authorization["evaluation_hash"] != qualification["evaluation_hash"]
+        or authorization["dependency_hashes_json"] != qualification["dependency_hashes_json"]
+        or authorization["dependency_heads_json"] != qualification["dependency_head_events_json"]
+    ):
+        raise ValueError("receipt qualification identity is inconsistent")
+    if expected_context is not None:
+        fields = {"run_id", "plan_hash", "candidate_hash", "snapshot_id", "snapshot_hash"}
+        if not isinstance(expected_context, dict) or set(expected_context) != fields:
+            raise ValueError("expected receipt context is invalid")
+        if any(normalized[field] != expected_context[field] for field in fields):
+            raise ValueError("receipt context does not match replay request")
+    if require_current:
+        raise ValueError("production_runtime_authority_unavailable")
+    return {
+        "historically_authorized": True,
+        "current_authority": False,
+        "qualification_id": authorization["qualification_id"],
+        "receipt_material_sha256": material_sha,
     }
 
 
@@ -4324,6 +5393,7 @@ def record_qualification_invalidation(
     changed = _semantic_dependencies({
         **{
             "semantic_policy": "0" * 64, "prompt": "0" * 64,
+            "plan": "0" * 64,
             "schema": "0" * 64, "ordered_provider_pools": "0" * 64,
             "capacity": "0" * 64, "provider": "0" * 64,
             "fault": "0" * 64, "replay": "0" * 64,

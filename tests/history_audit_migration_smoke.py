@@ -210,13 +210,25 @@ class HistoryAuditMigrationSmoke(unittest.TestCase):
     def test_migration_sha_drift_fails_closed(self):
         audit_store.init_schema(self.conn)
         first = audit_store.MIGRATIONS[0]
-        self.conn.execute(
-            "UPDATE audit_schema_migrations SET migration_sha256 = ? "
-            "WHERE component = ? AND version = ?",
-            ("f" * 64, first.component, first.version),
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.conn.execute(
+                "UPDATE audit_schema_migrations SET migration_sha256 = ? "
+                "WHERE component = ? AND version = ?",
+                ("f" * 64, first.component, first.version),
+            )
+        self.conn.rollback()
+        drift = history_store.connect(self.root / "drift.sqlite3")
+        history_store.init_schema(drift)
+        drift.executescript(audit_store._LEDGER_SQL)
+        drift.execute(
+            "INSERT INTO audit_schema_migrations VALUES(?,?,?,?)",
+            (first.component, first.version, "f" * 64,
+             "2026-08-03T00:00:00+00:00"),
         )
+        drift.commit()
         with self.assertRaises(audit_store.AuditMigrationError):
-            audit_store.init_schema(self.conn)
+            audit_store.init_schema(drift)
+        drift.close()
 
     def test_interrupted_component_rolls_back_all_ddl(self):
         audit_store.init_schema(self.conn)

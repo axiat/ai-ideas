@@ -13,8 +13,10 @@ import stat
 import zlib
 
 try:
+    from lib import history_audit_store
     from lib import history_contract_v2
 except ImportError:
+    import history_audit_store
     import history_contract_v2
 
 
@@ -597,7 +599,7 @@ def _receipt_row(receipt):
     return row
 
 
-def write_minimum_receipt(conn, receipt):
+def write_minimum_receipt(conn, receipt, *, release_context=None, now=None):
     """Persist a closed receipt after every referenced CAS descriptor exists."""
     if conn.in_transaction:
         raise CASError("minimum receipt persistence requires an idle connection")
@@ -618,12 +620,20 @@ def write_minimum_receipt(conn, receipt):
                 raise CASError(
                     f"receipt CAS descriptor is missing or invalid: {object_id}"
                 )
-        placeholders = ",".join("?" for _ in fields)
-        conn.execute(
-            "INSERT INTO audit_receipts(" + ",".join(fields) + ") VALUES(" 
-            + placeholders + ")",
-            tuple(encoded[field] for field in fields),
-        )
+        if normalized["final_status"] == "complete_no_match":
+            try:
+                history_audit_store.insert_authorized_complete_no_match_receipt(
+                    conn, normalized, release_context, now=now
+                )
+            except (ValueError, history_audit_store.AuditMigrationError) as exc:
+                raise CASError("complete_no_match release authorization failed") from exc
+        else:
+            placeholders = ",".join("?" for _ in fields)
+            conn.execute(
+                "INSERT INTO audit_receipts(" + ",".join(fields) + ") VALUES("
+                + placeholders + ")",
+                tuple(encoded[field] for field in fields),
+            )
         if normalized["final_status"] in {"overlap_found", "complete_no_match"}:
             pin_reason = "terminal-receipt:" + normalized["minimum_receipt_sha"]
             for object_id in normalized["raw_request_output_cas_hashes"]:
@@ -637,15 +647,20 @@ def write_minimum_receipt(conn, receipt):
                 )
         conn.execute("COMMIT")
     except Exception as exc:
+        history_audit_store.clear_semantic_receipt_authorization(conn)
         if conn.in_transaction:
             conn.execute("ROLLBACK")
         if isinstance(exc, CASError):
             raise
         raise CASError("minimum receipt persistence failed") from exc
+    history_audit_store.clear_semantic_receipt_authorization(conn)
     return normalized["minimum_receipt_sha"]
 
 
-def verify_minimum_receipt(conn, root, minimum_receipt_sha):
+def verify_minimum_receipt(
+    conn, root, minimum_receipt_sha, *, require_current_release=False,
+    expected_context=None, now=None,
+):
     """Verify one retained receipt and every live or normally expired CAS link."""
     _require_sha(minimum_receipt_sha, "minimum_receipt_sha")
     row = conn.execute(
@@ -654,10 +669,22 @@ def verify_minimum_receipt(conn, root, minimum_receipt_sha):
     ).fetchone()
     if row is None:
         raise CASIntegrityError("minimum receipt is missing")
+    receipt = dict(row)
     try:
-        object_ids = json.loads(row["raw_request_output_cas_hashes"])
-    except (TypeError, ValueError) as exc:
-        raise CASIntegrityError("minimum receipt CAS set is invalid") from exc
+        for field in _JSON_RECEIPT_FIELDS:
+            receipt[field] = history_contract_v2.parse_json_bytes(
+                receipt[field].encode("utf-8")
+            )
+        for field in _BOOLEAN_RECEIPT_FIELDS:
+            if receipt[field] not in (0, 1):
+                raise history_contract_v2.ContractV2Error(
+                    f"{field} is not a stored boolean"
+                )
+            receipt[field] = bool(receipt[field])
+        receipt = history_contract_v2.validate_receipt(receipt)
+    except (AttributeError, UnicodeError, history_contract_v2.ContractV2Error) as exc:
+        raise CASIntegrityError("minimum receipt material is invalid") from exc
+    object_ids = receipt["raw_request_output_cas_hashes"]
     if (
         not isinstance(object_ids, list)
         or len(set(object_ids)) != len(object_ids)
@@ -668,7 +695,29 @@ def verify_minimum_receipt(conn, root, minimum_receipt_sha):
         _require_sha(object_id, "receipt object_id")
         descriptor = verify_object(conn, root, object_id)
         states[object_id] = descriptor["integrity_state"]
+    release = {
+        "historically_authorized": False,
+        "current_authority": False,
+    }
+    if receipt["final_status"] == "complete_no_match":
+        try:
+            release = history_audit_store.verify_semantic_release_authorization(
+                conn, receipt,
+                require_current=require_current_release,
+                expected_context=expected_context,
+                now=now,
+            )
+        except (ValueError, history_contract_v2.ContractV2Error) as exc:
+            raise CASIntegrityError(
+                "minimum receipt semantic release authorization is invalid"
+            ) from exc
+    elif require_current_release:
+        raise CASIntegrityError(
+            "current semantic release authority requires complete_no_match"
+        )
     return {
         "minimum_receipt_sha": minimum_receipt_sha,
         "cas_states": states,
+        "historically_authorized": release["historically_authorized"],
+        "current_release_authority": release["current_authority"],
     }

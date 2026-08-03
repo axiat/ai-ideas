@@ -483,7 +483,7 @@ def _verified_usage(usage):
     required = {"input_tokens", "output_tokens", "provider_usage_units"}
     if not isinstance(usage, dict) or not required.issubset(usage):
         return None
-    if set(usage).difference(required | {"currency_micros"}):
+    if set(usage).difference(required | {"cache_tokens", "currency_micros"}):
         raise ExecutionError("invalid_verified_usage")
     if any(type(value) is not int or value < 0 for value in usage.values()):
         raise ExecutionError("invalid_verified_usage")
@@ -541,15 +541,45 @@ def record_attempt(
         raise ExecutionError("invalid_attempt_request")
     if not isinstance(usage_reservation, dict):
         raise ExecutionError("invalid_usage_reservation")
-    attempt_kind = usage_reservation.get("attempt_kind")
-    if attempt_kind not in _ATTEMPT_KINDS:
-        raise ExecutionError("invalid_usage_reservation")
     count = conn.execute(
         "SELECT count(*) FROM audit_task_attempts WHERE task_hash=?", (task_key,)
     ).fetchone()[0]
     ordinal = count if ordinal is None else ordinal
     if type(ordinal) is not int or ordinal != count or ordinal >= MAX_ATTEMPTS:
         raise ExecutionError("attempt_limit")
+    if count == 0:
+        if task["stage"] in {"detail", "reduce"}:
+            attempt_kind = task["stage"]
+        elif task["parent_task_hash"] is not None:
+            attempt_kind = "split"
+        else:
+            attempt_kind = "initial"
+    else:
+        prior = conn.execute(
+            """
+            SELECT prior.provenance_json,
+                   COALESCE(completion.outcome, cost.outcome) AS outcome
+            FROM audit_task_attempts prior
+            LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+            LEFT JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+            WHERE prior.task_hash=? AND prior.ordinal=?
+            """,
+            (task_key, count - 1),
+        ).fetchone()
+        if prior is None or prior["outcome"] is None:
+            raise ExecutionError("prior_attempt_not_terminal")
+        prior_provider = _json(prior["provenance_json"])["provider"]
+        infrastructure_failure = prior["outcome"] in {"timeout", "429", "5xx"}
+        retryable_failure = prior["outcome"] in {"syntax", "schema", "cancelled"}
+        if not infrastructure_failure and not retryable_failure:
+            raise ExecutionError("prior_attempt_not_retryable")
+        attempt_kind = "failover" if infrastructure_failure else "retry"
+        expected_transition_provider = (
+            task["provider_pool"][min(ordinal, len(task["provider_pool"]) - 1)]
+            if infrastructure_failure else prior_provider
+        )
+        if provider != expected_transition_provider:
+            raise ExecutionError("capability_authority_mismatch")
     expected_provider = (
         task["provider_pool"][min(ordinal, len(task["provider_pool"]) - 1)]
         if attempt_kind == "failover"
@@ -610,6 +640,9 @@ def record_attempt(
                 attempt_id, task_key, ordinal, _canonical(provenance),
                 request["object_id"], created_at,
             ),
+        )
+        history_audit_store.record_attempt_launch_cost_fact(
+            conn, attempt_id, queued_at=created_at, created_at=created_at
         )
         _budget_event(conn, task, attempt_id + ":reserved", "reserved", reserved)
         conn.execute("COMMIT")
@@ -737,6 +770,7 @@ def validate_map_output(task, raw_output, snapshot):
 
 def _insert_completion(conn, task, attempt_id, output_id, outcome, normalized, usage):
     encoded = _canonical(normalized) if normalized is not None else None
+    completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     conn.execute(
         """
         INSERT OR IGNORE INTO audit_attempt_completions_v2(
@@ -746,7 +780,7 @@ def _insert_completion(conn, task, attempt_id, output_id, outcome, normalized, u
         """,
         (
             attempt_id, output_id, outcome, encoded, _canonical(usage),
-            datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            completed_at,
         ),
     )
     stored = conn.execute(
@@ -760,6 +794,9 @@ def _insert_completion(conn, task, attempt_id, output_id, outcome, normalized, u
     if stored is None or tuple(stored) != expected:
         raise ExecutionError("conflicting_attempt_completion")
     effective = _settle_budget(conn, attempt_id, usage)
+    history_audit_store.record_attempt_terminal_cost_fact(
+        conn, attempt_id, completed_at=completed_at,
+    )
     _budget_event(conn, task, attempt_id + ":settled", "settled", effective)
 
 
@@ -838,6 +875,35 @@ def _failed_completion(conn, cas_root, task, attempt_id, outcome, raw, usage):
             conn.execute("ROLLBACK")
         raise
     return output["object_id"]
+
+
+def cancel_attempt(
+    conn, attempt_id, *, billing_state="unknown", usage=None,
+    error_class="cancelled", now=None,
+):
+    """Append an exact-once cancellation retaining reservation when usage is unknown."""
+    row = conn.execute(
+        "SELECT 1 FROM audit_task_attempts WHERE attempt_id=?", (attempt_id,)
+    ).fetchone()
+    if row is None:
+        raise ExecutionError("unknown_attempt")
+    if billing_state != "unknown":
+        raise ExecutionError("billing_authority_unavailable")
+    completed_at = _now(now).isoformat()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        actual = _verified_usage(usage or {})
+        _settle_budget(conn, attempt_id, usage or {})
+        history_audit_store.record_attempt_terminal_cost_fact(
+            conn, attempt_id, cancellation=True, error_class=error_class,
+            completed_at=completed_at,
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    return {"attempt_id": attempt_id, "outcome": "cancelled"}
 
 
 def settlement_decision(valid_attempts):
