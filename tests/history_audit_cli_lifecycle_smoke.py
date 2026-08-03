@@ -155,6 +155,8 @@ class HistoryAuditCliLifecycleSmoke(unittest.TestCase):
                 "reason_code",
                 "observation_scope",
                 "l1_observation_sha256",
+                "batch_sha256",
+                "direction",
                 "execution_request_profiles",
                 "hard_complete_work_created",
                 "production_no_match_authorized",
@@ -169,6 +171,8 @@ class HistoryAuditCliLifecycleSmoke(unittest.TestCase):
         self.assertEqual(value["reason_code"], "unbudgetable_provider")
         self.assertEqual(value["observation_scope"], scope)
         self.assertEqual(value["l1_observation_sha256"], l1_sha)
+        self.assertIsNone(value["batch_sha256"])
+        self.assertIsNone(value["direction"])
         self.assertEqual(value["execution_request_profiles"], list(profiles))
         self.assertFalse(value["hard_complete_work_created"])
         self.assertFalse(value["production_no_match_authorized"])

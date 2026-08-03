@@ -232,6 +232,11 @@ if shadow_plan.get("observation_scope") != "l1_shadow" or not isinstance(
 ):
     raise SystemExit("fresh Hunt omitted sealed L1 shadow observation")
 if (
+    shadow_plan.get("batch_sha256") != batch.get("batch_sha256")
+    or shadow_plan.get("direction") != direction
+):
+    raise SystemExit("fresh Hunt shadow plan is replayable across direction batches")
+if (
     shadow_plan.get("hard_complete_work_created") is not False
     or shadow_plan.get("production_no_match_authorized") is not False
     or shadow_plan.get("authority") != "shadow-only"

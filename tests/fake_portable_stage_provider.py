@@ -228,6 +228,7 @@ def main():
         declared = {
             "input/" + name for name in request.get("declared_inputs", [])
         }
+        declared.add(request.get("role_path", "role.md"))
         if observed != declared:
             return 31
         forbidden_names = {".git", ".claude", "ledger.tsv"}
