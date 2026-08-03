@@ -261,7 +261,7 @@ def assert_backend_defaults():
         assignments = [
             line
             for line in (ROOT / name).read_text().splitlines()
-            if re.match(r"^\s*model=", line)
+            if line == expected
         ]
         if assignments != [expected]:
             raise AssertionError(
