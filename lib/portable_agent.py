@@ -302,10 +302,19 @@ def _validate_contract(contract):
         raise PortableAgentError("invalid_output_contract")
     if type(contract["max_bytes"]) is not int or contract["max_bytes"] < 0:
         raise PortableAgentError("invalid_output_contract")
+    expected_sha = contract["sha256"]
     if (
-        not isinstance(contract["sha256"], str)
-        or len(contract["sha256"]) != 64
-        or any(character not in "0123456789abcdef" for character in contract["sha256"])
+        (
+            expected_sha is not None
+            and (
+                not isinstance(expected_sha, str)
+                or len(expected_sha) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in expected_sha
+                )
+            )
+        )
         or type(contract["forbid_extra_files"]) is not bool
         or not isinstance(contract["allowed_fields"], list)
         or not isinstance(contract["required_fields"], list)
@@ -395,7 +404,8 @@ def run_portable_attempt(
         if not stat.S_ISDIR(output_parent.st_mode) or output_parent.st_mode & 0o077:
             raise PortableAgentError("unsafe_output")
         output_sha = hashlib.sha256(raw).hexdigest()
-        if output_sha != output_contract["sha256"]:
+        expected_sha = output_contract["sha256"]
+        if expected_sha is not None and output_sha != expected_sha:
             raise PortableAgentError("output_sha_mismatch")
         value = _validate_schema(raw, output_contract)
         imports = root / "imports"

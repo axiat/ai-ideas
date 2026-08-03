@@ -48,6 +48,112 @@
 #   SIDE_COOLDOWN_SEC                 default: 3600; 0 exits on circuit break
 set -u
 repo="$(cd "$(dirname "$0")" && pwd)"
+
+runtime_variable_is_set() {
+  declare -p "$1" >/dev/null 2>&1
+}
+
+awr_provider_diagnostic() {
+  local label=$1 provider=$2 model=$3 reasoning=$4 output
+  local -a command=(
+    python3 -B "$repo/lib/history_audit_cli.py" provider-command
+    --surface awr
+    --provider "$provider"
+  )
+  [ -z "$model" ] || command+=(--model "$model")
+  [ -z "$reasoning" ] || command+=(--reasoning "$reasoning")
+  if ! output=$("${command[@]}" 2>&1); then
+    printf 'awr-side: invalid %s=%s: %s\n' "$label" "$provider" "$output" >&2
+    return 1
+  fi
+  printf '%s\n' "$output"
+}
+
+awr_runtime_preflight() {
+  local abi=v1 name role diagnostic provider model reasoning
+  local base_provider base_model base_reasoning provider_changed
+  local provider_name model_name reasoning_name
+  if runtime_variable_is_set HISTORY_RUNTIME_ABI; then
+    abi=$HISTORY_RUNTIME_ABI
+  fi
+  case "$abi" in
+    v1)
+      for name in \
+        AWR_PROVIDER AWR_MODEL AWR_REASONING_EFFORT \
+        AWR_RESEARCH_PROVIDER AWR_RESEARCH_MODEL AWR_RESEARCH_REASONING_EFFORT \
+        AWR_PRIORWORK_PROVIDER AWR_PRIORWORK_MODEL AWR_PRIORWORK_REASONING_EFFORT \
+        AWR_JUDGE_PROVIDER AWR_JUDGE_MODEL AWR_JUDGE_REASONING_EFFORT
+      do
+        if runtime_variable_is_set "$name"; then
+          printf 'awr-side: %s is valid only with HISTORY_RUNTIME_ABI=v2\n' \
+            "$name" >&2
+          return 2
+        fi
+      done
+      return 0
+      ;;
+    v2) ;;
+    *)
+      printf 'awr-side: HISTORY_RUNTIME_ABI must be v1 or v2: %s\n' "$abi" >&2
+      return 2
+      ;;
+  esac
+
+  for name in \
+    SIDE_CMD SIDE_RESEARCH_CMD SIDE_PRIORWORK_CMD SIDE_JUDGE_CMD \
+    AGY_MODEL AGY_PRINT_TIMEOUT
+  do
+    if runtime_variable_is_set "$name"; then
+      printf 'awr-side: %s cannot be mixed with v2 provider controls\n' \
+        "$name" >&2
+      return 2
+    fi
+  done
+
+  base_provider=${AWR_PROVIDER:-codex}
+  base_model=${AWR_MODEL:-}
+  base_reasoning=${AWR_REASONING_EFFORT:-}
+  diagnostic=$(awr_provider_diagnostic \
+    AWR_PROVIDER "$base_provider" "$base_model" "$base_reasoning") \
+    || return 2
+
+  for role in RESEARCH PRIORWORK JUDGE; do
+    provider_name=AWR_${role}_PROVIDER
+    model_name=AWR_${role}_MODEL
+    reasoning_name=AWR_${role}_REASONING_EFFORT
+    if runtime_variable_is_set "$provider_name" && [ -n "${!provider_name}" ]; then
+      provider=${!provider_name}
+    else
+      provider=$base_provider
+    fi
+    provider_changed=0
+    [ "$provider" = "$base_provider" ] || provider_changed=1
+    if runtime_variable_is_set "$model_name"; then
+      model=${!model_name}
+    elif [ "$provider_changed" -eq 1 ]; then
+      model=
+    else
+      model=$base_model
+    fi
+    if runtime_variable_is_set "$reasoning_name"; then
+      reasoning=${!reasoning_name}
+    elif [ "$provider_changed" -eq 1 ]; then
+      reasoning=
+    else
+      reasoning=$base_reasoning
+    fi
+    awr_provider_diagnostic "$provider_name" "$provider" "$model" "$reasoning" \
+      >/dev/null || return 2
+  done
+
+  printf '%s\n' \
+    "awr-side: HISTORY_RUNTIME_ABI=v2 portable stages are not wired; unsupported in this checkpoint: $diagnostic" \
+    >&2
+  return 2
+}
+
+awr_runtime_preflight || exit 2
+
 model=${AGY_MODEL:-gemini-3.6-flash-high}
 ptimeout=${AGY_PRINT_TIMEOUT:-10m}
 SIDE_CMD=${SIDE_CMD:-codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral}

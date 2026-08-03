@@ -32,6 +32,150 @@
 set -u
 
 cd "$(dirname "$0")" || exit 2
+
+runtime_variable_is_set() {
+  declare -p "$1" >/dev/null 2>&1
+}
+
+hunt_provider_diagnostic() {
+  local label=$1 provider=$2 model=$3 reasoning=$4 output
+  local -a command=(
+    python3 -B lib/history_audit_cli.py provider-command
+    --surface hunt
+    --provider "$provider"
+  )
+  [ -z "$model" ] || command+=(--model "$model")
+  [ -z "$reasoning" ] || command+=(--reasoning "$reasoning")
+  if ! output=$("${command[@]}" 2>&1); then
+    printf 'hunt.sh: invalid %s=%s: %s\n' "$label" "$provider" "$output" >&2
+    return 1
+  fi
+  printf '%s\n' "$output"
+}
+
+hunt_runtime_preflight() {
+  local abi=v1 name index indices="" provider model reasoning diagnostic
+  local base_provider base_model base_reasoning provider_changed reviewer_limit
+  local provider_name model_name reasoning_name
+  if runtime_variable_is_set HISTORY_RUNTIME_ABI; then
+    abi=$HISTORY_RUNTIME_ABI
+  fi
+  case "$abi" in
+    v1)
+      for name in HUNT_PROVIDER HUNT_MODEL HUNT_REASONING_EFFORT; do
+        if runtime_variable_is_set "$name"; then
+          printf 'hunt.sh: %s is valid only with HISTORY_RUNTIME_ABI=v2\n' \
+            "$name" >&2
+          return 2
+        fi
+      done
+      while IFS= read -r name; do
+        case "$name" in
+          HUNT_REVIEW_PROVIDER_*|HUNT_REVIEW_MODEL_*|HUNT_REVIEW_REASONING_EFFORT_*)
+            printf 'hunt.sh: %s is valid only with HISTORY_RUNTIME_ABI=v2\n' \
+              "$name" >&2
+            return 2
+            ;;
+        esac
+      done < <(compgen -A variable HUNT_REVIEW_)
+      return 0
+      ;;
+    v2) ;;
+    *)
+      printf 'hunt.sh: HISTORY_RUNTIME_ABI must be v1 or v2: %s\n' "$abi" >&2
+      return 2
+      ;;
+  esac
+
+  if runtime_variable_is_set CONTAINED_AGENT_CMD_JSON; then
+    printf 'hunt.sh: CONTAINED_AGENT_CMD_JSON cannot be mixed with v2 provider controls\n' >&2
+    return 2
+  fi
+  while IFS= read -r name; do
+    case "$name" in
+      CONTAINED_REV_CMD_*_JSON)
+        printf 'hunt.sh: %s cannot be mixed with v2 provider controls\n' \
+          "$name" >&2
+        return 2
+        ;;
+    esac
+  done < <(compgen -A variable CONTAINED_REV_CMD_)
+
+  base_provider=${HUNT_PROVIDER:-codex}
+  base_model=${HUNT_MODEL:-}
+  base_reasoning=${HUNT_REASONING_EFFORT:-}
+  reviewer_limit=${REVIEWERS:-3}
+  case "$reviewer_limit" in
+    ''|0|*[!0-9]*)
+      printf 'hunt.sh: REVIEWERS must be a positive integer for v2 preflight: %s\n' \
+        "$reviewer_limit" >&2
+      return 2
+      ;;
+  esac
+  diagnostic=$(hunt_provider_diagnostic \
+    HUNT_PROVIDER "$base_provider" "$base_model" "$base_reasoning") \
+    || return 2
+
+  while IFS= read -r name; do
+    case "$name" in
+      HUNT_REVIEW_PROVIDER_*|HUNT_REVIEW_MODEL_*|HUNT_REVIEW_REASONING_EFFORT_*)
+        index=${name##*_}
+        case "$index" in
+          ''|0|*[!0-9]*)
+            printf 'hunt.sh: invalid numbered review provider control: %s\n' \
+              "$name" >&2
+            return 2
+            ;;
+        esac
+        if [ "$index" -gt "$reviewer_limit" ]; then
+          printf 'hunt.sh: %s is outside REVIEWERS=%s\n' \
+            "$name" "$reviewer_limit" >&2
+          return 2
+        fi
+        case " $indices " in
+          *" $index "*) ;;
+          *) indices="$indices $index" ;;
+        esac
+        ;;
+    esac
+  done < <(compgen -A variable HUNT_REVIEW_)
+
+  for index in $indices; do
+    provider_name=HUNT_REVIEW_PROVIDER_$index
+    model_name=HUNT_REVIEW_MODEL_$index
+    reasoning_name=HUNT_REVIEW_REASONING_EFFORT_$index
+    if runtime_variable_is_set "$provider_name" && [ -n "${!provider_name}" ]; then
+      provider=${!provider_name}
+    else
+      provider=$base_provider
+    fi
+    provider_changed=0
+    [ "$provider" = "$base_provider" ] || provider_changed=1
+    if runtime_variable_is_set "$model_name"; then
+      model=${!model_name}
+    elif [ "$provider_changed" -eq 1 ]; then
+      model=
+    else
+      model=$base_model
+    fi
+    if runtime_variable_is_set "$reasoning_name"; then
+      reasoning=${!reasoning_name}
+    elif [ "$provider_changed" -eq 1 ]; then
+      reasoning=
+    else
+      reasoning=$base_reasoning
+    fi
+    hunt_provider_diagnostic "$provider_name" "$provider" "$model" "$reasoning" \
+      >/dev/null || return 2
+  done
+
+  printf '%s\n' \
+    "hunt.sh: HISTORY_RUNTIME_ABI=v2 portable stages are not wired; unsupported in this checkpoint: $diagnostic" \
+    >&2
+  return 2
+}
+
+hunt_runtime_preflight || exit 2
 git config core.hooksPath .githooks
 
 AGENT_CMD=${AGENT_CMD:-codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write}
