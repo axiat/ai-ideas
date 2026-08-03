@@ -414,6 +414,155 @@ CREATE TABLE audit_metadata_outbox(
 """ + _immutable_guards("audit_metadata_profiles", "audit_annotations")
 
 
+_METADATA_SHADOW_SQL = """
+CREATE TABLE audit_metadata_profiles_v2(
+  profile_id TEXT PRIMARY KEY,
+  profile_key TEXT NOT NULL,
+  profile_version TEXT NOT NULL,
+  profile_sha256 TEXT NOT NULL UNIQUE CHECK(length(profile_sha256) = 64),
+  profile_json TEXT NOT NULL,
+  producer_kind TEXT NOT NULL,
+  producer_id TEXT NOT NULL,
+  producer_version TEXT NOT NULL,
+  prompt_sha256 TEXT NOT NULL CHECK(length(prompt_sha256) = 64),
+  synopsis_max_chars INTEGER NOT NULL CHECK(synopsis_max_chars >= 0),
+  supersedes_profile_id TEXT REFERENCES audit_metadata_profiles_v2(profile_id),
+  created_at TEXT NOT NULL,
+  UNIQUE(profile_key, profile_version)
+);
+CREATE TABLE audit_metadata_profile_events_v2(
+  event_sequence INTEGER PRIMARY KEY,
+  event_id TEXT NOT NULL UNIQUE CHECK(length(event_id) = 64),
+  profile_id TEXT NOT NULL REFERENCES audit_metadata_profiles_v2(profile_id),
+  state TEXT NOT NULL CHECK(state IN ('current','stale')),
+  reason TEXT NOT NULL,
+  replaced_by_profile_id TEXT REFERENCES audit_metadata_profiles_v2(profile_id),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE audit_metadata_outbox_v2(
+  outbox_id TEXT PRIMARY KEY CHECK(length(outbox_id) = 64),
+  profile_id TEXT NOT NULL REFERENCES audit_metadata_profiles_v2(profile_id),
+  profile_sha256 TEXT NOT NULL CHECK(length(profile_sha256) = 64),
+  candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id),
+  source_content_sha TEXT NOT NULL CHECK(length(source_content_sha) = 64),
+  source_sequence INTEGER NOT NULL CHECK(source_sequence >= 1),
+  producer_kind TEXT NOT NULL,
+  producer_id TEXT NOT NULL,
+  producer_version TEXT NOT NULL,
+  prompt_sha256 TEXT NOT NULL CHECK(length(prompt_sha256) = 64),
+  state TEXT NOT NULL CHECK(state IN ('pending','claimed','done','failed')),
+  fence INTEGER NOT NULL CHECK(fence >= 0),
+  claim_token TEXT,
+  lease_until TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(candidate_id, source_content_sha, profile_id),
+  FOREIGN KEY(candidate_id, source_sequence)
+    REFERENCES candidates(candidate_id, source_sequence),
+  CHECK(
+    (state = 'claimed' AND claim_token IS NOT NULL AND lease_until IS NOT NULL)
+    OR
+    (state IN ('pending','done','failed')
+      AND claim_token IS NULL AND lease_until IS NULL)
+  )
+);
+CREATE TABLE audit_annotation_versions_v2(
+  annotation_id TEXT PRIMARY KEY CHECK(length(annotation_id) = 64),
+  outbox_id TEXT NOT NULL REFERENCES audit_metadata_outbox_v2(outbox_id),
+  profile_id TEXT NOT NULL REFERENCES audit_metadata_profiles_v2(profile_id),
+  profile_sha256 TEXT NOT NULL CHECK(length(profile_sha256) = 64),
+  candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id),
+  source_content_sha TEXT NOT NULL CHECK(length(source_content_sha) = 64),
+  source_sequence INTEGER NOT NULL CHECK(source_sequence >= 1),
+  family TEXT NOT NULL CHECK(family IN (
+    'synopsis','concept','free_tag','cluster','direction'
+  )),
+  value_json TEXT NOT NULL,
+  value_sha256 TEXT NOT NULL CHECK(length(value_sha256) = 64),
+  confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+  direction_identity_json TEXT,
+  producer_kind TEXT NOT NULL,
+  producer_id TEXT NOT NULL,
+  producer_version TEXT NOT NULL,
+  prompt_sha256 TEXT NOT NULL CHECK(length(prompt_sha256) = 64),
+  created_at TEXT NOT NULL,
+  stale_state TEXT NOT NULL CHECK(stale_state IN ('current','stale')),
+  FOREIGN KEY(candidate_id, source_sequence)
+    REFERENCES candidates(candidate_id, source_sequence),
+  CHECK(
+    (family = 'direction' AND direction_identity_json IS NOT NULL)
+    OR (family <> 'direction' AND direction_identity_json IS NULL)
+  )
+);
+""" + _immutable_guards(
+    "audit_metadata_profiles_v2",
+    "audit_metadata_profile_events_v2",
+    "audit_annotation_versions_v2",
+) + """
+CREATE TRIGGER audit_metadata_outbox_v2_insert_guard
+BEFORE INSERT ON audit_metadata_outbox_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM candidates candidate
+    WHERE candidate.candidate_id = NEW.candidate_id
+      AND candidate.source_sequence = NEW.source_sequence
+      AND candidate.raw_sha256 = NEW.source_content_sha
+  ) THEN RAISE(ABORT, 'metadata outbox source identity mismatch') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_metadata_profiles_v2 profile
+    WHERE profile.profile_id = NEW.profile_id
+      AND profile.profile_sha256 = NEW.profile_sha256
+      AND profile.producer_kind = NEW.producer_kind
+      AND profile.producer_id = NEW.producer_id
+      AND profile.producer_version = NEW.producer_version
+      AND profile.prompt_sha256 = NEW.prompt_sha256
+  ) THEN RAISE(ABORT, 'metadata outbox profile identity mismatch') END;
+END;
+CREATE TRIGGER audit_metadata_outbox_v2_fenced_update
+BEFORE UPDATE ON audit_metadata_outbox_v2
+BEGIN
+  SELECT CASE WHEN audit_fenced_cas_allowed() <> 1
+    THEN RAISE(ABORT, 'metadata shadow outbox update requires fenced CAS') END;
+  SELECT CASE WHEN NEW.outbox_id <> OLD.outbox_id
+    OR NEW.profile_id <> OLD.profile_id
+    OR NEW.profile_sha256 <> OLD.profile_sha256
+    OR NEW.candidate_id <> OLD.candidate_id
+    OR NEW.source_content_sha <> OLD.source_content_sha
+    OR NEW.source_sequence <> OLD.source_sequence
+    OR NEW.producer_kind <> OLD.producer_kind
+    OR NEW.producer_id <> OLD.producer_id
+    OR NEW.producer_version <> OLD.producer_version
+    OR NEW.prompt_sha256 <> OLD.prompt_sha256
+    OR NEW.created_at <> OLD.created_at
+    THEN RAISE(ABORT, 'metadata shadow outbox identity is immutable') END;
+  SELECT CASE WHEN NEW.fence <> OLD.fence + 1
+    THEN RAISE(ABORT, 'metadata shadow outbox fence must increase by one') END;
+END;
+CREATE TRIGGER audit_metadata_outbox_v2_no_delete
+BEFORE DELETE ON audit_metadata_outbox_v2
+BEGIN
+  SELECT RAISE(ABORT, 'metadata shadow outbox cannot be deleted');
+END;
+CREATE TRIGGER audit_annotation_versions_v2_insert_guard
+BEFORE INSERT ON audit_annotation_versions_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_metadata_outbox_v2 work
+    WHERE work.outbox_id = NEW.outbox_id
+      AND work.state = 'claimed'
+      AND work.profile_id = NEW.profile_id
+      AND work.profile_sha256 = NEW.profile_sha256
+      AND work.candidate_id = NEW.candidate_id
+      AND work.source_content_sha = NEW.source_content_sha
+      AND work.source_sequence = NEW.source_sequence
+      AND work.producer_kind = NEW.producer_kind
+      AND work.producer_id = NEW.producer_id
+      AND work.producer_version = NEW.producer_version
+      AND work.prompt_sha256 = NEW.prompt_sha256
+  ) THEN RAISE(ABORT, 'annotation is not bound to claimed metadata work') END;
+END;
+"""
+
+
 _SEMANTIC_SQL = """
 CREATE TABLE audit_semantic_qualifications(
   qualification_id TEXT PRIMARY KEY,
@@ -1321,6 +1470,7 @@ MIGRATIONS = (
     Migration("execution", 1, _EXECUTION_SQL),
     Migration("receipts", 1, _RECEIPT_SQL),
     Migration("metadata", 1, _METADATA_SQL),
+    Migration("metadata-shadow", 1, _METADATA_SHADOW_SQL),
     Migration("semantic-qualification", 1, _SEMANTIC_SQL),
     Migration("integrity-guards", 1, _INTEGRITY_GUARDS_SQL),
     Migration(
@@ -1618,4 +1768,58 @@ def compare_and_set_metadata_outbox(
         guard["active"] = False
     if cursor.rowcount != 1:
         raise StaleFence("metadata outbox state or fence is stale")
+    return True
+
+
+def compare_and_set_metadata_shadow_outbox(
+    conn,
+    outbox_id,
+    *,
+    expected_state,
+    expected_fence,
+    new_state,
+    new_fence,
+    claim_token=None,
+    lease_until=None,
+):
+    """Advance one source-bound metadata shadow item by fenced CAS."""
+    if (
+        type(expected_fence) is not int
+        or expected_fence < 0
+        or type(new_fence) is not int
+        or new_fence != expected_fence + 1
+    ):
+        raise ValueError("metadata shadow fence must increase by exactly one")
+    if new_state == "claimed":
+        if not isinstance(claim_token, str) or not claim_token or not isinstance(
+            lease_until, str
+        ) or not lease_until:
+            raise ValueError("claimed metadata work requires token and lease")
+    elif claim_token is not None or lease_until is not None:
+        raise ValueError("unclaimed metadata work cannot retain token or lease")
+    guard = _FENCE_GUARDS.get(id(conn))
+    if guard is None:
+        raise AuditMigrationError("fenced CAS is not initialized for connection")
+    guard["active"] = True
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE audit_metadata_outbox_v2
+            SET state=?, fence=?, claim_token=?, lease_until=?
+            WHERE outbox_id=? AND state=? AND fence=?
+            """,
+            (
+                new_state,
+                new_fence,
+                claim_token,
+                lease_until,
+                outbox_id,
+                expected_state,
+                expected_fence,
+            ),
+        )
+    finally:
+        guard["active"] = False
+    if cursor.rowcount != 1:
+        raise StaleFence("metadata shadow state or fence is stale")
     return True

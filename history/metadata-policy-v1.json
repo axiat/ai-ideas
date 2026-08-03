@@ -1,0 +1,25 @@
+{
+  "schema_version": "history-metadata-policy-v1",
+  "mode": "shadow-only-additive-union",
+  "rrf_k": 60,
+  "families": [
+    "synopsis",
+    "concept",
+    "free_tag",
+    "cluster"
+  ],
+  "direction_reference": {
+    "family": "direction",
+    "scope": "exact-run-owned-direction-identity",
+    "global_concept_authority": false
+  },
+  "lineage_vote": "one-best-contribution-per-family",
+  "flat_baseline": {
+    "preserve_candidate_ids": true,
+    "preserve_scores": true,
+    "preserve_order": true,
+    "metadata_tail_is_separate": true
+  },
+  "unknown_or_empty": "valid-no-contribution",
+  "profile_change_scope": "metadata-generation-only"
+}

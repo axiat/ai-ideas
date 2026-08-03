@@ -7,10 +7,12 @@ import re
 
 try:
     from lib import history_contract_v2 as contract
+    from lib import history_metadata
     from lib import history_projection
     from lib import history_store
 except ImportError:  # Direct execution with lib/ on sys.path.
     import history_contract_v2 as contract
+    import history_metadata
     import history_projection
     import history_store
 
@@ -342,6 +344,16 @@ def read_l1_rankings(conn, snapshot, query, *, depth):
     ):
         raise ValueError("L1 projection escaped the frozen asset root")
     return rankings
+
+
+def read_l1_shadow_union(
+    conn, snapshot, flat_rankings, query_annotations, profile_ids
+):
+    """Attach an auditable metadata-only tail to an unchanged flat ranking."""
+    metadata_rankings = history_metadata.shadow_rank(
+        conn, query_annotations, snapshot, profile_ids
+    )
+    return history_metadata.union_shadow(flat_rankings, metadata_rankings)
 
 
 def _direction_identity(direction_receipt):
