@@ -2740,6 +2740,248 @@ END;
 """
 
 
+_L2_RUNTIME_SPLIT_INPUT_AUTHORITY_SQL = """
+DROP TRIGGER audit_task_attempts_full_task_authority_guard;
+DROP TRIGGER audit_l2_task_inputs_v2_full_authority_guard;
+DROP VIEW audit_l2_valid_task_authority_v2;
+DROP VIEW audit_l2_valid_split_families_v2;
+DROP VIEW audit_l2_split_family_facts_v2;
+CREATE VIEW audit_l2_split_family_facts_v2 AS
+SELECT parent.task_hash AS parent_task_hash,
+       child0.task_hash AS child0_task_hash,
+       child1.task_hash AS child1_task_hash,
+       parent_binding.plan_sha AS plan_sha,
+       audit_l2_split_family_valid(
+         plan.plan_json,
+         records.records_json,
+         json_object(
+           'parent_task_hash', parent.task_hash,
+           'parent_state', parent.state,
+           'parent_fence', parent.fence,
+           'parent_input_id', parent.input_id,
+           'parent_stored_input_id', parent_input.input_id,
+           'parent_assigned_json', parent_binding.assigned_item_ids_json,
+           'terminal_state', terminal.terminal_state,
+           'terminal_reason', terminal.reason,
+           'terminal_sha', terminal.fact_sha256,
+           'authority_kind', authority.authority_kind,
+           'claim_fence', authority.claim_fence,
+           'claim_token', authority.claim_token,
+           'lease_until', authority.lease_until,
+           'authority_child0', authority.child0_task_hash,
+           'authority_child1', authority.child1_task_hash,
+           'authority_sha', authority.authorization_sha256,
+           'children', json_array(
+             json_object(
+               'position', 0, 'task_hash', child0.task_hash,
+               'run_id', child0.run_id, 'stage', child0.stage,
+               'candidate_id', child0.staging_candidate_id,
+               'input_id', child0.input_id,
+               'stored_input_id', input0.input_id,
+               'plan_sha', binding0.plan_sha,
+               'snapshot_id', binding0.snapshot_id,
+               'snapshot_hash', binding0.snapshot_hash,
+               'shard_input_sha', binding0.shard_input_sha,
+               'assigned_json', binding0.assigned_item_ids_json,
+               'frozen_json', binding0.frozen_records_json,
+               'pool_json', binding0.provider_pool_json,
+               'parent_hash', binding0.parent_task_hash,
+               'split_depth', binding0.split_depth,
+               'parent_plan_sha', parent_binding.plan_sha,
+               'parent_snapshot_id', parent_binding.snapshot_id,
+               'parent_candidate_id', parent.staging_candidate_id,
+               'parent_split_depth', parent_binding.split_depth,
+               'request_sha', input0.request_sha,
+               'request_text', input0.request_text,
+               'item_ids_json', input0.item_ids_json,
+               'edge_sha', edge0.edge_sha256
+             ),
+             json_object(
+               'position', 1, 'task_hash', child1.task_hash,
+               'run_id', child1.run_id, 'stage', child1.stage,
+               'candidate_id', child1.staging_candidate_id,
+               'input_id', child1.input_id,
+               'stored_input_id', input1.input_id,
+               'plan_sha', binding1.plan_sha,
+               'snapshot_id', binding1.snapshot_id,
+               'snapshot_hash', binding1.snapshot_hash,
+               'shard_input_sha', binding1.shard_input_sha,
+               'assigned_json', binding1.assigned_item_ids_json,
+               'frozen_json', binding1.frozen_records_json,
+               'pool_json', binding1.provider_pool_json,
+               'parent_hash', binding1.parent_task_hash,
+               'split_depth', binding1.split_depth,
+               'parent_plan_sha', parent_binding.plan_sha,
+               'parent_snapshot_id', parent_binding.snapshot_id,
+               'parent_candidate_id', parent.staging_candidate_id,
+               'parent_split_depth', parent_binding.split_depth,
+               'request_sha', input1.request_sha,
+               'request_text', input1.request_text,
+               'item_ids_json', input1.item_ids_json,
+               'edge_sha', edge1.edge_sha256
+             )
+           )
+         )
+       ) AS authority_valid
+FROM audit_logical_tasks parent
+JOIN audit_task_bindings_v2 parent_binding
+  ON parent_binding.task_hash=parent.task_hash
+JOIN audit_l2_task_inputs_v2 parent_input
+  ON parent_input.task_hash=parent.task_hash
+JOIN audit_l2_plans_v2 plan ON plan.plan_sha=parent_binding.plan_sha
+JOIN audit_l2_snapshot_records_v2 records
+  ON records.snapshot_id=parent_binding.snapshot_id
+JOIN audit_task_terminal_facts_v2 terminal
+  ON terminal.task_hash=parent.task_hash
+JOIN audit_l2_terminal_transition_authority_v2 authority
+  ON authority.parent_task_hash=parent.task_hash
+ AND authority.transition_kind='split'
+JOIN audit_task_edges_v2 edge0
+  ON edge0.parent_task_hash=parent.task_hash AND edge0.position=0
+JOIN audit_task_edges_v2 edge1
+  ON edge1.parent_task_hash=parent.task_hash AND edge1.position=1
+JOIN audit_logical_tasks child0 ON child0.task_hash=edge0.child_task_hash
+JOIN audit_task_bindings_v2 binding0 ON binding0.task_hash=child0.task_hash
+JOIN audit_l2_task_inputs_v2 input0 ON input0.task_hash=child0.task_hash
+JOIN audit_logical_tasks child1 ON child1.task_hash=edge1.child_task_hash
+JOIN audit_task_bindings_v2 binding1 ON binding1.task_hash=child1.task_hash
+JOIN audit_l2_task_inputs_v2 input1 ON input1.task_hash=child1.task_hash;
+CREATE VIEW audit_l2_valid_split_families_v2 AS
+SELECT parent_task_hash, child0_task_hash, child1_task_hash, plan_sha
+FROM audit_l2_split_family_facts_v2 WHERE authority_valid=1;
+CREATE VIEW audit_l2_valid_task_authority_v2 AS
+WITH RECURSIVE valid(task_hash) AS (
+  SELECT task.task_hash
+  FROM audit_logical_tasks task
+  JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
+  JOIN audit_l2_task_inputs_v2 input ON input.task_hash=task.task_hash
+  JOIN audit_l2_plans_v2 plan ON plan.plan_sha=binding.plan_sha
+  JOIN audit_l2_snapshot_records_v2 records
+    ON records.snapshot_id=binding.snapshot_id
+  WHERE binding.parent_task_hash IS NULL
+    AND audit_l2_binding_authority_valid(
+      plan.plan_json, records.records_json,
+      json_object(
+        'task_hash', task.task_hash, 'run_id', task.run_id,
+        'stage', task.stage, 'candidate_id', task.staging_candidate_id,
+        'input_id', task.input_id, 'plan_sha', binding.plan_sha,
+        'snapshot_id', binding.snapshot_id,
+        'snapshot_hash', binding.snapshot_hash,
+        'shard_input_sha', binding.shard_input_sha,
+        'assigned_json', binding.assigned_item_ids_json,
+        'frozen_json', binding.frozen_records_json,
+        'pool_json', binding.provider_pool_json,
+        'parent_hash', NULL, 'split_depth', binding.split_depth,
+        'parent_input_id', NULL, 'parent_assigned_json', NULL,
+        'parent_plan_sha', NULL, 'parent_snapshot_id', NULL,
+        'parent_candidate_id', NULL, 'parent_split_depth', NULL
+      )
+    )=1
+    AND audit_l2_input_authority_valid(
+      plan.plan_json,
+      json_object(
+        'task_hash', task.task_hash, 'stage', task.stage,
+        'candidate_id', task.staging_candidate_id,
+        'input_id', input.input_id, 'task_input_id', task.input_id,
+        'parent_input_id', NULL, 'plan_sha', binding.plan_sha,
+        'parent_hash', NULL, 'request_sha', input.request_sha,
+        'request_text', input.request_text,
+        'item_ids_json', input.item_ids_json
+      )
+    )=1
+  UNION ALL
+  SELECT member.value
+  FROM valid parent_valid
+  JOIN audit_l2_valid_split_families_v2 family
+    ON family.parent_task_hash=parent_valid.task_hash
+  JOIN json_each(json_array(
+    family.child0_task_hash, family.child1_task_hash
+  )) member
+)
+SELECT DISTINCT task_hash FROM valid;
+CREATE TABLE audit_l2_split_input_authority_upgrade_probe(
+  value INTEGER NOT NULL CHECK(value=0)
+);
+INSERT INTO audit_l2_split_input_authority_upgrade_probe(value)
+SELECT 1 FROM audit_task_bindings_v2 binding
+LEFT JOIN audit_l2_valid_task_authority_v2 valid
+  ON valid.task_hash=binding.task_hash
+WHERE valid.task_hash IS NULL;
+INSERT INTO audit_l2_split_input_authority_upgrade_probe(value)
+SELECT 1 FROM audit_logical_tasks task
+LEFT JOIN audit_l2_valid_split_families_v2 split
+  ON split.parent_task_hash=task.task_hash
+LEFT JOIN audit_l2_valid_exhaustions_v2 exhausted
+  ON exhausted.task_hash=task.task_hash
+WHERE (task.state='superseded' AND split.parent_task_hash IS NULL)
+   OR (task.state='exhausted' AND exhausted.task_hash IS NULL);
+INSERT INTO audit_l2_split_input_authority_upgrade_probe(value)
+SELECT 1 FROM audit_task_terminal_facts_v2 terminal
+LEFT JOIN audit_l2_valid_split_families_v2 split
+  ON split.parent_task_hash=terminal.task_hash
+LEFT JOIN audit_l2_valid_exhaustions_v2 exhausted
+  ON exhausted.task_hash=terminal.task_hash
+WHERE (terminal.terminal_state='superseded' AND split.parent_task_hash IS NULL)
+   OR (terminal.terminal_state='exhausted' AND exhausted.task_hash IS NULL);
+INSERT INTO audit_l2_split_input_authority_upgrade_probe(value)
+SELECT 1 FROM audit_task_edges_v2 edge
+LEFT JOIN audit_l2_valid_split_families_v2 split
+  ON split.parent_task_hash=edge.parent_task_hash
+ AND (split.child0_task_hash=edge.child_task_hash
+      OR split.child1_task_hash=edge.child_task_hash)
+WHERE split.parent_task_hash IS NULL;
+INSERT INTO audit_l2_split_input_authority_upgrade_probe(value)
+SELECT 1 FROM audit_l2_terminal_transition_authority_v2 authority
+LEFT JOIN audit_l2_valid_split_families_v2 split
+  ON split.parent_task_hash=authority.parent_task_hash
+LEFT JOIN audit_l2_valid_exhaustions_v2 exhausted
+  ON exhausted.task_hash=authority.parent_task_hash
+WHERE (authority.transition_kind='split' AND split.parent_task_hash IS NULL)
+   OR (authority.transition_kind='exhaust' AND exhausted.task_hash IS NULL);
+DROP TABLE audit_l2_split_input_authority_upgrade_probe;
+CREATE TRIGGER audit_l2_task_inputs_v2_full_authority_guard
+BEFORE INSERT ON audit_l2_task_inputs_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_logical_tasks task
+    JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
+    JOIN audit_l2_plans_v2 plan ON plan.plan_sha=binding.plan_sha
+    LEFT JOIN audit_logical_tasks parent_task
+      ON parent_task.task_hash=binding.parent_task_hash
+    WHERE task.task_hash=NEW.task_hash
+      AND audit_l2_input_authority_valid(
+        plan.plan_json,
+        json_object(
+          'task_hash', task.task_hash, 'stage', task.stage,
+          'candidate_id', task.staging_candidate_id,
+          'input_id', NEW.input_id, 'task_input_id', task.input_id,
+          'parent_input_id', parent_task.input_id,
+          'plan_sha', binding.plan_sha,
+          'parent_hash', binding.parent_task_hash,
+          'request_sha', NEW.request_sha, 'request_text', NEW.request_text,
+          'item_ids_json', NEW.item_ids_json
+        )
+      )=1
+  ) THEN RAISE(ABORT, 'forged task input authority') END;
+END;
+CREATE TRIGGER audit_task_attempts_full_task_authority_guard
+BEFORE INSERT ON audit_task_attempts
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_l2_valid_task_authority_v2 valid
+    JOIN audit_task_bindings_v2 binding ON binding.task_hash=valid.task_hash
+    JOIN audit_l2_plans_v2 plan ON plan.plan_sha=binding.plan_sha
+    WHERE valid.task_hash=NEW.task_hash
+      AND audit_l2_attempt_capability_valid(
+        plan.plan_json, binding.provider_pool_json, NEW.provenance_json
+      )=1
+  ) THEN RAISE(ABORT, 'attempt lacks validated task authority') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
@@ -2779,6 +3021,10 @@ MIGRATIONS = (
     ),
     Migration(
         "l2-runtime-split-authority", 1, _L2_RUNTIME_SPLIT_AUTHORITY_SQL
+    ),
+    Migration(
+        "l2-runtime-split-input-authority", 1,
+        _L2_RUNTIME_SPLIT_INPUT_AUTHORITY_SQL,
     ),
 )
 
@@ -3188,18 +3434,30 @@ def _l2_input_authority_valid(plan_json, facts_json):
         facts = json.loads(facts_json)
         item_ids = _closed_json(facts["item_ids_json"])
         plan_sha = history_audit_plan.runtime_plan_sha_from_material(plan)
+        has_task_input_id = "task_input_id" in facts
+        has_parent_input_id = "parent_input_id" in facts
+        if has_task_input_id != has_parent_input_id:
+            return 0
+        strict_input_identity = has_task_input_id
+        task_input_id = facts.get("task_input_id", facts["input_id"])
         if (
             facts["stage"] != "map"
             or facts["candidate_id"] != plan["candidate"]["candidate_id"]
             or facts["plan_sha"] != plan_sha
+            or (
+                strict_input_identity
+                and facts["input_id"] != task_input_id
+            )
             or hashlib.sha256(facts["request_text"].encode("utf-8")).hexdigest()
             != facts["request_sha"]
         ):
             return 0
         if facts["parent_hash"] is None:
+            if strict_input_identity and facts["parent_input_id"] is not None:
+                return 0
             matches = [
                 shard for shard in plan["shards"]
-                if shard["shard_id"] == facts["input_id"]
+                if shard["shard_id"] == task_input_id
             ]
             valid_request = len(matches) == 1 and (
                 matches[0]["serialized_request"] == facts["request_text"]
@@ -3207,17 +3465,40 @@ def _l2_input_authority_valid(plan_json, facts_json):
                 and matches[0]["item_ids"] == item_ids
             )
         else:
-            try:
-                position = int(facts["input_id"].rsplit(".", 1)[1])
-            except (IndexError, ValueError):
-                return 0
-            valid_request = facts["request_text"] == history_contract_v2.canonical_bytes(
-                {
-                    "parent_task_hash": facts["parent_hash"],
-                    "position": position,
-                    "item_ids": item_ids,
+            request_material = _closed_json(facts["request_text"])
+            if (
+                not isinstance(request_material, dict)
+                or set(request_material) != {
+                    "parent_task_hash", "position", "item_ids"
                 }
-            ).decode("utf-8")
+                or request_material["parent_task_hash"]
+                != facts["parent_hash"]
+                or type(request_material["position"]) is not int
+                or request_material["position"] not in (0, 1)
+                or request_material["item_ids"] != item_ids
+            ):
+                return 0
+            position = request_material["position"]
+            if strict_input_identity:
+                parent_input_id = facts["parent_input_id"]
+                valid_input_id = (
+                    isinstance(parent_input_id, str)
+                    and parent_input_id
+                    and task_input_id == parent_input_id + f".{position}"
+                )
+            else:
+                try:
+                    stored_position = int(task_input_id.rsplit(".", 1)[1])
+                except (AttributeError, IndexError, ValueError):
+                    return 0
+                valid_input_id = stored_position == position
+            valid_request = (
+                valid_input_id
+                and facts["request_text"]
+                == history_contract_v2.canonical_bytes(
+                    request_material
+                ).decode("utf-8")
+            )
         return 1 if (
             valid_request
             and facts["task_hash"] == history_contract_v2.logical_task_key(
@@ -3296,15 +3577,24 @@ def _l2_split_family_valid(plan_json, records_json, facts_json):
         facts = json.loads(facts_json)
         parent_ids = _closed_json(facts["parent_assigned_json"])
         children = facts["children"]
+        strict_input_identity = "parent_stored_input_id" in facts
+        expected_fact_keys = {
+            "parent_task_hash", "parent_state", "parent_fence",
+            "parent_input_id", "parent_assigned_json", "terminal_state",
+            "terminal_reason", "terminal_sha", "authority_kind",
+            "claim_fence", "claim_token", "lease_until",
+            "authority_child0", "authority_child1", "authority_sha",
+            "children",
+        }
+        if strict_input_identity:
+            expected_fact_keys.add("parent_stored_input_id")
         if (
-            set(facts) != {
-                "parent_task_hash", "parent_state", "parent_fence",
-                "parent_input_id", "parent_assigned_json", "terminal_state",
-                "terminal_reason", "terminal_sha", "authority_kind",
-                "claim_fence", "claim_token", "lease_until",
-                "authority_child0", "authority_child1", "authority_sha",
-                "children",
-            }
+            set(facts) != expected_fact_keys
+            or (
+                strict_input_identity
+                and facts["parent_stored_input_id"]
+                != facts["parent_input_id"]
+            )
             or facts["parent_state"] != "superseded"
             or facts["terminal_state"] != "superseded"
             or facts["terminal_reason"] != "invalid_parent_split"
@@ -3322,7 +3612,7 @@ def _l2_split_family_valid(plan_json, records_json, facts_json):
         groups = (parent_ids[:midpoint], parent_ids[midpoint:])
         child_hashes = []
         for position, child in enumerate(children):
-            if set(child) != {
+            expected_child_keys = {
                 "position", "task_hash", "run_id", "stage", "candidate_id",
                 "input_id", "plan_sha", "snapshot_id", "snapshot_hash",
                 "shard_input_sha", "assigned_json", "frozen_json", "pool_json",
@@ -3330,7 +3620,10 @@ def _l2_split_family_valid(plan_json, records_json, facts_json):
                 "parent_snapshot_id", "parent_candidate_id",
                 "parent_split_depth", "request_sha", "request_text",
                 "item_ids_json", "edge_sha",
-            }:
+            }
+            if strict_input_identity:
+                expected_child_keys.add("stored_input_id")
+            if set(child) != expected_child_keys:
                 return 0
             binding_facts = {
                 "task_hash": child["task_hash"],
@@ -3358,15 +3651,30 @@ def _l2_split_family_valid(plan_json, records_json, facts_json):
                 "task_hash": child["task_hash"],
                 "stage": child["stage"],
                 "candidate_id": child["candidate_id"],
-                "input_id": child["input_id"],
+                "input_id": child.get("stored_input_id", child["input_id"]),
                 "plan_sha": child["plan_sha"],
                 "parent_hash": child["parent_hash"],
                 "request_sha": child["request_sha"],
                 "request_text": child["request_text"],
                 "item_ids_json": child["item_ids_json"],
             }
+            if strict_input_identity:
+                input_facts.update(
+                    {
+                        "task_input_id": child["input_id"],
+                        "parent_input_id": facts["parent_input_id"],
+                    }
+                )
             if (
                 child["parent_hash"] != facts["parent_task_hash"]
+                or (
+                    strict_input_identity
+                    and (
+                        child["stored_input_id"] != child["input_id"]
+                        or child["input_id"]
+                        != facts["parent_input_id"] + f".{position}"
+                    )
+                )
                 or _closed_json(child["assigned_json"]) != groups[position]
                 or _closed_json(child["item_ids_json"]) != groups[position]
                 or _l2_binding_authority_valid(

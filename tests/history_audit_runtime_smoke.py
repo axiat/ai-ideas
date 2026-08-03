@@ -677,7 +677,8 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         }
 
     def _insert_canonical_split_child_without_transition(
-        self, conn, plan, parent_key, position=0, *, preupgrade_direct=False
+        self, conn, plan, parent_key, position=0, *, preupgrade_direct=False,
+        stored_input_id=None,
     ):
         child = self._canonical_split_child(
             conn, plan, parent_key, position
@@ -748,7 +749,8 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             ) VALUES(?, ?, ?, ?, ?, ?)
             """,
             (
-                child["task_hash"], child["input_id"], child["request_sha"],
+                child["task_hash"], stored_input_id or child["input_id"],
+                child["request_sha"],
                 child["request_text"],
                 history_contract_v2.canonical_bytes(child["item_ids"]).decode(),
                 created_at,
@@ -784,12 +786,15 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
     def test_upgrade_rejects_canonical_child_without_parent_terminal_or_edge(self):
         conn = sqlite3.connect(self.root / "forged-split-upgrade.sqlite3")
         conn.row_factory = sqlite3.Row
-        before_split_authority = tuple(
-            migration for migration in history_audit_store.MIGRATIONS
-            if migration.component != "l2-runtime-split-authority"
+        split_authority_index = next(
+            index for index, migration in enumerate(
+                history_audit_store.MIGRATIONS
+            )
+            if migration.component == "l2-runtime-split-authority"
         )
         with mock.patch.object(
-            history_audit_store, "MIGRATIONS", before_split_authority
+            history_audit_store, "MIGRATIONS",
+            history_audit_store.MIGRATIONS[:split_authority_index],
         ):
             history_audit_store.init_schema(conn)
             history_execution.persist_plan(conn, self.plan)
@@ -804,6 +809,94 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 history_audit_store.init_schema(conn)
         finally:
             conn.close()
+
+    def test_upgrade_rejects_split_child_with_mismatched_stored_input_id(self):
+        conn = sqlite3.connect(self.root / "forged-child-input-upgrade.sqlite3")
+        conn.row_factory = sqlite3.Row
+        split_authority_index = next(
+            index for index, migration in enumerate(
+                history_audit_store.MIGRATIONS
+            )
+            if migration.component == "l2-runtime-split-authority"
+        )
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS",
+            history_audit_store.MIGRATIONS[:split_authority_index],
+        ):
+            history_audit_store.init_schema(conn)
+            history_execution.persist_plan(conn, self.plan)
+            parent_key = self.plan["logical_task_keys"][0]
+            conn.execute("DROP TRIGGER audit_l2_task_inputs_v2_guard")
+            conn.execute(
+                "DROP TRIGGER audit_l2_task_inputs_v2_full_authority_guard"
+            )
+            conn.execute("BEGIN IMMEDIATE")
+            children = [
+                self._insert_canonical_split_child_without_transition(
+                    conn, self.plan, parent_key, position,
+                    preupgrade_direct=True,
+                    stored_input_id=(
+                        "forged-child-input.0" if position == 0 else None
+                    ),
+                )
+                for position in (0, 1)
+            ]
+            history_audit_store.compare_and_set_logical_task(
+                conn, parent_key,
+                expected_state="planned", expected_fence=0,
+                new_state="superseded", new_fence=1,
+            )
+            terminal = {
+                "task_hash": parent_key,
+                "terminal_state": "superseded",
+                "reason": "invalid_parent_split",
+            }
+            conn.execute(
+                "INSERT INTO audit_task_terminal_facts_v2 VALUES(?, ?, ?, ?, ?)",
+                (
+                    parent_key, "superseded", "invalid_parent_split",
+                    history_execution._sha(
+                        "history-task-terminal-v2", terminal
+                    ),
+                    self._now(),
+                ),
+            )
+            for position, child in enumerate(children):
+                edge = {
+                    "parent_task_hash": parent_key,
+                    "child_task_hash": child["task_hash"],
+                    "position": position,
+                }
+                conn.execute(
+                    "INSERT INTO audit_task_edges_v2 VALUES(?, ?, ?, ?, ?)",
+                    (
+                        parent_key, child["task_hash"], position,
+                        history_execution._sha("history-task-edge-v2", edge),
+                        self._now(),
+                    ),
+                )
+            conn.execute("COMMIT")
+        try:
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.init_schema(conn)
+        finally:
+            conn.close()
+
+    def test_database_rejects_split_child_with_mismatched_stored_input_id(self):
+        plan = self._install()
+        parent_key = plan["logical_task_keys"][0]
+        self.conn.execute("DROP TRIGGER audit_l2_task_inputs_v2_guard")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                self._insert_canonical_split_child_without_transition(
+                    self.conn, plan, parent_key,
+                    preupgrade_direct=True,
+                    stored_input_id="forged-child-input.0",
+                )
+        finally:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
 
     def test_split_requires_live_claim_fence_and_token(self):
         plan = self._install()
