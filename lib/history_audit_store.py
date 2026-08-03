@@ -829,6 +829,126 @@ END;
 """
 
 
+_METADATA_SHADOW_INTEGRITY_SQL = """
+CREATE TABLE audit_metadata_integrity_probe(
+  value INTEGER NOT NULL CHECK(value = 0)
+);
+INSERT INTO audit_metadata_integrity_probe(value)
+SELECT 1 FROM audit_annotation_versions_v2 annotation
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM audit_metadata_outbox_v2 work
+  JOIN audit_metadata_annotation_claims_v2 claim
+    ON claim.annotation_id = annotation.annotation_id
+   AND claim.outbox_id = work.outbox_id
+  JOIN audit_metadata_settlements_v2 settlement
+    ON settlement.outbox_id = work.outbox_id
+   AND settlement.claim_fence = claim.claim_fence
+   AND settlement.claim_token = claim.claim_token
+  WHERE work.outbox_id = annotation.outbox_id
+    AND work.state = 'done'
+    AND settlement.claim_fence = work.fence - 1
+    AND work.profile_id = annotation.profile_id
+    AND work.profile_sha256 = annotation.profile_sha256
+    AND work.candidate_id = annotation.candidate_id
+    AND work.source_content_sha = annotation.source_content_sha
+    AND work.source_sequence = annotation.source_sequence
+    AND work.producer_kind = annotation.producer_kind
+    AND work.producer_id = annotation.producer_id
+    AND work.producer_version = annotation.producer_version
+    AND work.prompt_sha256 = annotation.prompt_sha256
+    AND settlement.annotation_count = json_array_length(
+      settlement.annotation_ids_json
+    )
+    AND settlement.annotation_ids_sha256
+      = audit_metadata_annotation_ids_sha(settlement.annotation_ids_json)
+    AND settlement.annotation_count = (
+      SELECT count(*) FROM audit_annotation_versions_v2 member
+      WHERE member.outbox_id = work.outbox_id
+    )
+    AND 1 = (
+      SELECT count(*) FROM json_each(settlement.annotation_ids_json) item
+      WHERE item.value = annotation.annotation_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM json_each(settlement.annotation_ids_json) item
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM audit_annotation_versions_v2 declared
+        JOIN audit_metadata_annotation_claims_v2 declared_claim
+          ON declared_claim.annotation_id = declared.annotation_id
+        WHERE declared.annotation_id = item.value
+          AND declared.outbox_id = work.outbox_id
+          AND declared_claim.outbox_id = work.outbox_id
+          AND declared_claim.claim_fence = settlement.claim_fence
+          AND declared_claim.claim_token = settlement.claim_token
+      )
+    )
+);
+INSERT INTO audit_metadata_integrity_probe(value)
+SELECT 1 FROM audit_metadata_outbox_v2 work
+WHERE work.state = 'done'
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_metadata_settlements_v2 settlement
+    WHERE settlement.outbox_id = work.outbox_id
+      AND settlement.claim_fence = work.fence - 1
+      AND settlement.annotation_count = json_array_length(
+        settlement.annotation_ids_json
+      )
+      AND settlement.annotation_ids_sha256
+        = audit_metadata_annotation_ids_sha(settlement.annotation_ids_json)
+      AND settlement.annotation_count = (
+        SELECT count(*) FROM audit_annotation_versions_v2 annotation
+        WHERE annotation.outbox_id = work.outbox_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM json_each(settlement.annotation_ids_json) item
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM audit_annotation_versions_v2 annotation
+          JOIN audit_metadata_annotation_claims_v2 claim
+            ON claim.annotation_id = annotation.annotation_id
+          WHERE annotation.annotation_id = item.value
+            AND annotation.outbox_id = work.outbox_id
+            AND annotation.profile_id = work.profile_id
+            AND annotation.profile_sha256 = work.profile_sha256
+            AND annotation.candidate_id = work.candidate_id
+            AND annotation.source_content_sha = work.source_content_sha
+            AND annotation.source_sequence = work.source_sequence
+            AND annotation.producer_kind = work.producer_kind
+            AND annotation.producer_id = work.producer_id
+            AND annotation.producer_version = work.producer_version
+            AND annotation.prompt_sha256 = work.prompt_sha256
+            AND claim.outbox_id = work.outbox_id
+            AND claim.claim_fence = settlement.claim_fence
+            AND claim.claim_token = settlement.claim_token
+        )
+      )
+  );
+INSERT INTO audit_metadata_integrity_probe(value)
+SELECT 1 FROM audit_metadata_settlements_v2 settlement
+WHERE NOT EXISTS (
+  SELECT 1 FROM audit_metadata_outbox_v2 work
+  WHERE work.outbox_id = settlement.outbox_id AND work.state = 'done'
+);
+INSERT INTO audit_metadata_integrity_probe(value)
+SELECT 1 FROM audit_metadata_annotation_claims_v2 claim
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM audit_annotation_versions_v2 annotation
+  JOIN audit_metadata_settlements_v2 settlement
+    ON settlement.outbox_id = annotation.outbox_id
+   AND settlement.claim_fence = claim.claim_fence
+   AND settlement.claim_token = claim.claim_token
+  JOIN json_each(settlement.annotation_ids_json) item
+    ON item.value = annotation.annotation_id
+  WHERE annotation.annotation_id = claim.annotation_id
+    AND annotation.outbox_id = claim.outbox_id
+);
+DROP TABLE audit_metadata_integrity_probe;
+"""
+
+
 _SEMANTIC_SQL = """
 CREATE TABLE audit_semantic_qualifications(
   qualification_id TEXT PRIMARY KEY,
@@ -1739,6 +1859,9 @@ MIGRATIONS = (
     Migration("metadata-shadow", 1, _METADATA_SHADOW_SQL),
     Migration(
         "metadata-shadow-lifecycle", 1, _METADATA_SHADOW_LIFECYCLE_SQL
+    ),
+    Migration(
+        "metadata-shadow-integrity", 1, _METADATA_SHADOW_INTEGRITY_SQL
     ),
     Migration("semantic-qualification", 1, _SEMANTIC_SQL),
     Migration("integrity-guards", 1, _INTEGRITY_GUARDS_SQL),

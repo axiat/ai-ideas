@@ -607,6 +607,69 @@ def _normalize_query_annotation(value):
     }
 
 
+def _settlement_is_valid(conn, row):
+    try:
+        annotation_ids = json.loads(row["annotation_ids_json"])
+    except (TypeError, ValueError):
+        return False
+    if (
+        not isinstance(annotation_ids, list)
+        or any(
+            not isinstance(annotation_id, str)
+            or len(annotation_id) != 64
+            or any(character not in "0123456789abcdef" for character in annotation_id)
+            for annotation_id in annotation_ids
+        )
+        or len(set(annotation_ids)) != len(annotation_ids)
+        or _canonical_text(annotation_ids) != row["annotation_ids_json"]
+        or len(annotation_ids) != row["annotation_count"]
+        or _framed("history-metadata-annotation-set-v1", annotation_ids)
+        != row["annotation_ids_sha256"]
+        or row["annotation_id"] not in set(annotation_ids)
+    ):
+        return False
+    members = list(
+        conn.execute(
+            """
+            SELECT annotation.annotation_id, annotation.profile_id,
+                   annotation.profile_sha256, annotation.candidate_id,
+                   annotation.source_content_sha, annotation.source_sequence,
+                   annotation.producer_kind, annotation.producer_id,
+                   annotation.producer_version, annotation.prompt_sha256,
+                   claim.claim_fence, claim.claim_token,
+                   claim.outbox_id AS claim_outbox_id
+            FROM audit_annotation_versions_v2 annotation
+            LEFT JOIN audit_metadata_annotation_claims_v2 claim
+              ON claim.annotation_id=annotation.annotation_id
+            WHERE annotation.outbox_id=?
+            """,
+            (row["outbox_id"],),
+        )
+    )
+    if len(members) != len(annotation_ids) or {
+        member["annotation_id"] for member in members
+    } != set(annotation_ids):
+        return False
+    provenance = (
+        "profile_id",
+        "profile_sha256",
+        "candidate_id",
+        "source_content_sha",
+        "source_sequence",
+        "producer_kind",
+        "producer_id",
+        "producer_version",
+        "prompt_sha256",
+    )
+    return all(
+        member["claim_outbox_id"] == row["outbox_id"]
+        and member["claim_fence"] == row["settlement_claim_fence"]
+        and member["claim_token"] == row["settlement_claim_token"]
+        and all(member[field] == row[f"work_{field}"] for field in provenance)
+        for member in members
+    )
+
+
 def shadow_rank(conn, query_annotations, snapshot, profile_ids):
     """Return one best metadata rank per visible lineage."""
     if not isinstance(query_annotations, list):
@@ -645,11 +708,45 @@ def shadow_rank(conn, query_annotations, snapshot, profile_ids):
                profile.producer_kind AS current_producer_kind,
                profile.producer_id AS current_producer_id,
                profile.producer_version AS current_producer_version,
-               profile.prompt_sha256 AS current_prompt_sha256
+               profile.prompt_sha256 AS current_prompt_sha256,
+               work.profile_id AS work_profile_id,
+               work.profile_sha256 AS work_profile_sha256,
+               work.candidate_id AS work_candidate_id,
+               work.source_content_sha AS work_source_content_sha,
+               work.source_sequence AS work_source_sequence,
+               work.producer_kind AS work_producer_kind,
+               work.producer_id AS work_producer_id,
+               work.producer_version AS work_producer_version,
+               work.prompt_sha256 AS work_prompt_sha256,
+               work.fence AS work_fence,
+               settlement.claim_fence AS settlement_claim_fence,
+               settlement.claim_token AS settlement_claim_token,
+               settlement.annotation_ids_json,
+               settlement.annotation_ids_sha256,
+               settlement.annotation_count
         FROM audit_annotation_versions_v2 annotation
         JOIN candidates candidate ON candidate.candidate_id=annotation.candidate_id
         JOIN audit_metadata_profiles_v2 profile
           ON profile.profile_id=annotation.profile_id
+        JOIN audit_metadata_outbox_v2 work
+          ON work.outbox_id=annotation.outbox_id
+         AND work.state='done'
+         AND work.profile_id=annotation.profile_id
+         AND work.profile_sha256=annotation.profile_sha256
+         AND work.candidate_id=annotation.candidate_id
+         AND work.source_content_sha=annotation.source_content_sha
+         AND work.source_sequence=annotation.source_sequence
+         AND work.producer_kind=annotation.producer_kind
+         AND work.producer_id=annotation.producer_id
+         AND work.producer_version=annotation.producer_version
+         AND work.prompt_sha256=annotation.prompt_sha256
+        JOIN audit_metadata_annotation_claims_v2 claim
+          ON claim.annotation_id=annotation.annotation_id
+         AND claim.outbox_id=work.outbox_id
+        JOIN audit_metadata_settlements_v2 settlement
+          ON settlement.outbox_id=work.outbox_id
+         AND settlement.claim_fence=claim.claim_fence
+         AND settlement.claim_token=claim.claim_token
         WHERE annotation.stale_state='current'
         ORDER BY annotation.annotation_id
         """
@@ -669,6 +766,8 @@ def shadow_rank(conn, query_annotations, snapshot, profile_ids):
             or row["producer_id"] != row["current_producer_id"]
             or row["producer_version"] != row["current_producer_version"]
             or row["prompt_sha256"] != row["current_prompt_sha256"]
+            or row["settlement_claim_fence"] != row["work_fence"] - 1
+            or not _settlement_is_valid(conn, row)
         ):
             continue
         try:

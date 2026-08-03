@@ -299,6 +299,139 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
             ),
         )
 
+    def _legacy_unbound_metadata_database(self, name):
+        upgrade_root = self.root / name
+        upgrade_root.mkdir()
+        (upgrade_root / "ledger.instance-id").write_text(
+            f"{name}\n", encoding="utf-8"
+        )
+        ledger = upgrade_root / "ledger.tsv"
+        ledger.write_bytes(HEADER + ledger_row("legacy metadata candidate"))
+        conn = history_store.connect(upgrade_root / "history.sqlite3")
+        history_store.init_schema(conn)
+        history_store.import_tsv_epoch(conn, ledger)
+        before_lifecycle = tuple(
+            migration
+            for migration in history_audit_store.MIGRATIONS
+            if migration.component not in {
+                "metadata-shadow-lifecycle",
+                "metadata-shadow-integrity",
+            }
+        )
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", before_lifecycle
+        ):
+            history_audit_store.init_schema(conn)
+        candidate = conn.execute(
+            "SELECT candidate_id, raw_sha256, source_sequence FROM candidates"
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO audit_metadata_profiles_v2(
+              profile_id, profile_key, profile_version, profile_sha256,
+              profile_json, producer_kind, producer_id, producer_version,
+              prompt_sha256, synopsis_max_chars, supersedes_profile_id,
+              created_at
+            ) VALUES('legacy-profile', 'legacy', '1', ?, '{}', 'rule',
+                     'legacy-fixture', '1', ?, 512, NULL,
+                     '2026-08-03T00:00:00Z')
+            """,
+            ("1" * 64, "2" * 64),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_metadata_profile_events_v2(
+              event_id, profile_id, state, reason, replaced_by_profile_id,
+              created_at
+            ) VALUES(?, 'legacy-profile', 'current', 'registered', NULL,
+                     '2026-08-03T00:00:00Z')
+            """,
+            ("3" * 64,),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_metadata_outbox_v2(
+              outbox_id, profile_id, profile_sha256, candidate_id,
+              source_content_sha, source_sequence, producer_kind,
+              producer_id, producer_version, prompt_sha256, state, fence,
+              claim_token, lease_until, created_at
+            ) VALUES(?, 'legacy-profile', ?, ?, ?, ?, 'rule',
+                     'legacy-fixture', '1', ?, 'claimed', 1, 'legacy-worker',
+                     '2099-01-01T00:00:00+00:00',
+                     '2026-08-03T00:00:00Z')
+            """,
+            (
+                "4" * 64,
+                "1" * 64,
+                candidate["candidate_id"],
+                candidate["raw_sha256"],
+                candidate["source_sequence"],
+                "2" * 64,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_annotation_versions_v2(
+              annotation_id, outbox_id, profile_id, profile_sha256,
+              candidate_id, source_content_sha, source_sequence, family,
+              value_json, value_sha256, confidence, direction_identity_json,
+              producer_kind, producer_id, producer_version, prompt_sha256,
+              created_at, stale_state
+            ) VALUES(?, ?, 'legacy-profile', ?, ?, ?, ?, 'free_tag', ?, ?,
+                     1.0, NULL, 'rule', 'legacy-fixture', '1', ?,
+                     '2026-08-03T00:00:00Z', 'current')
+            """,
+            (
+                "5" * 64,
+                "4" * 64,
+                "1" * 64,
+                candidate["candidate_id"],
+                candidate["raw_sha256"],
+                candidate["source_sequence"],
+                json.dumps("legacy-tag") + "\n",
+                "6" * 64,
+                "2" * 64,
+            ),
+        )
+        guard = history_audit_store._FENCE_GUARDS[id(conn)]
+        guard["active"] = True
+        try:
+            conn.execute(
+                """
+                UPDATE audit_metadata_outbox_v2
+                SET state='done', fence=2, claim_token=NULL, lease_until=NULL
+                WHERE outbox_id=?
+                """,
+                ("4" * 64,),
+            )
+        finally:
+            guard["active"] = False
+        through_lifecycle = tuple(
+            migration
+            for migration in history_audit_store.MIGRATIONS
+            if migration.component != "metadata-shadow-integrity"
+        )
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", through_lifecycle
+        ):
+            history_audit_store.init_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO audit_run_manifests(
+              run_id, manifest_schema_version, plan_hash, manifest_json, created_at
+            ) VALUES(?, 'history-audit-manifest-v2', ?, '{}',
+                     '2026-08-03T00:00:00Z')
+            """,
+            (name, "7" * 64),
+        )
+        snapshot = history_audit.freeze_snapshot(
+            conn,
+            run_id=name,
+            batch_id="legacy-batch",
+            current_batch_ids=["stg-v2-" + "8" * 64],
+        )
+        return conn, candidate, snapshot
+
     def test_annotations_are_append_only_and_bind_source_and_profile(self):
         first_profile = self._register()
         first = self._publish(
@@ -694,6 +827,18 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
 
         settled = history_metadata.publish_annotations(self.conn, claimed, [])
         self.assertEqual(settled["published_count"], 0)
+        empty_settlement = self.conn.execute(
+            """
+            SELECT claim_fence, claim_token, annotation_ids_json,
+                   annotation_count
+            FROM audit_metadata_settlements_v2 WHERE outbox_id=?
+            """,
+            (pending["outbox_id"],),
+        ).fetchone()
+        self.assertEqual(
+            tuple(empty_settlement),
+            (claimed["fence"], "live-worker", "[]\n", 0),
+        )
         with self.assertRaises((ValueError, sqlite3.IntegrityError)):
             history_audit_store.compare_and_set_metadata_shadow_outbox(
                 self.conn,
@@ -744,7 +889,10 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
             before_guard = tuple(
                 migration
                 for migration in history_audit_store.MIGRATIONS
-                if migration.component != "metadata-shadow-lifecycle"
+                if migration.component not in {
+                    "metadata-shadow-lifecycle",
+                    "metadata-shadow-integrity",
+                }
             )
             with mock.patch.object(
                 history_audit_store, "MIGRATIONS", before_guard
@@ -837,6 +985,31 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
             )
             with self.assertRaises(history_audit_store.AuditMigrationError):
                 history_audit_store.init_schema(conn)
+        finally:
+            conn.close()
+
+    def test_integrity_migration_rejects_3bd4_unbound_done_metadata(self):
+        conn, _, _ = self._legacy_unbound_metadata_database(
+            "legacy-integrity-upgrade"
+        )
+        try:
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.init_schema(conn)
+        finally:
+            conn.close()
+
+    def test_shadow_rank_ignores_unbound_rows_after_partial_upgrade(self):
+        conn, _, snapshot = self._legacy_unbound_metadata_database(
+            "legacy-integrity-read"
+        )
+        try:
+            rankings = history_metadata.shadow_rank(
+                conn,
+                [{"family": "free_tag", "value": "legacy-tag", "rank": 1}],
+                snapshot,
+                ["legacy-profile"],
+            )
+            self.assertEqual(rankings, [])
         finally:
             conn.close()
 
