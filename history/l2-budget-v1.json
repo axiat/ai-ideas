@@ -1,0 +1,52 @@
+{
+  "schema_version": "l2-budget-v1",
+  "settlement_policy_sha": "2222222222222222222222222222222222222222222222222222222222222222",
+  "risk_policy_sha": "4444444444444444444444444444444444444444444444444444444444444444",
+  "intents": {
+    "duplicate_search": {
+      "round": {
+        "candidates": 8,
+        "started_attempts": 256,
+        "input_tokens": 1048576,
+        "output_tokens": 196608,
+        "provider_usage_units": 1048576
+      },
+      "candidate": {
+        "started_attempts": 64,
+        "input_tokens": 262144,
+        "output_tokens": 49152,
+        "provider_usage_units": 262144
+      }
+    },
+    "evolution_search": {
+      "round": {
+        "candidates": 4,
+        "started_attempts": 128,
+        "input_tokens": 524288,
+        "output_tokens": 98304,
+        "provider_usage_units": 524288
+      },
+      "candidate": {
+        "started_attempts": 64,
+        "input_tokens": 262144,
+        "output_tokens": 49152,
+        "provider_usage_units": 262144
+      }
+    },
+    "failure_pattern_search": {
+      "round": {
+        "candidates": 4,
+        "started_attempts": 128,
+        "input_tokens": 524288,
+        "output_tokens": 98304,
+        "provider_usage_units": 524288
+      },
+      "candidate": {
+        "started_attempts": 64,
+        "input_tokens": 262144,
+        "output_tokens": 49152,
+        "provider_usage_units": 262144
+      }
+    }
+  }
+}

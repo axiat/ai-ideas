@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import csv
 import hashlib
+import json
 import pathlib
 import re
 import shlex
@@ -44,10 +45,15 @@ RUNTIME_FILES = [
     "lib/resolve_cmd.sh", "lib/history_archive.py", "lib/history_budget.py",
     "lib/history_cli.py", "lib/history_eval.py", "lib/history_projection.py",
     "lib/history_retrieval.py", "lib/history_runtime.py",
+    "lib/provider_adapters.py", "lib/portable_agent.py",
+    "lib/history_audit_plan.py",
     "lib/history_stage.py", "lib/history_store.py", "lib/history_witness.py",
     "PROGRAM.md", "hunt.md", "trigger.md",
     "research_context.md", "brainstorming_policy.md", "rubric.md",
     "history/retrieval-policy-v1.json",
+    "history/provider-adapters-v1.json",
+    "history/capacity-profiles-v1.json",
+    "history/l2-budget-v1.json",
     "history/review-contract-v1.md",
     "ledger.instance-id",
     "roles/generate.md", "roles/meta.md", "roles/review.md",
@@ -435,9 +441,55 @@ def assert_no_claude_invocations():
     if failures:
         raise AssertionError("automatic Claude invocation remains in " + ", ".join(failures))
 
+def provider_registry_forbidden_paths(value, path="$"):
+    forbidden = "cl" + "aude"
+    failures = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child = f"{path}.{key}"
+            if forbidden in str(key).lower():
+                failures.append(child)
+            failures.extend(provider_registry_forbidden_paths(item, child))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            failures.extend(provider_registry_forbidden_paths(item, f"{path}[{index}]"))
+    elif isinstance(value, str) and forbidden in value.lower():
+        failures.append(path)
+    return failures
+
+def verify_provider_registry():
+    registry = json.loads((ROOT / "history/provider-adapters-v1.json").read_text())
+    expected_providers = ["codex", "kimi", "grok", "opencode", "agy"]
+    if list(registry) != ["schema_version", "registry_revision", "providers", "surfaces"]:
+        raise AssertionError("provider registry fields changed")
+    if list(registry["providers"]) != expected_providers:
+        raise AssertionError("provider registry set or order changed")
+    if registry["surfaces"] != {
+        "hunt": expected_providers[:3],
+        "awr": expected_providers,
+    }:
+        raise AssertionError("provider surface eligibility changed")
+    failures = provider_registry_forbidden_paths(registry)
+    if failures:
+        raise AssertionError("forbidden provider registry path: " + ", ".join(failures))
+
+    forbidden = "cl" + "aude"
+    scanner_vectors = (
+        {"providers": {forbidden: {}}},
+        {"aliases": {"portable": forbidden}},
+        {"default_provider": forbidden},
+        {"wrapper": f"/tmp/{forbidden}"},
+    )
+    if any(not provider_registry_forbidden_paths(vector) for vector in scanner_vectors):
+        raise AssertionError("provider registry forbidden-path scanner regressed")
+    shell_vector = f"BACKEND=/tmp/{forbidden}\nsudo env $BACKEND --print prompt\n"
+    if not claude_invocation_lines(shell_vector):
+        raise AssertionError("tainted wrapper command scanner regressed")
+
 def verify_runtime():
     assert_backend_defaults()
     assert_no_claude_invocations()
+    verify_provider_registry()
     verify_awr_state_aliases()
     assert_text_contract(runtime_paths())
     required = {
@@ -486,6 +538,12 @@ def verify_runtime():
         ],
         "ledger.instance-id": [],
         "lib/history_eval.py": ["synthetic_contract_only"],
+        "lib/provider_adapters.py": ["def load_registry", "def resolve_provider", "def render_command"],
+        "lib/portable_agent.py": ["def run_portable_attempt"],
+        "lib/history_audit_plan.py": ["def build_plan", "def reserve_attempt", "def settle_attempt"],
+        "history/provider-adapters-v1.json": ["provider-adapters-v1"],
+        "history/capacity-profiles-v1.json": ["safe-24k-v1", "unbudgetable"],
+        "history/l2-budget-v1.json": ["l2-budget-v1"],
         "lib/history_store.py": [
             "search_projection_outbox",
             "ledger_projection_outbox",

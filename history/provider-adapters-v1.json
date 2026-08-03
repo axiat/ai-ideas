@@ -1,0 +1,40 @@
+{
+  "schema_version": "provider-adapters-v1",
+  "registry_revision": "2026-08-03",
+  "providers": {
+    "codex": {
+      "executable": "codex",
+      "grammar_revision": "codex-portable-v1"
+    },
+    "kimi": {
+      "executable": "kimi",
+      "grammar_revision": "kimi-0.31.1-portable-v1"
+    },
+    "grok": {
+      "executable": "grok",
+      "grammar_revision": "grok-portable-v1"
+    },
+    "opencode": {
+      "executable": "opencode",
+      "grammar_revision": "opencode-portable-v1"
+    },
+    "agy": {
+      "executable": "agy",
+      "grammar_revision": "agy-portable-v1"
+    }
+  },
+  "surfaces": {
+    "hunt": [
+      "codex",
+      "kimi",
+      "grok"
+    ],
+    "awr": [
+      "codex",
+      "kimi",
+      "grok",
+      "opencode",
+      "agy"
+    ]
+  }
+}
