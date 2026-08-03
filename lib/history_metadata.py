@@ -338,7 +338,7 @@ def claim_candidate(conn, outbox_id, claim_token, lease_until, *, now=None):
                     "metadata outbox claim has not expired"
                 )
             expected_state = "claimed"
-        elif row["state"] in {"pending", "failed"}:
+        elif row["state"] == "pending":
             expected_state = row["state"]
         else:
             raise history_audit_store.StaleFence(
@@ -353,6 +353,7 @@ def claim_candidate(conn, outbox_id, claim_token, lease_until, *, now=None):
             new_fence=row["fence"] + 1,
             claim_token=claim_token,
             lease_until=_time_text(lease_value),
+            transition_now=_time_text(now_value),
         )
         return dict(
             conn.execute(
@@ -475,67 +476,99 @@ def publish_annotations(conn, claim, annotations):
         ]
         created_at = _time_text(now)
         annotation_ids = []
-        for ordinal, item in enumerate(normalized):
-            value_json = _canonical_text(item["value"])
-            value_sha = contract.framed_sha256(
-                "history-metadata-value-v1", value_json.encode("utf-8")
-            )
-            direction_json = (
-                None
-                if item["direction_identity"] is None
-                else _canonical_text(item["direction_identity"])
-            )
-            identity = {
-                "outbox_id": row["outbox_id"],
-                "ordinal": ordinal,
-                "family": item["family"],
-                "value_sha256": value_sha,
-                "confidence_millionths": round(item["confidence"] * 1_000_000),
-                "direction_identity": item["direction_identity"],
-            }
-            annotation_id = _framed(
-                "history-metadata-annotation-version-v1", identity
-            )
-            conn.execute(
-                """
-                INSERT INTO audit_annotation_versions_v2(
-                  annotation_id, outbox_id, profile_id, profile_sha256,
-                  candidate_id, source_content_sha, source_sequence, family,
-                  value_json, value_sha256, confidence, direction_identity_json,
-                  producer_kind, producer_id, producer_version, prompt_sha256,
-                  created_at, stale_state
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                         'current')
-                """,
-                (
-                    annotation_id,
-                    row["outbox_id"],
-                    row["profile_id"],
-                    row["profile_sha256"],
-                    row["candidate_id"],
-                    row["source_content_sha"],
-                    row["source_sequence"],
-                    item["family"],
-                    value_json,
-                    value_sha,
-                    item["confidence"],
-                    direction_json,
-                    row["producer_kind"],
-                    row["producer_id"],
-                    row["producer_version"],
-                    row["prompt_sha256"],
-                    created_at,
-                ),
-            )
-            annotation_ids.append(annotation_id)
-        history_audit_store.compare_and_set_metadata_shadow_outbox(
+        with history_audit_store.metadata_shadow_publish_guard(
             conn,
-            row["outbox_id"],
-            expected_state="claimed",
-            expected_fence=row["fence"],
-            new_state="done",
-            new_fence=row["fence"] + 1,
-        )
+            outbox_id=row["outbox_id"],
+            claim_token=row["claim_token"],
+            claim_fence=row["fence"],
+            now=created_at,
+        ):
+            for ordinal, item in enumerate(normalized):
+                value_json = _canonical_text(item["value"])
+                value_sha = contract.framed_sha256(
+                    "history-metadata-value-v1", value_json.encode("utf-8")
+                )
+                direction_json = (
+                    None
+                    if item["direction_identity"] is None
+                    else _canonical_text(item["direction_identity"])
+                )
+                identity = {
+                    "outbox_id": row["outbox_id"],
+                    "ordinal": ordinal,
+                    "family": item["family"],
+                    "value_sha256": value_sha,
+                    "confidence_millionths": round(
+                        item["confidence"] * 1_000_000
+                    ),
+                    "direction_identity": item["direction_identity"],
+                }
+                annotation_id = _framed(
+                    "history-metadata-annotation-version-v1", identity
+                )
+                conn.execute(
+                    """
+                    INSERT INTO audit_metadata_annotation_claims_v2(
+                      annotation_id, outbox_id, claim_fence, claim_token,
+                      created_at
+                    ) VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        annotation_id,
+                        row["outbox_id"],
+                        row["fence"],
+                        row["claim_token"],
+                        created_at,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO audit_annotation_versions_v2(
+                      annotation_id, outbox_id, profile_id, profile_sha256,
+                      candidate_id, source_content_sha, source_sequence, family,
+                      value_json, value_sha256, confidence,
+                      direction_identity_json, producer_kind, producer_id,
+                      producer_version, prompt_sha256, created_at, stale_state
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                             'current')
+                    """,
+                    (
+                        annotation_id,
+                        row["outbox_id"],
+                        row["profile_id"],
+                        row["profile_sha256"],
+                        row["candidate_id"],
+                        row["source_content_sha"],
+                        row["source_sequence"],
+                        item["family"],
+                        value_json,
+                        value_sha,
+                        item["confidence"],
+                        direction_json,
+                        row["producer_kind"],
+                        row["producer_id"],
+                        row["producer_version"],
+                        row["prompt_sha256"],
+                        created_at,
+                    ),
+                )
+                annotation_ids.append(annotation_id)
+            history_audit_store.record_metadata_shadow_settlement(
+                conn,
+                outbox_id=row["outbox_id"],
+                claim_fence=row["fence"],
+                claim_token=row["claim_token"],
+                annotation_ids=annotation_ids,
+                created_at=created_at,
+            )
+            history_audit_store.compare_and_set_metadata_shadow_outbox(
+                conn,
+                row["outbox_id"],
+                expected_state="claimed",
+                expected_fence=row["fence"],
+                new_state="done",
+                new_fence=row["fence"] + 1,
+            )
         return {
             "outbox_id": row["outbox_id"],
             "published_count": len(annotation_ids),

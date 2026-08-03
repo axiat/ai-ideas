@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -191,6 +192,112 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
             current_batch_ids=["stg-v2-" + "d" * 64],
         )
         return candidate_id, content_sha, snapshot
+
+    def _bind_host_direction(self, direction):
+        self.conn.execute(
+            """
+            INSERT INTO audit_run_manifests(
+              run_id, manifest_schema_version, plan_hash, manifest_json, created_at
+            ) VALUES(?, 'history-audit-manifest-v2', ?, '{}',
+                     '2026-08-03T00:00:00Z')
+            """,
+            (direction["run_id"], "7" * 64),
+        )
+        staging_id = "legacy-direction-a"
+        peer_id = "legacy-direction-b"
+        for source_order, candidate_hash, raw_sha, item_id in (
+            (0, "8" * 64, self.content_sha, staging_id),
+            (1, "9" * 64, "a" * 64, peer_id),
+        ):
+            self.conn.execute(
+                """
+                INSERT INTO audit_batch_staging(
+                  staging_candidate_id, run_id, batch_id, candidate_hash,
+                  raw_artifact_sha, source_order, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+                """,
+                (
+                    item_id,
+                    direction["run_id"],
+                    direction["batch_id"],
+                    candidate_hash,
+                    raw_sha,
+                    source_order,
+                ),
+            )
+        pair_plan_sha = "b" * 64
+        pair_result_sha = "c" * 64
+        self.conn.execute(
+            """
+            INSERT INTO audit_batch_pairs(
+              run_id, batch_id, left_staging_candidate_id,
+              right_staging_candidate_id, pair_plan_sha, pair_result_sha,
+              created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+            """,
+            (
+                direction["run_id"],
+                direction["batch_id"],
+                staging_id,
+                peer_id,
+                pair_plan_sha,
+                pair_result_sha,
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO audit_direction_contracts(
+              run_id, batch_id, direction_id, contract_sha, validator_version,
+              artifact_sha, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+            """,
+            (
+                direction["run_id"],
+                direction["batch_id"],
+                direction["direction_id"],
+                direction["contract_sha"],
+                direction["validator_version"],
+                direction["artifact_sha"],
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO audit_direction_checks(
+              run_id, batch_id, direction_id, contract_sha, validator_version,
+              artifact_sha, staging_candidate_id, semantic_relation,
+              lineage_relation, evidence_sha, checked_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'distinct', 'none', ?,
+                     '2026-08-03T00:00:00Z')
+            """,
+            (
+                direction["run_id"],
+                direction["batch_id"],
+                direction["direction_id"],
+                direction["contract_sha"],
+                direction["validator_version"],
+                direction["artifact_sha"],
+                staging_id,
+                "d" * 64,
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO audit_activation_maps(
+              staging_candidate_id, legacy_candidate_id, source_sequence,
+              raw_artifact_sha, pair_plan_sha, pair_result_sha,
+              activation_receipt_sha, activated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+            """,
+            (
+                staging_id,
+                self.candidate_id,
+                self.rows[0]["source_sequence"],
+                self.content_sha,
+                pair_plan_sha,
+                pair_result_sha,
+                "e" * 64,
+            ),
+        )
 
     def test_annotations_are_append_only_and_bind_source_and_profile(self):
         first_profile = self._register()
@@ -426,9 +533,21 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
             "validator_version": "direction-validator-v1",
             "artifact_sha": "4" * 64,
         }
-        self._publish(
-            [annotation("direction", "axis-a", direction_identity=direction)]
+        work = self._enqueue()
+        claim = self._claim(work)
+        with self.assertRaises((ValueError, sqlite3.IntegrityError)):
+            history_metadata.publish_annotations(
+                self.conn,
+                claim,
+                [annotation("direction", "axis-a", direction_identity=direction)],
+            )
+        self._bind_host_direction(direction)
+        result = history_metadata.publish_annotations(
+            self.conn,
+            claim,
+            [annotation("direction", "axis-a", direction_identity=direction)],
         )
+        self.assertEqual(result["published_count"], 1)
         stored = self.conn.execute(
             "SELECT family, direction_identity_json "
             "FROM audit_annotation_versions_v2"
@@ -517,6 +636,209 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
             (work["outbox_id"],),
         ).fetchone()
         self.assertEqual(tuple(row), ("done", recovered["fence"] + 1, None, None))
+
+    def test_storage_closes_metadata_outbox_transition_graph(self):
+        self._register()
+        pending = self._enqueue()
+        with self.assertRaises((ValueError, sqlite3.IntegrityError)):
+            history_audit_store.compare_and_set_metadata_shadow_outbox(
+                self.conn,
+                pending["outbox_id"],
+                expected_state="pending",
+                expected_fence=0,
+                new_state="done",
+                new_fence=1,
+            )
+
+        claimed = self._claim(pending, token="live-worker")
+        with self.assertRaises((ValueError, sqlite3.IntegrityError)):
+            history_audit_store.compare_and_set_metadata_shadow_outbox(
+                self.conn,
+                pending["outbox_id"],
+                expected_state="claimed",
+                expected_fence=claimed["fence"],
+                new_state="claimed",
+                new_fence=claimed["fence"] + 1,
+                claim_token="early-reclaimer",
+                lease_until="2099-01-02T00:00:00+00:00",
+            )
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_annotation_versions_v2(
+                  annotation_id, outbox_id, profile_id, profile_sha256,
+                  candidate_id, source_content_sha, source_sequence, family,
+                  value_json, value_sha256, confidence, direction_identity_json,
+                  producer_kind, producer_id, producer_version, prompt_sha256,
+                  created_at, stale_state
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, 'free_tag', ?, ?, 1.0, NULL,
+                         ?, ?, ?, ?, '2026-08-03T00:00:00Z', 'current')
+                """,
+                (
+                    "f" * 64,
+                    claimed["outbox_id"],
+                    claimed["profile_id"],
+                    claimed["profile_sha256"],
+                    claimed["candidate_id"],
+                    claimed["source_content_sha"],
+                    claimed["source_sequence"],
+                    json.dumps("separated-annotation") + "\n",
+                    "0" * 64,
+                    claimed["producer_kind"],
+                    claimed["producer_id"],
+                    claimed["producer_version"],
+                    claimed["prompt_sha256"],
+                ),
+            )
+
+        settled = history_metadata.publish_annotations(self.conn, claimed, [])
+        self.assertEqual(settled["published_count"], 0)
+        with self.assertRaises((ValueError, sqlite3.IntegrityError)):
+            history_audit_store.compare_and_set_metadata_shadow_outbox(
+                self.conn,
+                pending["outbox_id"],
+                expected_state="done",
+                expected_fence=settled["settled_fence"],
+                new_state="claimed",
+                new_fence=settled["settled_fence"] + 1,
+                claim_token="resurrected-worker",
+                lease_until="2099-01-03T00:00:00+00:00",
+            )
+
+        self._register("profile-direct", "2", "2")
+        direct = self._enqueue("profile-direct")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                UPDATE audit_metadata_outbox_v2
+                SET state='done', fence=fence+1
+                WHERE outbox_id=?
+                """,
+                (direct["outbox_id"],),
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                UPDATE audit_metadata_outbox_v2
+                SET state='claimed', fence=fence+1,
+                    claim_token='direct-worker',
+                    lease_until='2099-01-01T00:00:00+00:00'
+                WHERE outbox_id=?
+                """,
+                (pending["outbox_id"],),
+            )
+
+    def test_lifecycle_migration_rejects_forged_direction_annotation(self):
+        upgrade_root = self.root / "direction-upgrade"
+        upgrade_root.mkdir()
+        (upgrade_root / "ledger.instance-id").write_text(
+            "metadata-direction-upgrade\n", encoding="utf-8"
+        )
+        ledger = upgrade_root / "ledger.tsv"
+        ledger.write_bytes(HEADER + ledger_row("upgrade candidate"))
+        conn = history_store.connect(upgrade_root / "history.sqlite3")
+        try:
+            history_store.init_schema(conn)
+            history_store.import_tsv_epoch(conn, ledger)
+            before_guard = tuple(
+                migration
+                for migration in history_audit_store.MIGRATIONS
+                if migration.component != "metadata-shadow-lifecycle"
+            )
+            with mock.patch.object(
+                history_audit_store, "MIGRATIONS", before_guard
+            ):
+                history_audit_store.init_schema(conn)
+            candidate = conn.execute(
+                "SELECT candidate_id, raw_sha256, source_sequence FROM candidates"
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO audit_metadata_profiles_v2(
+                  profile_id, profile_key, profile_version, profile_sha256,
+                  profile_json, producer_kind, producer_id, producer_version,
+                  prompt_sha256, synopsis_max_chars, supersedes_profile_id,
+                  created_at
+                ) VALUES('forged-profile', 'forged', '1', ?, '{}', 'rule',
+                         'fixture', '1', ?, 512, NULL,
+                         '2026-08-03T00:00:00Z')
+                """,
+                ("1" * 64, "2" * 64),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_metadata_profile_events_v2(
+                  event_id, profile_id, state, reason, replaced_by_profile_id,
+                  created_at
+                ) VALUES(?, 'forged-profile', 'current', 'registered', NULL,
+                         '2026-08-03T00:00:00Z')
+                """,
+                ("3" * 64,),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_metadata_outbox_v2(
+                  outbox_id, profile_id, profile_sha256, candidate_id,
+                  source_content_sha, source_sequence, producer_kind,
+                  producer_id, producer_version, prompt_sha256, state, fence,
+                  claim_token, lease_until, created_at
+                ) VALUES(?, 'forged-profile', ?, ?, ?, ?, 'rule', 'fixture',
+                         '1', ?, 'claimed', 1, 'forger',
+                         '2099-01-01T00:00:00+00:00',
+                         '2026-08-03T00:00:00Z')
+                """,
+                (
+                    "4" * 64,
+                    "1" * 64,
+                    candidate["candidate_id"],
+                    candidate["raw_sha256"],
+                    candidate["source_sequence"],
+                    "2" * 64,
+                ),
+            )
+            forged_direction = {
+                "run_id": "forged-run",
+                "batch_id": "forged-batch",
+                "direction_id": "forged-direction",
+                "contract_sha": "5" * 64,
+                "validator_version": "forged-validator",
+                "artifact_sha": "6" * 64,
+            }
+            conn.execute(
+                """
+                INSERT INTO audit_annotation_versions_v2(
+                  annotation_id, outbox_id, profile_id, profile_sha256,
+                  candidate_id, source_content_sha, source_sequence, family,
+                  value_json, value_sha256, confidence, direction_identity_json,
+                  producer_kind, producer_id, producer_version, prompt_sha256,
+                  created_at, stale_state
+                ) VALUES(?, ?, 'forged-profile', ?, ?, ?, ?, 'direction', ?, ?,
+                         1.0, ?, 'rule', 'fixture', '1', ?,
+                         '2026-08-03T00:00:00Z', 'current')
+                """,
+                (
+                    "7" * 64,
+                    "4" * 64,
+                    "1" * 64,
+                    candidate["candidate_id"],
+                    candidate["raw_sha256"],
+                    candidate["source_sequence"],
+                    json.dumps("axis") + "\n",
+                    "8" * 64,
+                    json.dumps(
+                        forged_direction,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n",
+                    "2" * 64,
+                ),
+            )
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.init_schema(conn)
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

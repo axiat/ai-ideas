@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import contextlib
 
 try:
     from lib import history_contract_v2
@@ -559,6 +560,271 @@ BEGIN
       AND work.producer_version = NEW.producer_version
       AND work.prompt_sha256 = NEW.prompt_sha256
   ) THEN RAISE(ABORT, 'annotation is not bound to claimed metadata work') END;
+END;
+"""
+
+
+_METADATA_SHADOW_LIFECYCLE_SQL = """
+CREATE TABLE audit_metadata_annotation_claims_v2(
+  annotation_id TEXT PRIMARY KEY
+    REFERENCES audit_annotation_versions_v2(annotation_id)
+    DEFERRABLE INITIALLY DEFERRED,
+  outbox_id TEXT NOT NULL REFERENCES audit_metadata_outbox_v2(outbox_id),
+  claim_fence INTEGER NOT NULL CHECK(claim_fence >= 1),
+  claim_token TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE audit_metadata_settlements_v2(
+  outbox_id TEXT PRIMARY KEY REFERENCES audit_metadata_outbox_v2(outbox_id),
+  claim_fence INTEGER NOT NULL CHECK(claim_fence >= 1),
+  claim_token TEXT NOT NULL,
+  annotation_ids_json TEXT NOT NULL,
+  annotation_ids_sha256 TEXT NOT NULL CHECK(length(annotation_ids_sha256) = 64),
+  annotation_count INTEGER NOT NULL CHECK(annotation_count >= 0),
+  created_at TEXT NOT NULL
+);
+""" + _immutable_guards(
+    "audit_metadata_annotation_claims_v2",
+    "audit_metadata_settlements_v2",
+) + """
+CREATE TABLE audit_metadata_direction_probe(
+  value INTEGER NOT NULL CHECK(value = 0)
+);
+INSERT INTO audit_metadata_direction_probe(value)
+SELECT 1 FROM audit_annotation_versions_v2 annotation
+WHERE annotation.family = 'direction'
+  AND (
+    annotation.direction_identity_json IS NULL
+    OR json_valid(annotation.direction_identity_json) <> 1
+    OR NOT EXISTS (
+      SELECT 1
+      FROM audit_activation_maps activation
+      JOIN audit_direction_checks direction_check
+        ON direction_check.staging_candidate_id = activation.staging_candidate_id
+      JOIN audit_direction_contracts direction_contract
+        ON direction_contract.run_id = direction_check.run_id
+       AND direction_contract.batch_id = direction_check.batch_id
+       AND direction_contract.direction_id = direction_check.direction_id
+       AND direction_contract.contract_sha = direction_check.contract_sha
+       AND direction_contract.validator_version = direction_check.validator_version
+       AND direction_contract.artifact_sha = direction_check.artifact_sha
+      WHERE activation.legacy_candidate_id = annotation.candidate_id
+        AND direction_check.run_id = json_extract(
+          annotation.direction_identity_json, '$.run_id'
+        )
+        AND direction_check.batch_id = json_extract(
+          annotation.direction_identity_json, '$.batch_id'
+        )
+        AND direction_check.direction_id = json_extract(
+          annotation.direction_identity_json, '$.direction_id'
+        )
+        AND direction_check.contract_sha = json_extract(
+          annotation.direction_identity_json, '$.contract_sha'
+        )
+        AND direction_check.validator_version = json_extract(
+          annotation.direction_identity_json, '$.validator_version'
+        )
+        AND direction_check.artifact_sha = json_extract(
+          annotation.direction_identity_json, '$.artifact_sha'
+        )
+    )
+  );
+DROP TABLE audit_metadata_direction_probe;
+
+DROP TRIGGER audit_metadata_outbox_v2_fenced_update;
+CREATE TRIGGER audit_metadata_outbox_v2_fenced_update
+BEFORE UPDATE ON audit_metadata_outbox_v2
+BEGIN
+  SELECT CASE WHEN audit_fenced_cas_allowed() <> 1
+    THEN RAISE(ABORT, 'metadata shadow outbox update requires fenced CAS') END;
+  SELECT CASE WHEN NEW.outbox_id <> OLD.outbox_id
+    OR NEW.profile_id <> OLD.profile_id
+    OR NEW.profile_sha256 <> OLD.profile_sha256
+    OR NEW.candidate_id <> OLD.candidate_id
+    OR NEW.source_content_sha <> OLD.source_content_sha
+    OR NEW.source_sequence <> OLD.source_sequence
+    OR NEW.producer_kind <> OLD.producer_kind
+    OR NEW.producer_id <> OLD.producer_id
+    OR NEW.producer_version <> OLD.producer_version
+    OR NEW.prompt_sha256 <> OLD.prompt_sha256
+    OR NEW.created_at <> OLD.created_at
+    THEN RAISE(ABORT, 'metadata shadow outbox identity is immutable') END;
+  SELECT CASE WHEN NEW.fence <> OLD.fence + 1
+    THEN RAISE(ABORT, 'metadata shadow outbox fence must increase by one') END;
+  SELECT CASE WHEN NEW.outbox_id <> audit_metadata_outbox_id()
+    THEN RAISE(ABORT, 'metadata shadow transition owner mismatch') END;
+  SELECT CASE WHEN NOT (
+    OLD.state = 'pending'
+    AND NEW.state = 'claimed'
+    AND audit_metadata_operation() = 'claim'
+    AND OLD.claim_token IS NULL
+    AND OLD.lease_until IS NULL
+    AND NEW.claim_token = audit_metadata_claim_token()
+    AND NEW.fence = audit_metadata_claim_fence()
+    AND audit_metadata_lease_live(
+      NEW.lease_until, audit_metadata_now()
+    ) = 1
+  ) AND NOT (
+    OLD.state = 'claimed'
+    AND NEW.state = 'claimed'
+    AND audit_metadata_operation() = 'reclaim'
+    AND audit_metadata_lease_expired(
+      OLD.lease_until, audit_metadata_now()
+    ) = 1
+    AND NEW.claim_token = audit_metadata_claim_token()
+    AND NEW.claim_token <> OLD.claim_token
+    AND NEW.fence = audit_metadata_claim_fence()
+    AND audit_metadata_lease_live(
+      NEW.lease_until, audit_metadata_now()
+    ) = 1
+  ) AND NOT (
+    OLD.state = 'claimed'
+    AND NEW.state = 'done'
+    AND audit_metadata_operation() = 'publish'
+    AND OLD.claim_token = audit_metadata_claim_token()
+    AND OLD.fence = audit_metadata_claim_fence()
+    AND NEW.claim_token IS NULL
+    AND NEW.lease_until IS NULL
+    AND audit_metadata_lease_live(
+      OLD.lease_until, audit_metadata_now()
+    ) = 1
+    AND EXISTS (
+      SELECT 1 FROM audit_metadata_settlements_v2 settlement
+      WHERE settlement.outbox_id = OLD.outbox_id
+        AND settlement.claim_fence = OLD.fence
+        AND settlement.claim_token = OLD.claim_token
+    )
+  ) THEN RAISE(ABORT, 'metadata shadow transition is closed') END;
+END;
+
+CREATE TRIGGER audit_metadata_annotation_claims_v2_insert_guard
+BEFORE INSERT ON audit_metadata_annotation_claims_v2
+BEGIN
+  SELECT CASE WHEN audit_metadata_operation() <> 'publish'
+    OR NEW.outbox_id <> audit_metadata_outbox_id()
+    OR NEW.claim_token <> audit_metadata_claim_token()
+    OR NEW.claim_fence <> audit_metadata_claim_fence()
+    OR NOT EXISTS (
+      SELECT 1 FROM audit_metadata_outbox_v2 work
+      WHERE work.outbox_id = NEW.outbox_id
+        AND work.state = 'claimed'
+        AND work.fence = NEW.claim_fence
+        AND work.claim_token = NEW.claim_token
+        AND audit_metadata_lease_live(
+          work.lease_until, audit_metadata_now()
+        ) = 1
+    )
+    THEN RAISE(ABORT, 'annotation claim binding is stale') END;
+END;
+
+DROP TRIGGER audit_annotation_versions_v2_insert_guard;
+CREATE TRIGGER audit_annotation_versions_v2_insert_guard
+BEFORE INSERT ON audit_annotation_versions_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_metadata_outbox_v2 work
+    JOIN audit_metadata_annotation_claims_v2 claim
+      ON claim.annotation_id = NEW.annotation_id
+     AND claim.outbox_id = work.outbox_id
+     AND claim.claim_fence = work.fence
+     AND claim.claim_token = work.claim_token
+    WHERE work.outbox_id = NEW.outbox_id
+      AND work.state = 'claimed'
+      AND work.profile_id = NEW.profile_id
+      AND work.profile_sha256 = NEW.profile_sha256
+      AND work.candidate_id = NEW.candidate_id
+      AND work.source_content_sha = NEW.source_content_sha
+      AND work.source_sequence = NEW.source_sequence
+      AND work.producer_kind = NEW.producer_kind
+      AND work.producer_id = NEW.producer_id
+      AND work.producer_version = NEW.producer_version
+      AND work.prompt_sha256 = NEW.prompt_sha256
+      AND audit_metadata_operation() = 'publish'
+      AND work.outbox_id = audit_metadata_outbox_id()
+      AND work.fence = audit_metadata_claim_fence()
+      AND work.claim_token = audit_metadata_claim_token()
+      AND audit_metadata_lease_live(
+        work.lease_until, audit_metadata_now()
+      ) = 1
+  ) THEN RAISE(ABORT, 'annotation is not bound to current claimed work') END;
+  SELECT CASE WHEN NEW.family = 'direction' AND NOT EXISTS (
+    SELECT 1
+    FROM audit_activation_maps activation
+    JOIN audit_direction_checks direction_check
+      ON direction_check.staging_candidate_id = activation.staging_candidate_id
+    JOIN audit_direction_contracts direction_contract
+      ON direction_contract.run_id = direction_check.run_id
+     AND direction_contract.batch_id = direction_check.batch_id
+     AND direction_contract.direction_id = direction_check.direction_id
+     AND direction_contract.contract_sha = direction_check.contract_sha
+     AND direction_contract.validator_version = direction_check.validator_version
+     AND direction_contract.artifact_sha = direction_check.artifact_sha
+    WHERE activation.legacy_candidate_id = NEW.candidate_id
+      AND direction_check.run_id = json_extract(
+        NEW.direction_identity_json, '$.run_id'
+      )
+      AND direction_check.batch_id = json_extract(
+        NEW.direction_identity_json, '$.batch_id'
+      )
+      AND direction_check.direction_id = json_extract(
+        NEW.direction_identity_json, '$.direction_id'
+      )
+      AND direction_check.contract_sha = json_extract(
+        NEW.direction_identity_json, '$.contract_sha'
+      )
+      AND direction_check.validator_version = json_extract(
+        NEW.direction_identity_json, '$.validator_version'
+      )
+      AND direction_check.artifact_sha = json_extract(
+        NEW.direction_identity_json, '$.artifact_sha'
+      )
+  ) THEN RAISE(ABORT, 'direction annotation lacks host-owned provenance') END;
+END;
+
+CREATE TRIGGER audit_metadata_settlements_v2_insert_guard
+BEFORE INSERT ON audit_metadata_settlements_v2
+BEGIN
+  SELECT CASE WHEN audit_metadata_operation() <> 'publish'
+    OR NEW.outbox_id <> audit_metadata_outbox_id()
+    OR NEW.claim_token <> audit_metadata_claim_token()
+    OR NEW.claim_fence <> audit_metadata_claim_fence()
+    OR NEW.annotation_count <> json_array_length(NEW.annotation_ids_json)
+    OR NEW.annotation_ids_sha256
+      <> audit_metadata_annotation_ids_sha(NEW.annotation_ids_json)
+    OR EXISTS (
+      SELECT 1 FROM json_each(NEW.annotation_ids_json) item
+      GROUP BY item.value HAVING count(*) <> 1
+    )
+    OR EXISTS (
+      SELECT 1 FROM json_each(NEW.annotation_ids_json) item
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM audit_annotation_versions_v2 annotation
+        JOIN audit_metadata_annotation_claims_v2 claim
+          ON claim.annotation_id = annotation.annotation_id
+        WHERE annotation.annotation_id = item.value
+          AND annotation.outbox_id = NEW.outbox_id
+          AND claim.outbox_id = NEW.outbox_id
+          AND claim.claim_fence = NEW.claim_fence
+          AND claim.claim_token = NEW.claim_token
+      )
+    )
+    OR NEW.annotation_count <> (
+      SELECT count(*) FROM audit_annotation_versions_v2 annotation
+      WHERE annotation.outbox_id = NEW.outbox_id
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM audit_metadata_outbox_v2 work
+      WHERE work.outbox_id = NEW.outbox_id
+        AND work.state = 'claimed'
+        AND work.fence = NEW.claim_fence
+        AND work.claim_token = NEW.claim_token
+        AND audit_metadata_lease_live(
+          work.lease_until, audit_metadata_now()
+        ) = 1
+    )
+    THEN RAISE(ABORT, 'metadata settlement evidence is invalid') END;
 END;
 """
 
@@ -1471,6 +1737,9 @@ MIGRATIONS = (
     Migration("receipts", 1, _RECEIPT_SQL),
     Migration("metadata", 1, _METADATA_SQL),
     Migration("metadata-shadow", 1, _METADATA_SHADOW_SQL),
+    Migration(
+        "metadata-shadow-lifecycle", 1, _METADATA_SHADOW_LIFECYCLE_SQL
+    ),
     Migration("semantic-qualification", 1, _SEMANTIC_SQL),
     Migration("integrity-guards", 1, _INTEGRITY_GUARDS_SQL),
     Migration(
@@ -1521,6 +1790,161 @@ def _current_batch_ids_sha(member_ids_json):
     return history_contract_v2.ordered_set_sha256(
         "history-current-batch-ids-v2", values
     )
+
+
+def _metadata_timestamp(value):
+    if not isinstance(value, str) or not value:
+        raise ValueError("metadata transition timestamp is required")
+    parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("metadata transition timestamp needs timezone")
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _metadata_lease_live(lease_until, now):
+    try:
+        return 1 if _metadata_timestamp(lease_until) > _metadata_timestamp(now) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _metadata_lease_expired(lease_until, now):
+    try:
+        return 1 if _metadata_timestamp(lease_until) <= _metadata_timestamp(now) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _metadata_annotation_ids_sha(annotation_ids_json):
+    try:
+        values = json.loads(annotation_ids_json)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("metadata annotation set is invalid JSON") from exc
+    if (
+        not isinstance(values, list)
+        or len(set(values)) != len(values)
+        or any(
+            not isinstance(value, str)
+            or re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in values
+        )
+        or history_contract_v2.canonical_bytes(values).decode("utf-8")
+        != annotation_ids_json
+    ):
+        raise ValueError("metadata annotation set is not canonical")
+    return history_contract_v2.framed_sha256(
+        "history-metadata-annotation-set-v1",
+        history_contract_v2.canonical_bytes(values),
+    )
+
+
+def _clear_metadata_guard(guard):
+    guard.update(
+        active=False,
+        metadata_operation=None,
+        metadata_now=None,
+        metadata_outbox_id=None,
+        metadata_claim_token=None,
+        metadata_claim_fence=None,
+    )
+
+
+@contextlib.contextmanager
+def _metadata_transition_guard(
+    conn, *, operation, now, outbox_id, claim_token, claim_fence
+):
+    guard = _FENCE_GUARDS.get(id(conn))
+    if guard is None:
+        raise AuditMigrationError("fenced CAS is not initialized for connection")
+    if guard["active"]:
+        raise AuditMigrationError("another fenced transition is active")
+    guard.update(
+        active=True,
+        metadata_operation=operation,
+        metadata_now=now,
+        metadata_outbox_id=outbox_id,
+        metadata_claim_token=claim_token,
+        metadata_claim_fence=claim_fence,
+    )
+    try:
+        yield
+    finally:
+        _clear_metadata_guard(guard)
+
+
+@contextlib.contextmanager
+def metadata_shadow_publish_guard(
+    conn, *, outbox_id, claim_token, claim_fence, now
+):
+    """Authorize one atomic annotation-set publication and terminal settle."""
+    if not conn.in_transaction:
+        raise AuditMigrationError("metadata publication requires a transaction")
+    _metadata_timestamp(now)
+    row = conn.execute(
+        "SELECT state, fence, claim_token, lease_until "
+        "FROM audit_metadata_outbox_v2 WHERE outbox_id=?",
+        (outbox_id,),
+    ).fetchone()
+    if (
+        row is None
+        or row["state"] != "claimed"
+        or row["fence"] != claim_fence
+        or row["claim_token"] != claim_token
+        or _metadata_lease_live(row["lease_until"], now) != 1
+    ):
+        raise StaleFence("metadata publish claim is stale")
+    with _metadata_transition_guard(
+        conn,
+        operation="publish",
+        now=now,
+        outbox_id=outbox_id,
+        claim_token=claim_token,
+        claim_fence=claim_fence,
+    ):
+        yield
+        settled = conn.execute(
+            """
+            SELECT 1
+            FROM audit_metadata_outbox_v2 work
+            JOIN audit_metadata_settlements_v2 settlement
+              ON settlement.outbox_id=work.outbox_id
+            WHERE work.outbox_id=? AND work.state='done'
+              AND settlement.claim_fence=? AND settlement.claim_token=?
+            """,
+            (outbox_id, claim_fence, claim_token),
+        ).fetchone()
+        if settled is None:
+            raise AuditMigrationError(
+                "metadata publication did not atomically settle its annotation set"
+            )
+
+
+def record_metadata_shadow_settlement(
+    conn, *, outbox_id, claim_fence, claim_token, annotation_ids, created_at
+):
+    """Persist the exact annotation set before the guarded terminal transition."""
+    annotation_ids_json = history_contract_v2.canonical_bytes(
+        annotation_ids
+    ).decode("utf-8")
+    annotation_ids_sha = _metadata_annotation_ids_sha(annotation_ids_json)
+    conn.execute(
+        """
+        INSERT INTO audit_metadata_settlements_v2(
+          outbox_id, claim_fence, claim_token, annotation_ids_json,
+          annotation_ids_sha256, annotation_count, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            outbox_id,
+            claim_fence,
+            claim_token,
+            annotation_ids_json,
+            annotation_ids_sha,
+            len(annotation_ids),
+            created_at,
+        ),
+    )
+    return annotation_ids_sha
 
 
 def _execute_sql_script(conn, source):
@@ -1584,13 +2008,43 @@ def init_schema(conn):
         raise TypeError("conn must be a sqlite3 connection")
     if conn.in_transaction:
         raise AuditMigrationError("v2 migration requires an idle connection")
-    guard = {"active": False}
+    guard = {}
+    _clear_metadata_guard(guard)
     _FENCE_GUARDS[id(conn)] = guard
     conn.create_function(
         "audit_fenced_cas_allowed", 0, lambda: 1 if guard["active"] else 0
     )
     conn.create_function(
         "audit_current_batch_ids_sha", 1, _current_batch_ids_sha
+    )
+    conn.create_function(
+        "audit_metadata_operation", 0,
+        lambda: guard["metadata_operation"],
+    )
+    conn.create_function(
+        "audit_metadata_now", 0, lambda: guard["metadata_now"]
+    )
+    conn.create_function(
+        "audit_metadata_outbox_id", 0,
+        lambda: guard["metadata_outbox_id"],
+    )
+    conn.create_function(
+        "audit_metadata_claim_token", 0,
+        lambda: guard["metadata_claim_token"],
+    )
+    conn.create_function(
+        "audit_metadata_claim_fence", 0,
+        lambda: guard["metadata_claim_fence"],
+    )
+    conn.create_function(
+        "audit_metadata_lease_live", 2, _metadata_lease_live
+    )
+    conn.create_function(
+        "audit_metadata_lease_expired", 2, _metadata_lease_expired
+    )
+    conn.create_function(
+        "audit_metadata_annotation_ids_sha", 1,
+        _metadata_annotation_ids_sha,
     )
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA recursive_triggers = ON")
@@ -1781,8 +2235,9 @@ def compare_and_set_metadata_shadow_outbox(
     new_fence,
     claim_token=None,
     lease_until=None,
+    transition_now=None,
 ):
-    """Advance one source-bound metadata shadow item by fenced CAS."""
+    """Apply only claim, expired reclaim, or guarded terminal publication."""
     if (
         type(expected_fence) is not int
         or expected_fence < 0
@@ -1790,6 +2245,12 @@ def compare_and_set_metadata_shadow_outbox(
         or new_fence != expected_fence + 1
     ):
         raise ValueError("metadata shadow fence must increase by exactly one")
+    if (expected_state, new_state) not in {
+        ("pending", "claimed"),
+        ("claimed", "claimed"),
+        ("claimed", "done"),
+    }:
+        raise ValueError("metadata shadow transition is closed")
     if new_state == "claimed":
         if not isinstance(claim_token, str) or not claim_token or not isinstance(
             lease_until, str
@@ -1800,8 +2261,8 @@ def compare_and_set_metadata_shadow_outbox(
     guard = _FENCE_GUARDS.get(id(conn))
     if guard is None:
         raise AuditMigrationError("fenced CAS is not initialized for connection")
-    guard["active"] = True
-    try:
+
+    def execute_update():
         cursor = conn.execute(
             """
             UPDATE audit_metadata_outbox_v2
@@ -1818,8 +2279,32 @@ def compare_and_set_metadata_shadow_outbox(
                 expected_fence,
             ),
         )
-    finally:
-        guard["active"] = False
-    if cursor.rowcount != 1:
-        raise StaleFence("metadata shadow state or fence is stale")
-    return True
+        if cursor.rowcount != 1:
+            raise StaleFence("metadata shadow state or fence is stale")
+        return True
+
+    if (expected_state, new_state) == ("claimed", "done"):
+        if (
+            not guard["active"]
+            or guard["metadata_operation"] != "publish"
+            or guard["metadata_outbox_id"] != outbox_id
+            or guard["metadata_claim_token"] is None
+            or guard["metadata_claim_fence"] != expected_fence
+        ):
+            raise StaleFence("metadata terminal settlement lacks publish guard")
+        return execute_update()
+
+    now = transition_now or _utc_now()
+    _metadata_timestamp(now)
+    operation = (
+        "claim" if expected_state == "pending" else "reclaim"
+    )
+    with _metadata_transition_guard(
+        conn,
+        operation=operation,
+        now=now,
+        outbox_id=outbox_id,
+        claim_token=claim_token,
+        claim_fence=new_fence,
+    ):
+        return execute_update()
