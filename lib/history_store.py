@@ -577,6 +577,15 @@ def connect(path):
     return conn
 
 
+def init_audit_schema_v2(conn):
+    """Explicitly apply the sibling v2 audit schema to an idle connection."""
+    try:
+        from lib import history_audit_store
+    except ImportError:  # Direct imports with lib/ on sys.path.
+        import history_audit_store
+    history_audit_store.init_schema(conn)
+
+
 def _rename_unverified_table(conn, table):
     target = table + "_legacy_unverified"
     existing = conn.execute(

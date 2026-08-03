@@ -1,0 +1,72 @@
+{
+  "attempt": {
+    "expected_attempt_id": "73e5269114c0e2f862ca50e35d9567fcb0d4eaec7bf0534921fedb8d6157eabe",
+    "expected_logical_task_key": "e75a2061815724621afe13e6f4241f35fab1bedb55e411b5b2701ce45e5ae4e4",
+    "input_id": "shard-1",
+    "ordinal": 1,
+    "provenance": {
+      "model": "gpt-test",
+      "provider": "codex",
+      "reasoning": "high"
+    },
+    "stage": "map",
+    "staging_candidate_id": "stg-1"
+  },
+  "canonical_cases": [
+    {
+      "canonical_utf8": "{\"provider_pools_ordered\":{\"comparator\":[\"codex\",\"kimi\"],\"detail\":[],\"map\":[\"grok\",\"codex\"],\"reduce\":[\"codex\"]}}\n",
+      "name": "nested_provider_pools",
+      "sha256": "d6041be664f36ed7086f371fa4765cd470c7366b77a32ccfc2b836800c24043f",
+      "value": {
+        "provider_pools_ordered": {
+          "comparator": ["codex", "kimi"],
+          "detail": [],
+          "map": ["grok", "codex"],
+          "reduce": ["codex"]
+        }
+      }
+    },
+    {
+      "canonical_utf8": "{\"candidate\":{\"story\":\"机械臂 café\",\"theme\":\"视觉\"},\"enabled\":true}\n",
+      "name": "non_ascii_candidate",
+      "sha256": "00710b18cfd9d12576075e329296a6faffdf91e9b1ec5cf415178c67ccbb4469",
+      "value": {
+        "candidate": {
+          "story": "机械臂 café",
+          "theme": "视觉"
+        },
+        "enabled": true
+      }
+    },
+    {
+      "canonical_utf8": "{\"model\":null,\"reasoning\":\"default\",\"shadow\":false}\n",
+      "name": "null_default_markers",
+      "sha256": "6a8df5cd0863d0eb52c2bd7a6f1903f663995b2831dcd4490009f543f6597f3f",
+      "value": {
+        "model": null,
+        "reasoning": "default",
+        "shadow": false
+      }
+    }
+  ],
+  "ordered_id_set": {
+    "canonical_utf8": "[\"asset-a\",\"asset-β\",\"资产-1\"]\n",
+    "domain": "history-id-set-v2",
+    "expected_hash": "97a49f110e8bd565b0d35f445794f53b06174c05fa4303c57ab5bd92941d69f5",
+    "values": ["asset-β", "asset-a", "资产-1"]
+  },
+  "plan": {
+    "expected_hash": "edba3112be5f31922c0dd1a3c47b6e8465dfcda3bc6eac2d619e102a4ea9f30c",
+    "manifest": {
+      "capacity_profile_id": "safe-24k-v1",
+      "provider_pools_ordered": {
+        "comparator": ["codex", "kimi"],
+        "detail": [],
+        "map": ["grok", "codex"],
+        "reduce": ["codex"]
+      },
+      "snapshot_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "snapshot_id": "snapshot-7"
+    }
+  }
+}
