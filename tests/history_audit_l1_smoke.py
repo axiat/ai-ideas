@@ -2,8 +2,10 @@
 import hashlib
 import json
 import pathlib
+import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 import sys
 
@@ -244,6 +246,64 @@ class HistoryAuditL1Smoke(unittest.TestCase):
         )
         return pair_plan, pair_receipt, direction_check
 
+    def _foreign_snapshot(self):
+        self.conn.execute(
+            """
+            INSERT INTO audit_run_manifests(
+              run_id, manifest_schema_version, plan_hash, manifest_json, created_at
+            ) VALUES('run-foreign', 'history-audit-manifest-v2', ?, '{}',
+                     '2026-08-03T00:00:00Z')
+            """,
+            ("c" * 64,),
+        )
+        return audit.freeze_snapshot(
+            self.conn,
+            run_id="run-foreign",
+            batch_id="batch-foreign",
+            current_batch_ids=["stg-v2-" + "d" * 64],
+        )
+
+    def _insert_foreign_pair_receipt(self, staged, foreign_snapshot):
+        pair_plan = audit.plan_batch_pairs(staged)
+        pair_result_sha = "e" * 64
+        self.conn.execute(
+            """
+            INSERT INTO audit_batch_pair_receipts(
+              run_id, batch_id, snapshot_id, pair_plan_sha, pair_result_sha,
+              pair_count, completed_at
+            ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+            """,
+            (
+                staged["run_id"], staged["batch_id"],
+                foreign_snapshot["snapshot_id"], pair_plan["pair_plan_sha"],
+                pair_result_sha, pair_plan["pair_count"],
+            ),
+        )
+        for pair in pair_plan["pairs"]:
+            self.conn.execute(
+                """
+                INSERT INTO audit_batch_pairs(
+                  run_id, batch_id, left_staging_candidate_id,
+                  right_staging_candidate_id, pair_plan_sha, pair_result_sha,
+                  created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+                """,
+                (
+                    staged["run_id"], staged["batch_id"],
+                    pair["left_staging_candidate_id"],
+                    pair["right_staging_candidate_id"],
+                    pair_plan["pair_plan_sha"], pair_result_sha,
+                ),
+            )
+        return {
+            "run_id": staged["run_id"],
+            "batch_id": staged["batch_id"],
+            "snapshot_id": foreign_snapshot["snapshot_id"],
+            "pair_plan_sha": pair_plan["pair_plan_sha"],
+            "pair_result_sha": pair_result_sha,
+            "pair_count": pair_plan["pair_count"],
+        }
+
     def _receipt_inputs(self, snapshot):
         prior_ids = snapshot["expected_asset_ids"]
         retrieval = {
@@ -337,6 +397,138 @@ class HistoryAuditL1Smoke(unittest.TestCase):
         self.assertEqual(
             self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0], before
         )
+
+    def test_pair_persistence_rejects_snapshot_from_another_run_and_batch(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        foreign = self._foreign_snapshot()
+        substituted = dict(staged, snapshot_id=foreign["snapshot_id"])
+        pair_plan = audit.plan_batch_pairs(substituted)
+        pair_results = [
+            {
+                "left_staging_candidate_id": pair["left_staging_candidate_id"],
+                "right_staging_candidate_id": pair["right_staging_candidate_id"],
+                "semantic_relation": "distinct",
+                "evidence_sha": "f" * 64,
+            }
+            for pair in pair_plan["pairs"]
+        ]
+        with self.assertRaises(ValueError):
+            audit.record_batch_pair_results(
+                self.conn, substituted, pair_plan, pair_results
+            )
+
+    def test_activation_rejects_foreign_snapshot_even_if_storage_is_corrupt(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        foreign = self._foreign_snapshot()
+        self.conn.execute(
+            "DROP TRIGGER IF EXISTS audit_batch_pair_receipts_snapshot_owner_guard"
+        )
+        pair_receipt = self._insert_foreign_pair_receipt(staged, foreign)
+        direction_check = audit.record_direction_check(
+            self.conn,
+            staged_candidate=staged["candidates"][0],
+            direction_receipt=self.direction,
+            semantic_relation="distinct",
+            lineage_relation="none",
+            evidence_sha="6" * 64,
+        )
+        before = self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0]
+        with self.assertRaises(ValueError):
+            audit.activate_staged_candidate(
+                self.conn,
+                snapshot=snapshot,
+                staged_candidate=staged["candidates"][0],
+                pair_receipt=pair_receipt,
+                direction_check=direction_check,
+            )
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0],
+            before,
+        )
+
+    def test_database_rejects_pair_receipt_with_foreign_snapshot_owner(self):
+        staged = self._staged(snapshot=self._snapshot())
+        foreign = self._foreign_snapshot()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self._insert_foreign_pair_receipt(staged, foreign)
+
+    def test_pair_snapshot_owner_upgrade_probe_rejects_contradictory_rows(self):
+        conn = history_store.connect(self.root / "upgrade.sqlite3")
+        try:
+            history_store.init_schema(conn)
+            old_migrations = tuple(
+                migration
+                for migration in audit_store.MIGRATIONS
+                if migration.component != "l1-pair-snapshot-ownership"
+            )
+            with mock.patch.object(audit_store, "MIGRATIONS", old_migrations):
+                audit_store.init_schema(conn)
+            for run_id, plan_hash in (("run-a", "1" * 64), ("run-b", "2" * 64)):
+                conn.execute(
+                    """
+                    INSERT INTO audit_run_manifests(
+                      run_id, manifest_schema_version, plan_hash,
+                      manifest_json, created_at
+                    ) VALUES(?, 'history-audit-manifest-v2', ?, '{}',
+                             '2026-08-03T00:00:00Z')
+                    """,
+                    (run_id, plan_hash),
+                )
+            for snapshot_id, run_id, batch_id, marker in (
+                ("3" * 64, "run-a", "batch-a", "4"),
+                ("5" * 64, "run-b", "batch-b", "6"),
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO audit_snapshots(
+                      snapshot_id, snapshot_hash, history_as_of_watermark,
+                      current_batch_id_namespace, current_batch_ids_hash,
+                      exclusion_policy_sha, expected_asset_ids_hash, created_at,
+                      run_id, batch_id
+                    ) VALUES(?, ?, 0, 'history-v2-staging-v1', ?, ?, ?,
+                             '2026-08-03T00:00:00Z', ?, ?)
+                    """,
+                    (
+                        snapshot_id, marker * 64, "7" * 64, "8" * 64,
+                        "9" * 64, run_id, batch_id,
+                    ),
+                )
+            for source_order, staging_id in enumerate(
+                ("stg-v2-" + "a" * 64, "stg-v2-" + "b" * 64)
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO audit_batch_staging(
+                      staging_candidate_id, run_id, batch_id, candidate_hash,
+                      raw_artifact_sha, source_order, created_at
+                    ) VALUES(?, 'run-a', 'batch-a', ?, ?, ?,
+                             '2026-08-03T00:00:00Z')
+                    """,
+                    (staging_id, chr(ord("a") + source_order) * 64,
+                     chr(ord("c") + source_order) * 64, source_order),
+                )
+            conn.execute(
+                """
+                INSERT INTO audit_batch_pair_receipts(
+                  run_id, batch_id, snapshot_id, pair_plan_sha,
+                  pair_result_sha, pair_count, completed_at
+                ) VALUES('run-a', 'batch-a', ?, ?, ?, 1,
+                         '2026-08-03T00:00:00Z')
+                """,
+                ("5" * 64, "d" * 64, "e" * 64),
+            )
+            with self.assertRaises(audit_store.AuditMigrationError):
+                audit_store.init_schema(conn)
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM audit_schema_migrations "
+                    "WHERE component='l1-pair-snapshot-ownership'"
+                ).fetchone()
+            )
+        finally:
+            conn.close()
 
     def test_singleton_batch_records_empty_pair_receipt_and_activates(self):
         staging_id = self.staging_ids[0]

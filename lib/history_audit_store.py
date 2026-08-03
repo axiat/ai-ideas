@@ -727,6 +727,34 @@ END;
 """
 
 
+_PAIR_SNAPSHOT_OWNERSHIP_SQL = """
+CREATE TABLE audit_pair_snapshot_owner_probe(
+  value INTEGER NOT NULL CHECK(value = 0)
+);
+INSERT INTO audit_pair_snapshot_owner_probe(value)
+SELECT 1
+FROM audit_batch_pair_receipts receipt
+LEFT JOIN audit_snapshots snapshot
+  ON snapshot.snapshot_id = receipt.snapshot_id
+WHERE snapshot.snapshot_id IS NULL
+   OR snapshot.run_id IS NULL
+   OR snapshot.batch_id IS NULL
+   OR snapshot.run_id <> receipt.run_id
+   OR snapshot.batch_id <> receipt.batch_id;
+DROP TABLE audit_pair_snapshot_owner_probe;
+CREATE TRIGGER audit_batch_pair_receipts_snapshot_owner_guard
+BEFORE INSERT ON audit_batch_pair_receipts
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_snapshots snapshot
+    WHERE snapshot.snapshot_id = NEW.snapshot_id
+      AND snapshot.run_id = NEW.run_id
+      AND snapshot.batch_id = NEW.batch_id
+  ) THEN RAISE(ABORT, 'batch pair snapshot ownership mismatch') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("identity", 1, _IDENTITY_SQL),
@@ -740,6 +768,9 @@ MIGRATIONS = (
         "coverage-integrity-guards", 1, _COVERAGE_INTEGRITY_GUARDS_SQL
     ),
     Migration("l1-frozen-identity", 1, _L1_FROZEN_IDENTITY_SQL),
+    Migration(
+        "l1-pair-snapshot-ownership", 1, _PAIR_SNAPSHOT_OWNERSHIP_SQL
+    ),
 )
 
 

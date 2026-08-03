@@ -427,8 +427,49 @@ def plan_batch_pairs(staged_batch):
     }
 
 
+def _validate_staged_batch_snapshot(conn, staged_batch):
+    if not isinstance(staged_batch, dict):
+        raise ValueError("staged batch is invalid")
+    run_id = staged_batch.get("run_id")
+    batch_id = staged_batch.get("batch_id")
+    snapshot_id = staged_batch.get("snapshot_id")
+    snapshot = conn.execute(
+        "SELECT * FROM audit_snapshots WHERE snapshot_id=?", (snapshot_id,)
+    ).fetchone()
+    if (
+        snapshot is None
+        or snapshot["run_id"] != run_id
+        or snapshot["batch_id"] != batch_id
+        or snapshot["current_batch_id_namespace"]
+        != CURRENT_BATCH_ID_NAMESPACE
+    ):
+        raise ValueError("staged batch snapshot ownership is invalid")
+    candidates = staged_batch.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError("staged batch candidates are invalid")
+    staging_ids = _require_staging_ids(
+        [item.get("staging_candidate_id") for item in candidates]
+    )
+    if contract.ordered_set_sha256(
+        "history-current-batch-ids-v2", staging_ids
+    ) != snapshot["current_batch_ids_hash"]:
+        raise ValueError("staged batch does not match snapshot exclusion hash")
+    persisted = {
+        row["staging_candidate_id"]
+        for row in conn.execute(
+            "SELECT staging_candidate_id FROM audit_batch_staging "
+            "WHERE run_id=? AND batch_id=? ORDER BY staging_candidate_id",
+            (run_id, batch_id),
+        )
+    }
+    if persisted != set(staging_ids):
+        raise ValueError("staged batch does not match persisted batch ownership")
+    return snapshot
+
+
 def record_batch_pair_results(conn, staged_batch, pair_plan, pair_results):
     """Persist one completed pair receipt, including an explicit empty plan."""
+    snapshot = _validate_staged_batch_snapshot(conn, staged_batch)
     expected_plan = plan_batch_pairs(staged_batch)
     if pair_plan != expected_plan:
         raise ValueError("batch pair plan does not replay")
@@ -461,7 +502,7 @@ def record_batch_pair_results(conn, staged_batch, pair_plan, pair_results):
     )
     run_id = staged_batch["run_id"]
     batch_id = staged_batch["batch_id"]
-    snapshot_id = staged_batch["snapshot_id"]
+    snapshot_id = snapshot["snapshot_id"]
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute(
@@ -643,9 +684,15 @@ def activate_staged_candidate(
         "SELECT * FROM audit_batch_pair_receipts WHERE run_id=? AND batch_id=?",
         (frozen["run_id"], frozen["batch_id"]),
     ).fetchone()
-    if pair is None or any(pair[name] != pair_receipt.get(name) for name in (
+    if (
+        pair is None
+        or pair["snapshot_id"] != frozen["snapshot_id"]
+        or pair["run_id"] != frozen["run_id"]
+        or pair["batch_id"] != frozen["batch_id"]
+        or any(pair[name] != pair_receipt.get(name) for name in (
         "snapshot_id", "pair_plan_sha", "pair_result_sha", "pair_count"
-    )):
+        ))
+    ):
         raise ValueError("pair receipt is not the completed batch receipt")
     direction_fields = (
         "run_id", "batch_id", "direction_id", "contract_sha", "validator_version",
