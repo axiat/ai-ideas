@@ -39,8 +39,13 @@ def _reserved(path):
     lowered = [part.lower() for part in path.parts]
     name = lowered[-1]
     return (
-        ".git" in lowered
+        any(
+            part in {".git", ".ai-ideas", ".codex", "durable-state"}
+            for part in lowered
+        )
         or "ledger" in name
+        or "durable-state" in name
+        or "candidate-state" in name
         or name.endswith((".db", ".sqlite", ".sqlite3"))
     )
 
@@ -126,17 +131,43 @@ def _copy_inputs(inputs, mirror):
         raise PortableAgentError("invalid_manifest")
     copied = set()
     for item in inputs:
-        if not isinstance(item, dict) or set(item) != {"source", "path", "sha256", "max_bytes"}:
+        if not isinstance(item, dict) or set(item) != {
+            "source_root", "source_path", "provenance", "path", "sha256",
+            "max_bytes",
+        }:
             raise PortableAgentError("invalid_manifest")
+        if item["provenance"] != "declared-input-v1":
+            raise PortableAgentError("invalid_provenance")
+        source_relative = _safe_relative(item["source_path"], "source path")
         relative = _safe_relative(item["path"], "input path")
-        if _reserved(relative) or relative.as_posix().startswith("output/"):
+        if (
+            _reserved(source_relative)
+            or _reserved(relative)
+            or relative.as_posix().startswith("output/")
+        ):
             raise PortableAgentError("reserved_input")
         if relative.as_posix() in copied:
             raise PortableAgentError("duplicate_input")
         maximum = item["max_bytes"]
         if type(maximum) is not int or maximum < 0:
             raise PortableAgentError("invalid_manifest")
-        source = pathlib.Path(item["source"])
+        source_root = pathlib.Path(item["source_root"])
+        try:
+            root_info = source_root.lstat()
+        except OSError as exc:
+            raise PortableAgentError("unsafe_source_root") from exc
+        if not source_root.is_absolute() or not stat.S_ISDIR(root_info.st_mode):
+            raise PortableAgentError("unsafe_source_root")
+        try:
+            resolved_root = source_root.resolve(strict=True)
+            source = source_root.joinpath(*source_relative.parts)
+            resolved_source = source.resolve(strict=True)
+            resolved_source.relative_to(resolved_root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise PortableAgentError("source_boundary_violation") from exc
+        resolved_parts = pathlib.PurePosixPath(resolved_source.as_posix())
+        if _reserved(resolved_parts):
+            raise PortableAgentError("reserved_input")
         raw = _open_read_stable(source, maximum, "unsafe_input")
         if hashlib.sha256(raw).hexdigest() != item["sha256"]:
             raise PortableAgentError("input_sha_mismatch")

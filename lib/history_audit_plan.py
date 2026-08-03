@@ -172,6 +172,8 @@ def reserve_attempt(
     attempt_kind,
     estimate,
     events,
+    *,
+    provider=None,
 ):
     """Append one per-candidate reservation shared by every attempt kind."""
     intent_policy = _intent_policy(policy, intent)
@@ -212,6 +214,10 @@ def reserve_attempt(
         "attempt_kind": attempt_kind,
         "reserved": reserved,
     }
+    if provider is not None:
+        if not isinstance(provider, str) or not provider:
+            raise AuditPlanError("invalid_reservation", "provider")
+        material["provider"] = provider
     if exceeded:
         material["event_type"] = "attempt_reservation_rejected"
         _event(events, material)
@@ -387,6 +393,81 @@ def _serialized_request(snapshot, candidate, profile, items):
     return raw, len(raw)
 
 
+def _candidate_is_reserved(events, intent, candidate_id):
+    return any(
+        event.get("event_type") == "candidate_reserved"
+        and event.get("intent") == intent
+        and candidate_id in event.get("candidate_ids", ())
+        for event in events
+    )
+
+
+def _worst_case_estimate(profile, provider, input_tokens):
+    output_tokens = profile["max_output_tokens"]
+    estimate = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "provider_usage_units": input_tokens + output_tokens,
+    }
+    binding = profile["provider_bindings"][provider]
+    price_fields = {
+        "price_source",
+        "input_currency_micros_per_token",
+        "output_currency_micros_per_token",
+    }
+    present = price_fields.intersection(binding)
+    if present:
+        if present != price_fields or not isinstance(binding["price_source"], str) or not binding["price_source"]:
+            raise AuditPlanError("invalid_price_evidence", provider)
+        for field in (
+            "input_currency_micros_per_token",
+            "output_currency_micros_per_token",
+        ):
+            if type(binding[field]) is not int or binding[field] < 0:
+                raise AuditPlanError("invalid_price_evidence", provider)
+        estimate["currency_micros"] = (
+            input_tokens * binding["input_currency_micros_per_token"]
+            + output_tokens * binding["output_currency_micros_per_token"]
+        )
+    return estimate
+
+
+def _reserve_planned_work(
+    *,
+    budget_policy,
+    intent,
+    candidate_id,
+    provider_pool,
+    capacity_profile,
+    shards,
+    logical_tasks,
+    budget_events,
+):
+    if not isinstance(budget_events, list):
+        raise AuditPlanError("budget_state_required")
+    scratch = copy.deepcopy(budget_events)
+    initial_length = len(scratch)
+    if not _candidate_is_reserved(scratch, intent, candidate_id):
+        reserve_candidate_set(budget_policy, intent, [candidate_id], scratch)
+    for shard, logical_task in zip(shards, logical_tasks):
+        for pool_index, provider in enumerate(provider_pool):
+            reserve_attempt(
+                budget_policy,
+                intent,
+                candidate_id,
+                logical_task,
+                "initial" if pool_index == 0 else "failover",
+                _worst_case_estimate(
+                    capacity_profile, provider, shard["final_request_tokens"]
+                ),
+                scratch,
+                provider=provider,
+            )
+    appended = scratch[initial_length:]
+    budget_events.extend(appended)
+    return copy.deepcopy(appended)
+
+
 def build_plan(
     snapshot,
     candidate,
@@ -396,6 +477,8 @@ def build_plan(
     budget_policy,
     intent,
     records,
+    *,
+    budget_events,
 ):
     """Preflight budgets and return deterministic token/item shards."""
     _validate_pools(provider_pools)
@@ -408,8 +491,6 @@ def build_plan(
     ):
         if any(field not in value for field in fields):
             raise AuditPlanError("invalid_identity")
-    events = []
-    reserve_candidate_set(budget_policy, intent, [candidate["candidate_id"]], events)
     items = _record_items(records)
     b_pool = pool_bounds["map"]
     b_target = (capacity_profile["utilization_ppm"] * b_pool) // 1000000
@@ -504,6 +585,16 @@ def build_plan(
         )
         for shard in planned_shards
     ]
+    reserved_events = _reserve_planned_work(
+        budget_policy=budget_policy,
+        intent=intent,
+        candidate_id=candidate["candidate_id"],
+        provider_pool=provider_pools["map"],
+        capacity_profile=capacity_profile,
+        shards=planned_shards,
+        logical_tasks=logical_tasks,
+        budget_events=budget_events,
+    )
     return {
         "status": "planned",
         "plan_sha": plan_sha,
@@ -517,7 +608,7 @@ def build_plan(
         "shard_plan_sha": shard_plan_sha,
         "shards": planned_shards,
         "logical_task_keys": logical_tasks,
-        "budget_events": events,
+        "budget_events": reserved_events,
     }
 
 

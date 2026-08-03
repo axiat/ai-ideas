@@ -1,11 +1,13 @@
 """Closed provider resolution for portable history-audit execution."""
 
 import dataclasses
+import collections.abc
 import hashlib
 import json
 import pathlib
 import shutil
 import types
+import weakref
 
 try:
     from lib import history_contract_v2
@@ -35,6 +37,43 @@ _PROBE_FIELDS = frozenset(
 
 class ProviderResolutionError(ValueError):
     pass
+
+
+_VALIDATED_REGISTRIES = weakref.WeakKeyDictionary()
+
+
+class ValidatedProviderRegistry(collections.abc.Mapping):
+    """Opaque registry value issued only after closed-schema validation."""
+
+    __slots__ = ("__weakref__",)
+    __hash__ = object.__hash__
+    __eq__ = object.__eq__
+    __ne__ = object.__ne__
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("provider registries are loader-issued")
+
+    def __getitem__(self, key):
+        value = _VALIDATED_REGISTRIES.get(self)
+        if value is None:
+            raise ProviderResolutionError("provider registry is unvalidated")
+        return value[key]
+
+    def __iter__(self):
+        value = _VALIDATED_REGISTRIES.get(self)
+        if value is None:
+            return iter(())
+        return iter(value)
+
+    def __len__(self):
+        value = _VALIDATED_REGISTRIES.get(self)
+        return 0 if value is None else len(value)
+
+
+def _issue_registry(value):
+    registry = object.__new__(ValidatedProviderRegistry)
+    _VALIDATED_REGISTRIES[registry] = _freeze(value)
+    return registry
 
 
 @dataclasses.dataclass(frozen=True)
@@ -116,7 +155,7 @@ def load_registry(path):
         _require_text(entry["grammar_revision"], "grammar_revision")
     if any(_FORBIDDEN in item.lower() for item in _walk_strings(value)):
         raise ProviderResolutionError("forbidden provider path in registry")
-    return _freeze(value)
+    return _issue_registry(value)
 
 
 def _default_probe(provider, executable_path, model, reasoning):
@@ -143,6 +182,11 @@ def resolve_provider(
     version_probe=None,
 ):
     """Return a frozen no-launch capability and command grammar."""
+    if (
+        type(registry) is not ValidatedProviderRegistry
+        or registry not in _VALIDATED_REGISTRIES
+    ):
+        raise ProviderResolutionError("provider registry is unvalidated")
     if surface not in _SURFACES:
         raise ProviderResolutionError("unknown product surface")
     if provider not in _SURFACES[surface]:
@@ -155,6 +199,8 @@ def resolve_provider(
         executable = registry["providers"][provider]["executable"]
     except (KeyError, TypeError) as exc:
         raise ProviderResolutionError("provider registry does not match resolver") from exc
+    if executable != provider:
+        raise ProviderResolutionError("provider executable aliases are forbidden")
     lookup = executable_lookup or shutil.which
     executable_path = lookup(executable)
     if not isinstance(executable_path, str) or not executable_path:

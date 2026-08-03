@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import copy
 import hashlib
+import inspect
 import pathlib
 import sys
 import unittest
@@ -83,15 +84,15 @@ def budget_policy(**overrides):
                 "round": {
                     "candidates": 8,
                     "started_attempts": 1000,
-                    "input_tokens": 10000000,
-                    "output_tokens": 1000000,
-                    "provider_usage_units": 10000000,
+                    "input_tokens": 100000000,
+                    "output_tokens": 10000000,
+                    "provider_usage_units": 110000000,
                 },
                 "candidate": {
                     "started_attempts": 1000,
-                    "input_tokens": 1000000,
-                    "output_tokens": 100000,
-                    "provider_usage_units": 1000000,
+                    "input_tokens": 10000000,
+                    "output_tokens": 1000000,
+                    "provider_usage_units": 11000000,
                 },
             }
         },
@@ -154,6 +155,7 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
             "budget_policy": self.policy,
             "intent": "duplicate_search",
             "records": items,
+            "budget_events": [],
         }
         values.update(changes)
         return self._api("build_plan")(**values)
@@ -165,6 +167,23 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
             "missing behavior: history_audit_plan.AuditPlanError",
         )
         return value
+
+    def _build_with_events(self, events, items, **changes):
+        build = self._api("build_plan")
+        values = {
+            "snapshot": self.snapshot,
+            "candidate": self.candidate,
+            "provider_pools": self.pools,
+            "capabilities": self.capabilities,
+            "capacity_profile": self.profile,
+            "budget_policy": self.policy,
+            "intent": "duplicate_search",
+            "records": items,
+        }
+        values.update(changes)
+        if "budget_events" in inspect.signature(build).parameters:
+            values["budget_events"] = events
+        return build(**values)
 
     def test_plan_uses_final_serialized_request_and_rejects_unbudgetable_provider(self):
         constrained = copy.deepcopy(self.profile)
@@ -373,6 +392,59 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
         self.assertEqual(plan["provider_capability_profile_hashes"]["codex"], values["profile_hash"])
         attempt = self._api("attempt_manifest")(plan, 0, 0, capabilities["codex"])
         self.assertEqual(attempt["provenance"]["provider"], "codex")
+
+    def test_build_plan_reserves_every_worst_case_pool_attempt(self):
+        events = []
+        plan = self._build_with_events(events, records(13))
+        reservations = [
+            event for event in events
+            if event["event_type"] == "attempt_reserved"
+        ]
+        expected_attempts = len(plan["shards"]) * len(self.pools["map"])
+        self.assertEqual(len(reservations), expected_attempts)
+        expected_input = sum(
+            shard["final_request_tokens"] for shard in plan["shards"]
+        ) * len(self.pools["map"])
+        expected_output = (
+            len(plan["shards"])
+            * len(self.pools["map"])
+            * self.profile["max_output_tokens"]
+        )
+        totals = self._api("budget_totals")(
+            events, "duplicate_search", self.candidate["candidate_id"]
+        )
+        self.assertEqual(totals["started_attempts"], expected_attempts)
+        self.assertEqual(totals["input_tokens"], expected_input)
+        self.assertEqual(totals["output_tokens"], expected_output)
+        self.assertEqual(
+            totals["provider_usage_units"], expected_input + expected_output
+        )
+        self.assertNotIn("currency_micros", totals)
+
+    def test_multiple_plans_share_budget_and_reject_without_partial_events(self):
+        events = []
+        pools = {stage: ["codex"] for stage in self.pools}
+        policy = budget_policy(candidate={
+            "started_attempts": 1,
+            "input_tokens": 20000,
+            "output_tokens": 10000,
+            "provider_usage_units": 30000,
+        })
+        first = self._build_with_events(
+            events, records(1), provider_pools=pools, budget_policy=policy
+        )
+        self.assertEqual(len(first["shards"]), 1)
+        before = copy.deepcopy(events)
+        with self.assertRaises(self._error()) as caught:
+            self._build_with_events(
+                events, records(1), provider_pools=pools, budget_policy=policy
+            )
+        self.assertEqual(caught.exception.code, "attempt_budget_exceeded")
+        self.assertEqual(events, before)
+        self.assertEqual(
+            sum(event["event_type"] == "candidate_reserved" for event in events),
+            1,
+        )
 
 
 if __name__ == "__main__":

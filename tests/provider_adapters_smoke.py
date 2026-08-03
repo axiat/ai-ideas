@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import dataclasses
+import copy
 import hashlib
 import json
 import os
@@ -213,6 +214,32 @@ class ProviderAdaptersSmoke(unittest.TestCase):
         with self.assertRaises(self._error()):
             provider_for_attempt(pool, 2)
 
+    def test_direct_resolution_rejects_unvalidated_registry_before_lookup(self):
+        forged = json.loads(REGISTRY.read_text())
+        forged["providers"]["codex"]["executable"] = "portable-wrapper"
+        calls = []
+
+        def lookup(executable):
+            calls.append(("lookup", executable))
+            return str(FAKE)
+
+        def version_probe(*args):
+            calls.append(("probe", args))
+            return probe(*args)
+
+        with self.assertRaises(self._error()):
+            provider_adapters.resolve_provider(
+                forged, "hunt", "codex",
+                executable_lookup=lookup, version_probe=version_probe,
+            )
+        exact_copy = copy.deepcopy(json.loads(REGISTRY.read_text()))
+        with self.assertRaises(self._error()):
+            provider_adapters.resolve_provider(
+                exact_copy, "hunt", "codex",
+                executable_lookup=lookup, version_probe=version_probe,
+            )
+        self.assertEqual(calls, [])
+
 
 class PortableAgentSmoke(unittest.TestCase):
     def _api(self, name):
@@ -267,7 +294,9 @@ class PortableAgentSmoke(unittest.TestCase):
             source = root / "declared.txt"
             source.write_text("declared\n")
             manifest = [{
-                "source": str(source), "path": "input/deep/declared.txt",
+                "source_root": str(root), "source_path": "declared.txt",
+                "provenance": "declared-input-v1",
+                "path": "input/deep/declared.txt",
                 "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 "max_bytes": 64,
             }]
@@ -308,10 +337,66 @@ class PortableAgentSmoke(unittest.TestCase):
             ):
                 with self.assertRaises(self._error()):
                     self._run(root / "state", "success", inputs=[{
-                        "source": str(source), "path": target,
+                        "source_root": str(root), "source_path": source.name,
+                        "provenance": "declared-input-v1", "path": target,
                         "sha256": hashlib.sha256(real.read_bytes()).hexdigest(),
                         "max_bytes": 64,
                     }])
+
+    def test_reserved_source_cannot_hide_behind_benign_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            reserved_sources = (
+                root / "ledger.tsv",
+                root / "history.sqlite3",
+                root / ".git" / "config",
+                root / ".ai-ideas" / "durable-state.json",
+            )
+            for source in reserved_sources:
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text("durable\n")
+                with self.subTest(source=source):
+                    with self.assertRaises(self._error()):
+                        self._run(root / "state", "success", inputs=[{
+                            "source_root": str(root),
+                            "source_path": source.relative_to(root).as_posix(),
+                            "provenance": "declared-input-v1",
+                            "path": "input/renamed-records.json",
+                            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                            "max_bytes": 64,
+                        }])
+
+    def test_declared_regular_source_within_explicit_boundary_is_allowed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source_root = root / "declared"
+            source_root.mkdir()
+            source = source_root / "records.json"
+            source.write_text("declared\n")
+            try:
+                result = self._run(root / "state", "success", inputs=[{
+                    "source_root": str(source_root),
+                    "source_path": "records.json",
+                    "provenance": "declared-input-v1",
+                    "path": "input/records.json",
+                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "max_bytes": 64,
+                }])
+            except self._error() as exc:
+                self.fail(f"declared regular source was rejected: {exc.code}")
+            self.assertEqual(result["value"]["status"], "ok")
+
+            outside = root / "outside.json"
+            outside.write_text("outside\n")
+            with self.assertRaises(self._error()):
+                self._run(root / "outside-state", "success", inputs=[{
+                    "source_root": str(source_root),
+                    "source_path": "../outside.json",
+                    "provenance": "declared-input-v1",
+                    "path": "input/records.json",
+                    "sha256": hashlib.sha256(outside.read_bytes()).hexdigest(),
+                    "max_bytes": 64,
+                }])
 
     def test_invalid_outputs_are_never_imported(self):
         with tempfile.TemporaryDirectory() as directory:
