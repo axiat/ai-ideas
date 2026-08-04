@@ -230,6 +230,54 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
             )
             render.assert_not_called()
 
+    def test_stdout_runner_revalidates_again_immediately_before_popen(self):
+        intent = self.resolve(
+            "agy", "gemini-safe", models=("gemini-safe",)
+        )
+        current = {"catalog": catalog("agy", "gemini-safe")}
+
+        def drift_during_input_copy(*_args, **_kwargs):
+            current["catalog"] = catalog(
+                "agy", "gemini-safe", "new-model"
+            )
+            return set()
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            provider_adapters,
+            "_host_model_catalog_probe",
+            side_effect=lambda *_: current["catalog"],
+        ), mock.patch.object(
+            portable_agent,
+            "_copy_inputs",
+            side_effect=drift_during_input_copy,
+        ), mock.patch.object(
+            provider_adapters,
+            "render_command",
+            return_value=([str(FAKE), "PROMPT"], {}),
+        ), mock.patch.object(
+            portable_agent.subprocess,
+            "Popen",
+            side_effect=AssertionError(
+                "Popen must not be reached after catalog drift"
+            ),
+        ) as popen:
+            with self.assertRaises(portable_agent.PortableAgentError) as caught:
+                portable_agent.run_portable_stdout_attempt(
+                    intent,
+                    inputs=[],
+                    prompt="PROMPT",
+                    response_schema=portable_stage._response_schema(
+                        "awr-research"
+                    ),
+                    state_root=pathlib.Path(directory) / "state",
+                    timeout_seconds=1,
+                )
+            self.assertEqual(
+                caught.exception.code,
+                "provider_model_authority_changed",
+            )
+            popen.assert_not_called()
+
     def test_host_catalog_probe_is_bounded_pure_line_introspection(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

@@ -795,6 +795,15 @@ def _validate_stdout_mirror(mirror, expected_files):
         raise PortableAgentError("unexpected_artifact")
 
 
+def _revalidate_provider_model_authority(capability):
+    try:
+        provider_adapters.revalidate_command_intent_for_launch(capability)
+    except provider_adapters.ProviderResolutionError as exc:
+        raise PortableAgentError(
+            "provider_model_authority_changed"
+        ) from exc
+
+
 def run_portable_stdout_attempt(
     capability,
     *,
@@ -808,12 +817,7 @@ def run_portable_stdout_attempt(
     """Run one disposable mirror and import one canonical stdout envelope."""
     if not provider_adapters.command_intent_is_issued(capability):
         raise PortableAgentError("invalid_capability")
-    try:
-        provider_adapters.revalidate_command_intent_for_launch(capability)
-    except provider_adapters.ProviderResolutionError as exc:
-        raise PortableAgentError(
-            "provider_model_authority_changed"
-        ) from exc
+    _revalidate_provider_model_authority(capability)
     if not isinstance(prompt, str) or not prompt:
         raise PortableAgentError("invalid_prompt")
     if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
@@ -839,6 +843,7 @@ def run_portable_stdout_attempt(
             prompt,
         )
         environment = _provider_environment(mirror, environment_delta)
+        _revalidate_provider_model_authority(capability)
         process = subprocess.Popen(
             argv,
             cwd=mirror,
