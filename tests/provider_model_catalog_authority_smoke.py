@@ -14,6 +14,8 @@ import sys
 sys.path.insert(0, str(ROOT))
 
 from lib import history_contract_v2
+from lib import portable_agent
+from lib import portable_stage
 from lib import provider_adapters
 
 
@@ -197,6 +199,36 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
         ):
             with self.assertRaises(provider_adapters.ProviderResolutionError):
                 provider_adapters.revalidate_command_intent_for_launch(omitted)
+
+    def test_direct_stdout_runner_revalidates_before_render_or_workload(self):
+        intent = self.resolve(
+            "agy", "gemini-safe", models=("gemini-safe",)
+        )
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            provider_adapters,
+            "_host_model_catalog_probe",
+            return_value=catalog("agy", "gemini-safe", "new-model"),
+        ), mock.patch.object(
+            provider_adapters,
+            "render_command",
+            side_effect=AssertionError("render must not be reached"),
+        ) as render:
+            with self.assertRaises(portable_agent.PortableAgentError) as caught:
+                portable_agent.run_portable_stdout_attempt(
+                    intent,
+                    inputs=[],
+                    prompt="PROMPT",
+                    response_schema=portable_stage._response_schema(
+                        "awr-research"
+                    ),
+                    state_root=pathlib.Path(directory) / "state",
+                    timeout_seconds=1,
+                )
+            self.assertEqual(
+                caught.exception.code,
+                "provider_model_authority_changed",
+            )
+            render.assert_not_called()
 
     def test_host_catalog_probe_is_bounded_pure_line_introspection(self):
         with tempfile.TemporaryDirectory() as directory:
