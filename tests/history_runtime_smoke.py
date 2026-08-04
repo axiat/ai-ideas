@@ -2212,7 +2212,7 @@ class ReceiptAndResumeContract(RuntimeFixture):
 class RoundCoordinatorContract(CapabilityContract):
     @staticmethod
     def _portable_profile():
-        return provider_adapters.resolve_command_intent(
+        return provider_adapters._resolve_command_intent_for_test(
             provider_adapters.load_registry(PROVIDER_REGISTRY),
             "hunt",
             "codex",
@@ -2536,6 +2536,7 @@ class RoundCoordinatorContract(CapabilityContract):
             "role_sha256",
             "input_sha256s",
             "provider_request_sha256",
+            "provider_request_binding_sha256",
             "response_schema_sha256",
             "preflight",
             "completion",

@@ -84,7 +84,7 @@ SHA = "0" * 64
 
 
 def valid_receipt():
-    return {
+    receipt = {
         "manifest_schema_version": "history-audit-manifest-v2",
         "canonical_codec_version": "history-canonical-json-v2",
         "run_id": "run-1",
@@ -129,6 +129,9 @@ def valid_receipt():
         "stage_reason_code": "semantic_policy_unqualified",
         "evidence_anchors": [],
     }
+    if hasattr(contract, "minimum_receipt_sha"):
+        receipt["minimum_receipt_sha"] = contract.minimum_receipt_sha(receipt)
+    return receipt
 
 
 class HistoryContractV2Smoke(unittest.TestCase):
@@ -238,6 +241,7 @@ class HistoryContractV2Smoke(unittest.TestCase):
                 no_match_basis=basis,
                 semantic_policy_qualified=True,
             )
+            value["minimum_receipt_sha"] = contract.minimum_receipt_sha(value)
             self.assertEqual(contract.validate_receipt(value), value)
 
     def test_complete_no_match_rejects_invalid_or_truncated_evidence(self):
@@ -258,6 +262,14 @@ class HistoryContractV2Smoke(unittest.TestCase):
             value = valid_receipt()
             value[fault] = True
             with self.subTest(fault=fault):
+                with self.assertRaises(contract.ContractV2Error):
+                    contract.validate_receipt(value)
+
+    def test_coverage_complete_rejects_missing_duplicate_or_extra_ids(self):
+        for field in ("missing_ids", "duplicate_ids", "extra_ids"):
+            value = valid_receipt()
+            value[field] = ["asset-1"]
+            with self.subTest(field=field):
                 with self.assertRaises(contract.ContractV2Error):
                     contract.validate_receipt(value)
 

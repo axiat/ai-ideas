@@ -19,6 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from lib import direction_contract
+from lib import history_contract_v2
 from lib import portable_agent
 from lib import portable_stage
 from lib import provider_adapters
@@ -45,9 +46,6 @@ def _probe(provider, executable_path, model, reasoning):
         "model_override_applied": True,
         "reasoning_override_applied": True,
         "immutable_capacity_identity": "fake-capacity-v1",
-        "evidence_sha256": hashlib.sha256(
-            f"{provider}|{executable_path}|{model}|{reasoning}".encode()
-        ).hexdigest(),
     }
 
 
@@ -55,13 +53,176 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
     def setUp(self):
         self.registry = provider_adapters.load_registry(REGISTRY)
 
+    def test_public_resolvers_reject_caller_owned_lookup_and_probe(self):
+        lookup_calls = []
+        probe_calls = []
+
+        def forged_lookup(name):
+            lookup_calls.append(name)
+            return "/bin/echo"
+
+        with self.assertRaises(provider_adapters.ProviderResolutionError):
+            provider_adapters.resolve_command_intent(
+                self.registry,
+                "hunt",
+                "codex",
+                executable_lookup=forged_lookup,
+            )
+
+        def forged_probe(*args):
+            probe_calls.append(args)
+            return {
+                "cli_revision": "forged-cli-v1",
+                "serializer_revision": "portable-agent-command-v1",
+                "effective_model": "forged-model",
+                "effective_reasoning": "high",
+                "model_override_applied": True,
+                "reasoning_override_applied": True,
+                "immutable_capacity_identity": "forged-capacity",
+                "evidence_sha256": "a" * 64,
+            }
+
+        with self.assertRaises(provider_adapters.ProviderResolutionError):
+            provider_adapters.resolve_provider(
+                self.registry,
+                "hunt",
+                "codex",
+                version_probe=forged_probe,
+            )
+        with self.assertRaises(provider_adapters.ProviderResolutionError):
+            provider_adapters.resolve_provider(
+                self.registry,
+                "hunt",
+                "codex",
+                executable_lookup=forged_lookup,
+            )
+        with self.assertRaises(provider_adapters.ProviderResolutionError):
+            provider_adapters.resolve_pool(
+                self.registry,
+                "hunt",
+                ["codex"],
+                version_probe=forged_probe,
+            )
+        with self.assertRaises(provider_adapters.ProviderResolutionError):
+            provider_adapters.command_intent_from_record(
+                self.registry,
+                {},
+                executable_lookup=forged_lookup,
+            )
+        with self.assertRaises(provider_adapters.ProviderResolutionError):
+            provider_adapters.load_command_intent(
+                ROOT / "missing-provider-command.json",
+                self.registry,
+                executable_lookup=forged_lookup,
+            )
+        self.assertEqual(lookup_calls, [])
+        self.assertEqual(probe_calls, [])
+
+    def test_private_fake_resolution_is_shadow_only_and_host_seals_evidence(self):
+        resolve_intent = getattr(
+            provider_adapters, "_resolve_command_intent_for_test", None
+        )
+        resolve_capability = getattr(
+            provider_adapters, "_resolve_provider_for_test", None
+        )
+        self.assertTrue(callable(resolve_intent))
+        self.assertTrue(callable(resolve_capability))
+
+        intent = resolve_intent(
+            self.registry,
+            "hunt",
+            "codex",
+            executable_lookup=lambda _: str(FAKE_STAGE),
+        )
+        self.assertTrue(provider_adapters.command_intent_is_issued(intent))
+        self.assertEqual(intent.authority, "shadow-only")
+        self.assertFalse(intent.hard_complete_eligible)
+
+        def fake_probe(*_, effective_model="fake-model-v1"):
+            return {
+                "cli_revision": "fake-cli-v1",
+                "serializer_revision": "portable-agent-command-v1",
+                "effective_model": effective_model,
+                "effective_reasoning": "high",
+                "model_override_applied": True,
+                "reasoning_override_applied": True,
+                "immutable_capacity_identity": "fake-capacity-v1",
+            }
+
+        first = resolve_capability(
+            self.registry,
+            "hunt",
+            "codex",
+            executable_lookup=lambda _: str(FAKE_FILE),
+            version_probe=fake_probe,
+        )
+        changed = resolve_capability(
+            self.registry,
+            "hunt",
+            "codex",
+            executable_lookup=lambda _: str(FAKE_FILE),
+            version_probe=lambda *args: fake_probe(
+                *args, effective_model="fake-model-v2"
+            ),
+        )
+        other_executable = resolve_capability(
+            self.registry,
+            "hunt",
+            "codex",
+            executable_lookup=lambda _: str(FAKE_STAGE),
+            version_probe=fake_probe,
+        )
+        for capability in (first, changed, other_executable):
+            self.assertTrue(provider_adapters.capability_is_issued(capability))
+            self.assertEqual(capability.authority, "shadow-only")
+            self.assertFalse(capability.hard_complete_eligible)
+            self.assertEqual(len(capability.evidence_sha256), 64)
+        executable_info = FAKE_FILE.resolve().lstat()
+        expected_material = {
+            "schema_version": "provider-capability-evidence-v1",
+            "issuance_scope": "test-only-shadow",
+            "provider": "codex",
+            "surface": "hunt",
+            "executable": "codex",
+            "executable_path": str(FAKE_FILE.resolve()),
+            "executable_identity": {
+                "device": executable_info.st_dev,
+                "inode": executable_info.st_ino,
+                "mode": executable_info.st_mode,
+                "size": executable_info.st_size,
+                "mtime_ns": executable_info.st_mtime_ns,
+                "ctime_ns": executable_info.st_ctime_ns,
+            },
+            "requested_model": None,
+            "requested_reasoning": None,
+            "effective_model": "fake-model-v1",
+            "effective_reasoning": "high",
+            "model_override_applied": True,
+            "reasoning_override_applied": True,
+            "immutable_capacity_identity": "fake-capacity-v1",
+            "cli_revision": "fake-cli-v1",
+            "serializer_revision": "portable-agent-command-v1",
+            "grammar_revision": "codex-portable-v1",
+        }
+        self.assertEqual(
+            first.evidence_sha256,
+            history_contract_v2.framed_sha256(
+                "provider-capability-evidence-v1",
+                history_contract_v2.canonical_bytes(expected_material),
+            ),
+        )
+        self.assertNotEqual(first.evidence_sha256, changed.evidence_sha256)
+        self.assertNotEqual(
+            first.evidence_sha256, other_executable.evidence_sha256
+        )
+
     def test_non_nfc_model_and_reasoning_fail_before_executable_lookup(self):
         for field in ("model", "reasoning"):
             calls = []
             arguments = {field: "e\u0301"}
             with self.subTest(field=field):
                 with self.assertRaises(provider_adapters.ProviderResolutionError):
-                    provider_adapters.resolve_command_intent(
+                    provider_adapters._resolve_command_intent_for_test(
                         self.registry,
                         "hunt",
                         "codex",
@@ -71,7 +232,7 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
                 self.assertEqual(calls, [])
 
     def test_dataclass_relabeling_cannot_enter_command_rendering(self):
-        intent = provider_adapters.resolve_command_intent(
+        intent = provider_adapters._resolve_command_intent_for_test(
             self.registry,
             "hunt",
             "codex",
@@ -83,7 +244,7 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
                 forged_intent, pathlib.Path("/mirror"), "PROMPT"
             )
 
-        capability = provider_adapters.resolve_provider(
+        capability = provider_adapters._resolve_provider_for_test(
             self.registry,
             "hunt",
             "codex",
@@ -100,11 +261,11 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
             )
 
     def test_in_place_object_mutation_invalidates_resolver_issuance(self):
-        intent = provider_adapters.resolve_command_intent(
+        intent = provider_adapters._resolve_command_intent_for_test(
             self.registry,
             "hunt",
             "codex",
-            executable_lookup=lambda _: "/bin/echo",
+            executable_lookup=lambda _: str(FAKE_FILE),
         )
         self.assertTrue(provider_adapters.command_intent_is_issued(intent))
         object.__setattr__(intent, "executable_path", str(FAKE_STAGE))
@@ -132,7 +293,7 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
                 )
             self.assertFalse((root / "state").exists())
 
-        capability = provider_adapters.resolve_provider(
+        capability = provider_adapters._resolve_provider_for_test(
             self.registry,
             "hunt",
             "codex",
@@ -168,7 +329,7 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
     def test_text_subclass_cannot_spoof_resolver_or_issuance_snapshot(self):
         lookups = []
         with self.assertRaises(provider_adapters.ProviderResolutionError):
-            provider_adapters.resolve_command_intent(
+            provider_adapters._resolve_command_intent_for_test(
                 self.registry,
                 "hunt",
                 "codex",
@@ -177,7 +338,7 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
             )
         self.assertEqual(lookups, [])
 
-        intent = provider_adapters.resolve_command_intent(
+        intent = provider_adapters._resolve_command_intent_for_test(
             self.registry,
             "hunt",
             "codex",
@@ -209,11 +370,10 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
                 )
             self.assertFalse((root / "state").exists())
 
-    def test_probe_text_and_hash_subclasses_are_rejected(self):
+    def test_probe_text_subclasses_and_caller_evidence_hash_are_rejected(self):
         for field in (
             "cli_revision",
             "effective_model",
-            "evidence_sha256",
         ):
             with self.subTest(field=field):
                 def bad_probe(*args, field=field):
@@ -222,7 +382,7 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
                     return evidence
 
                 with self.assertRaises(provider_adapters.ProviderResolutionError):
-                    provider_adapters.resolve_provider(
+                    provider_adapters._resolve_provider_for_test(
                         self.registry,
                         "hunt",
                         "codex",
@@ -230,8 +390,20 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
                         version_probe=bad_probe,
                     )
 
+        def probe_with_caller_hash(*args):
+            return {**_probe(*args), "evidence_sha256": "a" * 64}
+
+        with self.assertRaises(provider_adapters.ProviderResolutionError):
+            provider_adapters._resolve_provider_for_test(
+                self.registry,
+                "hunt",
+                "codex",
+                executable_lookup=lambda _: str(FAKE_FILE),
+                version_probe=probe_with_caller_hash,
+            )
+
     def test_compact_profile_validation_is_pure_and_closed(self):
-        intent = provider_adapters.resolve_command_intent(
+        intent = provider_adapters._resolve_command_intent_for_test(
             self.registry,
             "hunt",
             "codex",
@@ -244,6 +416,11 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
             "provider": "codex",
             "requested_model": "MODEL",
             "requested_reasoning": "high",
+            "effective_model": None,
+            "effective_reasoning": None,
+            "default_probe_revision": None,
+            "model_catalog_probe_revision": None,
+            "model_catalog_sha256": None,
             "execution_request_profile_hash": (
                 intent.execution_request_profile_hash
             ),
@@ -259,7 +436,7 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
 
 class PortableStageHardeningSmoke(unittest.TestCase):
     def _intent(self, surface="hunt", provider="codex"):
-        return provider_adapters.resolve_command_intent(
+        return provider_adapters._resolve_command_intent_for_test(
             provider_adapters.load_registry(REGISTRY),
             surface,
             provider,
@@ -269,7 +446,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         )
 
     def _capability(self):
-        return provider_adapters.resolve_provider(
+        return provider_adapters._resolve_provider_for_test(
             provider_adapters.load_registry(REGISTRY),
             "hunt",
             "codex",
@@ -519,6 +696,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                     "role_sha256",
                     "input_sha256s",
                     "provider_request_sha256",
+                    "provider_request_binding_sha256",
                     "response_schema_sha256",
                     "preflight",
                     "completion",
@@ -620,7 +798,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
 
 class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
     def _capability(self):
-        return provider_adapters.resolve_provider(
+        return provider_adapters._resolve_provider_for_test(
             provider_adapters.load_registry(REGISTRY),
             "hunt",
             "codex",

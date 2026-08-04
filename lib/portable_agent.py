@@ -347,15 +347,21 @@ def _validate_response_schema_contract(schema):
         or schema.get("additionalProperties") is not False
         or schema.get("type") != "object"
         or schema.get("required")
-        != ["schema_version", "stage", "artifacts"]
+        != [
+            "schema_version",
+            "stage",
+            "request_attestation",
+            "artifacts",
+        ]
         or type(schema.get("properties")) is not dict
         or set(schema["properties"])
-        != {"schema_version", "stage", "artifacts"}
+        != {"schema_version", "stage", "request_attestation", "artifacts"}
     ):
         raise PortableAgentError("invalid_response_schema")
     properties = schema["properties"]
     version = properties["schema_version"]
     stage = properties["stage"]
+    attestation = properties["request_attestation"]
     artifacts = properties["artifacts"]
     if (
         type(version) is not dict
@@ -370,6 +376,24 @@ def _validate_response_schema_contract(schema):
         or type(stage.get("enum")) is not list
         or len(stage["enum"]) != 1
         or type(stage["enum"][0]) is not str
+        or type(attestation) is not dict
+        or set(attestation)
+        != {"additionalProperties", "properties", "required", "type"}
+        or attestation.get("additionalProperties") is not False
+        or attestation.get("type") != "object"
+        or attestation.get("required")
+        != [
+            "schema_version",
+            "provider_request_binding_sha256",
+            "serialized_prompt_sha256",
+        ]
+        or type(attestation.get("properties")) is not dict
+        or set(attestation["properties"])
+        != {
+            "schema_version",
+            "provider_request_binding_sha256",
+            "serialized_prompt_sha256",
+        }
         or type(artifacts) is not dict
         or set(artifacts) != {"items", "maxItems", "minItems", "type"}
         or artifacts.get("type") != "array"
@@ -377,6 +401,25 @@ def _validate_response_schema_contract(schema):
         or type(artifacts.get("maxItems")) is not int
         or artifacts["minItems"] <= 0
         or artifacts["minItems"] != artifacts["maxItems"]
+    ):
+        raise PortableAgentError("invalid_response_schema")
+    attestation_properties = attestation["properties"]
+    attestation_version = attestation_properties["schema_version"]
+    if (
+        type(attestation_version) is not dict
+        or set(attestation_version) != {"enum", "type"}
+        or attestation_version.get("type") != "string"
+        or attestation_version.get("enum")
+        != ["portable-stage-response-attestation-v1"]
+        or any(
+            value != {"type": "string"}
+            for value in (
+                attestation_properties[
+                    "provider_request_binding_sha256"
+                ],
+                attestation_properties["serialized_prompt_sha256"],
+            )
+        )
     ):
         raise PortableAgentError("invalid_response_schema")
     item = artifacts["items"]
@@ -419,13 +462,39 @@ def _validate_response_schema_contract(schema):
 def _validate_response_value(value, contract):
     if (
         type(value) is not dict
-        or set(value) != {"schema_version", "stage", "artifacts"}
+        or set(value)
+        != {"schema_version", "stage", "request_attestation", "artifacts"}
         or type(value.get("schema_version")) is not int
         or value["schema_version"] != contract["schema_version"]
         or type(value.get("stage")) is not str
         or value["stage"] != contract["stage"]
         or type(value.get("artifacts")) is not list
         or len(value["artifacts"]) != len(contract["artifact_kinds"])
+    ):
+        raise PortableAgentError("schema_mismatch")
+    attestation = value.get("request_attestation")
+    if (
+        type(attestation) is not dict
+        or set(attestation)
+        != {
+            "schema_version",
+            "provider_request_binding_sha256",
+            "serialized_prompt_sha256",
+        }
+        or attestation.get("schema_version")
+        != "portable-stage-response-attestation-v1"
+        or any(
+            type(attestation.get(name)) is not str
+            or len(attestation[name]) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in attestation[name]
+            )
+            for name in (
+                "provider_request_binding_sha256",
+                "serialized_prompt_sha256",
+            )
+        )
     ):
         raise PortableAgentError("schema_mismatch")
     for item, expected_kind in zip(

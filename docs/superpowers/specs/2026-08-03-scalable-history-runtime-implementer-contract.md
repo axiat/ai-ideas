@@ -17,12 +17,13 @@ OpenSpec change: `openspec/changes/scalable-history-runtime/`
 
 | Surface | Providers | Default model behavior | Reasoning override |
 |---|---|---|---|
-| Hunt | `codex`, `kimi`, `grok` | Omit model to use and freeze the CLI's current default | Codex and Grok use verified provider grammar; Kimi rejects an explicit reasoning value |
-| AwR | Hunt set plus `opencode`, `agy` | Same | OpenCode uses `--variant`; agy uses `--effort` |
+| Hunt and AwR | `codex`, `kimi`, `grok` | Omission preserves the CLI default | Codex accepts `high|xhigh`; Grok accepts `high`; Kimi rejects every explicit value |
+| AwR | `opencode` | Omission requires a successful host-owned `--pure debug config` probe and exact `opencode models --pure` membership; model and catalog identity are re-probed before launch, and the model is passed with explicit `-m` | `high` through `--variant` |
+| AwR | `agy` | Omission fails closed; an explicit model must exactly match `agy models` | `low|medium|high` through `--effort` |
 
 The canonical field `provider_pools_ordered.{comparator,map,detail,reduce}` is both allowlist and failover order. Flattened aliases and a separate failover field are rejected. Pool order, resolved-default capability, capacity, prompt/schema, risk, or settlement changes produce a new plan and logical task identity. Actual provider/model/reasoning belongs only to attempt provenance.
 
-Local CLI argument grammar is verified; model availability, effective override, capacity, and price are not. Target v2 commands are:
+Local CLI argument grammar is verified. OpenCode/agy model spelling is verified against the bounded local CLI catalog; this does not establish account entitlement, capacity, or price. Target v2 commands are:
 
 ```bash
 rtk env HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=codex HUNT_MODEL=gpt-5.6-sol HUNT_REASONING_EFFORT=xhigh ./hunt.sh
@@ -32,7 +33,15 @@ rtk env HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode AWR_MODEL=openai/gpt-5.6-so
 rtk env HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high AWR_REASONING_EFFORT=high ./awr-side.sh
 ```
 
-Omitting `*_MODEL` and `*_REASONING_EFFORT` preserves the selected CLI's current configuration. A default marker permits diagnostic/shadow execution only. Hard-complete planning requires a probe to bind an effective model and reasoning identity, or an immutable equivalent identity that also binds effective context, token bound, serializer, usage source, and CLI revision. Unsupported, ineffective, or drifted explicit overrides fail before launch.
+The reasoning values above are the project's conservative verified subset, not a claim about each CLI's complete capability. Omitted reasoning preserves the CLI default. Any other explicit value fails before executable lookup.
+
+Explicit OpenCode and agy model routes are NFKC-normalized, case-folded, repeatedly percent-decoded, and slash-normalized before executable lookup. Routes containing Claude, Anthropic, Haiku, Opus, Sonnet, or dynamic `auto|default|current|configured` markers fail closed. OpenCode requires an exact backend-qualified member of `opencode models --pure`; agy requires an exact member of `agy models`. The model, catalog probe revision, and canonical catalog SHA enter the execution profile and are re-probed before launch. OpenCode omission additionally requires a safe pure configuration result that matches the same catalog. Catalog, configuration, or route drift invalidates the request before workload execution.
+
+`history/provider-adapters-v1.json` is a byte-exact tracked ABI. Alternate registry paths are accepted only when their bytes match that ABI; changed revisions, grammars, reasoning lists, duplicate keys, and reformatted copies fail closed.
+
+A default marker permits diagnostic/shadow execution only. Hard-complete planning requires a probe to bind an effective model and reasoning identity, or an immutable equivalent identity that also binds effective context, token bound, serializer, usage source, and CLI revision. Unsupported, ineffective, or drifted explicit overrides fail before launch.
+
+Every portable request carries a host-computed base-request binding over the stage, seat, serialized prompt, role SHA, declared-input names and SHAs, and response schema, plus a separate serialized-prompt SHA. The provider response must echo both values in `request_attestation`; the full wire-request SHA is recorded separately. Missing or mismatched attestation rejects the response before artifact projection or completion publication.
 
 ## Identity and Corpus Contract
 
@@ -114,7 +123,7 @@ evidence_anchors
 ## Semantic Release Gate
 
 - `shadow-calibration-v1` starts at 30 independent blocking-positive lineages, at least five positives in each of low-overlap, cross-language, and lineage-revision slices, plus 20 adjudicated hard negatives or true no-matches.
-- Shadow readiness enables diagnostics only. Production qualification requires at least 300 independent blocking-positive query lineages, configured one-sided 95% recall/FNR gates, required bad-slice bounds, exact profile/corpus/evaluation/report bindings and expiry, provider capacity evidence, and passing fault/replay evidence.
+- Shadow readiness enables diagnostics only. Production qualification computes its minimum-positive count, aggregate recall/FNR gates, negative count, and required bad-slice bounds only from held-out `partition=test`; train fits models and development tunes policy without contributing release counts. The held-out test partition requires at least 300 independent blocking-positive query lineages. The evaluation identity binds the complete validated qrels and exact outputs across train, development, and test, while the metric values use only test. Qualification also binds exact profile/corpus/evaluation/report identities and expiry, provider capacity evidence, and passing fault/replay evidence.
 - Provider/prompt/capacity changes stale adjudication and qualification, not FTS. Metadata changes stale only metadata-dependent generations. Missing qualification keeps no-match nonpermanent.
 - The router receipt binds its ordered rule-table version and every matched rule ID. Routing may select L2 or shadow work but cannot bypass reservation, coverage, adjudication, qualification, or status derivation.
 

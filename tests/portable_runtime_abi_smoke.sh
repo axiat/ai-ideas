@@ -44,6 +44,18 @@ install_fake_providers() {
     executable="$repo/.test-bin/$provider"
     printf '%s\n' \
       '#!/bin/sh' \
+      'if [ "$1 $2 $3" = "--pure debug config" ]; then' \
+      '  printf "%s\n" '\''{"model":"openai/fixture-model"}'\''' \
+      '  exit 0' \
+      'fi' \
+      'if [ "$1 $2" = "models --pure" ]; then' \
+      '  printf "%s\n" openai/fixture-model' \
+      '  exit 0' \
+      'fi' \
+      'if [ "$1" = "models" ]; then' \
+      '  printf "%s\n" gemini/fixture-model' \
+      '  exit 0' \
+      'fi' \
       'printf "%s\\n" "$0" >> "$PROVIDER_LAUNCH_LOG"' \
       'exit 91' > "$executable"
     chmod 755 "$executable"

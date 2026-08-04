@@ -27,7 +27,15 @@ The `shadow-calibration-v1` readiness state SHALL require at least 30 independen
 - **THEN** every clean no-hit remains `uncertain/semantic_policy_unqualified`
 
 ### Requirement: Production qualification uses explicit statistical gates
-A production semantic policy SHALL require at least 300 independent blocking-positive query lineages, the configured one-sided 95% lineage-recall and false-negative bounds, required bad-slice bounds, complete provider capacity profiles, and passing fault/replay evidence. Qualification SHALL bind the L1 or L2 policy, prompts/schemas, provider pools, capacity profiles, corpus/evaluation identity, and metric report hash.
+A production semantic policy SHALL compute its minimum-positive count, aggregate recall and false-negative bounds, negative count, and required bad-slice bounds exclusively from held-out qrels with `partition=test`. Training qrels MAY fit a model and development qrels MAY tune policy, but neither partition SHALL contribute a production release count or metric. The held-out test partition SHALL contain at least 300 independent blocking-positive query lineages and pass the configured one-sided 95% bounds. Production qualification SHALL also require complete provider capacity profiles and passing fault/replay evidence. Qualification SHALL bind the complete validated qrels and exact outputs across all declared partitions, the test-only metric report, the L1 or L2 policy, prompts/schemas, provider pools, capacity profiles, and corpus/evaluation identity.
+
+#### Scenario: Training and development evidence cannot satisfy release gates
+- **WHEN** train contains 300 passing positives, development contains passing negatives, and the held-out test partition has no positives
+- **THEN** production qualification is false, the production aggregate abstains with denominator zero, and train/development contribute no release counts
+
+#### Scenario: Held-out test controls production metrics
+- **WHEN** the held-out test partition passes every production count and bound while train or development outputs fail
+- **THEN** production metrics use only the held-out test outcomes while the evaluation identity still changes with any exact output change in any declared partition
 
 #### Scenario: Missing bad-slice evidence vetoes release
 - **WHEN** aggregate recall passes but a required slice lacks enough observations or misses its bound

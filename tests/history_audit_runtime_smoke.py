@@ -2,6 +2,7 @@
 """Deterministic L2 execution, settlement, coverage, and recovery smoke tests."""
 
 import copy
+import contextlib
 import datetime
 import hashlib
 import json
@@ -77,6 +78,12 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         self.assertTrue(callable(value), f"missing behavior: history_execution.{name}")
         return value
 
+    def _without_candidate_budget_migrations(self):
+        return tuple(
+            migration for migration in history_audit_store.MIGRATIONS
+            if migration.component != "candidate-budget-authority"
+        )
+
     def _now(self, seconds=0):
         base = datetime.datetime(2026, 8, 3, tzinfo=datetime.timezone.utc)
         return (base + datetime.timedelta(seconds=seconds)).isoformat()
@@ -96,8 +103,6 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             "index_profile_recently_changed": False,
             "permanent_no_match_requested": False,
             "release_qualified": False,
-            "candidate_budget_available": True,
-            "attempt_budget_available": True,
         }
         facts.update(overrides)
         return facts
@@ -126,12 +131,9 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
 
     def _plan(
         self, records, *, shards=None, started_attempt_limit=100,
-        additional_candidates=None,
+        additional_candidates=None, intent="duplicate_search",
+        map_providers=None, comparator_providers=None, router_facts=None,
     ):
-        risk_policy_sha = history_contract_v2.framed_sha256(
-            "history-risk-policy-v1",
-            history_contract_v2.canonical_bytes(self._risk_policy()),
-        )
         candidate_id = "stg-v2-" + sha("runtime-candidate-id")
         candidate = {
             "candidate_id": candidate_id,
@@ -206,101 +208,66 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             shard["request_sha256"] = hashlib.sha256(
                 shard["serialized_request"].encode("utf-8")
             ).hexdigest()
+            shard["final_request_tokens"] = len(
+                shard["serialized_request"].encode("utf-8")
+            )
+        provider_pools = {
+            "comparator": list(comparator_providers or ["reviewer"]),
+            "map": list(map_providers or ["codex", "grok"]),
+            "detail": ["codex"],
+            "reduce": ["codex"],
+        }
+        active_providers = {
+            provider
+            for pool in provider_pools.values()
+            for provider in pool
+        }
+        provider_capabilities = {
+            provider: copy.deepcopy(capability)
+            for provider, capability in self.capabilities.items()
+            if provider in active_providers
+        }
         plan = {
             "schema_version": "history-audit-plan-v2",
             "run_id": "run-runtime-smoke",
             "batch_id": "batch-1",
             "candidate": candidate,
             "snapshot": snapshot,
-            "provider_pools_ordered": {
-                "comparator": ["reviewer"],
-                "map": ["codex", "grok"],
-                "detail": ["codex"],
-                "reduce": ["codex"],
-            },
+            "provider_pools_ordered": provider_pools,
             "provider_capability_profile_hashes": {
                 provider: capability["capability_profile_hash"]
-                for provider, capability in self.capabilities.items()
+                for provider, capability in provider_capabilities.items()
             },
-            "provider_capabilities": copy.deepcopy(self.capabilities),
-            "capacity_profile_id": "fake-safe-24k-v1",
-            "semantic_policy_profile_id": "semantic-test-v1",
-            "risk_policy_version": "risk-v1",
-            "matched_router_rule_ids": ["rule-l2"],
-            "settlement_policy_sha": sha("settlement"),
-            "risk_policy_sha": risk_policy_sha,
-            "capacity_profile": {
-                "profile_id": "fake-safe-24k-v1",
-                "item_cap": 12,
-                "max_output_tokens": 64,
-            },
-            "budget_policy": {
-                "schema_version": "l2-budget-v1",
-                "settlement_policy_sha": sha("settlement"),
-                "risk_policy_sha": risk_policy_sha,
-                "intents": {
-                    "duplicate_search": {
-                        "round": {
-                            "candidates": 8,
-                            "started_attempts": started_attempt_limit,
-                            "input_tokens": 100000,
-                            "output_tokens": 100000,
-                            "provider_usage_units": 200000,
-                        },
-                        "candidate": {
-                            "started_attempts": started_attempt_limit,
-                            "input_tokens": 100000,
-                            "output_tokens": 100000,
-                            "provider_usage_units": 200000,
-                        },
-                    }
-                },
-            },
+            "provider_capabilities": provider_capabilities,
             "shards": shards,
-            "intent": "duplicate_search",
+            "intent": intent,
         }
+        selected_route = history_audit_eval_v2.route_candidate(
+            {
+                **(router_facts or self._router_facts()),
+                "candidate_budget_available": True,
+                "attempt_budget_available": True,
+            },
+            self._risk_policy(),
+        )
+        plan.update(
+            history_audit_plan._issue_test_runtime_authority(
+                provider_pools_ordered=plan["provider_pools_ordered"],
+                provider_capabilities=plan["provider_capabilities"],
+                intent=plan["intent"],
+                started_attempt_limit=min(started_attempt_limit, 64),
+                semantic_policy_profile_id="semantic-test-v1",
+                matched_router_rule_ids=selected_route["matched_rule_ids"],
+                max_output_tokens=64,
+            )
+        )
         plan["shard_plan_sha"] = history_contract_v2.framed_sha256(
             "history-shard-plan-v2",
             history_contract_v2.canonical_bytes(
                 sorted(copy.deepcopy(shards), key=lambda shard: shard["shard_id"])
             ),
         )
-        snapshot_for_plan = copy.deepcopy(snapshot)
-        snapshot_for_plan.pop("records")
-        snapshot_for_plan["records_sha"] = history_contract_v2.framed_sha256(
-            "history-l2-snapshot-records-v2",
-            history_contract_v2.canonical_bytes(
-                sorted(copy.deepcopy(records), key=lambda item: item["item_id"])
-            ),
-        )
-        budget_sha = history_contract_v2.framed_sha256(
-            "history-budget-policy-v1",
-            history_contract_v2.canonical_bytes(plan["budget_policy"]),
-        )
-        plan_material = {
-            "schema_version": "history-audit-plan-v2",
-            "run_id": plan["run_id"],
-            "batch_id": plan["batch_id"],
-            "candidate": copy.deepcopy(candidate),
-            "snapshot": snapshot_for_plan,
-            "provider_pools_ordered": copy.deepcopy(plan["provider_pools_ordered"]),
-            "provider_capability_profile_hashes": copy.deepcopy(
-                plan["provider_capability_profile_hashes"]
-            ),
-            "provider_capabilities": copy.deepcopy(plan["provider_capabilities"]),
-            "capacity_profile": copy.deepcopy(plan["capacity_profile"]),
-            "budget_policy": copy.deepcopy(plan["budget_policy"]),
-            "budget_policy_sha": budget_sha,
-            "intent": plan["intent"],
-            "risk_policy_sha": plan["risk_policy_sha"],
-            "settlement_policy_sha": plan["settlement_policy_sha"],
-            "shard_plan_sha": plan["shard_plan_sha"],
-            "shards": sorted(copy.deepcopy(shards), key=lambda shard: shard["shard_id"]),
-        }
-        plan["plan_sha"] = history_contract_v2.framed_sha256(
-            "history-audit-plan-v2",
-            history_contract_v2.canonical_bytes(plan_material),
-        )
+        plan["plan_sha"] = history_audit_plan.runtime_plan_sha(plan)
         plan["logical_task_keys"] = [
             history_contract_v2.logical_task_key(
                 plan["plan_sha"], "map", candidate_id, shard["request_sha256"]
@@ -309,28 +276,488 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         ]
         return plan
 
-    def _install(self, plan=None, *, route_authority=None):
-        plan = plan or self.plan
-        self._api("persist_plan")(
-            self.conn, plan,
-            route_authority=(route_authority or self._route_authority(plan)),
+    def _router_candidate_cohort(self, plan, additional_candidates=None):
+        candidates = {plan["candidate"]["candidate_id"]: plan["candidate"]}
+        candidates.update({
+            candidate["candidate_id"]: candidate
+            for candidate in (additional_candidates or [])
+        })
+        self.assertEqual(
+            sorted(candidates), plan["snapshot"]["current_batch_ids"]
         )
+        return [copy.deepcopy(candidates[value]) for value in sorted(candidates)]
+
+    def _router_round_material(self, plan, additional_candidates=None):
+        snapshot_fields = {
+            "snapshot_id", "snapshot_hash", "history_as_of_watermark",
+            "current_batch_id_namespace", "current_batch_ids_hash",
+            "current_batch_ids", "exclusion_policy_sha",
+            "expected_asset_ids_hash", "expected_asset_ids",
+        }
+        return {
+            "schema_version": "history-router-round-v1",
+            "run_id": plan["run_id"],
+            "batch_id": plan["batch_id"],
+            "intent": plan["intent"],
+            "snapshot": {
+                name: copy.deepcopy(plan["snapshot"][name])
+                for name in snapshot_fields
+            },
+            "candidates": self._router_candidate_cohort(
+                plan, additional_candidates=additional_candidates
+            ),
+            "semantic_policy_profile_id": plan["semantic_policy_profile_id"],
+            "risk_policy_sha": plan["risk_policy_sha"],
+            "risk_slice_policy_sha": history_contract_v2.framed_sha256(
+                "history-risk-slice-policy-v1",
+                history_contract_v2.canonical_bytes(
+                    history_audit_eval_v2.RISK_SLICE_POLICY_V1
+                ),
+            ),
+            "budget_policy_sha": history_audit_plan.runtime_budget_policy_sha(
+                plan["budget_policy"]
+            ),
+            "authority_scope": "test_fake",
+        }
+
+    def _router_dependencies(self, route_round):
+        return {
+            "semantic_policy": sha("runtime-router-semantic-policy"),
+            "plan": route_round["route_round_sha256"],
+            "prompt": sha("runtime-router-prompt"),
+            "schema": sha("runtime-router-schema"),
+            "ordered_provider_pools": sha("runtime-router-provider-pools"),
+            "capacity": sha("runtime-router-capacity"),
+            "provider": sha("runtime-router-provider"),
+            "fault": sha("runtime-router-fault"),
+            "replay": sha("runtime-router-replay"),
+            "fts": sha("runtime-router-fts"),
+            "metadata": sha("runtime-router-metadata"),
+        }
+
+    def _router_domain_sources(
+        self, plan, route_round, *, calibrated=False,
+        comparator="pre_l1_skip", risk_slices_by_candidate=None,
+    ):
+        snapshot = plan["snapshot"]
+        selected_id = plan["candidate"]["candidate_id"]
+        candidate_ids = list(snapshot["current_batch_ids"])
+        identity = {
+            "run_id": plan["run_id"],
+            "batch_id": plan["batch_id"],
+            "snapshot_id": snapshot["snapshot_id"],
+            "snapshot_hash": snapshot["snapshot_hash"],
+            "route_round_sha256": route_round["route_round_sha256"],
+        }
+        selection_members = []
+        l1_members = []
+        risk_members = []
+        request_members = []
+        risk_slices_by_candidate = risk_slices_by_candidate or {}
+        for candidate_id in candidate_ids:
+            selection_members.append({
+                "candidate_id": candidate_id,
+                "selection_class": (
+                    "finalist" if candidate_id == selected_id else "screened"
+                ),
+                "channel_states": [
+                    {"channel_id": "dense_core", "state": "complete"},
+                    {"channel_id": "exact_lineage", "state": "complete"},
+                    {"channel_id": "fts", "state": "complete"},
+                ],
+            })
+            if comparator == "pre_l1_skip":
+                l1_members.append({
+                    "candidate_id": candidate_id,
+                    "observation_kind": "pre_l1_skip",
+                    "skip_reason": "retriever_uncalibrated",
+                    "coverage_state": "not_run",
+                    "pre_phase_fact_sha256": None,
+                })
+            else:
+                l1_members.append({
+                    "candidate_id": candidate_id,
+                    "observation_kind": "comparator",
+                    "comparator_outcome": comparator,
+                    "coverage_state": "complete",
+                    "comparator_receipt_sha256": sha(
+                        "runtime-router-comparator-receipt-" + candidate_id
+                    ),
+                })
+            risk_members.append({
+                "candidate_id": candidate_id,
+                "assigned_slice_ids": sorted(
+                    risk_slices_by_candidate.get(candidate_id, ["low_overlap"])
+                ),
+            })
+            request_members.append({
+                "candidate_id": candidate_id,
+                "request_state": "not_requested",
+                "request_id": None,
+            })
+        qrels_hash = sha("runtime-router-qrels")
+        dependencies = self._router_dependencies(route_round)
+        return {
+            "selection": {
+                "schema_version": "history-router-selection-source-v1",
+                **identity,
+                "selected_candidate_id": selected_id,
+                "candidate_ids": candidate_ids,
+                "members": selection_members,
+            },
+            "l1_observation": {
+                "schema_version": "history-router-l1-source-v1",
+                **identity,
+                "candidate_ids": candidate_ids,
+                "members": l1_members,
+            },
+            "calibration": {
+                "schema_version": "history-router-calibration-source-v1",
+                **identity,
+                "semantic_policy_profile_id": plan[
+                    "semantic_policy_profile_id"
+                ],
+                "qrels_hash": qrels_hash,
+                "calibration_state": (
+                    "shadow_ready" if calibrated else "unqualified"
+                ),
+            },
+            "qualification": {
+                "schema_version": "history-router-qualification-source-v1",
+                **identity,
+                "semantic_policy_profile_id": plan[
+                    "semantic_policy_profile_id"
+                ],
+                "qrels_hash": qrels_hash,
+                "qualification_id": None,
+                "lookup_state": "unavailable",
+                "dependency_heads": dependencies,
+            },
+            "risk_assignment": {
+                "schema_version": "history-router-risk-assignment-source-v1",
+                **identity,
+                "candidate_ids": candidate_ids,
+                "members": risk_members,
+            },
+            "dependency_heads": {
+                "schema_version": "history-router-dependency-heads-source-v1",
+                **identity,
+                "heads": dependencies,
+                "observed_index_profile_sha256": dependencies["fts"],
+            },
+            "permanent_request": {
+                "schema_version": "history-router-permanent-request-source-v1",
+                **identity,
+                "candidate_ids": candidate_ids,
+                "members": request_members,
+            },
+        }
+
+    def _install(
+        self, plan=None, *, additional_candidates=None, calibrated=False,
+        comparator="pre_l1_skip", risk_slices_by_candidate=None,
+    ):
+        plan = plan or self.plan
+        try:
+            material = history_audit_plan.build_runtime_plan_material(plan)
+            computed_plan_sha = history_audit_plan.runtime_plan_sha_from_material(
+                material
+            )
+            records = history_audit_plan.runtime_snapshot_records(
+                plan["snapshot"]["records"]
+            )
+        except history_audit_plan.AuditPlanError as exc:
+            raise self._api("ExecutionError")(
+                "frozen_identity_mismatch", exc.code
+            ) from exc
+        if (
+            plan.get("plan_sha") != computed_plan_sha
+            or plan.get("shard_plan_sha") != material["shard_plan_sha"]
+            or sorted(item["item_id"] for item in records)
+            != material["snapshot"]["expected_asset_ids"]
+            or plan["candidate"]["candidate_id"]
+            not in material["snapshot"]["current_batch_ids"]
+        ):
+            raise self._api("ExecutionError")("frozen_identity_mismatch")
+        route_round = history_audit_store.prepare_router_round(
+            self.conn,
+            self._router_round_material(
+                plan, additional_candidates=additional_candidates
+            ),
+            created_at=self._now(5),
+        )
+        sources = self._router_domain_sources(
+            plan,
+            route_round,
+            calibrated=calibrated,
+            comparator=comparator,
+            risk_slices_by_candidate=risk_slices_by_candidate,
+        )
+        pre_sources = {
+            name: value
+            for name, value in sources.items()
+            if name != "l1_observation"
+        }
+        history_audit_store._issue_test_router_domain_sources(
+            self.conn,
+            route_round["route_round_sha256"],
+            sources=copy.deepcopy(pre_sources),
+            created_at=self._now(10),
+        )
+        pre = history_audit_store.derive_candidate_route_facts(
+            self.conn,
+            plan["run_id"],
+            plan["batch_id"],
+            plan["intent"],
+            phase="pre_l1",
+            created_at=self._now(20),
+        )
+        l1_source = copy.deepcopy(sources["l1_observation"])
+        pre_by_candidate = {
+            item["candidate_id"]: item["phase_fact_sha256"]
+            for item in pre["candidate_routes"]
+        }
+        for member in l1_source["members"]:
+            if member["observation_kind"] == "pre_l1_skip":
+                member["pre_phase_fact_sha256"] = pre_by_candidate[
+                    member["candidate_id"]
+                ]
+        history_audit_store._issue_test_router_domain_sources(
+            self.conn,
+            route_round["route_round_sha256"],
+            sources={"l1_observation": l1_source},
+            created_at=self._now(30),
+        )
+        history_audit_store.derive_candidate_route_facts(
+            self.conn,
+            plan["run_id"],
+            plan["batch_id"],
+            plan["intent"],
+            phase="final",
+            created_at=self._now(40),
+        )
+        self._api("persist_plan")(self.conn, plan)
         return plan
 
     def _persist_pre_route_plan(self, conn, plan):
         """Build an old-schema fixture without weakening current runtime gates."""
+        has_budget_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='audit_candidate_budget_receipts_v2'"
+        ).fetchone() is not None
+        has_route = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='audit_candidate_route_facts_v2'"
+        ).fetchone() is not None and conn.execute(
+            "SELECT 1 FROM audit_candidate_route_facts_v2 WHERE run_id=?",
+            (plan["run_id"],),
+        ).fetchone() is not None
+        if has_budget_table and not has_route:
+            conn.execute(
+                "DROP TRIGGER IF EXISTS "
+                "audit_l2_plans_v2_candidate_budget_guard"
+            )
+        admission = (
+            contextlib.nullcontext()
+            if has_budget_table
+            else mock.patch.object(
+                history_audit_store,
+                "issue_candidate_budget_receipt",
+                return_value={
+                    "decision": "accepted", "decided_at": self._now()
+                },
+            )
+        )
+        def insert_plan_without_dispatch(target_conn, plan_values):
+            target_conn.execute(
+                "INSERT INTO audit_l2_plans_v2 "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                plan_values,
+            )
+
         with mock.patch.object(
-            history_audit_store, "record_candidate_route_facts"
+            history_audit_store,
+            "_router_candidate_cohort_for_plan_persistence",
+            return_value=[copy.deepcopy(plan["candidate"])],
         ), mock.patch.object(
-            history_audit_store, "record_candidate_l2_dispatch_fact"
-        ):
-            history_execution.persist_plan(conn, plan, route_authority={})
+            history_audit_store,
+            "_materialize_final_candidate_routes_for_plan",
+        ), mock.patch.object(
+            history_audit_store,
+            "_insert_new_l2_plan_with_dispatch",
+            side_effect=insert_plan_without_dispatch,
+        ), admission:
+            history_execution.persist_plan(conn, plan)
+
+    def _record_prefix_legacy_route(
+        self, conn, plan, *, created_at
+    ):
+        """Seed the caller-route projection used by one prefix migration fixture."""
+        authority = self._route_authority(plan)
+        routes = authority["candidate_routes"]
+        candidate_ids = [item["candidate"]["candidate_id"] for item in routes]
+        risk_policy = authority["risk_policy"]
+        slice_policy = authority["risk_slice_policy"]
+        risk_policy_sha = history_audit_store._semantic_sha(
+            "history-risk-policy-v1", risk_policy
+        )
+        slice_policy_sha = history_audit_store._semantic_sha(
+            "history-risk-slice-policy-v1", slice_policy
+        )
+        cohort_material = {
+            "run_id": plan["run_id"],
+            "batch_id": plan["batch_id"],
+            "intent": plan["intent"],
+            "candidate_ids": candidate_ids,
+            "risk_policy_sha256": risk_policy_sha,
+            "risk_slice_policy_sha256": slice_policy_sha,
+            "created_at": created_at,
+        }
+        cohort_sha = history_audit_store._semantic_sha(
+            "history-candidate-route-cohort-v2", cohort_material
+        )
+        cohort_values = (
+            plan["run_id"], plan["batch_id"], plan["intent"],
+            history_audit_store._semantic_canonical(candidate_ids),
+            history_audit_store._semantic_canonical(risk_policy),
+            risk_policy_sha,
+            history_audit_store._semantic_canonical(slice_policy),
+            slice_policy_sha, cohort_sha, created_at,
+        )
+        guard = history_audit_store._COST_FACT_GUARDS[id(conn)]
+        guard["cohort"] = cohort_values
+        try:
+            conn.execute(
+                "INSERT INTO audit_candidate_route_cohorts_v2 "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                cohort_values,
+            )
+        finally:
+            guard["cohort"] = None
+        item = routes[0]
+        facts = {
+            **item["router_facts"],
+            "candidate_budget_available": True,
+            "attempt_budget_available": True,
+        }
+        derived = history_audit_eval_v2.route_candidate(facts, risk_policy)
+        route_material = {
+            "run_id": plan["run_id"],
+            "candidate_id": plan["candidate"]["candidate_id"],
+            "intent": plan["intent"],
+            "cohort_sha256": cohort_sha,
+            "router_facts": facts,
+            "risk_slices": item["risk_slices"],
+            "matched_rule_ids": derived["matched_rule_ids"],
+            "route": derived["route"],
+            "call_l1_model": derived["call_l1_model"],
+            "dispatch_allowed": derived["dispatch_allowed"],
+            "rule_table_sha256": derived["rule_table_sha256"],
+            "risk_policy_version": derived["receipt_risk_policy_version"],
+            "created_at": created_at,
+        }
+        fact_sha = history_audit_store._semantic_sha(
+            "history-candidate-route-fact-v2", route_material
+        )
+        route_values = (
+            plan["run_id"], plan["candidate"]["candidate_id"],
+            plan["intent"], cohort_sha,
+            history_audit_store._semantic_canonical(facts),
+            history_audit_store._semantic_canonical(item["risk_slices"]),
+            history_audit_store._semantic_canonical(
+                derived["matched_rule_ids"]
+            ),
+            derived["route"], int(derived["call_l1_model"]),
+            int(derived["dispatch_allowed"]), derived["rule_table_sha256"],
+            derived["receipt_risk_policy_version"], fact_sha, created_at,
+        )
+        guard["route"] = route_values
+        try:
+            conn.execute(
+                "INSERT INTO audit_candidate_route_facts_v2 "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                route_values,
+            )
+        finally:
+            guard["route"] = None
+        observation_material = {
+            "run_id": plan["run_id"],
+            "candidate_id": plan["candidate"]["candidate_id"],
+            "route_fact_sha256": fact_sha,
+            "observation_scope": "host_issued_shadow",
+            "production_authority": False,
+            "created_at": created_at,
+        }
+        observation_values = (
+            plan["run_id"], plan["candidate"]["candidate_id"], fact_sha,
+            "host_issued_shadow", 0,
+            history_audit_store._semantic_sha(
+                "history-candidate-route-observation-boundary-v1",
+                observation_material,
+            ),
+            created_at,
+        )
+        guard["route_observation"] = observation_values
+        try:
+            conn.execute(
+                "INSERT INTO audit_candidate_route_observation_boundaries_v2 "
+                "VALUES(?,?,?,?,?,?,?)",
+                observation_values,
+            )
+        finally:
+            guard["route_observation"] = None
+        return fact_sha
+
+    def _persist_prefix_legacy_route_plan(self, conn, plan):
+        self._persist_pre_route_plan(conn, plan)
+        created_at = conn.execute(
+            "SELECT created_at FROM audit_l2_plans_v2 WHERE plan_sha=?",
+            (plan["plan_sha"],),
+        ).fetchone()[0]
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            fact_sha = self._record_prefix_legacy_route(
+                conn, plan, created_at=created_at
+            )
+            dispatch_material = {
+                "plan_sha": plan["plan_sha"],
+                "run_id": plan["run_id"],
+                "candidate_id": plan["candidate"]["candidate_id"],
+                "route_fact_sha256": fact_sha,
+                "created_at": created_at,
+            }
+            dispatch_values = (
+                plan["plan_sha"], plan["run_id"],
+                plan["candidate"]["candidate_id"], fact_sha,
+                history_audit_store._semantic_sha(
+                    "history-candidate-l2-dispatch-v2", dispatch_material
+                ),
+                created_at,
+            )
+            guard = history_audit_store._COST_FACT_GUARDS[id(conn)]
+            guard["dispatch"] = dispatch_values
+            try:
+                conn.execute(
+                    "INSERT INTO audit_candidate_l2_dispatch_facts_v2 "
+                    "VALUES(?,?,?,?,?,?)",
+                    dispatch_values,
+                )
+            finally:
+                guard["dispatch"] = None
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
 
     def _seed_route_prerequisites(
         self, conn, plan, candidates, *, run_created_at=None,
         staging_created_at=None,
     ):
         material = history_audit_plan.build_runtime_plan_material(plan)
+        history_audit_store.issue_candidate_budget_receipt(
+            conn, material, plan["plan_sha"], decided_at=run_created_at
+        )
         snapshot = plan["snapshot"]
         run_created_at = run_created_at or self._now(10)
         staging_created_at = staging_created_at or self._now()
@@ -367,14 +794,15 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             ),
         )
         for candidate in candidates:
-            conn.execute(
-                "INSERT INTO audit_batch_staging VALUES(?,?,?,?,?,?,?)",
-                (
-                    candidate["candidate_id"], plan["run_id"],
-                    plan["batch_id"], candidate["candidate_hash"],
-                    candidate["raw_artifact_sha"], candidate["source_order"],
-                    staging_created_at,
-                ),
+            history_audit_store.insert_authorized_batch_staging(
+                conn,
+                staging_candidate_id=candidate["candidate_id"],
+                run_id=plan["run_id"],
+                batch_id=plan["batch_id"],
+                candidate_hash=candidate["candidate_hash"],
+                raw_artifact_sha=candidate["raw_artifact_sha"],
+                source_order=candidate["source_order"],
+                created_at=staging_created_at,
             )
         conn.commit()
         return run_created_at
@@ -399,23 +827,26 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
     def test_route_authority_rejects_unselected_intent_and_unknown_slice(self):
         authority = self._route_authority()
         authority["intent"] = "arbitrary_intent"
-        with self.assertRaises(self._api("ExecutionError")):
+        with self.assertRaises(self._api("ExecutionError")) as caught:
             self._api("persist_plan")(
                 self.conn, self.plan, route_authority=authority
             )
+        self.assertEqual(caught.exception.code, "caller_route_authority_forbidden")
         authority = self._route_authority(risk_slices=["invented_slice"])
-        with self.assertRaises(self._api("ExecutionError")):
+        with self.assertRaises(self._api("ExecutionError")) as caught:
             self._api("persist_plan")(
                 self.conn, self.plan, route_authority=authority
             )
+        self.assertEqual(caught.exception.code, "caller_route_authority_forbidden")
         authority["risk_slice_policy"]["allowed_slices"].append(
             "invented_slice"
         )
         authority["risk_slice_policy"]["allowed_slices"].sort()
-        with self.assertRaises(self._api("ExecutionError")):
+        with self.assertRaises(self._api("ExecutionError")) as caught:
             self._api("persist_plan")(
                 self.conn, self.plan, route_authority=authority
             )
+        self.assertEqual(caught.exception.code, "caller_route_authority_forbidden")
 
     def test_route_cohort_cannot_omit_a_frozen_batch_candidate(self):
         second = {
@@ -433,7 +864,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 self.conn, plan,
                 route_authority=self._route_authority(plan),
             )
-        self.assertEqual(caught.exception.code, "invalid_route_authority")
+        self.assertEqual(caught.exception.code, "caller_route_authority_forbidden")
         self.assertEqual(
             self.conn.execute(
                 "SELECT count(*) FROM audit_candidate_route_facts_v2"
@@ -449,7 +880,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             self._api("persist_plan")(
                 self.conn, self.plan, route_authority=authority
             )
-        self.assertEqual(caught.exception.code, "invalid_route_authority")
+        self.assertEqual(caught.exception.code, "caller_route_authority_forbidden")
         self.assertEqual(
             self.conn.execute(
                 "SELECT count(*) FROM audit_candidate_route_facts_v2"
@@ -485,11 +916,18 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             self.conn, plan, [plan["candidate"]]
         )
         self.conn.execute("BEGIN IMMEDIATE")
-        history_audit_store.record_candidate_route_facts(
-            self.conn, plan["run_id"], plan["batch_id"], plan["intent"],
-            self._route_authority(plan), created_at=created_at,
-        )
-        self.conn.execute("COMMIT")
+        try:
+            with self.assertRaisesRegex(
+                history_audit_store.AuditMigrationError,
+                "caller_route_authority_forbidden",
+            ):
+                history_audit_store.record_candidate_route_facts(
+                    self.conn, plan["run_id"], plan["batch_id"],
+                    plan["intent"], self._route_authority(plan),
+                    created_at=created_at,
+                )
+        finally:
+            self.conn.execute("ROLLBACK")
         self._persist_pre_route_plan(self.conn, plan)
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -555,6 +993,54 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             "snapshot_hash": plan["snapshot"]["snapshot_hash"],
             "truncated": truncated,
             "items": items,
+        }
+
+    def _detail_output(self, task, *, anchor_item_id=None):
+        request = json.loads(task["durable_request_text"])
+        records = {
+            item["item_id"]: item for item in self.plan["snapshot"]["records"]
+        }
+        records.update({
+            item["item_id"]: item for item in task["frozen_records"]
+        })
+        item_ids = task["assigned_item_ids"]
+        anchor_item_id = anchor_item_id or item_ids[0]
+        source = records[anchor_item_id]
+        return {
+            "schema_version": "history-detail-output-v1",
+            "generation_id": request["generation_id"],
+            "snapshot_id": task["snapshot_id"],
+            "snapshot_hash": task["snapshot_hash"],
+            "task_hash": task["task_hash"],
+            "truncated": False,
+            "detail_card": {
+                "lineage_id": request["exceptional_card"]["lineage_id"],
+                "semantic_relation": request["exceptional_card"][
+                    "semantic_relation"
+                ],
+                "item_ids": item_ids,
+                "evidence": [{
+                    "asset_id": anchor_item_id,
+                    "artifact_sha": source["artifact_sha"],
+                    "start": 0,
+                    "end": 5,
+                    "quote": source["content"][:5],
+                }],
+            },
+        }
+
+    def _reduce_output(self, task, *, cards=None):
+        request = json.loads(task["durable_request_text"])
+        return {
+            "schema_version": "history-reduce-output-v1",
+            "generation_id": request["generation_id"],
+            "snapshot_id": task["snapshot_id"],
+            "snapshot_hash": task["snapshot_hash"],
+            "task_hash": task["task_hash"],
+            "truncated": False,
+            "cards": copy.deepcopy(
+                request["detail_cards"] if cards is None else cards
+            ),
         }
 
     def _attempt(self, plan, task_key, provider, output):
@@ -636,6 +1122,40 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         self.assertEqual(
             task["durable_plan"]["provider_capabilities"], self.capabilities
         )
+
+    def test_budget_event_identity_binds_durable_plan_intent_and_round(self):
+        plan = self._plan(self.records, intent="evolution_search")
+        self._install(plan)
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            lambda *_: {"kind": "success", "output": self._output(plan)},
+            now=self._now(),
+        )
+        rows = self.conn.execute(
+            """
+            SELECT * FROM audit_budget_events
+            ORDER BY event_id
+            """
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual(row["run_id"], plan["run_id"])
+            self.assertEqual(row["intent"], "evolution_search")
+            self.assertEqual(row["round_id"], plan["plan_sha"])
+            material = {
+                "run_id": plan["run_id"],
+                "intent": "evolution_search",
+                "round_id": plan["plan_sha"],
+                "event_id": row["event_id"],
+                "task_hash": plan["logical_task_keys"][0],
+                "event_type": row["event_type"],
+                "counters": json.loads(row["counters_json"]),
+            }
+            expected_sha = history_contract_v2.framed_sha256(
+                "history-runtime-budget-event-v1",
+                history_contract_v2.canonical_bytes(material),
+            )
+            self.assertEqual(row["event_sha256"], expected_sha)
 
     def test_record_attempt_rejects_arbitrary_capability_hash(self):
         plan = self._install()
@@ -809,6 +1329,63 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 self.conn, plan, self.cas_root
             )
 
+    def test_database_rejects_direct_unissued_detail_task(self):
+        plan = self._install()
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "forged task authority"
+        ):
+            self.conn.execute(
+                """
+                INSERT INTO audit_logical_tasks(
+                  task_hash, run_id, stage, staging_candidate_id, input_id,
+                  state, fence, claim_token, lease_until, created_at
+                ) VALUES(?, ?, 'detail', ?, 'detail-forged',
+                         'planned', 0, NULL, NULL, ?)
+                """,
+                (
+                    sha("direct-forged-detail"), plan["run_id"],
+                    plan["candidate"]["candidate_id"], self._now(),
+                ),
+            )
+        self.conn.rollback()
+
+    def test_adjudication_upgrade_rejects_preexisting_unissued_derived_task(self):
+        path = self.root / "forged-adjudication-upgrade.sqlite3"
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        migrations = history_audit_store.MIGRATIONS
+        target = next(
+            index for index, migration in enumerate(migrations)
+            if migration.component == "l2-adjudication-authority"
+        )
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", migrations[:target]
+        ):
+            history_audit_store.init_schema(conn)
+            self._persist_pre_route_plan(conn, self.plan)
+            conn.execute(
+                "DROP TRIGGER audit_logical_tasks_l2_insert_authority_guard_v2"
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_logical_tasks(
+                  task_hash, run_id, stage, staging_candidate_id, input_id,
+                  state, fence, claim_token, lease_until, created_at
+                ) VALUES(?, ?, 'detail', ?, 'detail-preexisting',
+                         'planned', 0, NULL, NULL, ?)
+                """,
+                (
+                    sha("preexisting-unissued-detail"), self.plan["run_id"],
+                    self.plan["candidate"]["candidate_id"], self._now(),
+                ),
+            )
+            conn.commit()
+        try:
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.init_schema(conn)
+        finally:
+            conn.close()
+
     def test_upgrade_probe_rejects_existing_forged_task_binding_chain(self):
         conn = sqlite3.connect(self.root / "forged-upgrade.sqlite3")
         conn.row_factory = sqlite3.Row
@@ -895,7 +1472,11 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                     ),
                 )
             conn.execute("COMMIT")
-        history_audit_store.init_schema(conn)
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS",
+            self._without_candidate_budget_migrations(),
+        ):
+            history_audit_store.init_schema(conn)
         applied = conn.execute(
             """
             SELECT 1 FROM audit_schema_migrations
@@ -1544,8 +2125,8 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
 
         def provider(task_key, provider_name, ordinal, request):
             if ordinal == 0:
-                return {"kind": "timeout", "raw": "timeout", "usage": {"input_tokens": 10}}
-            return {"kind": "success", "output": self._output(), "usage": {"input_tokens": 10, "output_tokens": 5}}
+                return {"kind": "timeout", "raw": "timeout"}
+            return {"kind": "success", "output": self._output()}
 
         result = self._api("run_map_task")(
             self.conn, self.cas_root, plan, plan["logical_task_keys"][0], provider,
@@ -1572,13 +2153,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         plan = self._install()
 
         def provider(*_):
-            return {
-                "kind": "success", "output": self._output(),
-                "usage": {
-                    "input_tokens": 10, "output_tokens": 5,
-                    "cache_tokens": 3, "provider_usage_units": 15,
-                },
-            }
+            return {"kind": "success", "output": self._output()}
 
         self._api("run_map_task")(
             self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
@@ -1588,10 +2163,30 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             self.conn, plan["run_id"]
         )
         realized = first["intents"]["duplicate_search"]["realized"]
+        reservation = json.loads(
+            self.conn.execute(
+                "SELECT reserved_json FROM audit_runtime_budget_reservations_v2"
+            ).fetchone()[0]
+        )
+        expected_reservation = {
+            "input_tokens": len(
+                plan["shards"][0]["serialized_request"].encode("utf-8")
+            ),
+            "output_tokens": plan["capacity_profile"]["max_output_tokens"],
+        }
+        expected_reservation["provider_usage_units"] = (
+            expected_reservation["input_tokens"]
+            + expected_reservation["output_tokens"]
+        )
+        self.assertEqual(reservation, expected_reservation)
         self.assertEqual(realized["calls"], 1)
-        self.assertEqual(realized["input_tokens"], 10)
-        self.assertEqual(realized["output_tokens"], 5)
-        self.assertEqual(realized["cache_tokens"], 3)
+        self.assertEqual(realized["input_tokens"], reservation["input_tokens"])
+        self.assertEqual(realized["output_tokens"], reservation["output_tokens"])
+        self.assertEqual(realized["cache_tokens"], 0)
+        self.assertEqual(
+            realized["provider_usage_units"],
+            reservation["provider_usage_units"],
+        )
         self.assertNotIn("currency_micros", realized)
         self.assertGreaterEqual(realized["queue_latency_ms"], 0)
         self.assertGreaterEqual(realized["run_latency_ms"], 0)
@@ -1599,6 +2194,13 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         self.assertFalse(
             first["intents"]["duplicate_search"]["accounting_complete"]
         )
+        settlement = self.conn.execute(
+            """
+            SELECT usage_verified, actual_json
+            FROM audit_runtime_budget_settlements_v2
+            """
+        ).fetchone()
+        self.assertEqual(tuple(settlement), (0, None))
         self.assertEqual(
             first["intents"]["duplicate_search"]["expected_per_candidate"]["calls"],
             1.0,
@@ -1647,25 +2249,16 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             second
         )
         plan = self._plan(self.records, additional_candidates=[second])
-        candidate_routes = sorted([
-            {
-                "candidate": copy.deepcopy(plan["candidate"]),
-                "router_facts": self._router_facts(),
-                "risk_slices": ["cross_language", "low_overlap"],
+        plan = self._install(
+            plan,
+            additional_candidates=[second],
+            risk_slices_by_candidate={
+                plan["candidate"]["candidate_id"]: [
+                    "cross_language", "low_overlap",
+                ],
+                second["candidate_id"]: ["low_overlap"],
             },
-            {
-                "candidate": copy.deepcopy(second),
-                "router_facts": self._router_facts(
-                    candidate_budget_available=False,
-                    attempt_budget_available=False,
-                ),
-                "risk_slices": ["low_overlap"],
-            },
-        ], key=lambda item: item["candidate"]["candidate_id"])
-        authority = self._route_authority(
-            plan, candidate_routes=candidate_routes
         )
-        plan = self._install(plan, route_authority=authority)
         before = history_audit_eval_v2.summarize_realized_cost(
             self.conn, plan["run_id"]
         )["intents"][plan["intent"]]
@@ -1677,10 +2270,6 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
             lambda *_: {
                 "kind": "success", "output": self._output(plan),
-                "usage": {
-                    "input_tokens": 10, "output_tokens": 6,
-                    "cache_tokens": 2, "provider_usage_units": 16,
-                },
             },
             now=self._now(2),
         )
@@ -1702,7 +2291,10 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         self.assertEqual(summary["escalation_rate"], 0.5)
         self.assertEqual(summary["realized"]["calls"], 1)
         self.assertEqual(summary["expected_per_candidate"]["calls"], 0.5)
-        self.assertEqual(summary["expected_per_candidate"]["input_tokens"], 5)
+        self.assertEqual(
+            summary["expected_per_candidate"]["input_tokens"],
+            summary["realized"]["input_tokens"] / 2,
+        )
         self.assertEqual(
             summary["risk_slices"]["low_overlap"]["candidate_count"], 2
         )
@@ -1714,13 +2306,15 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
     def test_call_l1_without_durable_l1_attempt_makes_expected_unavailable(self):
         facts = self._router_facts(
             retriever_calibrated=True,
-            finalist_or_sa=False,
+            finalist_or_sa=True,
             bad_slice_membership=False,
         )
+        plan = self._plan(self.records, router_facts=facts)
         plan = self._install(
-            route_authority=self._route_authority(
-                facts=facts, risk_slices=[]
-            )
+            plan,
+            calibrated=True,
+            comparator="certain",
+            risk_slices_by_candidate={plan["candidate"]["candidate_id"]: []},
         )
         summary = history_audit_eval_v2.summarize_realized_cost(
             self.conn, plan["run_id"]
@@ -1733,9 +2327,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
 
     def test_route_facts_reject_direct_sql_mutation_and_conflicting_reissue(self):
         plan = self._install()
-        self._api("persist_plan")(
-            self.conn, plan, route_authority=self._route_authority(plan)
-        )
+        self._api("persist_plan")(self.conn, plan)
         self.assertEqual(
             self.conn.execute(
                 "SELECT count(*) FROM audit_candidate_route_facts_v2"
@@ -1756,13 +2348,14 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 "SELECT * FROM audit_candidate_route_cohorts_v2"
             )
         self.conn.rollback()
-        with self.assertRaises(self._api("ExecutionError")):
+        with self.assertRaises(self._api("ExecutionError")) as caught:
             self._api("persist_plan")(
                 self.conn, plan,
                 route_authority=self._route_authority(
                     risk_slices=["cross_language", "low_overlap"]
                 ),
             )
+        self.assertEqual(caught.exception.code, "caller_route_authority_forbidden")
         self.conn.close()
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
@@ -1813,18 +2406,18 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             ),
         )
         candidate = plan["candidate"]
-        self.conn.execute(
-            "INSERT INTO audit_batch_staging VALUES(?,?,?,?,?,?,?)",
-            (
-                candidate["candidate_id"], plan["run_id"], plan["batch_id"],
-                candidate["candidate_hash"], candidate["raw_artifact_sha"],
-                candidate["source_order"], self._now(),
-            ),
+        history_audit_store.insert_authorized_batch_staging(
+            self.conn,
+            staging_candidate_id=candidate["candidate_id"],
+            run_id=plan["run_id"],
+            batch_id=plan["batch_id"],
+            candidate_hash=candidate["candidate_hash"],
+            raw_artifact_sha=candidate["raw_artifact_sha"],
+            source_order=candidate["source_order"],
+            created_at=self._now(),
         )
         self.conn.commit()
-        self._api("persist_plan")(
-            self.conn, plan, route_authority=self._route_authority(plan)
-        )
+        self._install(plan)
         row = self.conn.execute(
             "SELECT staging.created_at, route.created_at "
             "FROM audit_batch_staging staging "
@@ -1855,10 +2448,6 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         self._api("complete_attempt")(
             self.conn, self.cas_root, task_key, attempt["attempt_id"],
             self._output(), plan["snapshot"],
-            usage={
-                "input_tokens": 10, "output_tokens": 5,
-                "provider_usage_units": 15,
-            },
             now=completed_at,
         )
         realized = history_audit_eval_v2.summarize_realized_cost(
@@ -1866,6 +2455,615 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         )["intents"][plan["intent"]]["realized"]
         self.assertEqual(realized["queue_latency_ms"], 10000)
         self.assertEqual(realized["run_latency_ms"], 4000)
+
+    def test_completion_rejects_empty_and_zero_caller_usage_authority(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        self._api("claim_task")(
+            self.conn, task_key, "worker", 60, 0, now=self._now()
+        )
+        attempt = self._api("record_attempt")(
+            self.conn, task_key, plan["provider_capabilities"]["codex"],
+            {"attempt_kind": "initial"}, cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+        )
+        for usage in (
+            {},
+            {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "provider_usage_units": 0,
+            },
+        ):
+            with self.subTest(usage=usage):
+                with self.assertRaises(self._api("ExecutionError")) as caught:
+                    self._api("complete_attempt")(
+                        self.conn, self.cas_root, task_key,
+                        attempt["attempt_id"], self._output(),
+                        plan["snapshot"], usage=usage,
+                    )
+                self.assertEqual(
+                    caught.exception.code, "usage_authority_unavailable"
+                )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_attempt_completions_v2"
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_runtime_budget_settlements_v2"
+            ).fetchone()[0],
+            0,
+        )
+        started_at = self.conn.execute(
+            "SELECT created_at FROM audit_task_attempts WHERE attempt_id=?",
+            (attempt["attempt_id"],),
+        ).fetchone()[0]
+        completed_at = (
+            datetime.datetime.fromisoformat(started_at)
+            + datetime.timedelta(seconds=1)
+        ).isoformat()
+        self._api("complete_attempt")(
+            self.conn, self.cas_root, task_key, attempt["attempt_id"],
+            self._output(), plan["snapshot"],
+            now=completed_at,
+        )
+        settlement = self.conn.execute(
+            """
+            SELECT budget.usage_verified, budget.actual_json,
+                   budget.created_at, completion.completed_at,
+                   completion.usage_json
+            FROM audit_runtime_budget_settlements_v2 budget
+            JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+            WHERE budget.attempt_id=?
+            """,
+            (attempt["attempt_id"],),
+        ).fetchone()
+        self.assertEqual(
+            tuple(settlement),
+            (
+                0,
+                None,
+                completed_at,
+                completed_at,
+                history_contract_v2.canonical_bytes({}).decode(),
+            ),
+        )
+
+    def test_database_rejects_unreceipted_verified_usage_settlements(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        self._api("claim_task")(
+            self.conn, task_key, "worker", 60, 0, now=self._now()
+        )
+        attempt = self._api("record_attempt")(
+            self.conn, task_key, plan["provider_capabilities"]["codex"],
+            {"attempt_kind": "initial"}, cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+        )
+        cases = (
+            {},
+            {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "provider_usage_units": 0,
+            },
+            {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "provider_usage_units": 15,
+            },
+        )
+        for actual in cases:
+            with self.subTest(actual=actual):
+                with self.assertRaises(sqlite3.IntegrityError):
+                    self.conn.execute(
+                        """
+                        INSERT INTO audit_runtime_budget_settlements_v2(
+                          attempt_id, usage_verified, actual_json, created_at
+                        ) VALUES(?, 1, ?, ?)
+                        """,
+                        (
+                            attempt["attempt_id"],
+                            history_contract_v2.canonical_bytes(actual).decode(),
+                            self._now(),
+                        ),
+                    )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_runtime_budget_settlements_v2"
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_direct_terminal_rows_require_host_one_shot_authority(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        self._api("claim_task")(
+            self.conn, task_key, "worker", 60, 0, now=self._now()
+        )
+        attempt = self._api("record_attempt")(
+            self.conn, task_key, plan["provider_capabilities"]["codex"],
+            {"attempt_kind": "initial"}, cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_runtime_budget_settlements_v2(
+                  attempt_id, usage_verified, actual_json, created_at
+                ) VALUES(?, 0, NULL, ?)
+                """,
+                (attempt["attempt_id"], self._now()),
+            )
+        self.conn.rollback()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_attempt_completions_v2(
+                  attempt_id, output_cas_object_id, outcome,
+                  normalized_result_json, usage_json, completed_at
+                ) VALUES(?, ?, 'valid', '{}', ?, ?)
+                """,
+                (
+                    attempt["attempt_id"], attempt["request_cas_object_id"],
+                    history_contract_v2.canonical_bytes({}).decode(),
+                    self._now(),
+                ),
+            )
+        self.conn.rollback()
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_attempt_completions_v2"
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_runtime_budget_settlements_v2"
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_terminal_host_guards_clear_on_rollback_and_survive_reopen(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        ready_at = self.conn.execute(
+            "SELECT created_at FROM audit_logical_tasks WHERE task_hash=?",
+            (task_key,),
+        ).fetchone()[0]
+        self._api("claim_task")(
+            self.conn, task_key, "worker", 60, 0, now=ready_at
+        )
+        attempt = self._api("record_attempt")(
+            self.conn, task_key, plan["provider_capabilities"]["codex"],
+            {"attempt_kind": "initial"}, cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            now=ready_at,
+        )
+        completed_at = (
+            datetime.datetime.fromisoformat(ready_at)
+            + datetime.timedelta(seconds=1)
+        ).isoformat()
+        self.conn.execute("BEGIN IMMEDIATE")
+        history_audit_store.insert_attempt_completion(
+            self.conn, attempt["attempt_id"], attempt["request_cas_object_id"],
+            "valid", history_contract_v2.canonical_bytes({}).decode(),
+            completed_at=completed_at,
+        )
+        self.conn.rollback()
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM audit_attempt_completions_v2 WHERE attempt_id=?",
+            (attempt["attempt_id"],),
+        ).fetchone())
+
+        self.conn.close()
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        history_audit_store.init_schema(self.conn)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_attempt_completions_v2(
+                  attempt_id, output_cas_object_id, outcome,
+                  normalized_result_json, usage_json, completed_at
+                ) VALUES(?, ?, 'valid', ?, ?, ?)
+                """,
+                (
+                    attempt["attempt_id"], attempt["request_cas_object_id"],
+                    history_contract_v2.canonical_bytes({}).decode(),
+                    history_contract_v2.canonical_bytes({}).decode(),
+                    completed_at,
+                ),
+            )
+        self.conn.rollback()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_runtime_budget_settlements_v2(
+                  attempt_id, usage_verified, actual_json, created_at
+                ) VALUES(?, 0, NULL, ?)
+                """,
+                (attempt["attempt_id"], completed_at),
+            )
+        self.conn.rollback()
+        self._api("complete_attempt")(
+            self.conn, self.cas_root, task_key, attempt["attempt_id"],
+            self._output(), plan["snapshot"], now=completed_at,
+        )
+
+    def test_completion_and_cancellation_are_mutually_exclusive_both_orders(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        ready_at = self.conn.execute(
+            "SELECT created_at FROM audit_logical_tasks WHERE task_hash=?",
+            (task_key,),
+        ).fetchone()[0]
+        self._api("claim_task")(
+            self.conn, task_key, "worker", 60, 0, now=ready_at
+        )
+        attempt = self._api("record_attempt")(
+            self.conn, task_key, plan["provider_capabilities"]["codex"],
+            {"attempt_kind": "initial"}, cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            now=ready_at,
+        )
+        completed_at = (
+            datetime.datetime.fromisoformat(ready_at)
+            + datetime.timedelta(seconds=1)
+        ).isoformat()
+        normalized = history_contract_v2.canonical_bytes({}).decode()
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        history_audit_store.insert_attempt_completion(
+            self.conn, attempt["attempt_id"], attempt["request_cas_object_id"],
+            "valid", normalized, completed_at=completed_at,
+        )
+        with self.assertRaises(history_audit_store.AuditMigrationError):
+            history_audit_store.record_attempt_terminal_cost_fact(
+                self.conn, attempt["attempt_id"], cancellation=True,
+                completed_at=completed_at,
+            )
+        self.conn.rollback()
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        history_audit_store.record_attempt_terminal_cost_fact(
+            self.conn, attempt["attempt_id"], cancellation=True,
+            completed_at=completed_at,
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            history_audit_store.insert_attempt_completion(
+                self.conn, attempt["attempt_id"],
+                attempt["request_cas_object_id"], "valid", normalized,
+                completed_at=completed_at,
+            )
+        self.conn.rollback()
+        self.assertEqual(
+            tuple(self.conn.execute(
+                """
+                SELECT
+                  (SELECT count(*) FROM audit_attempt_completions_v2),
+                  (SELECT count(*) FROM audit_attempt_cost_settlements_v2),
+                  (SELECT count(*) FROM audit_runtime_budget_settlements_v2)
+                """
+            ).fetchone()),
+            (0, 0, 0),
+        )
+
+    def test_committed_completion_rejects_cancel_without_mutating_terminal_rows(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        ready_at = self.conn.execute(
+            "SELECT created_at FROM audit_logical_tasks WHERE task_hash=?",
+            (task_key,),
+        ).fetchone()[0]
+        completed_at = (
+            datetime.datetime.fromisoformat(ready_at)
+            + datetime.timedelta(seconds=1)
+        ).isoformat()
+        cancel_at = (
+            datetime.datetime.fromisoformat(ready_at)
+            + datetime.timedelta(seconds=2)
+        ).isoformat()
+        self._api("claim_task")(
+            self.conn, task_key, "worker", 60, 0, now=ready_at
+        )
+        attempt = self._api("record_attempt")(
+            self.conn, task_key, plan["provider_capabilities"]["codex"],
+            {"attempt_kind": "initial"}, cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            now=ready_at,
+        )
+        self._api("complete_attempt")(
+            self.conn, self.cas_root, task_key, attempt["attempt_id"],
+            self._output(), plan["snapshot"], now=completed_at,
+        )
+        query = """
+            SELECT completion.outcome, completion.completed_at,
+                   budget.usage_verified, budget.actual_json,
+                   budget.created_at, cost.outcome, cost.completed_at,
+                   cost.fact_sha256
+            FROM audit_attempt_completions_v2 completion
+            JOIN audit_runtime_budget_settlements_v2 budget USING(attempt_id)
+            JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+            WHERE completion.attempt_id=?
+        """
+        before = tuple(self.conn.execute(
+            query, (attempt["attempt_id"],)
+        ).fetchone())
+        with self.assertRaises(history_audit_store.AuditMigrationError):
+            self._api("cancel_attempt")(
+                self.conn, attempt["attempt_id"], now=cancel_at
+            )
+        after = tuple(self.conn.execute(
+            query, (attempt["attempt_id"],)
+        ).fetchone())
+        self.assertEqual(after, before)
+        self.assertEqual(
+            (after[0], after[2], after[3], after[5]),
+            ("valid", 0, None, "success"),
+        )
+
+    def test_terminal_authority_upgrade_rejects_dirty_conflicting_and_orphan_rows(self):
+        component = "attempt-terminal-authority"
+        self.assertTrue(any(
+            migration.component == component
+            for migration in history_audit_store.MIGRATIONS
+        ))
+        for case in (
+            "dirty_completion_usage",
+            "completion_cancel_conflict",
+            "orphan_budget_settlement",
+        ):
+            with self.subTest(case=case):
+                legacy = sqlite3.connect(self.root / f"legacy-{case}.sqlite3")
+                legacy.row_factory = sqlite3.Row
+                target = next(
+                    index for index, migration in enumerate(
+                        history_audit_store.MIGRATIONS
+                    )
+                    if migration.component == component
+                )
+                old_migrations = history_audit_store.MIGRATIONS[:target]
+                with mock.patch.object(
+                    history_audit_store, "MIGRATIONS", old_migrations
+                ):
+                    history_audit_store.init_schema(legacy)
+                primary_conn, primary_cas = self.conn, self.cas_root
+                self.conn = legacy
+                self.cas_root = self.root / f"legacy-{case}-cas"
+                try:
+                    plan = copy.deepcopy(self.plan)
+                    self._persist_prefix_legacy_route_plan(legacy, plan)
+                    task_key = plan["logical_task_keys"][0]
+                    ready_at = legacy.execute(
+                        "SELECT created_at FROM audit_logical_tasks "
+                        "WHERE task_hash=?",
+                        (task_key,),
+                    ).fetchone()[0]
+                    self._api("claim_task")(
+                        legacy, task_key, "legacy-worker", 60, 0,
+                        now=ready_at,
+                    )
+                    with mock.patch.object(
+                        history_execution,
+                        "_has_route_dispatch_authority",
+                        return_value=True,
+                    ):
+                        attempt = self._api("record_attempt")(
+                            legacy, task_key,
+                            plan["provider_capabilities"]["codex"],
+                            {"attempt_kind": "initial"},
+                            cas_root=self.cas_root,
+                            request_bytes=(
+                                plan["shards"][0]["serialized_request"].encode()
+                            ),
+                            now=ready_at,
+                        )
+                    terminal_at = (
+                        datetime.datetime.fromisoformat(ready_at)
+                        + datetime.timedelta(seconds=1)
+                    ).isoformat()
+                    if case == "dirty_completion_usage":
+                        legacy.execute(
+                            """
+                            INSERT INTO audit_attempt_completions_v2(
+                              attempt_id, output_cas_object_id, outcome,
+                              normalized_result_json, usage_json, completed_at
+                            ) VALUES(?, ?, 'valid', '{}', ?, ?)
+                            """,
+                            (
+                                attempt["attempt_id"],
+                                attempt["request_cas_object_id"],
+                                history_contract_v2.canonical_bytes(
+                                    {"caller": "usage"}
+                                ).decode(),
+                                terminal_at,
+                            ),
+                        )
+                    else:
+                        legacy.execute(
+                            """
+                            INSERT INTO audit_runtime_budget_settlements_v2(
+                              attempt_id, usage_verified, actual_json, created_at
+                            ) VALUES(?, 0, NULL, ?)
+                            """,
+                            (attempt["attempt_id"], terminal_at),
+                        )
+                        if case == "completion_cancel_conflict":
+                            legacy.execute(
+                                "CREATE TEMP TABLE "
+                                "audit_verified_usage_authorities_v2("
+                                "attempt_id TEXT)"
+                            )
+                            try:
+                                history_audit_store.record_attempt_terminal_cost_fact(
+                                    legacy, attempt["attempt_id"],
+                                    completed_at=terminal_at,
+                                    cancellation=True,
+                                )
+                            finally:
+                                legacy.execute(
+                                    "DROP TABLE temp."
+                                    "audit_verified_usage_authorities_v2"
+                                )
+                            legacy.execute(
+                                """
+                                INSERT INTO audit_attempt_completions_v2(
+                                  attempt_id, output_cas_object_id, outcome,
+                                  normalized_result_json, usage_json,
+                                  completed_at
+                                ) VALUES(?, ?, 'valid', '{}', ?, ?)
+                                """,
+                                (
+                                    attempt["attempt_id"],
+                                    attempt["request_cas_object_id"],
+                                    history_contract_v2.canonical_bytes(
+                                        {}
+                                    ).decode(),
+                                    terminal_at,
+                                ),
+                            )
+                    legacy.commit()
+                    with self.assertRaises(
+                        history_audit_store.AuditMigrationError
+                    ):
+                        history_audit_store.init_schema(legacy)
+                    self.assertIsNone(legacy.execute(
+                        """
+                        SELECT 1 FROM audit_schema_migrations
+                        WHERE component=?
+                        """,
+                        (component,),
+                    ).fetchone())
+                finally:
+                    self.conn, self.cas_root = primary_conn, primary_cas
+                    legacy.close()
+
+    def test_usage_authority_upgrade_rejects_legacy_verified_actual_atomically(self):
+        component = "runtime-usage-authority"
+        self.assertTrue(any(
+            migration.component == component
+            for migration in history_audit_store.MIGRATIONS
+        ))
+        legacy_path = self.root / "legacy-verified-usage.sqlite3"
+        legacy = sqlite3.connect(legacy_path)
+        legacy.row_factory = sqlite3.Row
+        target = next(
+            index for index, migration in enumerate(
+                history_audit_store.MIGRATIONS
+            )
+            if migration.component == component
+        )
+        old_migrations = history_audit_store.MIGRATIONS[:target]
+        def legacy_usage_valid(usage_verified, actual_json):
+            return int(
+                (usage_verified == 0 and actual_json is None)
+                or (usage_verified == 1 and actual_json is not None)
+            )
+
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS", old_migrations
+        ), mock.patch.object(
+            history_audit_store,
+            "_l2_budget_settlement_valid",
+            legacy_usage_valid,
+        ):
+            history_audit_store.init_schema(legacy)
+        primary_conn, primary_cas = self.conn, self.cas_root
+        self.conn = legacy
+        self.cas_root = self.root / "legacy-verified-usage-cas"
+        try:
+            plan = copy.deepcopy(self.plan)
+            self._persist_prefix_legacy_route_plan(legacy, plan)
+            task_key = plan["logical_task_keys"][0]
+            self._api("claim_task")(
+                legacy, task_key, "legacy-worker", 60, 0, now=self._now()
+            )
+            with mock.patch.object(
+                history_execution,
+                "_has_route_dispatch_authority",
+                return_value=True,
+            ):
+                attempt = self._api("record_attempt")(
+                    legacy, task_key,
+                    plan["provider_capabilities"]["codex"],
+                    {"attempt_kind": "initial"}, cas_root=self.cas_root,
+                    request_bytes=(
+                        plan["shards"][0]["serialized_request"].encode()
+                    ),
+                )
+            actual = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "provider_usage_units": 0,
+            }
+            legacy.execute(
+                """
+                INSERT INTO audit_runtime_budget_settlements_v2(
+                  attempt_id, usage_verified, actual_json, created_at
+                ) VALUES(?, 1, ?, ?)
+                """,
+                (
+                    attempt["attempt_id"],
+                    history_contract_v2.canonical_bytes(actual).decode(),
+                    self._now(),
+                ),
+            )
+            legacy.commit()
+            task = self._api("load_task")(legacy, task_key)
+            with self.assertRaises(self._api("ExecutionError")) as budget:
+                history_execution._effective_budget_totals(
+                    legacy, task, candidate_only=False
+                )
+            self.assertEqual(
+                budget.exception.code, "usage_authority_unavailable"
+            )
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.init_schema(legacy)
+            self.assertIsNone(legacy.execute(
+                """
+                SELECT 1 FROM audit_schema_migrations
+                WHERE component=?
+                """,
+                (component,),
+            ).fetchone())
+            stored = legacy.execute(
+                """
+                SELECT usage_verified, actual_json
+                FROM audit_runtime_budget_settlements_v2
+                WHERE attempt_id=?
+                """,
+                (attempt["attempt_id"],),
+            ).fetchone()
+            self.assertEqual(stored["usage_verified"], 1)
+            self.assertIsNotNone(stored["actual_json"])
+        finally:
+            self.conn, self.cas_root = primary_conn, primary_cas
+            legacy.close()
+
+    def test_run_task_rejects_provider_shaped_usage_before_completion(self):
+        plan = self._install()
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("run_map_task")(
+                self.conn, self.cas_root, plan,
+                plan["logical_task_keys"][0],
+                lambda *_: {
+                    "kind": "success",
+                    "output": self._output(),
+                    "usage": {},
+                },
+                now=self._now(),
+            )
+        self.assertEqual(caught.exception.code, "usage_authority_unavailable")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_attempt_completions_v2"
+            ).fetchone()[0],
+            0,
+        )
 
     def test_cost_fact_tables_reject_direct_writes_and_mutation(self):
         with self.assertRaises(sqlite3.DatabaseError):
@@ -1879,7 +3077,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             self.conn, plan["logical_task_keys"][0], "worker", 60, 0,
             now=self._now(),
         )
-        self._api("record_attempt")(
+        attempt = self._api("record_attempt")(
             self.conn, plan["logical_task_keys"][0],
             plan["provider_capabilities"]["codex"],
             {"attempt_kind": "initial"}, cas_root=self.cas_root,
@@ -1889,6 +3087,18 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 (plan["logical_task_keys"][0],),
             ).fetchone()[0],
         )
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_attempt_cost_settlements_v2(
+                  attempt_id, outcome, error_class, billing_state,
+                  usage_source, price_source, currency, run_latency_ms,
+                  fact_sha256, completed_at
+                ) VALUES(?, 'cancelled', 'cancelled', 'unknown',
+                         'reservation', NULL, NULL, 0, ?, ?)
+                """,
+                (attempt["attempt_id"], "e" * 64, self._now(1)),
+            )
         with self.assertRaises(sqlite3.DatabaseError):
             self.conn.execute(
                 "UPDATE audit_attempt_launch_facts_v2 SET queued_at=?",
@@ -1986,7 +3196,11 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         legacy.close()
         legacy = sqlite3.connect(legacy_path)
         legacy.row_factory = sqlite3.Row
-        history_audit_store.init_schema(legacy)
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS",
+            self._without_candidate_budget_migrations(),
+        ):
+            history_audit_store.init_schema(legacy)
         quarantined = legacy.execute(
             "SELECT reason FROM audit_legacy_unaccounted_attempts_v2 "
             "WHERE attempt_id=?",
@@ -2017,7 +3231,11 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         legacy.close()
         legacy = sqlite3.connect(legacy_path)
         legacy.row_factory = sqlite3.Row
-        history_audit_store.init_schema(legacy)
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS",
+            self._without_candidate_budget_migrations(),
+        ):
+            history_audit_store.init_schema(legacy)
         summary = history_audit_eval_v2.summarize_realized_cost(
             legacy, plan["run_id"]
         )["intents"][plan["intent"]]
@@ -2057,9 +3275,18 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 """
             )
             plan = self._plan(self.records)
-            history_execution.persist_plan(
-                legacy, plan, route_authority=self._route_authority(plan)
-            )
+            with mock.patch.object(
+                history_audit_store,
+                "issue_candidate_budget_receipt",
+                return_value={
+                    "decision": "accepted", "decided_at": self._now()
+                },
+            ), mock.patch.object(
+                history_audit_store,
+                "_accepted_candidate_budget_receipt_matches",
+                return_value=True,
+            ):
+                self._persist_prefix_legacy_route_plan(legacy, plan)
             legacy.execute(
                 "DROP TABLE audit_candidate_route_observation_boundaries_v2"
             )
@@ -2067,7 +3294,11 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         legacy.close()
         legacy = sqlite3.connect(legacy_path)
         legacy.row_factory = sqlite3.Row
-        history_audit_store.init_schema(legacy)
+        with mock.patch.object(
+            history_audit_store, "MIGRATIONS",
+            self._without_candidate_budget_migrations(),
+        ):
+            history_audit_store.init_schema(legacy)
         summary = history_audit_eval_v2.summarize_realized_cost(
             legacy, plan["run_id"]
         )["intents"][plan["intent"]]
@@ -2115,15 +3346,50 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 self.conn, attempt["attempt_id"], billing_state="billable",
                 now=cancel_at,
             )
+        for usage in (
+            {},
+            {
+                "input_tokens": 0, "output_tokens": 0,
+                "provider_usage_units": 0,
+            },
+        ):
+            with self.subTest(usage=usage):
+                with self.assertRaises(self._api("ExecutionError")) as caught:
+                    self._api("cancel_attempt")(
+                        self.conn, attempt["attempt_id"],
+                        billing_state="unknown", usage=usage,
+                        now=cancel_at,
+                    )
+                self.assertEqual(
+                    caught.exception.code, "usage_authority_unavailable"
+                )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_runtime_budget_settlements_v2"
+            ).fetchone()[0],
+            0,
+        )
         for _ in range(2):
             self._api("cancel_attempt")(
                 self.conn, attempt["attempt_id"], billing_state="unknown",
-                usage={
-                    "input_tokens": 2, "output_tokens": 0,
-                    "cache_tokens": 1, "provider_usage_units": 2,
-                },
                 now=cancel_at,
             )
+        settlement = self.conn.execute(
+            """
+            SELECT budget.usage_verified, budget.actual_json,
+                   budget.created_at, cost.completed_at,
+                   completion.attempt_id AS completion_attempt_id
+            FROM audit_runtime_budget_settlements_v2 budget
+            JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+            LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+            WHERE budget.attempt_id=?
+            """,
+            (attempt["attempt_id"],),
+        ).fetchone()
+        self.assertEqual(
+            tuple(settlement),
+            (0, None, cancel_at, cancel_at, None),
+        )
         summary = history_audit_eval_v2.summarize_realized_cost(
             self.conn, plan["run_id"]
         )["intents"]["duplicate_search"]
@@ -2148,8 +3414,8 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
 
                 def provider(task_key, provider_name, ordinal, request):
                     if ordinal == 0:
-                        return {"kind": failure, "raw": failure, "usage": {}}
-                    return {"kind": "success", "output": self._output(), "usage": {}}
+                        return {"kind": failure, "raw": failure}
+                    return {"kind": "success", "output": self._output()}
 
                 self._api("run_map_task")(
                     self.conn, self.cas_root, plan, plan["logical_task_keys"][0], provider,
@@ -2175,8 +3441,8 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
 
         def provider(_task_key, _provider_name, ordinal, _request):
             if ordinal == 0:
-                return {"kind": "syntax", "raw": "syntax", "usage": {}}
-            return {"kind": "success", "output": self._output(), "usage": {}}
+                return {"kind": "syntax", "raw": "syntax"}
+            return {"kind": "success", "output": self._output()}
 
         self._api("run_map_task")(
             self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
@@ -2219,7 +3485,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         plan = self._install()
 
         def provider(*_):
-            return {"kind": "overflow", "raw": "overflow", "usage": {}}
+            return {"kind": "overflow", "raw": "overflow"}
 
         result = self._api("run_map_task")(
             self.conn, self.cas_root, plan, plan["logical_task_keys"][0], provider,
@@ -2252,7 +3518,6 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             lambda *_: {
                 "kind": "success",
                 "output": self._output(plan, item_ids=child["item_ids"]),
-                "usage": {},
             },
             now=self._now(1),
         )
@@ -2269,7 +3534,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         self._install(plan)
 
         def provider(*_):
-            return {"kind": "overflow", "raw": "overflow", "usage": {}}
+            return {"kind": "overflow", "raw": "overflow"}
 
         result = self._api("run_map_task")(
             self.conn, self.cas_root, plan, plan["logical_task_keys"][0], provider,
@@ -2283,8 +3548,82 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             ),
             result,
         )
+        state = self._api("load_adjudication_state")(
+            self.conn, plan["plan_sha"]
+        )
+        self.assertTrue(state["generation_present"])
+        self.assertEqual(state["required_detail_count"], 0)
 
-    def test_missing_duplicate_extra_and_truncated_outputs_never_cover_parent(self):
+    def test_invalid_parent_faults_remain_visible_until_split_recovers(self):
+        invalid_schema = self._output()
+        invalid_schema["items"][0]["unexpected"] = True
+        invalid_anchor = self._output()
+        invalid_anchor["items"][0]["anchor"]["quote"] = "wrong"
+        cases = {
+            # Durable item-set evidence intentionally does not distinguish these
+            # three source shapes; the invalid parent contributes no observed IDs.
+            "missing": (
+                self._output(item_ids=["asset-1"]),
+                "superseded", ["item_set"], {},
+            ),
+            "duplicate": (
+                self._output(item_ids=["asset-1", "asset-1"]),
+                "superseded", ["item_set"], {},
+            ),
+            "extra": (
+                self._output(item_ids=["asset-1", "asset-2", "asset-x"]),
+                "superseded", ["item_set"], {},
+            ),
+            "truncated": (
+                self._output(truncated=True),
+                "superseded", ["truncated"], {"truncated": True},
+            ),
+            "invalid_schema": (
+                invalid_schema,
+                "exhausted", ["schema", "schema"], {"invalid_schema": True},
+            ),
+            "invalid_anchor": (
+                invalid_anchor,
+                "exhausted", ["invalid_anchor"], {"invalid_anchor": True},
+            ),
+        }
+        for name, (output, state, outcomes, expected_faults) in cases.items():
+            with self.subTest(name=name):
+                self.tearDown()
+                self.setUp()
+                plan = self._install()
+
+                def provider(*_):
+                    return {"kind": "success", "output": output}
+
+                result = self._api("run_map_task")(
+                    self.conn, self.cas_root, plan, plan["logical_task_keys"][0], provider,
+                    now=self._now(),
+                )
+                self.assertEqual(result["state"], state)
+                terminal = self._api("load_terminal_states")(
+                    self.conn, plan["plan_sha"]
+                )
+                parent = next(
+                    item for item in terminal
+                    if item["task_hash"] == plan["logical_task_keys"][0]
+                )
+                self.assertEqual(parent["attempt_outcomes"], outcomes)
+                coverage = self._api("build_coverage_receipt")(
+                    plan, terminal,
+                    {"qualified": False, "profile_id": "semantic-test-v1"},
+                )
+                self.assertEqual(coverage["observed_ids"], [])
+                self.assertEqual(coverage["missing_ids"], ["asset-1", "asset-2"])
+                self.assertEqual(coverage["duplicate_ids"], [])
+                self.assertEqual(coverage["extra_ids"], [])
+                self.assertFalse(coverage["coverage_complete"])
+                for field in ("invalid_schema", "invalid_anchor", "truncated"):
+                    self.assertEqual(
+                        coverage[field], expected_faults.get(field, False), field
+                    )
+
+    def test_valid_split_children_replace_invalid_parent_coverage_and_faults(self):
         cases = {
             "missing": self._output(item_ids=["asset-1"]),
             "duplicate": self._output(item_ids=["asset-1", "asset-1"]),
@@ -2296,20 +3635,45 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 self.tearDown()
                 self.setUp()
                 plan = self._install()
-
-                def provider(*_):
-                    return {"kind": "success", "output": output, "usage": {}}
-
                 result = self._api("run_map_task")(
-                    self.conn, self.cas_root, plan, plan["logical_task_keys"][0], provider,
+                    self.conn, self.cas_root, plan,
+                    plan["logical_task_keys"][0],
+                    lambda *_: {"kind": "success", "output": output},
                     now=self._now(),
                 )
                 self.assertEqual(result["state"], "superseded")
+                for index, child in enumerate(result["children"], 1):
+                    self._api("run_map_task")(
+                        self.conn, self.cas_root, plan, child["task_hash"],
+                        lambda *_, child=child: {
+                            "kind": "success",
+                            "output": self._output(
+                                plan,
+                                item_ids=child["item_ids"],
+                                relations={
+                                    item_id: "related_only"
+                                    for item_id in child["item_ids"]
+                                },
+                            ),
+                        },
+                        now=self._now(index),
+                    )
                 coverage = self._api("build_coverage_receipt")(
-                    plan, self._api("load_terminal_states")(self.conn, plan["plan_sha"]),
+                    plan,
+                    self._api("load_terminal_states")(
+                        self.conn, plan["plan_sha"]
+                    ),
                     {"qualified": False, "profile_id": "semantic-test-v1"},
+                    conn=self.conn,
                 )
-                self.assertEqual(coverage["observed_ids"], [])
+                self.assertEqual(coverage["observed_ids"], ["asset-1", "asset-2"])
+                self.assertEqual(coverage["missing_ids"], [])
+                self.assertEqual(coverage["duplicate_ids"], [])
+                self.assertEqual(coverage["extra_ids"], [])
+                self.assertFalse(coverage["invalid_schema"])
+                self.assertFalse(coverage["invalid_anchor"])
+                self.assertFalse(coverage["truncated"])
+                self.assertTrue(coverage["coverage_complete"])
 
     def test_reducer_receives_only_hit_and_uncertain_cards(self):
         plan = self.plan
@@ -2329,6 +3693,467 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         )
         self.assertEqual([card["lineage_id"] for card in receipt["reducer_input"]], ["lineage-a"])
         self.assertEqual(receipt["observed_ids"], ["asset-1", "asset-2"])
+
+    def test_exceptional_map_requires_detail_and_reduce_before_adjudication(self):
+        normalized = self._api("validate_map_output")(
+            {"assigned_item_ids": ["asset-1", "asset-2"]},
+            self._output(
+                relations={
+                    "asset-1": "blocking_duplicate",
+                    "asset-2": "distinct",
+                }
+            ),
+            self.plan["snapshot"],
+        )
+        receipt = self._api("build_coverage_receipt")(
+            self.plan,
+            [{
+                "state": "settled",
+                "settlement_kind": "equal",
+                "normalized_result": normalized,
+            }],
+            {"qualified": False, "profile_id": "semantic-test-v1"},
+        )
+        self.assertTrue(receipt["coverage_complete"])
+        self.assertFalse(receipt["adjudication_complete"])
+        self.assertEqual(
+            (receipt["final_status"], receipt["stage_reason_code"]),
+            ("overlap_found", "match_found_partial_coverage"),
+        )
+
+    def test_nonexceptional_map_needs_no_detail_or_reduce(self):
+        plan = self._install()
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            lambda *_: {
+                "kind": "success", "output": self._output(),
+            },
+            now=self._now(),
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_l2_adjudication_generations_v2"
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_l2_derived_task_authority_v2"
+            ).fetchone()[0],
+            0,
+        )
+        state = self._api("load_adjudication_state")(
+            self.conn, plan["plan_sha"]
+        )
+        self.assertTrue(state["generation_present"])
+        self.assertTrue(state["detail_complete"])
+        self.assertTrue(state["reduce_complete"])
+        receipt = self._api("build_coverage_receipt")(
+            plan, self._api("load_terminal_states")(self.conn, plan["plan_sha"]),
+            {"qualified": False, "profile_id": "semantic-test-v1"},
+            conn=self.conn,
+        )
+        self.assertTrue(receipt["coverage_complete"])
+        self.assertTrue(receipt["adjudication_complete"])
+        self.assertEqual(
+            (receipt["final_status"], receipt["stage_reason_code"]),
+            ("uncertain", "semantic_policy_unqualified"),
+        )
+        availability = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]["attempt_kind_availability"]
+        self.assertEqual(availability["detail"], "not_required")
+        self.assertEqual(availability["reduce"], "not_required")
+
+    def test_exceptional_map_materializes_detail_with_only_its_full_record(self):
+        plan = self._install()
+
+        def provider(*_):
+            return {
+                "kind": "success",
+                "output": self._output(
+                    relations={
+                        "asset-1": "blocking_duplicate",
+                        "asset-2": "distinct",
+                    }
+                ),
+            }
+
+        self._api("run_map_task")(
+            self.conn,
+            self.cas_root,
+            plan,
+            plan["logical_task_keys"][0],
+            provider,
+            now=self._now(),
+        )
+        tasks = self.conn.execute(
+            "SELECT task_hash, stage FROM audit_logical_tasks ORDER BY stage, task_hash"
+        ).fetchall()
+        self.assertEqual([row["stage"] for row in tasks], ["detail", "map"])
+        detail = self._api("load_task")(self.conn, tasks[0]["task_hash"])
+        request = json.loads(detail["durable_request_text"])
+        self.assertEqual(request["schema_version"], "history-detail-request-v1")
+        self.assertEqual(
+            [item["item_id"] for item in request["full_records"]],
+            ["asset-1"],
+        )
+        self.assertNotIn("beta evidence", detail["durable_request_text"])
+        self.assertEqual(detail["provider_pool"], ["codex"])
+
+    def test_adjudication_materialization_replays_after_database_reopen(self):
+        plan = self._install()
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            lambda *_: {
+                "kind": "success",
+                "output": self._output(
+                    relations={
+                        "asset-1": "blocking_duplicate",
+                        "asset-2": "distinct",
+                    }
+                ),
+            },
+            now=self._now(),
+        )
+        first = self.conn.execute(
+            """
+            SELECT task_hash FROM audit_l2_derived_task_authority_v2
+            WHERE stage='detail' ORDER BY task_hash
+            """
+        ).fetchall()
+        first_hashes = [row["task_hash"] for row in first]
+        self.assertEqual(len(first_hashes), 1)
+
+        self.conn.close()
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        history_audit_store.init_schema(self.conn)
+
+        self.assertEqual(
+            self._api("recover_run")(
+                self.conn, plan["plan_sha"], cas_root=self.cas_root,
+                now=self._now(1),
+            ),
+            [],
+        )
+        replay = self._api("materialize_adjudication_tasks")(
+            self.conn, self.cas_root, plan, now=self._now(1)
+        )
+        self.assertEqual(replay["detail_task_hashes"], first_hashes)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_l2_adjudication_generations_v2"
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_l2_derived_task_authority_v2"
+            ).fetchone()[0],
+            1,
+        )
+
+    def test_adjudication_replay_rejects_changed_frozen_plan(self):
+        plan = self._install()
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            lambda *_: {
+                "kind": "success",
+                "output": self._output(
+                    relations={
+                        "asset-1": "blocking_duplicate",
+                        "asset-2": "distinct",
+                    }
+                ),
+            },
+            now=self._now(),
+        )
+        changed = copy.deepcopy(plan)
+        changed["provider_pools_ordered"]["detail"] = ["grok"]
+        with self.assertRaises(self._api("ExecutionError")) as caught:
+            self._api("materialize_adjudication_tasks")(
+                self.conn, self.cas_root, changed, now=self._now(1)
+            )
+        self.assertEqual(caught.exception.code, "frozen_identity_mismatch")
+
+    def test_detail_uses_independent_schema_and_only_bound_full_record_anchors(self):
+        plan = self._install()
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            lambda *_: {
+                "kind": "success",
+                "output": self._output(
+                    relations={
+                        "asset-1": "blocking_duplicate",
+                        "asset-2": "distinct",
+                    }
+                ),
+            },
+            now=self._now(),
+        )
+        pending = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]["attempt_kind_availability"]
+        self.assertEqual(pending["detail"], "pending")
+        self.assertEqual(pending["reduce"], "pending")
+        detail_hash = self.conn.execute(
+            "SELECT task_hash FROM audit_logical_tasks WHERE stage='detail'"
+        ).fetchone()[0]
+        detail = self._api("load_task")(self.conn, detail_hash)
+        normalized = self._api("validate_detail_output")(
+            detail, self._detail_output(detail)
+        )
+        self.assertEqual(normalized["schema_version"], "history-detail-output-v1")
+        with self.assertRaises(self._api("MapValidationError")) as disguised:
+            self._api("validate_detail_output")(detail, self._output())
+        self.assertEqual(disguised.exception.code, "schema")
+        with self.assertRaises(self._api("MapValidationError")) as foreign:
+            self._api("validate_detail_output")(
+                detail, self._detail_output(detail, anchor_item_id="asset-2")
+            )
+        self.assertEqual(foreign.exception.code, "invalid_anchor")
+
+    def test_settled_detail_materializes_reduce_with_only_detail_cards(self):
+        plan = self._install()
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            lambda *_: {
+                "kind": "success",
+                "output": self._output(
+                    relations={
+                        "asset-1": "blocking_duplicate",
+                        "asset-2": "distinct",
+                    }
+                ),
+            },
+            now=self._now(),
+        )
+        detail_hash = self.conn.execute(
+            "SELECT task_hash FROM audit_logical_tasks WHERE stage='detail'"
+        ).fetchone()[0]
+        detail = self._api("load_task")(self.conn, detail_hash)
+        expected_card = self._detail_output(detail)["detail_card"]
+        self._api("run_task")(
+            self.conn, self.cas_root, plan, detail_hash,
+            lambda *_: {
+                "kind": "success",
+                "output": self._detail_output(detail),
+            },
+            now=self._now(1),
+        )
+        detail_durable = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]["attempt_kind_availability"]
+        self.assertEqual(detail_durable["detail"], "durable")
+        self.assertEqual(detail_durable["reduce"], "pending")
+        reduce_hash = self.conn.execute(
+            "SELECT task_hash FROM audit_logical_tasks WHERE stage='reduce'"
+        ).fetchone()[0]
+        reduce_task = self._api("load_task")(self.conn, reduce_hash)
+        request = json.loads(reduce_task["durable_request_text"])
+        self.assertEqual(request["schema_version"], "history-reduce-request-v1")
+        self.assertEqual(request["detail_cards"], [expected_card])
+        self.assertEqual(request["source_task_hashes"], [detail_hash])
+        self.assertNotIn("full_records", request)
+        self.assertNotIn("alpha evidence", reduce_task["durable_request_text"])
+        self.assertEqual(reduce_task["frozen_records"], [])
+        self.assertEqual(reduce_task["provider_pool"], ["codex"])
+        detail_reservation = self.conn.execute(
+            """
+            SELECT reservation.attempt_kind
+            FROM audit_runtime_budget_reservations_v2 reservation
+            JOIN audit_task_attempts attempt
+              ON attempt.attempt_id=reservation.attempt_id
+            WHERE attempt.task_hash=?
+            """,
+            (detail_hash,),
+        ).fetchone()
+        self.assertEqual(detail_reservation["attempt_kind"], "detail")
+
+    def test_each_exceptional_record_gets_one_detail_before_reduce(self):
+        records = [
+            self.records[0],
+            record("asset-3", "gamma evidence", "lineage-a"),
+        ]
+        plan = self._plan(records)
+        self._install(plan)
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            lambda *_: {
+                "kind": "success",
+                "output": self._output(
+                    plan,
+                    relations={
+                        "asset-1": "blocking_duplicate",
+                        "asset-3": "substantive_overlap",
+                    },
+                ),
+            },
+            now=self._now(),
+        )
+        detail_hashes = [
+            row["task_hash"] for row in self.conn.execute(
+                """
+                SELECT task_hash FROM audit_logical_tasks
+                WHERE stage='detail' ORDER BY task_hash
+                """
+            )
+        ]
+        self.assertEqual(len(detail_hashes), 2)
+        for offset, detail_hash in enumerate(detail_hashes, start=1):
+            detail = self._api("load_task")(self.conn, detail_hash)
+            self.assertEqual(len(detail["assigned_item_ids"]), 1)
+            self._api("run_task")(
+                self.conn, self.cas_root, plan, detail_hash,
+                lambda *_args, detail=detail: {
+                    "kind": "success",
+                    "output": self._detail_output(detail),
+                },
+                now=self._now(offset),
+            )
+        reduce_tasks = self.conn.execute(
+            "SELECT task_hash FROM audit_logical_tasks WHERE stage='reduce'"
+        ).fetchall()
+        self.assertEqual(len(reduce_tasks), 1)
+        reduce_task = self._api("load_task")(
+            self.conn, reduce_tasks[0]["task_hash"]
+        )
+        request = json.loads(reduce_task["durable_request_text"])
+        self.assertEqual(len(request["detail_cards"]), 2)
+        self.assertNotIn("full_records", request)
+
+    def test_reduce_is_independent_and_only_durable_completion_opens_adjudication(self):
+        plan = self._install()
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            lambda *_: {
+                "kind": "success",
+                "output": self._output(
+                    relations={
+                        "asset-1": "blocking_duplicate",
+                        "asset-2": "distinct",
+                    }
+                ),
+            },
+            now=self._now(),
+        )
+        detail_hash = self.conn.execute(
+            "SELECT task_hash FROM audit_logical_tasks WHERE stage='detail'"
+        ).fetchone()[0]
+        detail = self._api("load_task")(self.conn, detail_hash)
+        self._api("run_task")(
+            self.conn, self.cas_root, plan, detail_hash,
+            lambda *_: {
+                "kind": "success", "output": self._detail_output(detail),
+            },
+            now=self._now(1),
+        )
+        before = self._api("build_coverage_receipt")(
+            plan, self._api("load_terminal_states")(self.conn, plan["plan_sha"]),
+            {"qualified": False, "profile_id": "semantic-test-v1"},
+            conn=self.conn,
+        )
+        self.assertFalse(before["adjudication_complete"])
+        reduce_hash = self.conn.execute(
+            "SELECT task_hash FROM audit_logical_tasks WHERE stage='reduce'"
+        ).fetchone()[0]
+        reduce_task = self._api("load_task")(self.conn, reduce_hash)
+        normalized = self._api("validate_reduce_output")(
+            reduce_task, self._reduce_output(reduce_task)
+        )
+        self.assertEqual(normalized["schema_version"], "history-reduce-output-v1")
+        with self.assertRaises(self._api("MapValidationError")) as override:
+            forged = self._reduce_output(reduce_task, cards=[])
+            forged["final_status"] = "complete_no_match"
+            self._api("validate_reduce_output")(reduce_task, forged)
+        self.assertEqual(override.exception.code, "schema")
+        self._api("run_task")(
+            self.conn, self.cas_root, plan, reduce_hash,
+            lambda *_: {
+                "kind": "success", "output": self._reduce_output(reduce_task),
+            },
+            now=self._now(2),
+        )
+        durable = history_audit_eval_v2.summarize_realized_cost(
+            self.conn, plan["run_id"]
+        )["intents"][plan["intent"]]["attempt_kind_availability"]
+        self.assertEqual(durable["detail"], "durable")
+        self.assertEqual(durable["reduce"], "durable")
+        after = self._api("build_coverage_receipt")(
+            plan, self._api("load_terminal_states")(self.conn, plan["plan_sha"]),
+            {"qualified": False, "profile_id": "semantic-test-v1"},
+            conn=self.conn,
+        )
+        self.assertTrue(after["coverage_complete"])
+        self.assertTrue(after["adjudication_complete"])
+        self.assertEqual(
+            (after["final_status"], after["stage_reason_code"]),
+            ("overlap_found", "match_found"),
+        )
+        reduce_kind = self.conn.execute(
+            """
+            SELECT reservation.attempt_kind
+            FROM audit_runtime_budget_reservations_v2 reservation
+            JOIN audit_task_attempts attempt
+              ON attempt.attempt_id=reservation.attempt_id
+            WHERE attempt.task_hash=?
+            """,
+            (reduce_hash,),
+        ).fetchone()[0]
+        self.assertEqual(reduce_kind, "reduce")
+
+    def test_exhausted_detail_cannot_materialize_reduce_or_open_adjudication(self):
+        plan = self._install()
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            lambda *_: {
+                "kind": "success",
+                "output": self._output(
+                    relations={
+                        "asset-1": "blocking_duplicate",
+                        "asset-2": "distinct",
+                    }
+                ),
+            },
+            now=self._now(),
+        )
+        detail_hash = self.conn.execute(
+            "SELECT task_hash FROM audit_logical_tasks WHERE stage='detail'"
+        ).fetchone()[0]
+        exhausted = self._api("run_task")(
+            self.conn, self.cas_root, plan, detail_hash,
+            lambda *_: {"kind": "schema", "raw": "invalid"},
+            now=self._now(1),
+        )
+        self.assertEqual(exhausted["state"], "exhausted")
+        self.assertTrue(
+            history_audit_store.validate_l2_terminal_graph(
+                self.conn, plan["plan_sha"]
+            )
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_logical_tasks WHERE stage='reduce'"
+            ).fetchone()[0],
+            0,
+        )
+        state = self._api("load_adjudication_state")(
+            self.conn, plan["plan_sha"]
+        )
+        self.assertFalse(state["detail_complete"])
+        self.assertFalse(state["reduce_complete"])
+        self.assertEqual(state["exhausted_reason"], "provider_exhausted")
+        receipt = self._api("build_coverage_receipt")(
+            plan, self._api("load_terminal_states")(self.conn, plan["plan_sha"]),
+            {"qualified": False, "profile_id": "semantic-test-v1"},
+            conn=self.conn,
+        )
+        self.assertFalse(receipt["adjudication_complete"])
+        self.assertEqual(
+            (receipt["final_status"], receipt["stage_reason_code"]),
+            ("overlap_found", "match_found_partial_coverage"),
+        )
 
     def test_lineage_uses_maximum_relation_severity_without_extra_votes(self):
         records = [self.records[0], record("asset-3", "gamma evidence", "lineage-a")]
@@ -2378,7 +4203,10 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
 
         def provider(task_key, *_):
             item_id = "asset-1" if task_key == plan["logical_task_keys"][0] else "asset-2"
-            return {"kind": "success", "output": self._output(plan, item_ids=[item_id]), "usage": {}}
+            return {
+                "kind": "success",
+                "output": self._output(plan, item_ids=[item_id]),
+            }
 
         self._api("run_map_task")(
             self.conn, self.cas_root, plan, plan["logical_task_keys"][0], provider,
@@ -2423,7 +4251,11 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         )
 
     def test_durable_budget_rejects_split_child_after_reopen_without_partial_event(self):
-        plan = self._plan(self.records, started_attempt_limit=1)
+        plan = self._plan(
+            self.records,
+            started_attempt_limit=1,
+            map_providers=["codex"],
+        )
         self._install(plan)
         parent = plan["logical_task_keys"][0]
         claim = self._api("claim_task")(
@@ -2491,8 +4323,80 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         }
         self.assertEqual(after, before)
 
+    def test_run_task_turns_budget_rejection_into_durable_partial_terminal(self):
+        shards = [
+            {"shard_id": "map-0000", "item_ids": ["asset-1"]},
+            {"shard_id": "map-0001", "item_ids": ["asset-2"]},
+        ]
+        plan = self._plan(
+            self.records,
+            shards=shards,
+            started_attempt_limit=2,
+            map_providers=["codex"],
+        )
+        self._install(plan)
+
+        def consume_retry_budget(_task_key, _provider, ordinal, _request):
+            if ordinal == 0:
+                return {"kind": "syntax", "raw": "syntax"}
+            return {
+                "kind": "success",
+                "output": self._output(
+                    plan, item_ids=["asset-1"],
+                    relations={"asset-1": "blocking_duplicate"},
+                ),
+            }
+
+        self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][0],
+            consume_retry_budget,
+            now=self._now(),
+        )
+        provider_calls = []
+
+        def should_not_run(*args):
+            provider_calls.append(args)
+            return {
+                "kind": "success",
+                "output": self._output(plan, item_ids=["asset-2"]),
+            }
+
+        result = self._api("run_map_task")(
+            self.conn, self.cas_root, plan, plan["logical_task_keys"][1],
+            should_not_run, now=self._now(1),
+        )
+        self.assertEqual(provider_calls, [])
+        self.assertEqual(result["state"], "exhausted")
+        terminal = self.conn.execute(
+            """
+            SELECT task.state, fact.reason
+            FROM audit_logical_tasks task
+            JOIN audit_task_terminal_facts_v2 fact
+              ON fact.task_hash=task.task_hash
+            WHERE task.task_hash=?
+            """,
+            (plan["logical_task_keys"][1],),
+        ).fetchone()
+        self.assertEqual(
+            (terminal["state"], terminal["reason"]),
+            ("exhausted", "budget_exceeded"),
+        )
+        receipt = self._api("build_coverage_receipt")(
+            plan, self._api("load_terminal_states")(self.conn, plan["plan_sha"]),
+            {"qualified": False, "profile_id": "semantic-test-v1"},
+            conn=self.conn,
+        )
+        self.assertEqual(
+            (receipt["final_status"], receipt["stage_reason_code"]),
+            ("overlap_found", "match_found_partial_coverage"),
+        )
+
     def test_database_rejects_direct_budget_reservation_past_candidate_limit(self):
-        plan = self._plan(self.records, started_attempt_limit=1)
+        plan = self._plan(
+            self.records,
+            started_attempt_limit=1,
+            map_providers=["codex"],
+        )
         self._install(plan)
         parent = plan["logical_task_keys"][0]
         claim = self._api("claim_task")(

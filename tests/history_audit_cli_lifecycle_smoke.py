@@ -236,6 +236,13 @@ class HistoryAuditCliLifecycleSmoke(unittest.TestCase):
             "provider": profile["provider"],
             "requested_model": profile["requested_model"],
             "requested_reasoning": profile["requested_reasoning"],
+            "effective_model": profile["effective_model"],
+            "effective_reasoning": profile["effective_reasoning"],
+            "default_probe_revision": profile["default_probe_revision"],
+            "model_catalog_probe_revision": profile[
+                "model_catalog_probe_revision"
+            ],
+            "model_catalog_sha256": profile["model_catalog_sha256"],
             "execution_request_profile_hash": profile[
                 "execution_request_profile_hash"
             ],

@@ -44,10 +44,10 @@
 
 - [x] 8.1 Add explicit `HISTORY_RUNTIME_ABI=v2` Hunt portable-mirror provider/model/reasoning controls while retaining v1 command compatibility and defaulting migration runs to v1.
 - [x] 8.2 Add AwR provider/model/reasoning controls and role overrides for the full registered AwR provider set.
-- [x] 8.3 Add one locally verified CLI-grammar example per provider with explicit v2 selection and unverified model/capacity boundaries, plus offline end-to-end fake-provider tests, shell syntax gates, and product-contract checks.
+- [x] 8.3 Add one locally verified CLI-grammar example per provider with explicit v2 selection and local-catalog/account/capacity boundaries, plus offline end-to-end fake-provider tests, shell syntax gates, and product-contract checks.
 
 ## 9. Independent Verification
 
 - [x] 9.1 Run the full offline regression suite, OpenSpec strict validation, migration/recovery/fault injection, shell syntax checks, and `git diff --check`.
-- [x] 9.2 Obtain an independent test report and an independent whole-branch code audit, repair every blocking finding, and rerun both until they pass.
-- [x] 9.3 Confirm that production `complete_no_match` remains vetoed without real qrels and provider-capacity evidence, then record the final evidence boundary.
+- [ ] 9.2 Obtain an independent test report and an independent whole-branch code audit, repair every blocking finding, and rerun both until they pass.
+- [ ] 9.3 Confirm that production `complete_no_match` remains vetoed without real qrels and provider-capacity evidence, then record the final evidence boundary.

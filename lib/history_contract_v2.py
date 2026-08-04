@@ -268,6 +268,21 @@ def _validate_unique_string_list(value, name, *, sha_values=False):
     return normalized
 
 
+def minimum_receipt_sha(value):
+    """Return the canonical receipt identity without hashing the identity field."""
+    if not isinstance(value, dict):
+        raise ContractV2Error("receipt must be an object")
+    fields = set(value)
+    material_fields = _RECEIPT_FIELDS.difference({"minimum_receipt_sha"})
+    if fields not in {_RECEIPT_FIELDS, material_fields}:
+        raise ContractV2Error("receipt identity fields are invalid")
+    material = _normalize(value)
+    material.pop("minimum_receipt_sha", None)
+    return framed_sha256(
+        "history-minimum-receipt-v2", canonical_bytes(material)
+    )
+
+
 def validate_receipt(value):
     """Validate one closed history-audit-receipt-v2 object and aliases."""
     if not isinstance(value, dict):
@@ -324,6 +339,9 @@ def validate_receipt(value):
     coverage_fault = any(
         normalized[field]
         for field in ("invalid_schema", "invalid_anchor", "truncated")
+    ) or any(
+        normalized[field]
+        for field in ("missing_ids", "duplicate_ids", "extra_ids")
     )
     if normalized["coverage_complete"] and coverage_fault:
         raise ContractV2Error("complete coverage cannot contain coverage faults")
@@ -348,4 +366,6 @@ def validate_receipt(value):
             raise ContractV2Error("complete_no_match requires all release gates")
     elif basis is not None:
         raise ContractV2Error("no_match_basis requires complete_no_match")
+    if normalized["minimum_receipt_sha"] != minimum_receipt_sha(normalized):
+        raise ContractV2Error("minimum_receipt_sha is not canonical")
     return normalized

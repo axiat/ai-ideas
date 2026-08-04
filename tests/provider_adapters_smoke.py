@@ -8,6 +8,8 @@ import pathlib
 import tempfile
 import time
 import unittest
+import urllib.parse
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -21,6 +23,19 @@ from lib import provider_adapters
 REGISTRY = ROOT / "history/provider-adapters-v1.json"
 FAKE = ROOT / "tests/fake_portable_agent.py"
 FORBIDDEN_PROVIDER = "cl" + "aude"
+
+
+def catalog(provider, *models):
+    models = sorted(models)
+    return {
+        "schema_version": "provider-model-catalog-v1",
+        "provider": provider,
+        "models": models,
+        "probe_revision": "fixture-model-catalog-v1",
+        "catalog_sha256": provider_adapters._model_catalog_sha256(
+            provider, models
+        ),
+    }
 
 
 def probe(
@@ -46,10 +61,6 @@ def probe(
             reasoning is None or effective_reasoning in (None, reasoning)
         ),
         "immutable_capacity_identity": immutable_capacity_identity,
-        "evidence_sha256": hashlib.sha256(
-            f"{provider}|{executable_path}|{cli_revision}|{effective_model}|"
-            f"{effective_reasoning}|{immutable_capacity_identity}".encode()
-        ).hexdigest(),
     }
 
 
@@ -71,7 +82,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
         return value
 
     def _resolve(self, surface, provider, model=None, reasoning=None, probe_fn=probe):
-        return self._api(provider_adapters, "resolve_provider")(
+        return self._api(provider_adapters, "_resolve_provider_for_test")(
             self._registry(),
             surface,
             provider,
@@ -98,15 +109,21 @@ class ProviderAdaptersSmoke(unittest.TestCase):
 
     def test_omitted_model_and_reasoning_emit_no_override_flags(self):
         render = self._api(provider_adapters, "render_command")
-        for name in ("codex", "kimi", "grok", "opencode", "agy"):
-            surface = "hunt" if name in ("codex", "kimi", "grok") else "awr"
-            capability = self._resolve(surface, name)
+        for name in ("codex", "kimi", "grok"):
+            capability = self._resolve("hunt", name)
             argv, environment = render(
                 capability, pathlib.Path("/tmp/disposable-mirror"), "PROMPT"
             )
             self.assertNotIn("MODEL", argv)
             self.assertFalse(any("reasoning" in item or "variant" in item or "effort" in item for item in argv))
             self.assertEqual(environment, {})
+        for name in ("opencode", "agy"):
+            with self.subTest(provider=name), self.assertRaises(self._error()):
+                render(
+                    self._resolve("awr", name),
+                    pathlib.Path("/tmp/disposable-mirror"),
+                    "PROMPT",
+                )
 
     def test_default_marker_is_shadow_only_without_effective_capacity_identity(self):
         capability = self._resolve("hunt", "codex")
@@ -117,7 +134,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
         with self.assertRaises(dataclasses.FrozenInstanceError):
             capability.provider = "grok"
 
-    def test_command_intent_is_distinct_from_verified_hard_capability(self):
+    def test_command_intent_is_distinct_from_probed_shadow_capability(self):
         strict = self._resolve(
             "hunt",
             "codex",
@@ -129,20 +146,20 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             ),
         )
         self.assertIsInstance(strict, provider_adapters.ProviderCapability)
-        self.assertTrue(strict.hard_complete_eligible)
-        self.assertEqual(strict.authority, "hard-complete")
+        self.assertFalse(strict.hard_complete_eligible)
+        self.assertEqual(strict.authority, "shadow-only")
         self.assertEqual(strict.model_identity, "observed-model")
         self.assertEqual(strict.reasoning_identity, "high")
 
         resolve_intent = self._api(
-            provider_adapters, "resolve_command_intent"
+            provider_adapters, "_resolve_command_intent_for_test"
         )
         intent = resolve_intent(
             self._registry(),
             "hunt",
             "codex",
             model="requested-model",
-            reasoning="unverified-spelling",
+            reasoning="high",
             executable_lookup=lambda _: str(FAKE),
         )
         intent_type = getattr(
@@ -151,7 +168,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
         self.assertIs(type(intent), intent_type)
         self.assertNotIsInstance(intent, provider_adapters.ProviderCapability)
         self.assertEqual(intent.requested_model, "requested-model")
-        self.assertEqual(intent.requested_reasoning, "unverified-spelling")
+        self.assertEqual(intent.requested_reasoning, "high")
         self.assertIsNone(intent.effective_model)
         self.assertIsNone(intent.effective_reasoning)
         self.assertIsNone(intent.model_override_applied)
@@ -160,7 +177,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
         self.assertFalse(intent.hard_complete_eligible)
 
     def test_default_model_reasoning_or_cli_drift_stales_capability(self):
-        resolve = self._api(provider_adapters, "resolve_provider")
+        resolve = self._api(provider_adapters, "_resolve_provider_for_test")
         current = self._resolve(
             "hunt",
             "codex",
@@ -205,14 +222,26 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             "codex": ["-m", "MODEL", "-c", "model_reasoning_effort=high"],
             "kimi": ["-m", "MODEL"],
             "grok": ["-m", "MODEL", "--reasoning-effort", "high"],
-            "opencode": ["-m", "MODEL", "--variant", "high"],
+            "opencode": ["-m", "safe/MODEL", "--variant", "high"],
             "agy": ["--model", "MODEL", "--effort", "high"],
         }
         render = self._api(provider_adapters, "render_command")
         for name, spelling in cases.items():
             surface = "hunt" if name in ("codex", "kimi", "grok") else "awr"
             reasoning = None if name == "kimi" else "high"
-            capability = self._resolve(surface, name, "MODEL", reasoning)
+            model = "safe/MODEL" if name == "opencode" else "MODEL"
+            if name in ("opencode", "agy"):
+                capability = provider_adapters._resolve_command_intent_for_test(
+                    self._registry(),
+                    surface,
+                    name,
+                    model=model,
+                    reasoning=reasoning,
+                    executable_lookup=lambda _: str(FAKE),
+                    model_catalog_probe=lambda *_: catalog(name, model),
+                )
+            else:
+                capability = self._resolve(surface, name, model, reasoning)
             argv, _ = render(capability, pathlib.Path("/mirror"), "PROMPT")
             joined = "\0".join(argv)
             self.assertIn("\0".join(spelling), joined)
@@ -228,23 +257,282 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             self._resolve("awr", "unknown", probe_fn=no_launch_probe)
         self.assertEqual(calls, [])
 
+    def test_indirect_claude_models_fail_before_executable_lookup(self):
+        calls = []
+
+        def lookup(executable):
+            calls.append(executable)
+            return str(FAKE)
+
+        forbidden = (
+            ("opencode", "anthropic/claude-sonnet-4"),
+            ("opencode", "OPENROUTER/SONNET"),
+            ("opencode", "anthropic%252Fclaude-opus"),
+            ("agy", "ＣＬＡＵＤＥ-test"),
+            ("agy", r"models\Anthropic\Haiku"),
+        )
+        encoded_alias = "".join(f"%{ord(character):02x}" for character in "claude")
+        for _ in range(5):
+            encoded_alias = urllib.parse.quote(encoded_alias, safe="")
+        forbidden += (("opencode", "openrouter/" + encoded_alias),)
+        for provider, model in forbidden:
+            with self.subTest(provider=provider, model=model):
+                with self.assertRaises(self._error()):
+                    provider_adapters._resolve_command_intent_for_test(
+                        self._registry(),
+                        "awr",
+                        provider,
+                        model=model,
+                        executable_lookup=lookup,
+                    )
+        self.assertEqual(calls, [])
+
+    def test_unsupported_reasoning_fails_before_executable_lookup(self):
+        for surface, provider in (
+            ("hunt", "codex"),
+            ("hunt", "grok"),
+            ("awr", "opencode"),
+            ("awr", "agy"),
+        ):
+            calls = []
+
+            def lookup(executable):
+                calls.append(executable)
+                return str(FAKE)
+
+            with self.subTest(provider=provider):
+                with self.assertRaises(self._error()):
+                    provider_adapters._resolve_command_intent_for_test(
+                        self._registry(),
+                        surface,
+                        provider,
+                        reasoning="definitely-invalid",
+                        executable_lookup=lookup,
+                    )
+                self.assertEqual(calls, [])
+
+    def test_safe_default_identity_changes_execution_profile(self):
+        registry = self._registry()
+
+        def resolve(effective_model):
+            return provider_adapters._resolve_command_intent_for_test(
+                registry,
+                "awr",
+                "opencode",
+                executable_lookup=lambda _: str(FAKE),
+                default_identity_probe=lambda *_: {
+                    "schema_version": "provider-default-identity-v1",
+                    "provider": "opencode",
+                    "effective_model": effective_model,
+                    "probe_revision": "fixture-default-probe-v1",
+                },
+                model_catalog_probe=lambda *_: catalog(
+                    "opencode", effective_model
+                ),
+            )
+
+        first = resolve("openai/model-a")
+        second = resolve("openai/model-b")
+        self.assertEqual(first.effective_model, "openai/model-a")
+        argv, _ = provider_adapters.render_command(
+            first, pathlib.Path("/mirror"), "PROMPT"
+        )
+        self.assertIn("\0-m\0openai/model-a\0", "\0" + "\0".join(argv) + "\0")
+        self.assertIn(
+            "\0-m\0openai/model-a\0",
+            "\0"
+            + "\0".join(provider_adapters.command_intent_record(first)["argv"])
+            + "\0",
+        )
+        self.assertNotEqual(
+            first.execution_request_profile_hash,
+            second.execution_request_profile_hash,
+        )
+
+    def test_omitted_multibackend_default_requires_host_owned_probe(self):
+        with mock.patch.object(
+            provider_adapters,
+            "_host_executable_lookup",
+            return_value=str(FAKE),
+        ), mock.patch.object(
+            provider_adapters,
+            "_host_default_identity_probe",
+            return_value=None,
+            create=True,
+        ):
+            for provider in ("opencode", "agy"):
+                with self.subTest(provider=provider):
+                    with self.assertRaises(self._error()):
+                        provider_adapters.resolve_command_intent(
+                            self._registry(),
+                            "awr",
+                            provider,
+                        )
+
+    def test_agy_omitted_model_rejects_injected_and_persisted_default_evidence(self):
+        evidence = {
+            "schema_version": "provider-default-identity-v1",
+            "provider": "agy",
+            "effective_model": "gemini/fixture-default",
+            "probe_revision": "untrusted-agy-probe-v1",
+        }
+        with self.assertRaises(self._error()):
+            provider_adapters._resolve_command_intent_for_test(
+                self._registry(),
+                "awr",
+                "agy",
+                executable_lookup=lambda _: str(FAKE),
+                default_identity_probe=lambda *_: evidence,
+            )
+
+        descriptor = {
+            "surface": "awr",
+            "provider": "agy",
+            "requested_model": None,
+            "requested_reasoning": None,
+            "effective_model": evidence["effective_model"],
+            "effective_reasoning": None,
+            "default_probe_revision": evidence["probe_revision"],
+            "execution_request_profile_hash": provider_adapters._command_profile_hash(
+                self._registry(),
+                "awr",
+                "agy",
+                None,
+                None,
+                evidence["effective_model"],
+                None,
+                evidence["probe_revision"],
+            ),
+        }
+        with self.assertRaises(self._error()):
+            provider_adapters.validate_command_profile_descriptor(
+                self._registry(), descriptor
+            )
+
+    def test_default_identity_probe_kills_on_output_overflow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            marker = root / "continued-after-overflow"
+            executable = root / "opencode"
+            executable.write_text(
+                "#!/usr/bin/env python3\n"
+                "import pathlib, sys, time\n"
+                "sys.stdout.write('x' * 65536)\n"
+                "sys.stdout.flush()\n"
+                "time.sleep(0.2)\n"
+                f"pathlib.Path({str(marker)!r}).write_text('unsafe')\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            self.assertIsNone(
+                provider_adapters._host_default_identity_probe(
+                    "opencode", str(executable)
+                )
+            )
+            self.assertFalse(marker.exists())
+
+    def test_default_identity_probe_is_pure_config_introspection_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            audit = root / "probe.json"
+            workload = root / "provider-workload"
+            executable = root / "opencode"
+            executable.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, pathlib, sys\n"
+                f"audit = pathlib.Path({str(audit)!r})\n"
+                f"workload = pathlib.Path({str(workload)!r})\n"
+                "if sys.argv[1:] != ['--pure', 'debug', 'config']:\n"
+                "    workload.write_text('unsafe')\n"
+                "    raise SystemExit(91)\n"
+                "audit.write_text(json.dumps({\n"
+                "    'argv': sys.argv[1:],\n"
+                "    'cwd': os.getcwd(),\n"
+                "    'provider_launch_log': os.environ.get('PROVIDER_LAUNCH_LOG'),\n"
+                "}, sort_keys=True))\n"
+                "print(json.dumps({'model': 'openai/fixture-default'}))\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            with mock.patch.dict(
+                os.environ,
+                {"PROVIDER_LAUNCH_LOG": str(workload)},
+                clear=False,
+            ):
+                evidence = provider_adapters._host_default_identity_probe(
+                    "opencode", str(executable)
+                )
+            self.assertEqual(
+                evidence,
+                {
+                    "schema_version": "provider-default-identity-v1",
+                    "provider": "opencode",
+                    "effective_model": "openai/fixture-default",
+                    "probe_revision": "opencode-pure-debug-config-v1",
+                },
+            )
+            observed = json.loads(audit.read_text(encoding="utf-8"))
+            self.assertEqual(observed["argv"], ["--pure", "debug", "config"])
+            self.assertTrue(
+                pathlib.Path(observed["cwd"]).name.startswith(
+                    "provider-default-probe-"
+                )
+            )
+            self.assertIsNone(observed["provider_launch_log"])
+            self.assertFalse(workload.exists())
+
+    def test_default_identity_probe_rejects_duplicate_model_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = pathlib.Path(directory) / "opencode"
+            executable.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' "
+                "'{\"model\":\"anthropic/claude\","
+                "\"model\":\"openai/apparently-safe\"}'\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            self.assertIsNone(
+                provider_adapters._host_default_identity_probe(
+                    "opencode", str(executable)
+                )
+            )
+
     def test_registry_and_resolved_commands_have_no_claude_path(self):
         registry = self._registry()
         self.assertNotIn(FORBIDDEN_PROVIDER, json.dumps(registry, default=list).lower())
         render = self._api(provider_adapters, "render_command")
         for name in ("codex", "kimi", "grok", "opencode", "agy"):
             surface = "hunt" if name in ("codex", "kimi", "grok") else "awr"
-            argv, _ = render(self._resolve(surface, name), pathlib.Path("/mirror"), "P")
+            model = None if surface == "hunt" else "safe-provider/model"
+            if name in ("opencode", "agy"):
+                resolved = provider_adapters._resolve_command_intent_for_test(
+                    registry,
+                    surface,
+                    name,
+                    model=model,
+                    executable_lookup=lambda _: str(FAKE),
+                    model_catalog_probe=lambda *_, name=name, model=model: catalog(
+                        name, model
+                    ),
+                )
+            else:
+                resolved = self._resolve(surface, name, model=model)
+            argv, _ = render(
+                resolved,
+                pathlib.Path("/mirror"),
+                "P",
+            )
             self.assertNotIn(FORBIDDEN_PROVIDER, "\0".join(argv).lower())
         with self.assertRaises(self._error()):
-            provider_adapters.resolve_provider(
+            provider_adapters._resolve_provider_for_test(
                 registry, "hunt", "codex",
                 executable_lookup=lambda _: "/tmp/" + FORBIDDEN_PROVIDER,
                 version_probe=probe,
             )
 
     def test_pool_failover_cannot_escape_declared_order(self):
-        resolve_pool = self._api(provider_adapters, "resolve_pool")
+        resolve_pool = self._api(provider_adapters, "_resolve_pool_for_test")
         provider_for_attempt = self._api(provider_adapters, "provider_for_attempt")
         pool = resolve_pool(
             self._registry(), "hunt", ["grok", "codex"],
@@ -270,13 +558,13 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             return probe(*args)
 
         with self.assertRaises(self._error()):
-            provider_adapters.resolve_provider(
+            provider_adapters._resolve_provider_for_test(
                 forged, "hunt", "codex",
                 executable_lookup=lookup, version_probe=version_probe,
             )
         exact_copy = copy.deepcopy(json.loads(REGISTRY.read_text()))
         with self.assertRaises(self._error()):
-            provider_adapters.resolve_provider(
+            provider_adapters._resolve_provider_for_test(
                 exact_copy, "hunt", "codex",
                 executable_lookup=lookup, version_probe=version_probe,
             )
@@ -291,9 +579,14 @@ class PortableAgentSmoke(unittest.TestCase):
 
     def _capability(self):
         load_registry = getattr(provider_adapters, "load_registry", None)
-        resolve_provider = getattr(provider_adapters, "resolve_provider", None)
+        resolve_provider = getattr(
+            provider_adapters, "_resolve_provider_for_test", None
+        )
         self.assertTrue(callable(load_registry), "missing behavior: provider_adapters.load_registry")
-        self.assertTrue(callable(resolve_provider), "missing behavior: provider_adapters.resolve_provider")
+        self.assertTrue(
+            callable(resolve_provider),
+            "missing behavior: provider_adapters._resolve_provider_for_test",
+        )
         registry = load_registry(REGISTRY)
         return resolve_provider(
             registry, "hunt", "codex", model="MODEL", reasoning="high",

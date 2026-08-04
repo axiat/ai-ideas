@@ -57,6 +57,57 @@ RISK_SLICE_POLICY_V1 = {
     "policy_version": "critical-semantic-slices-v1",
     "allowed_slices": sorted(_CRITICAL_SLICES),
 }
+RISK_POLICY_V1_RULES = [
+    {
+        "rule_id": "retriever_uncalibrated",
+        "fact": "retriever_calibrated",
+        "equals": False,
+        "required_route": "exhaustive",
+        "pre_l1": True,
+    },
+    {
+        "rule_id": "finalist_or_sa",
+        "fact": "finalist_or_sa",
+        "equals": True,
+        "required_route": "guarded",
+        "pre_l1": False,
+    },
+    {
+        "rule_id": "mandatory_channel_failed",
+        "fact": "mandatory_channel_failed",
+        "equals": True,
+        "required_route": "exhaustive",
+        "pre_l1": True,
+    },
+    {
+        "rule_id": "comparator_uncertain",
+        "fact": "comparator_uncertain",
+        "equals": True,
+        "required_route": "guarded",
+        "pre_l1": False,
+    },
+    {
+        "rule_id": "bad_slice_membership",
+        "fact": "bad_slice_membership",
+        "equals": True,
+        "required_route": "guarded",
+        "pre_l1": False,
+    },
+    {
+        "rule_id": "index_profile_recently_changed",
+        "fact": "index_profile_recently_changed",
+        "equals": True,
+        "required_route": "exhaustive",
+        "pre_l1": True,
+    },
+    {
+        "rule_id": "permanent_no_match_without_release_gate",
+        "fact": "permanent_no_match_without_release_gate",
+        "equals": True,
+        "required_route": "exhaustive",
+        "pre_l1": True,
+    },
+]
 
 
 def _hash(domain, value):
@@ -286,7 +337,12 @@ def _validate_dataset(dataset):
     expected.pop("qrels_hash")
     if dataset["qrels_hash"] != _hash("history-audit-qrels-v2", expected):
         raise ValueError("validated qrels hash is invalid")
-    return dataset
+    replayed = validate_qrels(
+        dataset["rows"], dataset["partitions"], scope=dataset["scope"]
+    )
+    if contract.canonical_bytes(dataset) != contract.canonical_bytes(replayed):
+        raise ValueError("validated qrels are not canonical")
+    return replayed
 
 
 def _validate_outputs(dataset, outputs):
@@ -311,11 +367,13 @@ def _validate_outputs(dataset, outputs):
     return observed
 
 
-def _lineage_outcomes(dataset, output_by_query):
+def _lineage_outcomes(dataset, output_by_query, *, partition=None):
     positive = {}
     negative = set()
     slices = {}
     for row in dataset["rows"]:
+        if partition is not None and row["partition"] != partition:
+            continue
         if row["adjudication_state"] != "adjudicated":
             continue
         lineage_id = row["query_lineage_id"]
@@ -431,39 +489,38 @@ def _apply_metric_gate(metric, gate):
     return "passed"
 
 
-def evaluate_production_qualification(qrels, outputs, policy, evidence):
-    """Produce an immutable qualification candidate or an exact veto list."""
-    dataset = _validate_dataset(qrels)
-    normalized_policy = _validate_policy(policy)
-    policy_sha = _policy_hash(normalized_policy)
-    normalized_evidence = _validate_evidence(evidence, policy_sha)
-    output_by_query = _validate_outputs(dataset, outputs)
-    positive, negative, slices = _lineage_outcomes(dataset, output_by_query)
+def _production_metrics(dataset, output_by_query, normalized_policy):
+    positive, negative, slices = _lineage_outcomes(
+        dataset, output_by_query, partition="test"
+    )
     z = normalized_policy["wilson_one_sided_z"]
     aggregate = _metric(sum(positive.values()), len(positive), z)
-    aggregate["state"] = _apply_metric_gate(aggregate, normalized_policy["production"]["aggregate"])
+    aggregate["state"] = _apply_metric_gate(
+        aggregate, normalized_policy["production"]["aggregate"]
+    )
     slice_metrics = {}
     vetoes = []
-    for name, gate in sorted(normalized_policy["production"]["required_slices"].items()):
-        members = [lineage for lineage in positive if name in slices.get(lineage, set())]
-        metric = _metric(sum(1 for lineage in members if positive[lineage]), len(members), z)
+    for name, gate in sorted(
+        normalized_policy["production"]["required_slices"].items()
+    ):
+        members = [
+            lineage for lineage in positive
+            if name in slices.get(lineage, set())
+        ]
+        metric = _metric(
+            sum(1 for lineage in members if positive[lineage]),
+            len(members), z,
+        )
         metric["state"] = _apply_metric_gate(metric, gate)
         slice_metrics[name] = metric
         if metric["state"] != "passed":
             vetoes.append("slice_%s_%s" % (name, metric["state"]))
-    if dataset["scope"] not in {"real", "production", "real_qrels"}:
-        vetoes.append("non_production_scope")
-    if len(positive) < normalized_policy["production"]["minimum_positive_lineages"]:
+    if len(positive) < normalized_policy["production"][
+        "minimum_positive_lineages"
+    ]:
         vetoes.append("insufficient_positive_lineages")
     if aggregate["state"] != "passed":
         vetoes.append("aggregate_%s" % aggregate["state"])
-    if not normalized_evidence["provider_capacity_complete"]:
-        vetoes.append("provider_capacity_incomplete")
-    if not normalized_evidence["fault_evidence_passed"]:
-        vetoes.append("fault_evidence_failed")
-    if not normalized_evidence["replay_evidence_passed"]:
-        vetoes.append("replay_evidence_failed")
-    vetoes = sorted(set(vetoes))
     metrics = {
         "aggregate_recall": aggregate["recall"],
         "aggregate_false_negative": aggregate["false_negative"],
@@ -478,6 +535,71 @@ def evaluate_production_qualification(qrels, outputs, policy, evidence):
         },
         "negative_lineages": len(negative),
     }
+    return metrics, vetoes
+
+
+def semantic_evaluation_identities(qrels, outputs, policy):
+    """Rebuild exact qrels, normalized-output, and computed-metric identities."""
+    dataset = _validate_dataset(qrels)
+    normalized_policy = _validate_policy(policy)
+    output_by_query = _validate_outputs(dataset, outputs)
+    metrics, _ = _production_metrics(
+        dataset, output_by_query, normalized_policy
+    )
+    normalized_outputs = [
+        {
+            "query_id": query_id,
+            "historical_id": historical_id,
+            "semantic_relation": output_by_query[(query_id, historical_id)],
+        }
+        for query_id, historical_id in sorted(output_by_query)
+    ]
+    evaluation_material = {
+        "schema_version": "history-semantic-evaluation-v1",
+        "qrels_hash": dataset["qrels_hash"],
+        "outputs": normalized_outputs,
+    }
+    evaluation_hash = _hash(
+        "history-semantic-evaluation-v1", evaluation_material
+    )
+    policy_sha = _policy_hash(normalized_policy)
+    metric_material = {
+        "schema_version": "history-semantic-metric-report-v1",
+        "qrels_hash": dataset["qrels_hash"],
+        "evaluation_hash": evaluation_hash,
+        "policy_sha256": policy_sha,
+        "metrics": _decimal_identity(metrics),
+    }
+    return {
+        "qrels_hash": dataset["qrels_hash"],
+        "evaluation_hash": evaluation_hash,
+        "metric_report_hash": _hash(
+            "history-semantic-metric-report-v1", metric_material
+        ),
+        "policy_sha256": policy_sha,
+        "metrics": metrics,
+    }
+
+
+def evaluate_production_qualification(qrels, outputs, policy, evidence):
+    """Produce an immutable qualification candidate or an exact veto list."""
+    dataset = _validate_dataset(qrels)
+    normalized_policy = _validate_policy(policy)
+    policy_sha = _policy_hash(normalized_policy)
+    normalized_evidence = _validate_evidence(evidence, policy_sha)
+    output_by_query = _validate_outputs(dataset, outputs)
+    metrics, vetoes = _production_metrics(
+        dataset, output_by_query, normalized_policy
+    )
+    if dataset["scope"] not in {"real", "production", "real_qrels"}:
+        vetoes.append("non_production_scope")
+    if not normalized_evidence["provider_capacity_complete"]:
+        vetoes.append("provider_capacity_incomplete")
+    if not normalized_evidence["fault_evidence_passed"]:
+        vetoes.append("fault_evidence_failed")
+    if not normalized_evidence["replay_evidence_passed"]:
+        vetoes.append("replay_evidence_failed")
+    vetoes = sorted(set(vetoes))
     return {
         "schema_version": "semantic-qualification-v2",
         "semantic_policy_profile_id": normalized_policy["semantic_policy_profile_id"],
@@ -552,7 +674,13 @@ def _rule_table(ordered_rules):
         ):
             raise ValueError("risk rule is invalid")
         seen.add(rule["rule_id"])
-    return rules
+    if (
+        ordered_rules["risk_policy_version"] != "risk-policy-v1"
+        or contract.canonical_bytes(rules)
+        != contract.canonical_bytes(RISK_POLICY_V1_RULES)
+    ):
+        raise ValueError("risk policy is not the host-authorized v1 policy")
+    return copy.deepcopy(rules)
 
 
 def route_candidate(facts, ordered_rules):
@@ -634,9 +762,281 @@ def _add_cost(target, source, scale=1.0):
         target["currency_micros"] += source["currency_micros"] * scale
 
 
+def _per_unit_cost(total, denominator, *, latency_complete, currency_complete):
+    if denominator <= 0:
+        normalized = {field: 0.0 for field in _empty_cost()}
+    else:
+        normalized = {
+            field: total.get(field, 0) / denominator
+            for field in _empty_cost()
+        }
+    if not latency_complete:
+        normalized.pop("queue_latency_ms", None)
+        normalized.pop("run_latency_ms", None)
+    if currency_complete and "currency_micros" in total:
+        normalized["currency_micros"] = (
+            total["currency_micros"] / denominator
+            if denominator > 0 else 0.0
+        )
+    return normalized
+
+
+def _derived_attempt_kind_availability(conn, run_id, intent):
+    plans = conn.execute(
+        """
+        SELECT plan.plan_sha, plan.plan_json,
+               generation.generation_id, generation.material_json
+        FROM audit_l2_plans_v2 plan
+        LEFT JOIN audit_l2_adjudication_generations_v2 generation
+          ON generation.plan_sha=plan.plan_sha
+        WHERE plan.run_id=? AND plan.intent=?
+        ORDER BY plan.plan_sha
+        """,
+        (run_id, intent),
+    ).fetchall()
+    unavailable = {"detail": "producer_unavailable", "reduce": "producer_unavailable"}
+    if not plans or any(row["generation_id"] is None for row in plans):
+        return unavailable
+    expected = {"detail": 0, "reduce": 0}
+    try:
+        for row in plans:
+            plan = contract.parse_json_bytes(
+                (row["plan_json"] + "\n").encode("utf-8")
+            )
+            generation = contract.parse_json_bytes(
+                (row["material_json"] + "\n").encode("utf-8")
+            )
+            exceptional_count = sum(
+                len(card["item_ids"])
+                for card in generation["exceptional_cards"]
+            )
+            item_cap = plan["capacity_profile"]["item_cap"]
+            if type(item_cap) is not int or item_cap <= 0:
+                raise ValueError
+            expected["detail"] += exceptional_count
+            if exceptional_count:
+                expected["reduce"] += (
+                    exceptional_count + item_cap - 1
+                ) // item_cap
+    except (KeyError, TypeError, ValueError, contract.ContractV2Error) as exc:
+        raise ValueError("adjudication cost authority is invalid") from exc
+    if expected["detail"] == 0:
+        return {"detail": "not_required", "reduce": "not_required"}
+    task_rows = conn.execute(
+        """
+        SELECT authority.stage, authority.task_hash,
+               CASE WHEN valid.task_hash IS NULL THEN 0 ELSE 1 END AS valid,
+               count(attempt.attempt_id) AS attempt_count,
+               sum(
+                 CASE WHEN attempt.attempt_id IS NOT NULL
+                       AND launch.attempt_id IS NOT NULL
+                       AND terminal.attempt_id IS NOT NULL
+                      THEN 1 ELSE 0 END
+               ) AS durable_attempt_count
+        FROM audit_l2_derived_task_authority_v2 authority
+        JOIN audit_l2_adjudication_generations_v2 generation
+          ON generation.generation_id=authority.generation_id
+        JOIN audit_l2_plans_v2 plan ON plan.plan_sha=generation.plan_sha
+        LEFT JOIN audit_l2_valid_adjudication_task_authority_v2 valid
+          ON valid.task_hash=authority.task_hash
+        LEFT JOIN audit_task_attempts attempt
+          ON attempt.task_hash=authority.task_hash
+        LEFT JOIN audit_attempt_launch_facts_v2 launch
+          ON launch.attempt_id=attempt.attempt_id
+        LEFT JOIN audit_attempt_cost_settlements_v2 terminal
+          ON terminal.attempt_id=attempt.attempt_id
+        WHERE plan.run_id=? AND plan.intent=?
+        GROUP BY authority.stage, authority.task_hash, valid.task_hash
+        ORDER BY authority.stage, authority.task_hash
+        """,
+        (run_id, intent),
+    ).fetchall()
+    result = {}
+    for stage in ("detail", "reduce"):
+        stage_rows = [row for row in task_rows if row["stage"] == stage]
+        durable = (
+            len(stage_rows) == expected[stage]
+            and all(row["valid"] == 1 for row in stage_rows)
+            and all(row["attempt_count"] > 0 for row in stage_rows)
+            and all(
+                row["durable_attempt_count"] == row["attempt_count"]
+                for row in stage_rows
+            )
+        )
+        result[stage] = "durable" if durable else "pending"
+    return result
+
+
+def _validate_intent_route_authority(run_id, cohort, route_rows):
+    """Validate one intent cohort without sharing completeness across intents."""
+    observation_complete = True
+    source_complete = True
+    try:
+        candidate_ids = contract.parse_json_bytes(
+            (cohort["candidate_ids_json"] + "\n").encode("utf-8")
+        )
+        risk_policy = contract.parse_json_bytes(
+            (cohort["risk_policy_json"] + "\n").encode("utf-8")
+        )
+        slice_policy = contract.parse_json_bytes(
+            (cohort["risk_slice_policy_json"] + "\n").encode("utf-8")
+        )
+    except (TypeError, ValueError, contract.ContractV2Error) as exc:
+        raise ValueError("candidate route cohort is not canonical") from exc
+    risk_policy_sha = _hash("history-risk-policy-v1", risk_policy)
+    slice_policy_sha = _hash("history-risk-slice-policy-v1", slice_policy)
+    cohort_material = {
+        "run_id": run_id, "batch_id": cohort["batch_id"],
+        "intent": cohort["intent"], "candidate_ids": candidate_ids,
+        "risk_policy_sha256": risk_policy_sha,
+        "risk_slice_policy_sha256": slice_policy_sha,
+        "created_at": cohort["created_at"],
+    }
+    if (
+        not isinstance(candidate_ids, list)
+        or not candidate_ids
+        or candidate_ids != sorted(candidate_ids)
+        or len(set(candidate_ids)) != len(candidate_ids)
+        or risk_policy_sha != cohort["risk_policy_sha256"]
+        or slice_policy != RISK_SLICE_POLICY_V1
+        or slice_policy_sha != cohort["risk_slice_policy_sha256"]
+        or _hash("history-candidate-route-cohort-v2", cohort_material)
+            != cohort["cohort_sha256"]
+        or [row["candidate_id"] for row in route_rows] != candidate_ids
+        or any(row["intent"] != cohort["intent"] for row in route_rows)
+    ):
+        raise ValueError("candidate route cohort authority is inconsistent")
+    for route in route_rows:
+        try:
+            router_facts = contract.parse_json_bytes(
+                (route["router_facts_json"] + "\n").encode("utf-8")
+            )
+            risk_slices = contract.parse_json_bytes(
+                (route["risk_slices_json"] + "\n").encode("utf-8")
+            )
+            matched_rule_ids = contract.parse_json_bytes(
+                (route["matched_rule_ids_json"] + "\n").encode("utf-8")
+            )
+            replay = route_candidate(router_facts, risk_policy)
+        except (TypeError, ValueError, contract.ContractV2Error) as exc:
+            raise ValueError("candidate route fact is not replayable") from exc
+        route_material = {
+            "run_id": run_id, "candidate_id": route["candidate_id"],
+            "intent": route["intent"],
+            "cohort_sha256": cohort["cohort_sha256"],
+            "router_facts": router_facts, "risk_slices": risk_slices,
+            "matched_rule_ids": matched_rule_ids,
+            "route": replay["route"],
+            "call_l1_model": replay["call_l1_model"],
+            "dispatch_allowed": replay["dispatch_allowed"],
+            "rule_table_sha256": replay["rule_table_sha256"],
+            "risk_policy_version": replay["receipt_risk_policy_version"],
+            "created_at": route["created_at"],
+        }
+        if (
+            not isinstance(risk_slices, list)
+            or any(value not in _CRITICAL_SLICES for value in risk_slices)
+            or bool(risk_slices) != router_facts["bad_slice_membership"]
+            or matched_rule_ids != replay["matched_rule_ids"]
+            or route["route"] != replay["route"]
+            or route["call_l1_model"] != int(replay["call_l1_model"])
+            or route["dispatch_allowed"] != int(replay["dispatch_allowed"])
+            or route["rule_table_sha256"] != replay["rule_table_sha256"]
+            or route["risk_policy_version"]
+                != replay["receipt_risk_policy_version"]
+            or _hash("history-candidate-route-fact-v2", route_material)
+                != route["fact_sha256"]
+        ):
+            raise ValueError("candidate route fact authority is inconsistent")
+        if (
+            route["legacy_route_fact_sha256"] is not None
+            or route["bound_route_fact_sha256"] != route["fact_sha256"]
+            or route["bound_final_phase_fact_sha256"]
+                != route["exact_final_phase_fact_sha256"]
+            or route["bound_source_set_sha256"]
+                != route["exact_final_source_set_sha256"]
+            or route["exact_source_round_sha256"] is None
+            or route["router_facts_json"] != route["final_router_facts_json"]
+            or route["risk_slices_json"] != route["final_risk_slices_json"]
+            or route["matched_rule_ids_json"]
+                != route["final_matched_rule_ids_json"]
+            or route["route"] != route["final_route"]
+            or route["call_l1_model"] != route["final_call_l1_model"]
+            or route["dispatch_allowed"] != route["final_dispatch_allowed"]
+            or route["rule_table_sha256"] != route["final_rule_table_sha256"]
+            or route["risk_policy_version"]
+                != route["final_risk_policy_version"]
+        ):
+            source_complete = False
+        if route["boundary_sha256"] is None:
+            observation_complete = False
+        else:
+            observation_material = {
+                "run_id": run_id,
+                "candidate_id": route["candidate_id"],
+                "route_fact_sha256": route["fact_sha256"],
+                "observation_scope": "host_issued_shadow",
+                "production_authority": False,
+                "created_at": route["observation_created_at"],
+            }
+            if (
+                route["observation_scope"] != "host_issued_shadow"
+                or route["production_authority"] != 0
+                or _hash(
+                    "history-candidate-route-observation-boundary-v1",
+                    observation_material,
+                ) != route["boundary_sha256"]
+            ):
+                raise ValueError(
+                    "candidate route observation boundary is inconsistent"
+                )
+        if route["actual_l2_dispatch"]:
+            dispatch_material = {
+                "plan_sha": route["dispatch_plan_sha"], "run_id": run_id,
+                "candidate_id": route["candidate_id"],
+                "route_fact_sha256": route["fact_sha256"],
+                "created_at": route["dispatch_created_at"],
+            }
+            if (
+                not replay["dispatch_allowed"]
+                or route["dispatch_plan_valid"] != 1
+                or _hash(
+                    "history-candidate-l2-dispatch-v2", dispatch_material
+                ) != route["dispatch_sha256"]
+            ):
+                raise ValueError(
+                    "candidate route dispatch authority is inconsistent"
+                )
+    return observation_complete and source_complete
+
+
+def _route_authority_completeness_by_intent(run_id, cohorts, route_rows):
+    cohort_by_intent = {}
+    for cohort in cohorts:
+        intent = cohort["intent"]
+        if intent in cohort_by_intent:
+            raise ValueError("candidate route cohort intent is ambiguous")
+        cohort_by_intent[intent] = cohort
+    route_rows_by_intent = {}
+    for route in route_rows:
+        route_rows_by_intent.setdefault(route["intent"], []).append(route)
+    if set(route_rows_by_intent).difference(cohort_by_intent):
+        raise ValueError("candidate route cohort authority is inconsistent")
+    return {
+        intent: _validate_intent_route_authority(
+            run_id, cohort, route_rows_by_intent.get(intent, [])
+        )
+        for intent, cohort in cohort_by_intent.items()
+    }
+
+
 def summarize_realized_cost(conn, run_id):
     """Summarize durable Task5 attempt cost facts for one exact run."""
     import sqlite3
+    try:
+        from lib import history_audit_store
+    except ImportError:
+        import history_audit_store
     if not isinstance(conn, sqlite3.Connection):
         raise TypeError("conn must be a sqlite3 connection")
     if not isinstance(run_id, str) or not run_id:
@@ -649,12 +1049,16 @@ def summarize_realized_cost(conn, run_id):
                attempt.ordinal, attempt.provenance_json,
                binding.parent_task_hash, binding.provider_pool_json,
                budget.usage_verified, budget.actual_json,
+               budget.created_at AS budget_created_at,
                launch.queue_latency_ms,
                terminal.outcome, terminal.billing_state,
                terminal.usage_source, terminal.price_source,
                terminal.currency, terminal.run_latency_ms,
+               terminal.completed_at AS terminal_completed_at,
                completion.attempt_id AS completion_id,
-               completion.outcome AS completion_outcome
+               completion.outcome AS completion_outcome,
+               completion.output_cas_object_id AS completion_output_id,
+               completion.completed_at AS completion_completed_at
         FROM audit_runtime_budget_reservations_v2 reservation
         JOIN audit_l2_plans_v2 plan ON plan.plan_sha=reservation.plan_sha
         JOIN audit_task_attempts attempt
@@ -685,10 +1089,10 @@ def summarize_realized_cost(conn, run_id):
     ).fetchone()[0]
     if reservation_count != len(rows):
         raise ValueError("durable cost launch parity is incomplete")
-    cohort = conn.execute(
+    cohorts = conn.execute(
         "SELECT * FROM audit_candidate_route_cohorts_v2 WHERE run_id=?",
         (run_id,),
-    ).fetchone()
+    ).fetchall()
     route_rows = conn.execute(
         """
         SELECT route.*,
@@ -696,6 +1100,29 @@ def summarize_realized_cost(conn, run_id):
                observation.production_authority,
                observation.boundary_sha256,
                observation.created_at AS observation_created_at,
+               source_binding.route_fact_sha256
+                 AS bound_route_fact_sha256,
+               source_binding.final_phase_fact_sha256
+                 AS bound_final_phase_fact_sha256,
+               source_binding.source_set_sha256
+                 AS bound_source_set_sha256,
+               final_phase.phase_fact_sha256
+                 AS exact_final_phase_fact_sha256,
+               final_phase.router_facts_json AS final_router_facts_json,
+               final_phase.risk_slices_json AS final_risk_slices_json,
+               final_phase.matched_rule_ids_json
+                 AS final_matched_rule_ids_json,
+               final_phase.route AS final_route,
+               final_phase.call_l1_model AS final_call_l1_model,
+               final_phase.dispatch_allowed AS final_dispatch_allowed,
+               final_phase.rule_table_sha256 AS final_rule_table_sha256,
+               final_phase.risk_policy_version
+                 AS final_risk_policy_version,
+               source_set.source_set_sha256
+                 AS exact_final_source_set_sha256,
+               source_round.route_round_sha256
+                 AS exact_source_round_sha256,
+               legacy.route_fact_sha256 AS legacy_route_fact_sha256,
                CASE WHEN dispatch.plan_sha IS NULL THEN 0 ELSE 1 END
                  AS actual_l2_dispatch,
                dispatch.plan_sha AS dispatch_plan_sha,
@@ -708,6 +1135,28 @@ def summarize_realized_cost(conn, run_id):
           ON observation.run_id=route.run_id
          AND observation.candidate_id=route.candidate_id
          AND observation.route_fact_sha256=route.fact_sha256
+        LEFT JOIN audit_candidate_route_source_bindings_v2 source_binding
+          ON source_binding.run_id=route.run_id
+         AND source_binding.candidate_id=route.candidate_id
+         AND source_binding.route_fact_sha256=route.fact_sha256
+        LEFT JOIN audit_router_phase_facts_v2 final_phase
+          ON final_phase.phase_fact_sha256=
+               source_binding.final_phase_fact_sha256
+         AND final_phase.phase='final'
+         AND final_phase.candidate_id=route.candidate_id
+         AND final_phase.source_set_sha256=source_binding.source_set_sha256
+        LEFT JOIN audit_router_source_sets_v2 source_set
+          ON source_set.source_set_sha256=source_binding.source_set_sha256
+         AND source_set.phase='final'
+         AND source_set.route_round_sha256=final_phase.route_round_sha256
+        LEFT JOIN audit_router_rounds_v2 source_round
+          ON source_round.route_round_sha256=final_phase.route_round_sha256
+         AND source_round.run_id=route.run_id
+         AND source_round.intent=route.intent
+        LEFT JOIN audit_legacy_candidate_route_authorities_v2 legacy
+          ON legacy.route_fact_sha256=route.fact_sha256
+          OR (legacy.run_id=route.run_id
+              AND legacy.candidate_id=route.candidate_id)
         LEFT JOIN audit_candidate_l2_dispatch_facts_v2 dispatch
          ON dispatch.run_id=route.run_id
          AND dispatch.candidate_id=route.candidate_id
@@ -721,123 +1170,89 @@ def summarize_realized_cost(conn, run_id):
         """,
         (run_id,),
     ).fetchall()
-    route_facts_complete = False
-    observation_boundaries_complete = cohort is not None
-    if cohort is not None:
-        try:
-            candidate_ids = contract.parse_json_bytes(
-                (cohort["candidate_ids_json"] + "\n").encode("utf-8")
-            )
-            risk_policy = contract.parse_json_bytes(
-                (cohort["risk_policy_json"] + "\n").encode("utf-8")
-            )
-            slice_policy = contract.parse_json_bytes(
-                (cohort["risk_slice_policy_json"] + "\n").encode("utf-8")
-            )
-        except (TypeError, ValueError, contract.ContractV2Error) as exc:
-            raise ValueError("candidate route cohort is not canonical") from exc
-        risk_policy_sha = _hash("history-risk-policy-v1", risk_policy)
-        slice_policy_sha = _hash("history-risk-slice-policy-v1", slice_policy)
-        cohort_material = {
-            "run_id": run_id, "batch_id": cohort["batch_id"],
-            "intent": cohort["intent"], "candidate_ids": candidate_ids,
-            "risk_policy_sha256": risk_policy_sha,
-            "risk_slice_policy_sha256": slice_policy_sha,
-            "created_at": cohort["created_at"],
-        }
+    route_facts_complete_by_intent = (
+        _route_authority_completeness_by_intent(run_id, cohorts, route_rows)
+    )
+    l1_fact_rows = []
+    has_l1_facts = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='audit_l1_attempt_facts_v2'"
+    ).fetchone() is not None
+    if has_l1_facts:
+        raw_l1_rows = conn.execute(
+            "SELECT * FROM audit_l1_attempt_facts_v2 WHERE run_id=? "
+            "ORDER BY intent,candidate_id,ordinal", (run_id,),
+        ).fetchall()
+        l1_fact_rows = conn.execute(
+            "SELECT * FROM audit_l1_valid_attempt_facts_v2 WHERE run_id=? "
+            "ORDER BY intent,candidate_id,ordinal", (run_id,),
+        ).fetchall()
         if (
-            not isinstance(candidate_ids, list)
-            or not candidate_ids
-            or candidate_ids != sorted(candidate_ids)
-            or len(set(candidate_ids)) != len(candidate_ids)
-            or risk_policy_sha != cohort["risk_policy_sha256"]
-            or slice_policy != RISK_SLICE_POLICY_V1
-            or slice_policy_sha != cohort["risk_slice_policy_sha256"]
-            or _hash("history-candidate-route-cohort-v2", cohort_material)
-                != cohort["cohort_sha256"]
-            or [row["candidate_id"] for row in route_rows] != candidate_ids
-            or any(row["intent"] != cohort["intent"] for row in route_rows)
+            len(raw_l1_rows) != len(l1_fact_rows)
+            or [row["attempt_id"] for row in raw_l1_rows]
+                != [row["attempt_id"] for row in l1_fact_rows]
+            or any(
+                history_audit_store._l1_attempt_fact_row_valid(*tuple(row))
+                != 1
+                for row in raw_l1_rows
+            )
         ):
-            raise ValueError("candidate route cohort authority is inconsistent")
-        for route in route_rows:
-            try:
-                router_facts = contract.parse_json_bytes(
-                    (route["router_facts_json"] + "\n").encode("utf-8")
-                )
-                risk_slices = contract.parse_json_bytes(
-                    (route["risk_slices_json"] + "\n").encode("utf-8")
-                )
-                matched_rule_ids = contract.parse_json_bytes(
-                    (route["matched_rule_ids_json"] + "\n").encode("utf-8")
-                )
-                replay = route_candidate(router_facts, risk_policy)
-            except (TypeError, ValueError, contract.ContractV2Error) as exc:
-                raise ValueError("candidate route fact is not replayable") from exc
-            route_material = {
-                "run_id": run_id, "candidate_id": route["candidate_id"],
-                "intent": route["intent"],
-                "cohort_sha256": cohort["cohort_sha256"],
-                "router_facts": router_facts, "risk_slices": risk_slices,
-                "matched_rule_ids": matched_rule_ids,
-                "route": replay["route"],
-                "call_l1_model": replay["call_l1_model"],
-                "dispatch_allowed": replay["dispatch_allowed"],
-                "rule_table_sha256": replay["rule_table_sha256"],
-                "risk_policy_version": replay["receipt_risk_policy_version"],
-                "created_at": route["created_at"],
-            }
+            raise ValueError("durable L1 attempt authority is inconsistent")
+    l1_costs = {}
+    l1_candidates = {}
+    l1_currency_complete = {}
+    l1_latency_complete = {}
+    l1_prior_attempt = {}
+    for row in l1_fact_rows:
+        try:
+            reserved = json.loads(row["reserved_json"])
+            actual = (
+                None if row["actual_json"] is None
+                else json.loads(row["actual_json"])
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("durable L1 usage is invalid") from exc
+        usage = actual if row["usage_source"] == "verified_actual" else reserved
+        intent = row["intent"]
+        target = l1_costs.setdefault(intent, _empty_cost())
+        l1_candidates.setdefault(intent, set()).add(row["candidate_id"])
+        l1_currency_complete.setdefault(intent, True)
+        l1_latency_complete.setdefault(intent, True)
+        target["calls"] += 1
+        prior_key = (intent, row["candidate_id"])
+        if row["ordinal"] > 0:
+            previous = l1_prior_attempt.get(prior_key)
             if (
-                not isinstance(risk_slices, list)
-                or any(value not in _CRITICAL_SLICES for value in risk_slices)
-                or bool(risk_slices) != router_facts["bad_slice_membership"]
-                or matched_rule_ids != replay["matched_rule_ids"]
-                or route["route"] != replay["route"]
-                or route["call_l1_model"] != int(replay["call_l1_model"])
-                or route["dispatch_allowed"] != int(replay["dispatch_allowed"])
-                or route["rule_table_sha256"] != replay["rule_table_sha256"]
-                or route["risk_policy_version"]
-                    != replay["receipt_risk_policy_version"]
-                or _hash("history-candidate-route-fact-v2", route_material)
-                    != route["fact_sha256"]
+                previous is None
+                or previous["ordinal"] != row["ordinal"] - 1
             ):
-                raise ValueError("candidate route fact authority is inconsistent")
-            if route["boundary_sha256"] is None:
-                observation_boundaries_complete = False
-            else:
-                observation_material = {
-                    "run_id": run_id,
-                    "candidate_id": route["candidate_id"],
-                    "route_fact_sha256": route["fact_sha256"],
-                    "observation_scope": "host_issued_shadow",
-                    "production_authority": False,
-                    "created_at": route["observation_created_at"],
-                }
-                if (
-                    route["observation_scope"] != "host_issued_shadow"
-                    or route["production_authority"] != 0
-                    or _hash(
-                        "history-candidate-route-observation-boundary-v1",
-                        observation_material,
-                    ) != route["boundary_sha256"]
-                ):
-                    raise ValueError(
-                        "candidate route observation boundary is inconsistent"
-                    )
-            if route["actual_l2_dispatch"]:
-                dispatch_material = {
-                    "plan_sha": route["dispatch_plan_sha"], "run_id": run_id,
-                    "candidate_id": route["candidate_id"],
-                    "route_fact_sha256": route["fact_sha256"],
-                    "created_at": route["dispatch_created_at"],
-                }
-                if (
-                    not replay["dispatch_allowed"]
-                    or route["dispatch_plan_valid"] != 1
-                    or _hash("history-candidate-l2-dispatch-v2", dispatch_material)
-                        != route["dispatch_sha256"]
-                ):
-                    raise ValueError("candidate route dispatch authority is inconsistent")
-        route_facts_complete = observation_boundaries_complete
+                raise ValueError("durable L1 attempt sequence is incomplete")
+            counter = (
+                "retry_calls"
+                if previous["provider"] == row["provider"]
+                else "failover_calls"
+            )
+            target[counter] += 1
+        if row["outcome"] == "failed":
+            target["failed_calls"] += 1
+        if row["outcome"] == "cancelled" and row["billing_state"] == "billable":
+            target["billable_cancelled_calls"] += 1
+        for field in (
+            "input_tokens", "output_tokens", "cache_tokens",
+            "provider_usage_units",
+        ):
+            target[field] += usage.get(field, 0)
+        target["queue_latency_ms"] += row["queue_latency_ms"]
+        target["run_latency_ms"] += row["run_latency_ms"]
+        if row["billing_state"] == "billable":
+            target.setdefault("currency_micros", 0)
+            target["currency_micros"] += usage["currency_micros"]
+        elif row["billing_state"] == "unknown":
+            l1_currency_complete[intent] = False
+        target["unverified_usage_calls"] = target.get(
+            "unverified_usage_calls", 0
+        ) + int(row["usage_source"] == "reservation")
+        l1_prior_attempt[prior_key] = row
     candidate_rows = route_rows or conn.execute(
         "SELECT intent, candidate_id FROM audit_l2_plans_v2 "
         "WHERE run_id=? ORDER BY candidate_id", (run_id,),
@@ -850,7 +1265,7 @@ def summarize_realized_cost(conn, run_id):
         candidates.setdefault(candidate["intent"], set()).add(
             candidate["candidate_id"]
         )
-        if route_facts_complete:
+        if route_facts_complete_by_intent.get(candidate["intent"], False):
             route_by_candidate[(candidate["intent"], candidate["candidate_id"])] = candidate
     latency_complete = {}
     currency_complete = {}
@@ -910,11 +1325,66 @@ def summarize_realized_cost(conn, run_id):
         ) if row["completion_id"] is not None else row["outcome"]
         if row["outcome"] is not None and row["outcome"] != expected_outcome:
             raise ValueError("durable cost outcome parity is incomplete")
+        verified_authority = None
+        if row["usage_verified"] == 1 and row["actual_json"] is not None:
+            verified_authority = (
+                history_audit_store._verified_usage_authority_for_settlement(
+                    conn,
+                    attempt_id=row["attempt_id"],
+                    actual_json=row["actual_json"],
+                    terminal_at=row["budget_created_at"],
+                )
+            )
+            if (
+                verified_authority is None
+                or verified_authority["terminal_at"]
+                    != row["terminal_completed_at"]
+                or verified_authority["billing_state"]
+                    != row["billing_state"]
+                or verified_authority["price_source"]
+                    != row["price_source"]
+                or verified_authority["currency"] != row["currency"]
+                or row["outcome"] != (
+                    "success"
+                    if verified_authority["terminal_outcome"] == "valid"
+                    else "cancelled"
+                    if verified_authority["terminal_outcome"] == "cancelled"
+                    else "failed"
+                )
+                or (
+                    row["completion_id"] is None
+                    and (
+                        verified_authority["terminal_outcome"] != "cancelled"
+                        or verified_authority["output_cas_object_id"] is not None
+                    )
+                )
+                or (
+                    row["completion_id"] is not None
+                    and (
+                        verified_authority["terminal_outcome"]
+                            != row["completion_outcome"]
+                        or verified_authority["output_cas_object_id"]
+                            != row["completion_output_id"]
+                        or verified_authority["terminal_at"]
+                            != row["completion_completed_at"]
+                    )
+                )
+            ):
+                raise ValueError(
+                    "durable cost verified usage authority is incomplete"
+                )
+        elif not (
+            row["usage_verified"] in (None, 0)
+            and row["actual_json"] is None
+        ):
+            raise ValueError(
+                "durable cost verified usage authority is incomplete"
+            )
         try:
             reserved = json.loads(row["reserved_json"])
             actual = (
-                json.loads(row["actual_json"])
-                if row["usage_verified"] == 1 else None
+                json.loads(verified_authority["actual_json"])
+                if verified_authority is not None else None
             )
         except (TypeError, ValueError) as exc:
             raise ValueError("durable cost usage is invalid") from exc
@@ -1017,6 +1487,12 @@ def summarize_realized_cost(conn, run_id):
         }
     result = {"run_id": run_id, "intents": {}}
     for intent, realized in sorted(per_intent.items()):
+        route_facts_complete = route_facts_complete_by_intent.get(
+            intent, False
+        )
+        derived_availability = _derived_attempt_kind_availability(
+            conn, run_id, intent
+        )
         latency_complete.setdefault(intent, True)
         currency_complete.setdefault(intent, True)
         if not latency_complete[intent]:
@@ -1030,26 +1506,105 @@ def summarize_realized_cost(conn, run_id):
         ]
         escalated = sum(row["actual_l2_dispatch"] for row in facts)
         escalation_rate = escalated / candidate_count if candidate_count else 0.0
+        required_l1_candidates = {
+            row["candidate_id"] for row in facts if row["call_l1_model"]
+        }
+        intent_l1_rows = [
+            row for row in l1_fact_rows if row["intent"] == intent
+        ]
+        l1_chain_complete = True
+        for candidate_id in sorted(required_l1_candidates):
+            chain = [
+                row for row in intent_l1_rows
+                if row["candidate_id"] == candidate_id
+            ]
+            if (
+                not chain
+                or [row["ordinal"] for row in chain] != list(range(len(chain)))
+                or chain[0]["previous_attempt_id"] is not None
+                or any(
+                    chain[index]["previous_attempt_id"]
+                        != chain[index - 1]["attempt_id"]
+                    for index in range(1, len(chain))
+                )
+                or chain[-1]["outcome"] != "success"
+                or any(row["outcome"] == "success" for row in chain[:-1])
+            ):
+                l1_chain_complete = False
+                break
+        intent_l1_currency_complete = l1_currency_complete.get(intent, True)
+        intent_l1_latency_complete = l1_latency_complete.get(intent, True)
+        l1_authority_complete = (
+            not required_l1_candidates
+            or (bool(intent_l1_rows) and l1_chain_complete)
+        )
+        combined_currency_complete = (
+            currency_complete[intent]
+            and l1_authority_complete
+            and intent_l1_currency_complete
+        )
+        combined_latency_complete = (
+            latency_complete[intent]
+            and l1_authority_complete
+            and intent_l1_latency_complete
+        )
         expected = None
         expected_reason = "candidate_route_facts_unavailable"
-        if route_facts_complete and any(row["call_l1_model"] for row in facts):
+        if (
+            route_facts_complete
+            and required_l1_candidates
+            and not intent_l1_rows
+        ):
             expected_reason = "durable_l1_attempt_facts_unavailable"
+        elif (
+            route_facts_complete
+            and required_l1_candidates
+            and not l1_chain_complete
+        ):
+            expected_reason = "durable_l1_attempt_facts_incomplete"
         elif route_facts_complete and escalated and realized["calls"] == 0:
             expected_reason = "durable_l2_cost_sample_unavailable"
         elif route_facts_complete:
-            expected = _empty_cost()
-            for field in (
-                "calls", "input_tokens", "output_tokens", "cache_tokens",
-                "provider_usage_units", "queue_latency_ms", "run_latency_ms",
+            l1_total = l1_costs.get(intent, _empty_cost())
+            l1_per_candidate = _per_unit_cost(
+                l1_total, candidate_count,
+                latency_complete=intent_l1_latency_complete,
+                currency_complete=intent_l1_currency_complete,
+            )
+            l2_per_escalation = _per_unit_cost(
+                realized, escalated,
+                latency_complete=latency_complete[intent],
+                currency_complete=currency_complete[intent],
+            )
+            expected = {
+                "formula": (
+                    "L1_per_candidate + escalation_rate * "
+                    "L2_per_escalation"
+                ),
+                "escalation_rate": escalation_rate,
+                "L1_per_candidate": l1_per_candidate,
+                "L2_per_escalation": l2_per_escalation,
+            }
+            for field in _empty_cost():
+                if (
+                    field in l1_per_candidate
+                    and field in l2_per_escalation
+                ):
+                    expected[field] = (
+                        l1_per_candidate[field]
+                        + escalation_rate * l2_per_escalation[field]
+                    )
+            if (
+                combined_currency_complete
+                and (
+                    "currency_micros" in l1_per_candidate
+                    or "currency_micros" in l2_per_escalation
+                )
             ):
-                if field in realized:
-                    expected[field] = realized[field] / candidate_count
-                else:
-                    expected.pop(field, None)
-            expected["formula"] = "0 + escalation_rate * L2_per_escalation"
-            if "currency_micros" in realized:
                 expected["currency_micros"] = (
-                    realized["currency_micros"] / candidate_count
+                    l1_per_candidate.get("currency_micros", 0)
+                    + escalation_rate
+                    * l2_per_escalation.get("currency_micros", 0)
                 )
             expected_reason = None
         providers = {}
@@ -1100,10 +1655,14 @@ def summarize_realized_cost(conn, run_id):
             "accounting_complete": (
                 realized.get("inflight_calls", 0) == 0
                 and realized.get("unverified_usage_calls", 0) == 0
-                and currency_complete[intent]
+                and l1_costs.get(intent, {}).get(
+                    "unverified_usage_calls", 0
+                ) == 0
+                and l1_authority_complete
+                and combined_currency_complete
             ),
-            "latency_complete": latency_complete[intent],
-            "currency_complete": currency_complete[intent],
+            "latency_complete": combined_latency_complete,
+            "currency_complete": combined_currency_complete,
             "expected_per_candidate": expected,
             "expected_unavailable_reason": expected_reason,
             "risk_slices": risk_slices,
@@ -1126,8 +1685,7 @@ def summarize_realized_cost(conn, run_id):
             "attempt_kind_availability": {
                 "initial": "durable", "retry": "durable",
                 "failover": "durable", "split": "durable",
-                "detail": "producer_unavailable",
-                "reduce": "producer_unavailable",
+                **derived_availability,
             },
         }
     return result

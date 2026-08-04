@@ -1,8 +1,11 @@
 # Backends
 
 `HISTORY_RUNTIME_ABI=v2` is the provider-neutral runtime. Internal stages use
-registered provider IDs and portable mirrors. Omitted model and reasoning
-values preserve the selected CLI's current configuration.
+registered provider IDs and portable mirrors. Omitted reasoning preserves the
+selected CLI's current configuration. Omitted models preserve the Codex, Kimi,
+and Grok defaults; OpenCode requires a safe host probe and is launched with the
+resolved model pinned; agy requires an explicit model. OpenCode and agy models
+must be exact members of their current bounded local CLI catalogs.
 
 ## Hunt
 
@@ -36,6 +39,10 @@ HUNT_REASONING_EFFORT=high \
 
 These spellings are adapter inputs only. The checks did not query Codex, Kimi,
 or Grok for model availability, account entitlement, or capacity.
+
+The accepted explicit reasoning values are a conservative verified subset:
+Codex `high|xhigh`, Grok `high`, and no value for Kimi. Other explicit values
+fail before executable lookup. Omission continues to use the CLI default.
 
 Kimi CLI `0.31.1` has no reasoning flag; setting
 `HUNT_REASONING_EFFORT` with `HUNT_PROVIDER=kimi` fails preflight. Per-seat
@@ -97,8 +104,30 @@ SIDE_POLL_SEC=0 \
 ./awr-side.sh
 ```
 
-These spellings are adapter inputs only. The checks did not query either
-provider for model availability, account entitlement, or capacity.
+The host checks OpenCode models against `opencode models --pure` and agy models
+against `agy models`. Catalog membership does not establish account
+entitlement, capacity, or price.
+
+OpenCode accepts an omitted model only when the host-owned
+`opencode --pure debug config` probe returns a backend-qualified model outside
+the forbidden Claude/Anthropic and dynamic routes. The effective model must
+also appear exactly in `opencode models --pure`. The effective model, catalog
+probe revision, and canonical catalog SHA enter the profile. Configuration and
+catalog are re-probed immediately before launch, and the model is passed to
+`opencode run` with explicit `-m`. Probe failure or drift fails before model
+workload execution.
+Agy has no trusted default-identity probe, so every agy role requires
+`AWR_MODEL` or its role-specific `AWR_*_MODEL`; the value must appear exactly
+in `agy models`.
+
+`auto`, `default`, `current`, and `configured` route markers are rejected even
+when a CLI catalog lists them. The v1 provider registry is an exact tracked
+byte ABI; changed registry revision, grammar, reasoning set, key duplication,
+or reformatting is rejected.
+
+The accepted AwR-specific reasoning values are OpenCode `high` and agy
+`low|medium|high`. OpenCode `max|minimal` may appear in CLI examples but are
+not verified by this adapter revision. Omitted reasoning uses the CLI default.
 
 Role-specific controls are `AWR_RESEARCH_*`, `AWR_PRIORWORK_*`, and
 `AWR_JUDGE_*`. For example:
@@ -107,7 +136,9 @@ Role-specific controls are `AWR_RESEARCH_*`, `AWR_PRIORWORK_*`, and
 HISTORY_RUNTIME_ABI=v2 \
 AWR_PROVIDER=codex \
 AWR_PRIORWORK_PROVIDER=opencode \
+AWR_PRIORWORK_MODEL=openai/gpt-5.6-sol \
 AWR_JUDGE_PROVIDER=agy \
+AWR_JUDGE_MODEL=gemini-3.6-flash-high \
 SIDE_POLL_SEC=0 \
 ./awr-side.sh
 ```
@@ -122,6 +153,11 @@ mirror contains one role plus declared inputs; it omits the full ledger,
 SQLite database, Git metadata, unrelated round state, and `.claude`. The host
 sets a fixed request-byte ceiling, accepts one closed JSON envelope on stdout,
 validates it, and publishes outputs atomically.
+
+The host injects a base-request binding over the stage, seat, prompt, role SHA,
+declared-input names and SHAs, and response schema, plus a separate prompt SHA.
+The response must echo both values exactly. Missing or wrong attestation fails
+before any artifact is projected or completion is published.
 
 This is process-level data minimization, not an OS/container sandbox. A
 host-privileged CLI can still access absolute host paths outside the mirror.

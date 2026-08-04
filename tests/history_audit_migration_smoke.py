@@ -250,6 +250,145 @@ class HistoryAuditMigrationSmoke(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(count, 0)
 
+    def test_optional_candidate_budget_can_be_installed_after_later_schema(self):
+        path = self.root / "late-candidate-budget.sqlite3"
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        plans_migration = next(
+            migration for migration in audit_store.MIGRATIONS
+            if migration.component == "l2-plans-per-run"
+        )
+        without_candidate_budget = tuple(
+            migration for migration in audit_store.MIGRATIONS
+            if migration.component != "candidate-budget-authority"
+        )
+        try:
+            with mock.patch.object(
+                audit_store, "MIGRATIONS", without_candidate_budget
+            ):
+                audit_store.init_schema(conn)
+            applied = {
+                row[0] for row in conn.execute(
+                    "SELECT component FROM audit_schema_migrations"
+                )
+            }
+            self.assertIn("l2-plans-per-run", applied)
+            self.assertNotIn("candidate-budget-authority", applied)
+            self.assertEqual(
+                conn.execute(
+                    "SELECT migration_sha256 FROM audit_schema_migrations "
+                    "WHERE component='l2-plans-per-run'"
+                ).fetchone()[0],
+                plans_migration.sha256,
+            )
+            self.assertIsNone(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='audit_candidate_budget_receipts_v2'"
+            ).fetchone())
+            self.assertIsNone(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                "AND name='audit_l2_plans_v2_candidate_budget_guard'"
+            ).fetchone())
+
+            audit_store.init_schema(conn)
+            applied = {
+                row[0] for row in conn.execute(
+                    "SELECT component FROM audit_schema_migrations"
+                )
+            }
+            self.assertIn("candidate-budget-authority", applied)
+            self.assertIn("l2-plans-per-run", applied)
+            self.assertIsNotNone(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='audit_candidate_budget_receipts_v2'"
+            ).fetchone())
+            self.assertIsNotNone(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                "AND name='audit_l2_plans_v2_candidate_budget_guard'"
+            ).fetchone())
+            self.assertEqual(conn.execute(
+                "PRAGMA foreign_key_check"
+            ).fetchall(), [])
+
+            fresh = sqlite3.connect(":memory:")
+            try:
+                audit_store.init_schema(fresh)
+                self.assertEqual(
+                    audit_store._managed_schema_rows(conn),
+                    audit_store._managed_schema_rows(fresh),
+                )
+                self.assertEqual(
+                    fresh.execute(
+                        "SELECT migration_sha256 "
+                        "FROM audit_schema_migrations "
+                        "WHERE component='l2-plans-per-run'"
+                    ).fetchone()[0],
+                    plans_migration.sha256,
+                )
+            finally:
+                fresh.close()
+
+            before_restart = "\n".join(conn.iterdump()).encode("utf-8")
+            audit_store.init_schema(conn)
+            self.assertEqual(
+                "\n".join(conn.iterdump()).encode("utf-8"),
+                before_restart,
+            )
+        finally:
+            conn.close()
+
+    def test_l2_plan_rebuild_rejects_inconsistent_budget_authority_schema(self):
+        target = next(
+            index for index, migration in enumerate(audit_store.MIGRATIONS)
+            if migration.component == "l2-plans-per-run"
+        )
+        migration = audit_store.MIGRATIONS[target]
+        prefix = audit_store.MIGRATIONS[:target]
+        for missing_object, drop_statement in (
+            (
+                "table",
+                "DROP TABLE audit_candidate_budget_receipts_v2",
+            ),
+            (
+                "trigger",
+                "DROP TRIGGER audit_l2_plans_v2_candidate_budget_guard",
+            ),
+        ):
+            with self.subTest(missing_object=missing_object):
+                conn = sqlite3.connect(
+                    self.root / f"missing-budget-{missing_object}.sqlite3"
+                )
+                conn.row_factory = sqlite3.Row
+                try:
+                    with mock.patch.object(
+                        audit_store, "MIGRATIONS", prefix
+                    ):
+                        audit_store.init_schema(conn)
+                    conn.execute(drop_statement)
+                    conn.commit()
+                    before_upgrade = "\n".join(
+                        conn.iterdump()
+                    ).encode("utf-8")
+                    with mock.patch.object(
+                        audit_store,
+                        "MIGRATIONS",
+                        prefix + (migration,),
+                    ), self.assertRaisesRegex(
+                        audit_store.AuditMigrationError,
+                        "candidate budget authority schema is inconsistent",
+                    ):
+                        audit_store.init_schema(conn)
+                    self.assertEqual(
+                        "\n".join(conn.iterdump()).encode("utf-8"),
+                        before_upgrade,
+                    )
+                    self.assertIsNone(conn.execute(
+                        "SELECT 1 FROM audit_schema_migrations "
+                        "WHERE component='l2-plans-per-run'"
+                    ).fetchone())
+                finally:
+                    conn.close()
+
     def test_current_populated_database_keeps_v1_schema_and_rows(self):
         ledger = self.root / "ledger.tsv"
         ledger.write_bytes(
@@ -411,7 +550,18 @@ class HistoryAuditMigrationSmoke(unittest.TestCase):
 
     def test_activation_and_direction_checks_bind_batch_owned_evidence(self):
         candidate = self._import_candidate()
-        audit_store.init_schema(self.conn)
+        legacy_evidence_migrations = tuple(
+            migration for migration in audit_store.MIGRATIONS
+            if migration.component not in {
+                "batch-staging-authority",
+                "batch-direction-gate-authority",
+                "metadata-direction-gate-provenance",
+            }
+        )
+        with mock.patch.object(
+            audit_store, "MIGRATIONS", legacy_evidence_migrations
+        ):
+            audit_store.init_schema(self.conn)
         for run_id, plan_hash in (("run-1", SHA), ("run-2", "9" * 64)):
             self.conn.execute(
                 """
@@ -428,15 +578,22 @@ class HistoryAuditMigrationSmoke(unittest.TestCase):
             ("stg-2", "run-1", "batch-1", "3" * 64, "4" * 64, 1),
             ("stg-other", "run-2", "batch-2", "5" * 64, "6" * 64, 0),
         )
-        self.conn.executemany(
-            """
-            INSERT INTO audit_batch_staging(
-              staging_candidate_id, run_id, batch_id, candidate_hash,
-              raw_artifact_sha, source_order, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
-            """,
-            staging,
-        )
+        self.conn.execute("BEGIN IMMEDIATE")
+        for (
+            staging_candidate_id, run_id, batch_id, candidate_hash,
+            raw_artifact_sha, source_order,
+        ) in staging:
+            audit_store.insert_authorized_batch_staging(
+                self.conn,
+                staging_candidate_id=staging_candidate_id,
+                run_id=run_id,
+                batch_id=batch_id,
+                candidate_hash=candidate_hash,
+                raw_artifact_sha=raw_artifact_sha,
+                source_order=source_order,
+                created_at="2026-08-03T00:00:00Z",
+            )
+        self.conn.execute("COMMIT")
         self.conn.execute(
             """
             INSERT INTO audit_batch_pairs(

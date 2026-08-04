@@ -55,6 +55,8 @@ RUNTIME_FILES = [
     "history/provider-adapters-v1.json",
     "history/capacity-profiles-v1.json",
     "history/l2-budget-v1.json",
+    "history/settlement-policy-v1.json",
+    "history/production-evidence-roots-v1.json",
     "history/review-contract-v1.md",
     "ledger.instance-id",
     "roles/generate.md", "roles/meta.md", "roles/review.md",
@@ -487,10 +489,33 @@ def verify_provider_registry():
     if not claude_invocation_lines(shell_vector):
         raise AssertionError("tainted wrapper command scanner regressed")
 
+
+def verify_production_evidence_roots():
+    roots = json.loads(
+        (ROOT / "history/production-evidence-roots-v1.json").read_text()
+    )
+    if list(roots) != [
+        "schema_version", "registry_revision",
+        "fault_reports", "replay_reports", "semantic_evaluation_reports",
+    ]:
+        raise AssertionError("production evidence root registry is not closed")
+    if (
+        roots["schema_version"] != "history-production-evidence-roots-v1"
+        or not isinstance(roots["registry_revision"], str)
+        or not roots["registry_revision"]
+        or roots["fault_reports"] != []
+        or roots["replay_reports"] != []
+        or roots["semantic_evaluation_reports"] != []
+    ):
+        raise AssertionError(
+            "shipped production evidence roots must remain empty"
+        )
+
 def verify_runtime():
     assert_backend_defaults()
     assert_no_claude_invocations()
     verify_provider_registry()
+    verify_production_evidence_roots()
     verify_awr_state_aliases()
     assert_text_contract(runtime_paths())
     required = {
@@ -545,6 +570,16 @@ def verify_runtime():
         "history/provider-adapters-v1.json": ["provider-adapters-v1"],
         "history/capacity-profiles-v1.json": ["safe-24k-v1", "unbudgetable"],
         "history/l2-budget-v1.json": ["l2-budget-v1"],
+        "history/settlement-policy-v1.json": [
+            "history-settlement-policy-v1",
+            "deterministic-equality-v1",
+        ],
+        "history/production-evidence-roots-v1.json": [
+            "history-production-evidence-roots-v1",
+            "fault_reports",
+            "replay_reports",
+            "semantic_evaluation_reports",
+        ],
         "lib/history_store.py": [
             "search_projection_outbox",
             "ledger_projection_outbox",

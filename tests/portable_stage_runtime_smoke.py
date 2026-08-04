@@ -31,6 +31,19 @@ FAKE = ROOT / "tests/fake_portable_stage_provider.py"
 BOUNDARY = "portable-mirror-v1"
 
 
+def _catalog(provider, *models):
+    models = sorted(models)
+    return {
+        "schema_version": "provider-model-catalog-v1",
+        "provider": provider,
+        "models": models,
+        "probe_revision": "fixture-model-catalog-v1",
+        "catalog_sha256": provider_adapters._model_catalog_sha256(
+            provider, models
+        ),
+    }
+
+
 class PortableStageRuntimeSmoke(unittest.TestCase):
     def _api(self, module, name):
         self.assertIsNotNone(
@@ -59,11 +72,11 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
     @staticmethod
     def _intent():
         resolve_intent = getattr(
-            provider_adapters, "resolve_command_intent", None
+            provider_adapters, "_resolve_command_intent_for_test", None
         )
         if not callable(resolve_intent):
             raise AssertionError(
-                "missing behavior: provider_adapters.resolve_command_intent"
+                "missing behavior: provider_adapters._resolve_command_intent_for_test"
             )
         registry = provider_adapters.load_registry(REGISTRY)
         return resolve_intent(
@@ -75,7 +88,14 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
             executable_lookup=lambda _: str(FAKE),
         )
 
-    def _prepare(self, root, *, stage="generate"):
+    def _prepare(
+        self,
+        root,
+        *,
+        stage="generate",
+        intent=None,
+        generation_policy="bounded policy\n",
+    ):
         inputs = root / "inputs"
         inputs.mkdir(parents=True)
         if stage == "generate":
@@ -88,7 +108,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 '{"brief":"bounded"}\n', encoding="utf-8"
             )
             (inputs / "generation_policy.md").write_text(
-                "bounded policy\n", encoding="utf-8"
+                generation_policy, encoding="utf-8"
             )
             input_paths = {
                 "generation_brief.json": inputs / "generation_brief.json",
@@ -118,10 +138,20 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 "prior_work.md": inputs / "prior_work.md",
                 "review_contract.md": inputs / "review_contract.md",
             }
+        elif stage == "awr-research":
+            serialized_prompt = json.dumps(
+                {"schema_version": 1, "stage": "awr-research"},
+                sort_keys=True,
+                separators=(",", ":"),
+            ) + "\n"
+            (inputs / "idea.md").write_text(
+                "bounded idea\n", encoding="utf-8"
+            )
+            input_paths = {"idea.md": inputs / "idea.md"}
         else:
             raise AssertionError(stage)
         prepared = self._api(portable_stage, "prepare_stage")(
-            self._intent(),
+            self._intent() if intent is None else intent,
             stage=stage,
             seat_id=f"{stage}-seat-1",
             serialized_prompt=serialized_prompt,
@@ -130,6 +160,78 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
             state_root=root / "portable-state",
         )
         return prepared, serialized_prompt, input_paths
+
+    def test_request_binding_changes_with_declared_input_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            first, _, _ = self._prepare(
+                root / "first", generation_policy="policy A\n"
+            )
+            second, _, _ = self._prepare(
+                root / "second", generation_policy="policy B\n"
+            )
+            self.assertEqual(
+                first["serialized_prompt_sha256"],
+                second["serialized_prompt_sha256"],
+            )
+            self.assertNotEqual(
+                first["provider_request_binding_sha256"],
+                second["provider_request_binding_sha256"],
+            )
+            self.assertNotEqual(
+                first["provider_request_sha256"],
+                second["provider_request_sha256"],
+            )
+
+    def test_default_backend_drift_fails_before_provider_workload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            intent = provider_adapters._resolve_command_intent_for_test(
+                provider_adapters.load_registry(REGISTRY),
+                "awr",
+                "opencode",
+                executable_lookup=lambda _: str(FAKE),
+                default_identity_probe=lambda *_: {
+                    "schema_version": "provider-default-identity-v1",
+                    "provider": "opencode",
+                    "effective_model": "openai/safe-model",
+                    "probe_revision": "fixture-default-probe-v1",
+                },
+                model_catalog_probe=lambda *_: _catalog(
+                    "opencode", "openai/safe-model"
+                ),
+            )
+            prepared, _, _ = self._prepare(
+                root, stage="awr-research", intent=intent
+            )
+            workload = root / "provider-workload"
+            with mock.patch.object(
+                provider_adapters,
+                "_host_default_identity_probe",
+                return_value={
+                    "schema_version": "provider-default-identity-v1",
+                    "provider": "opencode",
+                    "effective_model": "anthropic/claude-sonnet",
+                    "probe_revision": "fixture-default-probe-v1",
+                },
+            ), mock.patch.object(
+                provider_adapters,
+                "_host_model_catalog_probe",
+                return_value=_catalog("opencode", "openai/safe-model"),
+            ), mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_LOG": str(workload)},
+                clear=False,
+            ):
+                with self.assertRaises(self._error()):
+                    self._api(portable_stage, "run_stage")(
+                        prepared,
+                        timeout_seconds=2,
+                    )
+            self.assertFalse(workload.exists())
+            self.assertFalse(
+                pathlib.Path(prepared["completion_path"]).exists()
+            )
 
     @staticmethod
     def _load(path):
@@ -333,6 +435,58 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 (root / "state").exists(),
                 "over-limit input created portable attempt state",
             )
+
+    def test_provider_envelope_without_request_attestation_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared, _, _ = self._prepare(root)
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "missing-request-attestation"},
+                clear=False,
+            ):
+                with self.assertRaises(self._error()):
+                    self._api(portable_stage, "run_stage")(
+                        prepared,
+                        timeout_seconds=2,
+                    )
+            self.assertFalse(
+                pathlib.Path(prepared["completion_path"]).exists()
+            )
+            self.assertTrue(
+                all(
+                    not pathlib.Path(path).exists()
+                    for path in prepared["output_paths"].values()
+                )
+            )
+
+    def test_wrong_provider_request_or_prompt_attestation_never_projects(self):
+        for mode in (
+            "wrong-request-attestation",
+            "wrong-prompt-attestation",
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                prepared, _, _ = self._prepare(root)
+                with mock.patch.dict(
+                    os.environ,
+                    {"FAKE_PORTABLE_STAGE_MODE": mode},
+                    clear=False,
+                ):
+                    with self.assertRaises(self._error()):
+                        self._api(portable_stage, "run_stage")(
+                            prepared,
+                            timeout_seconds=2,
+                        )
+                self.assertFalse(
+                    pathlib.Path(prepared["completion_path"]).exists()
+                )
+                self.assertTrue(
+                    all(
+                        not pathlib.Path(path).exists()
+                        for path in prepared["output_paths"].values()
+                    )
+                )
 
     def test_mirror_has_only_declared_inputs_and_scrubs_runtime_pointers(self):
         with tempfile.TemporaryDirectory() as directory:

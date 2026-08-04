@@ -248,6 +248,11 @@ profile_fields = {
     "provider",
     "requested_model",
     "requested_reasoning",
+    "effective_model",
+    "effective_reasoning",
+    "default_probe_revision",
+    "model_catalog_probe_revision",
+    "model_catalog_sha256",
     "execution_request_profile_hash",
 }
 if (
@@ -319,6 +324,7 @@ public_stage_fields = {
     "role_sha256",
     "input_sha256s",
     "provider_request_sha256",
+    "provider_request_binding_sha256",
     "response_schema_sha256",
     "preflight",
     "completion",
@@ -558,6 +564,7 @@ run_awr_v2() {
       AWR_RESEARCH_PROVIDER=codex \
       AWR_PRIORWORK_PROVIDER=opencode \
       AWR_JUDGE_PROVIDER=agy \
+      AWR_JUDGE_MODEL=gemini/fixture-model \
       SIDE_POLL_SEC=0 \
       SIDE_MAX_ROUNDS=1 \
       SIDE_MAX_BAD=1 \

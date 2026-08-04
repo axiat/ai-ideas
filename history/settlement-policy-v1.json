@@ -1,0 +1,14 @@
+{
+  "schema_version": "history-settlement-policy-v1",
+  "settlement_policy_id": "deterministic-equality-v1",
+  "valid_result_policy": {
+    "normalization": "closed-schema-canonical-v2",
+    "equal_results": "settled-equal",
+    "divergent_results": "settled-conflict",
+    "arrival_order_affects_result": false
+  },
+  "retry_policy": {
+    "requires_no_valid_result": true,
+    "terminal_settlement_count": 1
+  }
+}

@@ -81,10 +81,24 @@ class _ZeroAudit:
 
     @staticmethod
     def record_direction_check(conn, *, staged_candidate, direction_receipt,
-                               semantic_relation, lineage_relation, evidence_sha):
+                               semantic_relation=None, lineage_relation=None,
+                               evidence_sha=None, direction_fit=None,
+                               direction_evidence=None):
         return {
             "staging_candidate_id": staged_candidate["staging_candidate_id"],
-            "evidence_sha": SHA,
+            "direction_fit": direction_fit,
+            "direction_evidence": direction_evidence,
+            "verdict_sha256": SHA,
+        }
+
+    @staticmethod
+    def record_batch_direction_gate(
+        conn, *, staged_batch, direction_receipt, verdict_tsv
+    ):
+        return {
+            "gate_sha256": SHA,
+            "candidate_mapping": [],
+            "verdicts": [],
         }
 
     @staticmethod
@@ -221,6 +235,11 @@ class HistoryAuditL1Smoke(unittest.TestCase):
         )
 
     def _activation_evidence(self, staged):
+        pair_plan, pair_receipt = self._pair_evidence(staged)
+        direction_checks = self._direction_verdicts(staged)
+        return pair_plan, pair_receipt, direction_checks[0]
+
+    def _pair_evidence(self, staged):
         pair_plan = audit.plan_batch_pairs(staged)
         pair_results = [
             {
@@ -236,15 +255,72 @@ class HistoryAuditL1Smoke(unittest.TestCase):
         pair_receipt = audit.record_batch_pair_results(
             self.conn, staged, pair_plan, pair_results
         )
-        direction_check = audit.record_direction_check(
+        return pair_plan, pair_receipt
+
+    def _direction_verdicts(self, staged, fits=None):
+        fits = fits or ["in-scope"] * len(staged["candidates"])
+        gate = audit.record_batch_direction_gate(
             self.conn,
-            staged_candidate=staged["candidates"][0],
+            staged_batch=staged,
             direction_receipt=self.direction,
-            semantic_relation="distinct",
-            lineage_relation="none",
-            evidence_sha="6" * 64,
+            verdict_tsv=self._direction_tsv(staged, fits=fits),
         )
-        return pair_plan, pair_receipt, direction_check
+        return gate["verdicts"]
+
+    def _direction_tsv(self, staged, fits=None, evidences=None):
+        ordered = sorted(
+            staged["candidates"], key=lambda item: item["source_order"]
+        )
+        fits = fits or ["in-scope"] * len(ordered)
+        evidences = evidences or [
+            f"selector evidence {index + 1}" for index in range(len(ordered))
+        ]
+        rows = ["id\tdirection-fit\tdirection-evidence"]
+        rows.extend(
+            f"I{index + 1}\t{fit}\t{evidence}"
+            for index, (fit, evidence) in enumerate(zip(fits, evidences))
+        )
+        return ("\n".join(rows) + "\n").encode("utf-8")
+
+    def _direct_activation_insert(self, staged_candidate, pair_receipt):
+        appended = history_store.append_rows(
+            self.conn,
+            [staged_candidate["raw_candidate"]],
+            {"run_id": "direct-direction-gate"},
+        )
+        candidate = self.conn.execute(
+            "SELECT candidate_id,source_sequence FROM candidates "
+            "WHERE candidate_id=?",
+            (appended["candidate_ids"][0],),
+        ).fetchone()
+        activation_sha = hashlib.sha256(
+            ("direct:" + staged_candidate["staging_candidate_id"]).encode()
+        ).hexdigest()
+        self.conn.execute(
+            """
+            INSERT INTO audit_activation_receipts(
+              activation_receipt_sha, staging_candidate_id,
+              receipt_json, created_at
+            ) VALUES(?, ?, '{}', '2026-08-03T00:00:00Z')
+            """,
+            (activation_sha, staged_candidate["staging_candidate_id"]),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO audit_activation_maps(
+              staging_candidate_id, legacy_candidate_id, source_sequence,
+              raw_artifact_sha, pair_plan_sha, pair_result_sha,
+              activation_receipt_sha, activated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+            """,
+            (
+                staged_candidate["staging_candidate_id"],
+                candidate["candidate_id"], candidate["source_sequence"],
+                staged_candidate["raw_artifact_sha"],
+                pair_receipt["pair_plan_sha"],
+                pair_receipt["pair_result_sha"], activation_sha,
+            ),
+        )
 
     def _foreign_snapshot(self):
         self.conn.execute(
@@ -313,18 +389,23 @@ class HistoryAuditL1Smoke(unittest.TestCase):
         candidate_hash = contract.framed_sha256(
             "history-candidate-content-v2", raw_candidate
         )
-        self.conn.execute(
-            """
-            INSERT INTO audit_batch_staging(
-              staging_candidate_id, run_id, batch_id, candidate_hash,
-              raw_artifact_sha, source_order, created_at
-            ) VALUES(?, ?, ?, ?, ?, 99, '2026-08-03T00:00:00Z')
-            """,
-            (
-                staging_id, self.run_id, self.batch_id, candidate_hash,
-                raw_artifact_sha,
-            ),
-        )
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            audit_store.insert_authorized_batch_staging(
+                self.conn,
+                staging_candidate_id=staging_id,
+                run_id=self.run_id,
+                batch_id=self.batch_id,
+                candidate_hash=candidate_hash,
+                raw_artifact_sha=raw_artifact_sha,
+                source_order=99,
+                created_at="2026-08-03T00:00:00Z",
+            )
+            self.conn.execute("COMMIT")
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+            raise
         return {
             "staging_candidate_id": staging_id,
             "run_id": self.run_id,
@@ -484,6 +565,221 @@ class HistoryAuditL1Smoke(unittest.TestCase):
             self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0], before
         )
 
+    def test_new_staging_rows_require_host_authority_for_any_id_shape(self):
+        inserted = []
+        for index, staging_id in enumerate((
+            "new-nonprefix-candidate",
+            "stg-v2-" + "f" * 64,
+        )):
+            try:
+                self.conn.execute(
+                    """
+                    INSERT INTO audit_batch_staging(
+                      staging_candidate_id, run_id, batch_id, candidate_hash,
+                      raw_artifact_sha, source_order, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+                    """,
+                    (
+                        staging_id, self.run_id, self.batch_id,
+                        hashlib.sha256(f"candidate-{index}".encode()).hexdigest(),
+                        hashlib.sha256(f"raw-{index}".encode()).hexdigest(),
+                        index,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                inserted.append(False)
+            else:
+                inserted.append(True)
+        self.conn.rollback()
+        self.assertEqual(inserted, [False, False])
+
+    def test_active_staging_direction_triggers_use_authority_kind_not_prefix(self):
+        names = (
+            "audit_batch_pairs_owner_and_order_guard",
+            "audit_batch_pairs_set_binding_guard",
+            "audit_activation_maps_evidence_guard",
+            "audit_activation_maps_batch_direction_guard",
+            "audit_direction_checks_staging_owner_guard",
+        )
+        rows = self.conn.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='trigger' "
+            f"AND name IN ({','.join('?' for _ in names)})",
+            names,
+        ).fetchall()
+        self.assertEqual({row["name"] for row in rows}, set(names))
+        for row in rows:
+            self.assertNotIn("GLOB", row["sql"])
+            self.assertIn("authority_kind", row["sql"])
+
+    def test_staging_authority_sidecars_are_immutable_and_reopen_exactly(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        before = self.conn.execute(
+            "SELECT * FROM audit_batch_staging_authorities_v2 ORDER BY source_order"
+        ).fetchall()
+        self.assertEqual(
+            [row["authority_kind"] for row in before],
+            ["host_issued", "host_issued"],
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "UPDATE audit_batch_staging_authorities_v2 "
+                "SET authority_kind='migration_v2' WHERE source_order=0"
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "DELETE FROM audit_batch_staging_authorities_v2 WHERE source_order=0"
+            )
+        self.conn.close()
+        self.conn = history_store.connect(self.root / "history.sqlite3")
+        history_store.init_schema(self.conn)
+        audit_store.init_schema(self.conn)
+        replay = self._staged(snapshot=snapshot)
+        after = self.conn.execute(
+            "SELECT * FROM audit_batch_staging_authorities_v2 ORDER BY source_order"
+        ).fetchall()
+        self.assertEqual(
+            [tuple(row) for row in after], [tuple(row) for row in before]
+        )
+        self.assertEqual(
+            [item["staging_candidate_id"] for item in replay["candidates"]],
+            [item["staging_candidate_id"] for item in staged["candidates"]],
+        )
+
+    def test_individual_v2_direction_verdict_requires_batch_gate(self):
+        staged = self._staged()
+        with self.assertRaisesRegex(ValueError, "direction_gate_authority_required"):
+            audit.record_direction_check(
+                self.conn,
+                staged_candidate=staged["candidates"][0],
+                direction_receipt=self.direction,
+                direction_fit="in-scope",
+                direction_evidence="caller verdict",
+            )
+
+    def test_batch_direction_gate_maps_selector_ids_by_source_order(self):
+        ids = (
+            "stg-v2-" + "f" * 64,
+            "stg-v2-" + "0" * 64,
+        )
+        snapshot = self._snapshot(ids=ids)
+        staged = self._staged(snapshot=snapshot, ids=ids)
+        gate = audit.record_batch_direction_gate(
+            self.conn,
+            staged_batch=staged,
+            direction_receipt=self.direction,
+            verdict_tsv=self._direction_tsv(staged),
+        )
+        expected = [
+            {
+                "selector_id": "I1",
+                "staging_candidate_id": ids[0],
+                "source_order": 0,
+            },
+            {
+                "selector_id": "I2",
+                "staging_candidate_id": ids[1],
+                "source_order": 1,
+            },
+        ]
+        self.assertEqual(gate["candidate_mapping"], expected)
+        self.assertEqual(
+            [item["staging_candidate_id"] for item in gate["verdicts"]],
+            list(ids),
+        )
+
+    def test_batch_direction_gate_rejects_caller_source_order_drift(self):
+        staged = self._staged()
+        tampered = dict(
+            staged,
+            candidates=[dict(item) for item in staged["candidates"]],
+        )
+        tampered["candidates"][0]["source_order"] = 99
+        with self.assertRaisesRegex(ValueError, "identity does not replay"):
+            audit.record_batch_direction_gate(
+                self.conn,
+                staged_batch=tampered,
+                direction_receipt=self.direction,
+                verdict_tsv=self._direction_tsv(staged),
+            )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_batch_direction_gates_v2"
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_batch_direction_gate_half_write_rolls_back_and_then_commits(self):
+        staged = self._staged()
+        self.conn.execute(
+            """
+            CREATE TEMP TRIGGER fail_second_direction_binding
+            BEFORE INSERT ON main.audit_batch_direction_gate_bindings_v2
+            WHEN NEW.source_order=1
+            BEGIN
+              SELECT RAISE(ABORT,'fault injected at second direction binding');
+            END
+            """
+        )
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "fault injected at second direction binding"
+        ):
+            audit.record_batch_direction_gate(
+                self.conn,
+                staged_batch=staged,
+                direction_receipt=self.direction,
+                verdict_tsv=self._direction_tsv(staged),
+            )
+        self.assertFalse(self.conn.in_transaction)
+        for table in (
+            "audit_batch_direction_gates_v2",
+            "audit_batch_direction_gate_bindings_v2",
+            "audit_batch_direction_verdicts_v2",
+        ):
+            self.assertEqual(
+                self.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0],
+                0,
+            )
+        self.conn.execute("DROP TRIGGER temp.fail_second_direction_binding")
+        gate = audit.record_batch_direction_gate(
+            self.conn,
+            staged_batch=staged,
+            direction_receipt=self.direction,
+            verdict_tsv=self._direction_tsv(staged),
+        )
+        self.assertEqual(gate["member_count"], 2)
+
+    def test_batch_direction_gate_reopens_and_exactly_replays(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        verdict_tsv = self._direction_tsv(staged)
+        first = audit.record_batch_direction_gate(
+            self.conn,
+            staged_batch=staged,
+            direction_receipt=self.direction,
+            verdict_tsv=verdict_tsv,
+        )
+        self.conn.close()
+        self.conn = history_store.connect(self.root / "history.sqlite3")
+        history_store.init_schema(self.conn)
+        audit_store.init_schema(self.conn)
+        replay = audit.record_batch_direction_gate(
+            self.conn,
+            staged_batch=staged,
+            direction_receipt=self.direction,
+            verdict_tsv=verdict_tsv,
+        )
+        self.assertEqual(replay, first)
+        with self.assertRaisesRegex(ValueError, "conflicts with durable state"):
+            audit.record_batch_direction_gate(
+                self.conn,
+                staged_batch=staged,
+                direction_receipt=self.direction,
+                verdict_tsv=self._direction_tsv(
+                    staged, evidences=["changed evidence", "selector evidence 2"]
+                ),
+            )
+
     def test_pair_persistence_rejects_snapshot_from_another_run_and_batch(self):
         snapshot = self._snapshot()
         staged = self._staged(snapshot=snapshot)
@@ -538,14 +834,7 @@ class HistoryAuditL1Smoke(unittest.TestCase):
                 foreign_set["current_batch_ids_hash"], foreign_set["member_count"],
             ),
         )
-        direction_check = audit.record_direction_check(
-            self.conn,
-            staged_candidate=staged["candidates"][0],
-            direction_receipt=self.direction,
-            semantic_relation="distinct",
-            lineage_relation="none",
-            evidence_sha="6" * 64,
-        )
+        direction_check = {}
         before = self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0]
         with self.assertRaises(ValueError):
             audit.activate_staged_candidate(
@@ -577,6 +866,10 @@ class HistoryAuditL1Smoke(unittest.TestCase):
                     "l1-pair-snapshot-ownership",
                     "l1-snapshot-batch-membership",
                     "l1-strict-pair-completion",
+                    "l1-batch-direction-authority",
+                    "batch-staging-authority",
+                    "batch-direction-gate-authority",
+                    "metadata-direction-gate-provenance",
                 }
             )
             with mock.patch.object(audit_store, "MIGRATIONS", old_migrations):
@@ -656,6 +949,10 @@ class HistoryAuditL1Smoke(unittest.TestCase):
                 if migration.component not in {
                     "l1-snapshot-batch-membership",
                     "l1-strict-pair-completion",
+                    "l1-batch-direction-authority",
+                    "batch-staging-authority",
+                    "batch-direction-gate-authority",
+                    "metadata-direction-gate-provenance",
                 }
             )
             with mock.patch.object(audit_store, "MIGRATIONS", old_migrations):
@@ -703,14 +1000,7 @@ class HistoryAuditL1Smoke(unittest.TestCase):
         staged = self._staged(snapshot=snapshot)
         _, pair_receipt, _ = self._activation_evidence(staged)
         injected = self._inject_same_batch_staging()
-        direction_check = audit.record_direction_check(
-            self.conn,
-            staged_candidate=injected,
-            direction_receipt=self.direction,
-            semantic_relation="distinct",
-            lineage_relation="none",
-            evidence_sha="f" * 64,
-        )
+        direction_check = {}
         before = self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0]
         with self.assertRaises(ValueError):
             audit.activate_staged_candidate(
@@ -774,14 +1064,7 @@ class HistoryAuditL1Smoke(unittest.TestCase):
         )
         pair_receipt = self._install_mixed_strict_pair(snapshot, staged)
         selected = staged["candidates"][1]
-        direction_check = audit.record_direction_check(
-            self.conn,
-            staged_candidate=selected,
-            direction_receipt=self.direction,
-            semantic_relation="distinct",
-            lineage_relation="none",
-            evidence_sha="f" * 64,
-        )
+        direction_check = {}
         before = self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0]
         with self.assertRaises(ValueError):
             audit.activate_staged_candidate(
@@ -898,7 +1181,13 @@ class HistoryAuditL1Smoke(unittest.TestCase):
             old_migrations = tuple(
                 migration
                 for migration in audit_store.MIGRATIONS
-                if migration.component != "l1-strict-pair-completion"
+                if migration.component not in {
+                    "l1-strict-pair-completion",
+                    "l1-batch-direction-authority",
+                    "batch-staging-authority",
+                    "batch-direction-gate-authority",
+                    "metadata-direction-gate-provenance",
+                }
             )
             with mock.patch.object(audit_store, "MIGRATIONS", old_migrations):
                 audit_store.init_schema(conn)
@@ -1025,6 +1314,425 @@ class HistoryAuditL1Smoke(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_direction_authority_upgrade_rejects_preexisting_unissued_activation(self):
+        self.assertTrue(any(
+            migration.component == "l1-batch-direction-authority"
+            for migration in audit_store.MIGRATIONS
+        ))
+        conn = history_store.connect(self.root / "direction-upgrade.sqlite3")
+        try:
+            history_store.init_schema(conn)
+            history_store.import_tsv_epoch(conn, self.ledger)
+            old_migrations = tuple(
+                migration
+                for migration in audit_store.MIGRATIONS
+                if migration.component not in {
+                    "l1-batch-direction-authority",
+                    "batch-direction-gate-authority",
+                    "metadata-direction-gate-provenance",
+                }
+            )
+            with mock.patch.object(audit_store, "MIGRATIONS", old_migrations):
+                audit_store.init_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO audit_run_manifests(
+                  run_id, manifest_schema_version, plan_hash,
+                  manifest_json, created_at
+                ) VALUES('run-direction-upgrade', 'history-audit-manifest-v2',
+                         ?, '{}', '2026-08-03T00:00:00Z')
+                """,
+                ("1" * 64,),
+            )
+            staging_id = "stg-v2-" + "7" * 64
+            snapshot = audit.freeze_snapshot(
+                conn,
+                run_id="run-direction-upgrade",
+                batch_id="batch-direction-upgrade",
+                current_batch_ids=[staging_id],
+            )
+            staged = audit.stage_raw_batch(
+                conn,
+                snapshot=snapshot,
+                raw_candidates=[{
+                    "staging_candidate_id": staging_id,
+                    "raw_candidate": row("unissued direction activation"),
+                }],
+                direction_receipt=self.direction,
+            )
+            pair_plan = audit.plan_batch_pairs(staged)
+            pair_receipt = audit.record_batch_pair_results(
+                conn, staged, pair_plan, []
+            )
+            selected = staged["candidates"][0]
+            appended = history_store.append_rows(
+                conn, [selected["raw_candidate"]],
+                {"run_id": "direction-upgrade-append"},
+            )
+            candidate = conn.execute(
+                "SELECT candidate_id,source_sequence FROM candidates "
+                "WHERE candidate_id=?",
+                (appended["candidate_ids"][0],),
+            ).fetchone()
+            activation_sha = "8" * 64
+            conn.execute(
+                "INSERT INTO audit_activation_receipts VALUES(?, ?, '{}', ?)",
+                (
+                    activation_sha, staging_id,
+                    "2026-08-03T00:00:00Z",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_activation_maps(
+                  staging_candidate_id, legacy_candidate_id, source_sequence,
+                  raw_artifact_sha, pair_plan_sha, pair_result_sha,
+                  activation_receipt_sha, activated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
+                """,
+                (
+                    staging_id, candidate["candidate_id"],
+                    candidate["source_sequence"], selected["raw_artifact_sha"],
+                    pair_receipt["pair_plan_sha"],
+                    pair_receipt["pair_result_sha"], activation_sha,
+                ),
+            )
+            with self.assertRaises(audit_store.AuditMigrationError):
+                audit_store.init_schema(conn)
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM audit_schema_migrations "
+                    "WHERE component='l1-batch-direction-authority'"
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+
+    def test_unactivated_v2_upgrade_is_migration_v2_and_still_needs_gate(self):
+        conn = history_store.connect(self.root / "migration-v2-gate.sqlite3")
+        try:
+            history_store.init_schema(conn)
+            history_store.import_tsv_epoch(conn, self.ledger)
+            old_migrations = tuple(
+                migration for migration in audit_store.MIGRATIONS
+                if migration.component not in {
+                    "batch-staging-authority",
+                    "batch-direction-gate-authority",
+                    "metadata-direction-gate-provenance",
+                }
+            )
+            with mock.patch.object(audit_store, "MIGRATIONS", old_migrations):
+                audit_store.init_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO audit_run_manifests(
+                  run_id,manifest_schema_version,plan_hash,manifest_json,created_at
+                ) VALUES(?, 'history-audit-manifest-v2', ?, '{}',
+                         '2026-08-03T00:00:00Z')
+                """,
+                (self.run_id, self.plan_hash),
+            )
+            staging_id = self.staging_ids[0]
+            snapshot = audit.freeze_snapshot(
+                conn,
+                run_id=self.run_id,
+                batch_id=self.batch_id,
+                current_batch_ids=[staging_id],
+            )
+            normalized = history_store._normalize_append_row(self.raw[0])
+            conn.execute(
+                """
+                INSERT INTO audit_direction_contracts(
+                  run_id,batch_id,direction_id,contract_sha,
+                  validator_version,artifact_sha,created_at
+                ) VALUES(?,?,?,?,?,?, '2026-08-03T00:00:00Z')
+                """,
+                (
+                    self.run_id, self.batch_id, self.direction["direction_id"],
+                    self.direction["contract_sha"],
+                    self.direction["validator_version"],
+                    self.direction["artifact_sha"],
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_batch_staging(
+                  staging_candidate_id,run_id,batch_id,candidate_hash,
+                  raw_artifact_sha,source_order,created_at
+                ) VALUES(?,?,?,?,?,0,'2026-08-03T00:00:00Z')
+                """,
+                (
+                    staging_id, self.run_id, self.batch_id,
+                    contract.framed_sha256(
+                        "history-candidate-content-v2", normalized
+                    ),
+                    hashlib.sha256(normalized).hexdigest(),
+                ),
+            )
+            conn.commit()
+            audit_store.init_schema(conn)
+            self.assertEqual(
+                conn.execute(
+                    "SELECT authority_kind FROM "
+                    "audit_batch_staging_authorities_v2"
+                ).fetchone()[0],
+                "migration_v2",
+            )
+            staged = audit.stage_raw_batch(
+                conn,
+                snapshot=snapshot,
+                raw_candidates=[{
+                    "staging_candidate_id": staging_id,
+                    "raw_candidate": self.raw[0],
+                }],
+                direction_receipt=self.direction,
+            )
+            pair_plan = audit.plan_batch_pairs(staged)
+            pair_receipt = audit.record_batch_pair_results(
+                conn, staged, pair_plan, []
+            )
+            with self.assertRaisesRegex(ValueError, "direction gate"):
+                audit.activate_staged_candidate(
+                    conn,
+                    snapshot=snapshot,
+                    staged_candidate=staged["candidates"][0],
+                    pair_receipt=pair_receipt,
+                    direction_check={},
+                )
+            gate = audit.record_batch_direction_gate(
+                conn,
+                staged_batch=staged,
+                direction_receipt=self.direction,
+                verdict_tsv=self._direction_tsv(staged),
+            )
+            activated = audit.activate_staged_candidate(
+                conn,
+                snapshot=snapshot,
+                staged_candidate=staged["candidates"][0],
+                pair_receipt=pair_receipt,
+                direction_check=gate["verdicts"][0],
+            )
+            self.assertGreater(
+                activated["source_sequence"], snapshot["history_as_of_watermark"]
+            )
+        finally:
+            conn.close()
+
+    def test_unactivated_non_v2_staging_fails_closed_at_authority_upgrade(self):
+        conn = history_store.connect(self.root / "staging-fail-closed.sqlite3")
+        try:
+            history_store.init_schema(conn)
+            old_migrations = tuple(
+                migration for migration in audit_store.MIGRATIONS
+                if migration.component not in {
+                    "batch-staging-authority",
+                    "batch-direction-gate-authority",
+                    "metadata-direction-gate-provenance",
+                }
+            )
+            with mock.patch.object(audit_store, "MIGRATIONS", old_migrations):
+                audit_store.init_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO audit_run_manifests(
+                  run_id,manifest_schema_version,plan_hash,manifest_json,created_at
+                ) VALUES('legacy-run','history-audit-manifest-v2',?,'{}',
+                         '2026-08-03T00:00:00Z')
+                """,
+                ("9" * 64,),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_batch_staging(
+                  staging_candidate_id,run_id,batch_id,candidate_hash,
+                  raw_artifact_sha,source_order,created_at
+                ) VALUES('unactivated-legacy','legacy-run','legacy-batch',
+                         ?,?,0,'2026-08-03T00:00:00Z')
+                """,
+                ("7" * 64, "8" * 64),
+            )
+            conn.commit()
+            with self.assertRaises(audit_store.AuditMigrationError):
+                audit_store.init_schema(conn)
+            self.assertIsNone(conn.execute(
+                "SELECT 1 FROM audit_schema_migrations "
+                "WHERE component='batch-staging-authority'"
+            ).fetchone())
+        finally:
+            conn.close()
+
+    def test_completed_legacy_staging_migrates_only_as_frozen_replay(self):
+        conn = history_store.connect(self.root / "completed-legacy.sqlite3")
+        try:
+            history_store.init_schema(conn)
+            history_store.import_tsv_epoch(conn, self.ledger)
+            old_migrations = tuple(
+                migration for migration in audit_store.MIGRATIONS
+                if migration.component not in {
+                    "batch-staging-authority",
+                    "batch-direction-gate-authority",
+                    "metadata-direction-gate-provenance",
+                }
+            )
+            with mock.patch.object(audit_store, "MIGRATIONS", old_migrations):
+                audit_store.init_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO audit_run_manifests(
+                  run_id,manifest_schema_version,plan_hash,manifest_json,created_at
+                ) VALUES('legacy-run','history-audit-manifest-v2',?,'{}',
+                         '2026-08-03T00:00:00Z')
+                """,
+                ("9" * 64,),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_direction_contracts(
+                  run_id,batch_id,direction_id,contract_sha,
+                  validator_version,artifact_sha,created_at
+                ) VALUES('legacy-run','legacy-batch',?,?,?,?,
+                         '2026-08-03T00:00:00Z')
+                """,
+                (
+                    self.direction["direction_id"],
+                    self.direction["contract_sha"],
+                    self.direction["validator_version"],
+                    self.direction["artifact_sha"],
+                ),
+            )
+            legacy_rows = [row("completed legacy one"), row("completed legacy two")]
+            appended = history_store.append_rows(
+                conn, legacy_rows, {"run_id": "legacy-append"}
+            )
+            pair_plan_sha = "a" * 64
+            pair_result_sha = "b" * 64
+            staging_material = []
+            for index, (staging_id, raw_value, candidate_id) in enumerate(zip(
+                ("legacy-stage-one", "legacy-stage-two"),
+                legacy_rows,
+                appended["candidate_ids"],
+            )):
+                normalized = history_store._normalize_append_row(raw_value)
+                raw_sha = hashlib.sha256(normalized).hexdigest()
+                candidate_hash = contract.framed_sha256(
+                    "history-candidate-content-v2", normalized
+                )
+                conn.execute(
+                    """
+                    INSERT INTO audit_batch_staging(
+                      staging_candidate_id,run_id,batch_id,candidate_hash,
+                      raw_artifact_sha,source_order,created_at
+                    ) VALUES(?,'legacy-run','legacy-batch',?,?,?,
+                             '2026-08-03T00:00:00Z')
+                    """,
+                    (staging_id, candidate_hash, raw_sha, index),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO audit_direction_checks(
+                      run_id,batch_id,direction_id,contract_sha,
+                      validator_version,artifact_sha,staging_candidate_id,
+                      semantic_relation,lineage_relation,evidence_sha,checked_at
+                    ) VALUES('legacy-run','legacy-batch',?,?,?,?,?,
+                             'distinct','none',?,'2026-08-03T00:00:00Z')
+                    """,
+                    (
+                        self.direction["direction_id"],
+                        self.direction["contract_sha"],
+                        self.direction["validator_version"],
+                        self.direction["artifact_sha"], staging_id, "6" * 64,
+                    ),
+                )
+                candidate = conn.execute(
+                    "SELECT source_sequence FROM candidates WHERE candidate_id=?",
+                    (candidate_id,),
+                ).fetchone()
+                activation_sha = hashlib.sha256(
+                    ("legacy-activation:" + staging_id).encode()
+                ).hexdigest()
+                conn.execute(
+                    "INSERT INTO audit_activation_receipts VALUES(?,?, '{}',?)",
+                    (
+                        activation_sha, staging_id,
+                        "2026-08-03T00:00:00Z",
+                    ),
+                )
+                staging_material.append((
+                    staging_id, candidate_id, candidate["source_sequence"],
+                    raw_sha, candidate_hash, index, activation_sha,
+                ))
+            conn.execute(
+                """
+                INSERT INTO audit_batch_pairs(
+                  run_id,batch_id,left_staging_candidate_id,
+                  right_staging_candidate_id,pair_plan_sha,pair_result_sha,
+                  created_at
+                ) VALUES('legacy-run','legacy-batch','legacy-stage-one',
+                         'legacy-stage-two',?,?,'2026-08-03T00:00:00Z')
+                """,
+                (pair_plan_sha, pair_result_sha),
+            )
+            for (
+                staging_id, candidate_id, source_sequence, raw_sha,
+                _candidate_hash, _source_order, activation_sha,
+            ) in staging_material:
+                conn.execute(
+                    """
+                    INSERT INTO audit_activation_maps(
+                      staging_candidate_id,legacy_candidate_id,source_sequence,
+                      raw_artifact_sha,pair_plan_sha,pair_result_sha,
+                      activation_receipt_sha,activated_at
+                    ) VALUES(?,?,?,?,?,?,?,'2026-08-03T00:00:00Z')
+                    """,
+                    (
+                        staging_id, candidate_id, source_sequence, raw_sha,
+                        pair_plan_sha, pair_result_sha, activation_sha,
+                    ),
+                )
+            conn.commit()
+            audit_store.init_schema(conn)
+            self.assertEqual(
+                [row[0] for row in conn.execute(
+                    "SELECT authority_kind FROM "
+                    "audit_batch_staging_authorities_v2 ORDER BY source_order"
+                )],
+                ["migration_legacy", "migration_legacy"],
+            )
+            first = staging_material[0]
+            conn.execute("BEGIN IMMEDIATE")
+            audit_store.insert_authorized_batch_staging(
+                conn,
+                staging_candidate_id=first[0],
+                run_id="legacy-run",
+                batch_id="legacy-batch",
+                candidate_hash=first[4],
+                raw_artifact_sha=first[3],
+                source_order=first[5],
+            )
+            conn.execute("COMMIT")
+            replay = audit.record_direction_check(
+                conn,
+                staged_candidate={"staging_candidate_id": first[0]},
+                direction_receipt=self.direction,
+                semantic_relation="distinct",
+                lineage_relation="none",
+                evidence_sha="6" * 64,
+            )
+            self.assertEqual(replay["staging_candidate_id"], first[0])
+            with self.assertRaisesRegex(
+                ValueError, "conflicts with durable state"
+            ):
+                audit.record_direction_check(
+                    conn,
+                    staged_candidate={"staging_candidate_id": first[0]},
+                    direction_receipt=self.direction,
+                    semantic_relation="uncertain",
+                    lineage_relation="none",
+                    evidence_sha="7" * 64,
+                )
+        finally:
+            conn.close()
+
     def test_singleton_batch_records_empty_pair_receipt_and_activates(self):
         staging_id = self.staging_ids[0]
         snapshot = self._snapshot(ids=[staging_id])
@@ -1037,14 +1745,7 @@ class HistoryAuditL1Smoke(unittest.TestCase):
             self.conn, staged, pair_plan, []
         )
         self.assertEqual(pair_receipt["pair_count"], 0)
-        direction_check = audit.record_direction_check(
-            self.conn,
-            staged_candidate=staged["candidates"][0],
-            direction_receipt=self.direction,
-            semantic_relation="distinct",
-            lineage_relation="none",
-            evidence_sha="6" * 64,
-        )
+        direction_check = self._direction_verdicts(staged)[0]
         activated = audit.activate_staged_candidate(
             self.conn,
             snapshot=snapshot,
@@ -1059,6 +1760,225 @@ class HistoryAuditL1Smoke(unittest.TestCase):
             self.conn.execute("SELECT count(*) FROM audit_batch_pairs").fetchone()[0],
             0,
         )
+
+    def test_activation_requires_direction_verdict_for_every_batch_member(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        pair_plan = audit.plan_batch_pairs(staged)
+        pair_results = [
+            {
+                "left_staging_candidate_id": pair["left_staging_candidate_id"],
+                "right_staging_candidate_id": pair["right_staging_candidate_id"],
+                "semantic_relation": "distinct",
+                "evidence_sha": "6" * 64,
+            }
+            for pair in pair_plan["pairs"]
+        ]
+        pair_receipt = audit.record_batch_pair_results(
+            self.conn, staged, pair_plan, pair_results
+        )
+        with self.assertRaises(ValueError):
+            audit.record_batch_direction_gate(
+                self.conn,
+                staged_batch=staged,
+                direction_receipt=self.direction,
+                verdict_tsv=(
+                    b"id\tdirection-fit\tdirection-evidence\n"
+                    b"I1\tin-scope\tonly one member was checked\n"
+                ),
+            )
+        direction_check = {}
+        before = self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0]
+        with self.assertRaises(ValueError):
+            audit.activate_staged_candidate(
+                self.conn,
+                snapshot=snapshot,
+                staged_candidate=staged["candidates"][0],
+                pair_receipt=pair_receipt,
+                direction_check=direction_check,
+            )
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0],
+            before,
+        )
+
+    def test_one_out_of_scope_direction_verdict_rejects_the_whole_batch(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        pair_plan = audit.plan_batch_pairs(staged)
+        pair_results = [
+            {
+                "left_staging_candidate_id": pair["left_staging_candidate_id"],
+                "right_staging_candidate_id": pair["right_staging_candidate_id"],
+                "semantic_relation": "distinct",
+                "evidence_sha": hashlib.sha256((
+                    pair["left_staging_candidate_id"]
+                    + pair["right_staging_candidate_id"]
+                ).encode()).hexdigest(),
+            }
+            for pair in pair_plan["pairs"]
+        ]
+        pair_receipt = audit.record_batch_pair_results(
+            self.conn, staged, pair_plan, pair_results
+        )
+        checks = self._direction_verdicts(
+            staged, ["in-scope", "out-of-scope"]
+        )
+        before = self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0]
+        with self.assertRaises(ValueError):
+            audit.activate_staged_candidate(
+                self.conn,
+                snapshot=snapshot,
+                staged_candidate=staged["candidates"][0],
+                pair_receipt=pair_receipt,
+                direction_check=checks[0],
+            )
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM candidates").fetchone()[0],
+            before,
+        )
+
+    def test_direction_verdict_is_host_canonical_and_append_only(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        candidate = staged["candidates"][0]
+        evidence = "independent selector canonical evidence"
+        gate = audit.record_batch_direction_gate(
+            self.conn,
+            staged_batch=staged,
+            direction_receipt=self.direction,
+            verdict_tsv=self._direction_tsv(
+                staged, evidences=[evidence, "second canonical evidence"]
+            ),
+        )
+        verdict = next(
+            item for item in gate["verdicts"]
+            if item["staging_candidate_id"] == candidate["staging_candidate_id"]
+        )
+        material = {
+            "schema_version": "history-direction-verdict-v2",
+            "run_id": staged["run_id"],
+            "batch_id": staged["batch_id"],
+            "snapshot_id": snapshot["snapshot_id"],
+            "current_batch_ids_hash": snapshot["current_batch_ids_hash"],
+            **self.direction,
+            "staging_candidate_id": candidate["staging_candidate_id"],
+            "direction_fit": "in-scope",
+            "direction_evidence": evidence,
+        }
+        self.assertEqual(
+            verdict["verdict_sha256"],
+            contract.framed_sha256(
+                "history-direction-verdict-v2",
+                contract.canonical_bytes(material),
+            ),
+        )
+        row = self.conn.execute(
+            "SELECT * FROM audit_batch_direction_verdicts_v2 "
+            "WHERE verdict_sha256=?",
+            (verdict["verdict_sha256"],),
+        ).fetchone()
+        self.assertEqual(
+            contract.parse_json_bytes(row["evidence_json"].encode()), evidence
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "UPDATE audit_batch_direction_verdicts_v2 "
+                "SET direction_fit='out-of-scope' WHERE verdict_sha256=?",
+                (verdict["verdict_sha256"],),
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "DELETE FROM audit_batch_direction_gates_v2 WHERE gate_sha256=?",
+                (gate["gate_sha256"],),
+            )
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "direction gate requires host issuance"
+        ):
+            self.conn.execute(
+                "INSERT INTO audit_batch_direction_gates_v2 "
+                "SELECT * FROM audit_batch_direction_gates_v2 WHERE gate_sha256=?",
+                (gate["gate_sha256"],),
+            )
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "direction gate binding requires host issuance"
+        ):
+            self.conn.execute(
+                "INSERT INTO audit_batch_direction_gate_bindings_v2 "
+                "SELECT * FROM audit_batch_direction_gate_bindings_v2 "
+                "WHERE gate_sha256=? LIMIT 1",
+                (gate["gate_sha256"],),
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "DELETE FROM audit_batch_direction_verdicts_v2 "
+                "WHERE verdict_sha256=?",
+                (verdict["verdict_sha256"],),
+            )
+        with self.assertRaises(ValueError):
+            audit.record_direction_check(
+                self.conn,
+                staged_candidate=candidate,
+                direction_receipt=self.direction,
+                direction_fit="out-of-scope",
+                direction_evidence="conflicting replay",
+            )
+
+    def test_legacy_semantic_direction_checks_do_not_satisfy_batch_gate(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        _, pair_receipt = self._pair_evidence(staged)
+        for candidate in staged["candidates"]:
+            with self.assertRaisesRegex(
+                ValueError, "legacy direction migration boundary is immutable"
+            ):
+                audit.record_direction_check(
+                self.conn,
+                staged_candidate=candidate,
+                direction_receipt=self.direction,
+                semantic_relation="distinct",
+                lineage_relation="none",
+                evidence_sha="6" * 64,
+            )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_batch_direction_verdicts_v2"
+            ).fetchone()[0],
+            0,
+        )
+        with self.assertRaises(ValueError):
+            audit.activate_staged_candidate(
+                self.conn,
+                snapshot=snapshot,
+                staged_candidate=staged["candidates"][0],
+                pair_receipt=pair_receipt,
+                direction_check={},
+            )
+
+    def test_database_batch_direction_gate_rejects_missing_member_verdict(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        _, pair_receipt = self._pair_evidence(staged)
+        with self.assertRaises(ValueError):
+            audit.record_batch_direction_gate(
+                self.conn,
+                staged_batch=staged,
+                direction_receipt=self.direction,
+                verdict_tsv=(
+                    b"id\tdirection-fit\tdirection-evidence\n"
+                    b"I1\tin-scope\tonly one member was checked\n"
+                ),
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self._direct_activation_insert(staged["candidates"][0], pair_receipt)
+
+    def test_database_batch_direction_gate_rejects_any_out_of_scope_verdict(self):
+        snapshot = self._snapshot()
+        staged = self._staged(snapshot=snapshot)
+        _, pair_receipt = self._pair_evidence(staged)
+        self._direction_verdicts(staged, ["in-scope", "out-of-scope"])
+        with self.assertRaises(sqlite3.IntegrityError):
+            self._direct_activation_insert(staged["candidates"][0], pair_receipt)
 
     def test_provider_local_ids_are_never_used_as_corpus_exclusions(self):
         with self.assertRaises(ValueError):
@@ -1251,6 +2171,26 @@ class HistoryAuditL1Smoke(unittest.TestCase):
         with self.assertRaises(ValueError):
             audit.build_l1_receipt(
                 snapshot, false_coverage, adjudication, qualification
+            )
+
+    def test_l1_positive_receipt_rejects_caller_only_verified_hit(self):
+        snapshot = self._snapshot()
+        retrieval, adjudication, qualification = self._receipt_inputs(snapshot)
+        forged = dict(
+            adjudication,
+            verified_hits=[{
+                "lineage_id": "caller-invented-lineage",
+                "source": "normalized_exact",
+                "semantic_relation": "blocking_duplicate",
+            }],
+        )
+        with self.assertRaises(ValueError):
+            audit.build_l1_receipt(
+                snapshot,
+                retrieval,
+                forged,
+                qualification,
+                qualification_conn=self.conn,
             )
 
     def test_snapshot_exclusion_sha_binds_the_published_policy(self):

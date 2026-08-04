@@ -16,15 +16,29 @@ The runtime SHALL accept `codex`, `kimi`, and `grok` for Hunt and SHALL addition
 - **THEN** the role receives the same mirror and artifact-validation contract as the other registered AwR providers
 
 ### Requirement: Defaults and explicit overrides are distinguishable
-If model and reasoning are omitted, the runtime SHALL preserve the selected CLI's current configured defaults and probe an effective immutable capability identity. A provider-default marker without effective model/reasoning or an equivalent context/token/usage-bound identity SHALL be diagnostic or shadow-only and SHALL NOT enter a hard-complete pool. If either override is supplied, the adapter SHALL use the provider's exact supported grammar and SHALL fail when the override is unsupported, ignored, or resolves to a different effective value.
+Omitted reasoning SHALL preserve the selected CLI's current configured default. Omitted models SHALL preserve the Codex, Kimi, and Grok defaults. Every OpenCode/agy model SHALL exactly match a bounded host-owned CLI model catalog. The effective model, catalog probe revision, and canonical catalog SHA SHALL enter execution identity and SHALL be re-probed before launch. An omitted OpenCode model SHALL additionally require a host-owned pure configuration probe that returns a backend-qualified non-Claude, non-dynamic model in the same catalog; the runtime SHALL re-probe it before launch and pass it as an explicit workload model. An omitted agy model SHALL fail closed because no trusted default-identity probe is registered. A provider-default marker without effective model/reasoning or an equivalent context/token/usage-bound identity SHALL be diagnostic or shadow-only and SHALL NOT enter a hard-complete pool. If either override is supplied, the adapter SHALL use the provider's exact supported grammar and SHALL fail when the override is unsupported, ignored, absent from the catalog, or resolves to a different effective value.
 
 #### Scenario: Provider default is frozen
 - **WHEN** a run selects a provider without model or reasoning overrides
 - **THEN** its manifest records the effective model/reasoning identity or a diagnostic-only provider-default marker, plus the capability evidence and revision that produced it
 
+#### Scenario: OpenCode default is pinned and revalidated
+- **WHEN** OpenCode is selected without a model and the pure host probe returns a safe backend-qualified model
+- **THEN** the effective model enters execution identity, the launch-time probe must match, and workload argv contains an explicit model override
+
+#### Scenario: Agy default is unavailable
+- **WHEN** agy is selected without an explicit model
+- **THEN** preflight fails before workload execution
+
+#### Scenario: Multi-backend catalog authority drifts
+- **WHEN** an OpenCode or agy model is absent from the bounded catalog, uses a dynamic route marker, or the launch-time catalog identity differs from preflight
+- **THEN** preflight or launch revalidation fails before workload execution
+
 #### Scenario: Unsupported reasoning fails closed
 - **WHEN** an explicit reasoning value is not supported by the selected provider adapter
 - **THEN** preflight fails without silently dropping the setting
+
+The adapter's explicit reasoning grammar SHALL be the conservative verified subset recorded in the registry. Omitted reasoning SHALL continue to use the CLI default. Kimi SHALL accept no explicit reasoning value.
 
 ### Requirement: Provider execution uses a portable mirror
 Every portable provider attempt SHALL run in a disposable mirror containing only declared role and input artifacts. The durable database, full ledger, Git metadata, unrelated candidate state, and destination path SHALL be absent; only schema-valid declared outputs and host-owned attempt metadata SHALL return.
@@ -36,6 +50,13 @@ Every portable provider attempt SHALL run in a disposable mirror containing only
 #### Scenario: Extra output is discarded
 - **WHEN** an agent writes declared output plus additional files
 - **THEN** only the declared output is considered and the attempt fails if the output contract forbids extras
+
+### Requirement: Provider responses attest to the host request
+Every portable request SHALL carry a host-computed base-request binding over its stage, seat, serialized prompt, role SHA, declared-input names and SHAs, and response schema, plus a separate serialized-prompt SHA. The response SHALL echo both values exactly in its closed envelope. The runtime SHALL record the full wire-request SHA separately and SHALL NOT derive provider attestation from host state after the response.
+
+#### Scenario: Missing or mismatched request attestation is rejected
+- **WHEN** a provider response omits either attestation value or returns a different request or prompt SHA
+- **THEN** the runtime publishes no projected artifact and no completion receipt
 
 ### Requirement: Ordered pools define execution identity and failover
 Each stage SHALL use one ordered provider list that is both its allowlist and failover order. Pool order, resolved-default capability, capacity profile, prompt/schema, or settlement policy changes SHALL create a new plan identity; an attempt's actual provider/model/reasoning SHALL affect attempt provenance but not the logical task identity.
@@ -68,7 +89,7 @@ Hard-complete work SHALL require an exact token counter or a validated conservat
 - **THEN** its actual or reserved usage remains included in the run and intent totals
 
 ### Requirement: Claude is never an automatic execution path
-The registered provider set, defaults, failover pools, test fixtures, and compatibility adapters SHALL NOT launch Claude or select it as a fallback.
+The registered provider set, defaults, failover pools, test fixtures, compatibility adapters, and indirect multi-backend model routes SHALL NOT launch Claude or select it as a fallback. Explicit OpenCode and agy model routes SHALL be normalized and checked before executable lookup; Claude aliases and dynamic `auto|default|current|configured` markers SHALL fail even if a local catalog lists them. The v1 registry SHALL match the tracked byte ABI exactly.
 
 #### Scenario: No declared pool can resolve to Claude
 - **WHEN** provider configuration and default pools are validated

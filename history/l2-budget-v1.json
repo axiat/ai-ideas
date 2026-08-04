@@ -1,7 +1,7 @@
 {
   "schema_version": "l2-budget-v1",
-  "settlement_policy_sha": "2222222222222222222222222222222222222222222222222222222222222222",
-  "risk_policy_sha": "4444444444444444444444444444444444444444444444444444444444444444",
+  "settlement_policy_sha": "22304b21fba5e7786d75cb04dc87f4ecadc5b0e7b40517e92cac78aecf18b2ec",
+  "risk_policy_sha": "c4b6c045e2a50d2eb596d7ef0d4e1b178a8410ba7306d1be0b8ccf2f6932a18d",
   "intents": {
     "duplicate_search": {
       "round": {

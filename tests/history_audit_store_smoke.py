@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from lib import history_audit_store
 from lib import history_cas
+from lib import history_contract_v2
 
 
 def sha(label):
@@ -93,8 +94,25 @@ class HistoryAuditStoreSmoke(unittest.TestCase):
         )
         self.conn.commit()
 
-    def _receipt(self, object_ids):
+    def _store_fixture_provenance(self, receipt):
         return {
+            "schema_version": "history-receipt-provenance-v2",
+            "authority_kind": "l2",
+            "run_id": receipt["run_id"],
+            "plan_sha": receipt["plan_hash"],
+            "fixture_scope": "store-smoke-only",
+        }
+
+    def _write_store_fixture_receipt(self, receipt):
+        with mock.patch.object(
+            history_audit_store,
+            "derive_receipt_provenance",
+            return_value=self._store_fixture_provenance(receipt),
+        ):
+            return history_cas.write_minimum_receipt(self.conn, receipt)
+
+    def _receipt(self, object_ids):
+        receipt = {
             "manifest_schema_version": "history-audit-manifest-v2",
             "canonical_codec_version": "history-canonical-json-v2",
             "run_id": "run-store-smoke",
@@ -139,6 +157,10 @@ class HistoryAuditStoreSmoke(unittest.TestCase):
             "stage_reason_code": "incomplete_coverage",
             "evidence_anchors": [],
         }
+        receipt["minimum_receipt_sha"] = (
+            history_contract_v2.minimum_receipt_sha(receipt)
+        )
+        return receipt
 
     def test_equal_raw_objects_deduplicate_after_compression(self):
         first = self._put(b"same raw bytes")
@@ -171,8 +193,11 @@ class HistoryAuditStoreSmoke(unittest.TestCase):
             final_status="overlap_found",
             stage_reason_code="match_found_partial_coverage",
         )
+        receipt["minimum_receipt_sha"] = (
+            history_contract_v2.minimum_receipt_sha(receipt)
+        )
         self._install_receipt_owner(receipt)
-        history_cas.write_minimum_receipt(self.conn, receipt)
+        self._write_store_fixture_receipt(receipt)
         pin = self.conn.execute(
             "SELECT pin_reason FROM audit_cas_pins WHERE object_id=?",
             (descriptor["object_id"],),
@@ -259,13 +284,18 @@ class HistoryAuditStoreSmoke(unittest.TestCase):
         descriptor = self._put(b"receipt evidence")
         receipt = self._receipt([descriptor["object_id"]])
         self._install_receipt_owner(receipt)
-        history_cas.write_minimum_receipt(self.conn, receipt)
+        self._write_store_fixture_receipt(receipt)
         history_cas.collect_garbage(
             self.conn, self.cas_root, self._now(), grace_seconds=0
         )
-        verified = history_cas.verify_minimum_receipt(
-            self.conn, self.cas_root, receipt["minimum_receipt_sha"]
-        )
+        with mock.patch.object(
+            history_audit_store,
+            "derive_receipt_provenance",
+            return_value=self._store_fixture_provenance(receipt),
+        ):
+            verified = history_cas.verify_minimum_receipt(
+                self.conn, self.cas_root, receipt["minimum_receipt_sha"]
+            )
         self.assertEqual(verified["minimum_receipt_sha"], receipt["minimum_receipt_sha"])
         self.assertEqual(verified["cas_states"], {descriptor["object_id"]: "expired"})
 

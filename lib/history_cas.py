@@ -607,8 +607,6 @@ def write_minimum_receipt(conn, receipt, *, release_context=None, now=None):
         normalized = history_contract_v2.validate_receipt(receipt)
     except history_contract_v2.ContractV2Error as exc:
         raise CASError("minimum receipt is invalid") from exc
-    fields = tuple(normalized)
-    encoded = _receipt_row(normalized)
     try:
         conn.execute("BEGIN IMMEDIATE")
         for object_id in normalized["raw_request_output_cas_hashes"]:
@@ -620,20 +618,12 @@ def write_minimum_receipt(conn, receipt, *, release_context=None, now=None):
                 raise CASError(
                     f"receipt CAS descriptor is missing or invalid: {object_id}"
                 )
-        if normalized["final_status"] == "complete_no_match":
-            try:
-                history_audit_store.insert_authorized_complete_no_match_receipt(
-                    conn, normalized, release_context, now=now
-                )
-            except (ValueError, history_audit_store.AuditMigrationError) as exc:
-                raise CASError("complete_no_match release authorization failed") from exc
-        else:
-            placeholders = ",".join("?" for _ in fields)
-            conn.execute(
-                "INSERT INTO audit_receipts(" + ",".join(fields) + ") VALUES("
-                + placeholders + ")",
-                tuple(encoded[field] for field in fields),
+        try:
+            history_audit_store.insert_authorized_receipt(
+                conn, normalized, release_context, now=now
             )
+        except (ValueError, history_audit_store.AuditMigrationError) as exc:
+            raise CASError("receipt issuance authorization failed") from exc
         if normalized["final_status"] in {"overlap_found", "complete_no_match"}:
             pin_reason = "terminal-receipt:" + normalized["minimum_receipt_sha"]
             for object_id in normalized["raw_request_output_cas_hashes"]:
@@ -647,12 +637,14 @@ def write_minimum_receipt(conn, receipt, *, release_context=None, now=None):
                 )
         conn.execute("COMMIT")
     except Exception as exc:
+        history_audit_store.clear_receipt_issuance_authorization(conn)
         history_audit_store.clear_semantic_receipt_authorization(conn)
         if conn.in_transaction:
             conn.execute("ROLLBACK")
         if isinstance(exc, CASError):
             raise
         raise CASError("minimum receipt persistence failed") from exc
+    history_audit_store.clear_receipt_issuance_authorization(conn)
     history_audit_store.clear_semantic_receipt_authorization(conn)
     return normalized["minimum_receipt_sha"]
 
@@ -695,6 +687,16 @@ def verify_minimum_receipt(
         _require_sha(object_id, "receipt object_id")
         descriptor = verify_object(conn, root, object_id)
         states[object_id] = descriptor["integrity_state"]
+    try:
+        issuance = history_audit_store.verify_receipt_issuance(conn, receipt)
+    except (
+        ValueError,
+        history_audit_store.AuditMigrationError,
+        history_contract_v2.ContractV2Error,
+    ) as exc:
+        raise CASIntegrityError(
+            "minimum receipt host issuance is invalid"
+        ) from exc
     release = {
         "historically_authorized": False,
         "current_authority": False,
@@ -718,6 +720,8 @@ def verify_minimum_receipt(
     return {
         "minimum_receipt_sha": minimum_receipt_sha,
         "cas_states": states,
+        "execution_authorized": True,
+        "issuance_id": issuance["issuance_id"],
         "historically_authorized": release["historically_authorized"],
         "current_release_authority": release["current_authority"],
     }

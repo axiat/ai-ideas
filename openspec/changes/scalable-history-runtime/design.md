@@ -40,9 +40,9 @@ Plain `json.dumps()` hashes were rejected because implicit Unicode, null/default
 
 ### 3. Keep provider adapters narrow and portable
 
-A provider registry declares surface eligibility, executable/argv grammar, model and reasoning override grammar, capability probe, serializer revision, token counter or bound, usage parser, and artifact protocol. The runtime preserves omitted CLI defaults but freezes an effective capability identity. A bare provider-default marker is diagnostic/shadow-only; hard-complete work requires effective model/reasoning or an immutable equivalent identity bound to context, token bound, serializer, usage source, and CLI revision. It never guesses model names, capacity, price, or support for reasoning.
+A provider registry declares surface eligibility, executable/argv grammar, model and reasoning override grammar, capability probe, serializer revision, token counter or bound, usage parser, and artifact protocol. Its v1 bytes are a fixed tracked ABI. Codex, Kimi, and Grok preserve omitted model defaults. Every OpenCode/agy model must exactly match a bounded host-owned `models` catalog; the catalog probe revision and canonical catalog SHA enter execution identity and are re-probed before launch. OpenCode omission additionally requires a host-owned pure configuration probe whose backend-qualified safe result matches that catalog and is pinned with explicit `-m`. Agy omission fails closed and requires an explicit model. Claude aliases and dynamic model-route markers fail before executable lookup. Omitted reasoning preserves the CLI default; explicit values are limited to the registry's conservative verified subset. A bare provider-default marker is diagnostic/shadow-only; hard-complete work requires effective model/reasoning or an immutable equivalent identity bound to context, token bound, serializer, usage source, and CLI revision. The runtime never guesses model names, capacity, price, or reasoning support.
 
-Portable attempts receive a disposable mirror populated from an explicit input manifest. The process runs with its normal local authentication/configuration and writes one declared artifact. The host validates the target's type, size, schema, prompt attestation, and request identity before importing it. The canonical database, full ledger, `.git`, and unrelated state are not mirrored.
+Portable attempts receive a disposable mirror populated from an explicit input manifest. The process runs with its normal local authentication/configuration and writes one declared artifact. The host injects a base-request binding over the prompt, role/input hashes, stage/seat identity, and response schema, plus a serialized-prompt SHA; the provider must echo both values in the response. The host validates the target's type, size, schema, echoed attestation, and separately recorded full wire-request identity before importing it. The canonical database, full ledger, `.git`, and unrelated state are not mirrored.
 
 Adapting the existing contained Codex registry for every provider was rejected because its proxy, auth, CLI-version, sandbox, and Responses-wire assumptions are provider-specific. Arbitrary command strings remain a legacy compatibility surface, not a v2 provider identity.
 
@@ -91,7 +91,7 @@ Moving every legacy embedded trace into CAS was rejected as expensive and unnece
 
 ### 9. Distinguish shadow readiness from production qualification
 
-`shadow-calibration-v1` starts with 30 independent positive lineages, explicit minimum critical-slice coverage, and 20 adjudicated negatives/no-matches. It enables metric computation and router observation but never no-match authority. Production qualification retains the accepted approximately 300-independent-positive lineage gate, one-sided confidence bounds, bad-slice checks, provider capacity evidence, and replay/fault evidence.
+`shadow-calibration-v1` starts with 30 independent positive lineages, explicit minimum critical-slice coverage, and 20 adjudicated negatives/no-matches. It enables metric computation and router observation but never no-match authority. Production qualification computes the approximately 300-independent-positive lineage gate, one-sided confidence bounds, negative count, and bad-slice checks only from held-out `partition=test`; train and development remain available for fitting and tuning without contributing release evidence. The evaluation identity still binds all validated qrels and exact outputs across every declared partition. Provider capacity and replay/fault evidence remain mandatory.
 
 Qualification binds all semantic dependencies and invalidates locally. Provider/prompt/capacity changes do not rebuild FTS; metadata failure does not hide flat results. A deterministic ordered rule table routes uncalibrated, finalist, disputed, bad-slice, or permanent-no-match cases to L2. The router records rule IDs and cannot override budget or release gates.
 
@@ -99,7 +99,7 @@ Qualification binds all semantic dependencies and invalidates locally. Provider/
 
 Hunt gains `HUNT_PROVIDER`, `HUNT_MODEL`, `HUNT_REASONING_EFFORT`, and role-specific review overrides. AwR gains `AWR_PROVIDER`, `AWR_MODEL`, `AWR_REASONING_EFFORT`, and role-specific overrides. These controls are valid only with `HISTORY_RUNTIME_ABI=v2`; v1 rejects them rather than silently ignoring migration intent. The v2 resolver generates closed argv/environment manifests and readable `--print-provider-command` diagnostics without starting a model. Existing `AGENT_CMD`, `CONTAINED_*`, and `SIDE_*` remain v1 compatibility controls.
 
-Default provider is Codex. Omitted model and reasoning use the CLI's current configuration; documentation includes one verified spelling example per provider and labels unsupported reasoning controls explicitly. No registry entry or fallback names Claude.
+Default provider is Codex. Omitted reasoning uses the CLI's current configuration. Codex, Kimi, and Grok retain omitted model defaults; OpenCode uses safe probe-and-pin; agy requires an explicit model. Documentation includes one verified model/reasoning spelling example per provider and labels the conservative reasoning subset explicitly. No registry entry, fallback, or normalized OpenCode/agy model route selects Claude.
 
 ## Risks / Trade-offs
 
@@ -107,7 +107,7 @@ Default provider is Codex. Omitted model and reasoning use the CLI's current con
 - [A new v2 schema increases migration surface] -> Use a component migration ledger, idempotent transactions, closed enums, compatibility hashes, and restart tests; never rewrite v1 rows.
 - [L2 can be expensive even at 550 records] -> Apply per-intent reservations, guarded routing, token-and-item shards, positive-first status, and measured cost counters.
 - [Small shadow qrels can overfit] -> Keep shadow readiness separate from authority and require independent lineage/time splits plus production confidence gates.
-- [Provider default resolution can drift] -> Resolve at planning time, freeze capability hashes, and make profile changes produce a new plan.
+- [Provider default resolution can drift] -> Bind the effective default to the profile, re-probe immediately before launch, and pin a verified OpenCode default in workload argv.
 - [Metadata enrichment can become an accidental dependency] -> Keep it asynchronous, additive, removable, versioned, and covered by corruption tests.
 - [CAS retention can remove data needed for replay] -> Pin final evidence, keep minimum receipts permanently, tombstone before delete, and fail on unexplained absence.
 

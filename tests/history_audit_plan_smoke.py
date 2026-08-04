@@ -395,11 +395,11 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
 
     def test_grammar_only_command_intent_cannot_enter_hard_complete_plan(self):
         resolve_intent = getattr(
-            provider_adapters, "resolve_command_intent", None
+            provider_adapters, "_resolve_command_intent_for_test", None
         )
         self.assertTrue(
             callable(resolve_intent),
-            "missing behavior: provider_adapters.resolve_command_intent",
+            "missing behavior: provider_adapters._resolve_command_intent_for_test",
         )
         registry = provider_adapters.load_registry(
             ROOT / "history/provider-adapters-v1.json"
@@ -409,7 +409,7 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
             "hunt",
             "codex",
             model="requested-model",
-            reasoning="unverified-effort-spelling",
+            reasoning="high",
             executable_lookup=lambda _: str(
                 ROOT / "tests/fake_portable_stage_provider.py"
             ),
@@ -417,7 +417,7 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
         self.assertEqual(intent.requested_model, "requested-model")
         self.assertEqual(
             intent.requested_reasoning,
-            "unverified-effort-spelling",
+            "high",
         )
         self.assertIsNone(intent.effective_model)
         self.assertIsNone(intent.effective_reasoning)
@@ -430,7 +430,7 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
         )
         self.assertIn("requested-model", argv)
         self.assertIn(
-            "model_reasoning_effort=unverified-effort-spelling", argv
+            "model_reasoning_effort=high", argv
         )
         self.assertEqual(environment, {})
 

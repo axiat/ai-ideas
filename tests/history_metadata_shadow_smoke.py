@@ -203,101 +203,99 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
             """,
             (direction["run_id"], "7" * 64),
         )
-        staging_id = "legacy-direction-a"
-        peer_id = "legacy-direction-b"
-        for source_order, candidate_hash, raw_sha, item_id in (
-            (0, "8" * 64, self.content_sha, staging_id),
-            (1, "9" * 64, "a" * 64, peer_id),
-        ):
-            self.conn.execute(
-                """
-                INSERT INTO audit_batch_staging(
-                  staging_candidate_id, run_id, batch_id, candidate_hash,
-                  raw_artifact_sha, source_order, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
-                """,
-                (
-                    item_id,
-                    direction["run_id"],
-                    direction["batch_id"],
-                    candidate_hash,
-                    raw_sha,
-                    source_order,
-                ),
-            )
-        pair_plan_sha = "b" * 64
-        pair_result_sha = "c" * 64
-        self.conn.execute(
-            """
-            INSERT INTO audit_batch_pairs(
-              run_id, batch_id, left_staging_candidate_id,
-              right_staging_candidate_id, pair_plan_sha, pair_result_sha,
-              created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
-            """,
-            (
-                direction["run_id"],
-                direction["batch_id"],
-                staging_id,
-                peer_id,
-                pair_plan_sha,
-                pair_result_sha,
+        staging_ids = [
+            "stg-v2-" + hashlib.sha256(b"metadata-direction-one").hexdigest(),
+            "stg-v2-" + hashlib.sha256(b"metadata-direction-two").hexdigest(),
+        ]
+        snapshot = history_audit.freeze_snapshot(
+            self.conn,
+            run_id=direction["run_id"],
+            batch_id=direction["batch_id"],
+            current_batch_ids=staging_ids,
+        )
+        staged = history_audit.stage_raw_batch(
+            self.conn,
+            snapshot=snapshot,
+            raw_candidates=[
+                {
+                    "staging_candidate_id": staging_ids[0],
+                    "raw_candidate": ledger_row("activated direction candidate"),
+                },
+                {
+                    "staging_candidate_id": staging_ids[1],
+                    "raw_candidate": ledger_row("direction peer candidate"),
+                },
+            ],
+            direction_receipt={
+                name: direction[name] for name in (
+                    "direction_id", "contract_sha", "validator_version",
+                    "artifact_sha",
+                )
+            },
+        )
+        pair_plan = history_audit.plan_batch_pairs(staged)
+        pair_receipt = history_audit.record_batch_pair_results(
+            self.conn,
+            staged,
+            pair_plan,
+            [{
+                "left_staging_candidate_id": pair_plan["pairs"][0][
+                    "left_staging_candidate_id"
+                ],
+                "right_staging_candidate_id": pair_plan["pairs"][0][
+                    "right_staging_candidate_id"
+                ],
+                "semantic_relation": "distinct",
+                "evidence_sha": hashlib.sha256(
+                    b"metadata direction pair evidence"
+                ).hexdigest(),
+            }],
+        )
+        gate = history_audit.record_batch_direction_gate(
+            self.conn,
+            staged_batch=staged,
+            direction_receipt={
+                name: direction[name] for name in (
+                    "direction_id", "contract_sha", "validator_version",
+                    "artifact_sha",
+                )
+            },
+            verdict_tsv=(
+                b"id\tdirection-fit\tdirection-evidence\n"
+                b"I1\tin-scope\tmetadata direction evidence one\n"
+                b"I2\tin-scope\tmetadata direction evidence two\n"
             ),
         )
-        self.conn.execute(
-            """
-            INSERT INTO audit_direction_contracts(
-              run_id, batch_id, direction_id, contract_sha, validator_version,
-              artifact_sha, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
-            """,
-            (
-                direction["run_id"],
-                direction["batch_id"],
-                direction["direction_id"],
-                direction["contract_sha"],
-                direction["validator_version"],
-                direction["artifact_sha"],
-            ),
+        selected = next(
+            item for item in staged["candidates"]
+            if item["staging_candidate_id"] == staging_ids[0]
         )
-        self.conn.execute(
-            """
-            INSERT INTO audit_direction_checks(
-              run_id, batch_id, direction_id, contract_sha, validator_version,
-              artifact_sha, staging_candidate_id, semantic_relation,
-              lineage_relation, evidence_sha, checked_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, 'distinct', 'none', ?,
-                     '2026-08-03T00:00:00Z')
-            """,
-            (
-                direction["run_id"],
-                direction["batch_id"],
-                direction["direction_id"],
-                direction["contract_sha"],
-                direction["validator_version"],
-                direction["artifact_sha"],
-                staging_id,
-                "d" * 64,
-            ),
+        selected_verdict = next(
+            item for item in gate["verdicts"]
+            if item["staging_candidate_id"] == staging_ids[0]
         )
-        self.conn.execute(
-            """
-            INSERT INTO audit_activation_maps(
-              staging_candidate_id, legacy_candidate_id, source_sequence,
-              raw_artifact_sha, pair_plan_sha, pair_result_sha,
-              activation_receipt_sha, activated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, '2026-08-03T00:00:00Z')
-            """,
-            (
-                staging_id,
-                self.candidate_id,
-                self.rows[0]["source_sequence"],
-                self.content_sha,
-                pair_plan_sha,
-                pair_result_sha,
-                "e" * 64,
-            ),
+        activation = history_audit.activate_staged_candidate(
+            self.conn,
+            snapshot=snapshot,
+            staged_candidate=selected,
+            pair_receipt=pair_receipt,
+            direction_check=selected_verdict,
         )
+        candidate = self.conn.execute(
+            "SELECT candidate_id,raw_sha256,source_sequence FROM candidates "
+            "WHERE candidate_id=?",
+            (activation["legacy_candidate_id"],),
+        ).fetchone()
+        return {
+            "snapshot": snapshot,
+            "staged": staged,
+            "pair_receipt": pair_receipt,
+            "gate": gate,
+            "activation": activation,
+            "candidate_id": candidate["candidate_id"],
+            "content_sha": candidate["raw_sha256"],
+            "source_sequence": candidate["source_sequence"],
+        }
 
     def _legacy_unbound_metadata_database(self, name):
         upgrade_root = self.root / name
@@ -316,6 +314,7 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
             if migration.component not in {
                 "metadata-shadow-lifecycle",
                 "metadata-shadow-integrity",
+                "metadata-direction-gate-provenance",
             }
         )
         with mock.patch.object(
@@ -674,10 +673,24 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
                 claim,
                 [annotation("direction", "axis-a", direction_identity=direction)],
             )
-        self._bind_host_direction(direction)
+        bound = self._bind_host_direction(direction)
+        bound_work = self._enqueue(
+            candidate_id=bound["candidate_id"],
+            content_sha=bound["content_sha"],
+        )
+        bound_claim = self._claim(bound_work, token="worker-direction-bound")
+        wrong_identity = dict(direction, run_id="direction-run-wrong")
+        with self.assertRaises((ValueError, sqlite3.IntegrityError)):
+            history_metadata.publish_annotations(
+                self.conn,
+                bound_claim,
+                [annotation(
+                    "direction", "axis-a", direction_identity=wrong_identity
+                )],
+            )
         result = history_metadata.publish_annotations(
             self.conn,
-            claim,
+            bound_claim,
             [annotation("direction", "axis-a", direction_identity=direction)],
         )
         self.assertEqual(result["published_count"], 1)
@@ -688,10 +701,25 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
         self.assertEqual(stored["family"], "direction")
         self.assertEqual(json.loads(stored["direction_identity_json"]), direction)
 
+        self.conn.execute(
+            """
+            INSERT INTO audit_run_manifests(
+              run_id,manifest_schema_version,plan_hash,manifest_json,created_at
+            ) VALUES('metadata-direction-scope','history-audit-manifest-v2',
+                     ?, '{}','2026-08-03T00:00:00Z')
+            """,
+            ("f" * 64,),
+        )
+        direction_snapshot = history_audit.freeze_snapshot(
+            self.conn,
+            run_id="metadata-direction-scope",
+            batch_id="metadata-direction-scope-batch",
+            current_batch_ids=["stg-v2-" + "f" * 64],
+        )
         no_scope = history_metadata.shadow_rank(
             self.conn,
             [{"family": "direction", "value": "axis-a", "rank": 1}],
-            self.snapshot,
+            direction_snapshot,
             ["profile-v1"],
         )
         foreign_direction = dict(direction, run_id="direction-run-b")
@@ -703,7 +731,7 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
                 "rank": 1,
                 "direction_identity": foreign_direction,
             }],
-            self.snapshot,
+            direction_snapshot,
             ["profile-v1"],
         )
         exact_scope = history_metadata.shadow_rank(
@@ -714,7 +742,7 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
                 "rank": 1,
                 "direction_identity": direction,
             }],
-            self.snapshot,
+            direction_snapshot,
             ["profile-v1"],
         )
         self.assertEqual(no_scope, [])
@@ -729,6 +757,481 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
                 profile_id="profile-direction",
                 token="worker-direction",
             )
+
+    def test_direction_gate_provenance_reopens_and_remains_exact(self):
+        self._register()
+        direction = {
+            "run_id": "direction-run-a",
+            "batch_id": "direction-batch",
+            "direction_id": "shared-direction-id",
+            "contract_sha": "3" * 64,
+            "validator_version": "direction-validator-v1",
+            "artifact_sha": "4" * 64,
+        }
+        bound = self._bind_host_direction(direction)
+        self.conn.close()
+        self.conn = history_store.connect(self.root / "history.sqlite3")
+        history_store.init_schema(self.conn)
+        history_audit_store.init_schema(self.conn)
+        work = self._enqueue(
+            candidate_id=bound["candidate_id"],
+            content_sha=bound["content_sha"],
+        )
+        claim = self._claim(work, token="worker-direction-reopen")
+        result = history_metadata.publish_annotations(
+            self.conn,
+            claim,
+            [annotation("direction", "axis-a", direction_identity=direction)],
+        )
+        self.assertEqual(result["published_count"], 1)
+        provenance = self.conn.execute(
+            "SELECT * FROM audit_valid_metadata_direction_provenance_v2 "
+            "WHERE candidate_id=?",
+            (bound["candidate_id"],),
+        ).fetchall()
+        self.assertEqual(len(provenance), 1)
+        self.assertEqual(provenance[0]["provenance_kind"], "batch_gate_v2")
+
+    def test_direction_metadata_rejects_missing_gate_binding(self):
+        self._register()
+        direction = {
+            "run_id": "direction-run-a",
+            "batch_id": "direction-batch",
+            "direction_id": "shared-direction-id",
+            "contract_sha": "3" * 64,
+            "validator_version": "direction-validator-v1",
+            "artifact_sha": "4" * 64,
+        }
+        bound = self._bind_host_direction(direction)
+        self.conn.execute(
+            "DROP TRIGGER "
+            "audit_batch_direction_gate_bindings_v2_immutable_delete"
+        )
+        self.conn.execute(
+            "DELETE FROM audit_batch_direction_gate_bindings_v2 "
+            "WHERE gate_sha256=? AND source_order=1",
+            (bound["gate"]["gate_sha256"],),
+        )
+        work = self._enqueue(
+            candidate_id=bound["candidate_id"],
+            content_sha=bound["content_sha"],
+        )
+        claim = self._claim(work, token="worker-direction-missing-binding")
+        with self.assertRaises((ValueError, sqlite3.IntegrityError)):
+            history_metadata.publish_annotations(
+                self.conn,
+                claim,
+                [annotation("direction", "axis-a", direction_identity=direction)],
+            )
+
+    def test_direction_metadata_rejects_out_of_scope_verdict_drift(self):
+        self._register()
+        direction = {
+            "run_id": "direction-run-a",
+            "batch_id": "direction-batch",
+            "direction_id": "shared-direction-id",
+            "contract_sha": "3" * 64,
+            "validator_version": "direction-validator-v1",
+            "artifact_sha": "4" * 64,
+        }
+        bound = self._bind_host_direction(direction)
+        self.conn.execute(
+            "DROP TRIGGER audit_batch_direction_verdicts_v2_immutable_update"
+        )
+        self.conn.execute(
+            "UPDATE audit_batch_direction_verdicts_v2 "
+            "SET direction_fit='out-of-scope' WHERE verdict_sha256=("
+            "SELECT verdict_sha256 FROM "
+            "audit_batch_direction_gate_bindings_v2 "
+            "WHERE gate_sha256=? AND source_order=1)",
+            (bound["gate"]["gate_sha256"],),
+        )
+        work = self._enqueue(
+            candidate_id=bound["candidate_id"],
+            content_sha=bound["content_sha"],
+        )
+        claim = self._claim(work, token="worker-direction-out")
+        with self.assertRaises((ValueError, sqlite3.IntegrityError)):
+            history_metadata.publish_annotations(
+                self.conn,
+                claim,
+                [annotation("direction", "axis-a", direction_identity=direction)],
+            )
+
+    def test_direction_metadata_rejects_gate_snapshot_drift(self):
+        self._register()
+        direction = {
+            "run_id": "direction-run-a",
+            "batch_id": "direction-batch",
+            "direction_id": "shared-direction-id",
+            "contract_sha": "3" * 64,
+            "validator_version": "direction-validator-v1",
+            "artifact_sha": "4" * 64,
+        }
+        bound = self._bind_host_direction(direction)
+        self.conn.execute(
+            """
+            INSERT INTO audit_run_manifests(
+              run_id,manifest_schema_version,plan_hash,manifest_json,created_at
+            ) VALUES('foreign-direction-run','history-audit-manifest-v2',?,
+                     '{}','2026-08-03T00:00:00Z')
+            """,
+            ("e" * 64,),
+        )
+        foreign = history_audit.freeze_snapshot(
+            self.conn,
+            run_id="foreign-direction-run",
+            batch_id="foreign-direction-batch",
+            current_batch_ids=["stg-v2-" + "e" * 64],
+        )
+        self.conn.execute(
+            "DROP TRIGGER audit_batch_direction_gates_v2_immutable_update"
+        )
+        self.conn.execute(
+            "UPDATE audit_batch_direction_gates_v2 "
+            "SET snapshot_id=?,current_batch_ids_hash=? WHERE gate_sha256=?",
+            (
+                foreign["snapshot_id"], foreign["current_batch_ids_hash"],
+                bound["gate"]["gate_sha256"],
+            ),
+        )
+        work = self._enqueue(
+            candidate_id=bound["candidate_id"],
+            content_sha=bound["content_sha"],
+        )
+        claim = self._claim(work, token="worker-direction-snapshot-drift")
+        with self.assertRaises((ValueError, sqlite3.IntegrityError)):
+            history_metadata.publish_annotations(
+                self.conn,
+                claim,
+                [annotation("direction", "axis-a", direction_identity=direction)],
+            )
+
+    def test_direction_annotation_direct_sql_still_rejects_valid_gate_reuse(self):
+        self._register()
+        direction = {
+            "run_id": "direction-run-a",
+            "batch_id": "direction-batch",
+            "direction_id": "shared-direction-id",
+            "contract_sha": "3" * 64,
+            "validator_version": "direction-validator-v1",
+            "artifact_sha": "4" * 64,
+        }
+        bound = self._bind_host_direction(direction)
+        work = self._enqueue(
+            candidate_id=bound["candidate_id"],
+            content_sha=bound["content_sha"],
+        )
+        claim = self._claim(work, token="worker-direction-direct")
+        history_metadata.publish_annotations(
+            self.conn,
+            claim,
+            [annotation("direction", "axis-a", direction_identity=direction)],
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                """
+                INSERT INTO audit_annotation_versions_v2(
+                  annotation_id,outbox_id,profile_id,profile_sha256,candidate_id,
+                  source_content_sha,source_sequence,family,value_json,
+                  value_sha256,confidence,direction_identity_json,producer_kind,
+                  producer_id,producer_version,prompt_sha256,created_at,stale_state
+                )
+                SELECT ?,outbox_id,profile_id,profile_sha256,candidate_id,
+                       source_content_sha,source_sequence,family,value_json,
+                       value_sha256,confidence,direction_identity_json,producer_kind,
+                       producer_id,producer_version,prompt_sha256,created_at,stale_state
+                FROM audit_annotation_versions_v2 LIMIT 1
+                """,
+                ("f" * 64,),
+            )
+
+    def test_metadata_direction_upgrade_accepts_existing_valid_v2_annotation(self):
+        upgrade_root = self.root / "metadata-v2-provenance-upgrade"
+        upgrade_root.mkdir()
+        (upgrade_root / "ledger.instance-id").write_text(
+            "metadata-v2-provenance-upgrade\n", encoding="utf-8"
+        )
+        ledger = upgrade_root / "ledger.tsv"
+        ledger.write_bytes(HEADER + ledger_row("upgrade alpha"))
+        conn = history_store.connect(upgrade_root / "history.sqlite3")
+        original_conn = self.conn
+        try:
+            history_store.init_schema(conn)
+            history_store.import_tsv_epoch(conn, ledger)
+            before_provenance = tuple(
+                migration for migration in history_audit_store.MIGRATIONS
+                if migration.component != "metadata-direction-gate-provenance"
+            )
+            with mock.patch.object(
+                history_audit_store, "MIGRATIONS", before_provenance
+            ):
+                history_audit_store.init_schema(conn)
+            self.conn = conn
+            self._register("upgrade-profile", "1", "1")
+            direction = {
+                "run_id": "direction-upgrade-run",
+                "batch_id": "direction-upgrade-batch",
+                "direction_id": "direction-upgrade-id",
+                "contract_sha": "3" * 64,
+                "validator_version": "direction-validator-v1",
+                "artifact_sha": "4" * 64,
+            }
+            bound = self._bind_host_direction(direction)
+            work = self._enqueue(
+                "upgrade-profile",
+                candidate_id=bound["candidate_id"],
+                content_sha=bound["content_sha"],
+            )
+            claim = self._claim(work, token="upgrade-direction-worker")
+            prior_trigger_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                "AND name='audit_annotation_versions_v2_insert_guard'"
+            ).fetchone()[0]
+            conn.execute("DROP TRIGGER audit_annotation_versions_v2_insert_guard")
+            history_metadata.publish_annotations(
+                conn,
+                claim,
+                [annotation("direction", "axis-a", direction_identity=direction)],
+            )
+            conn.execute(prior_trigger_sql)
+            self.conn = original_conn
+            history_audit_store.init_schema(conn)
+            provenance = conn.execute(
+                "SELECT provenance_kind FROM "
+                "audit_valid_metadata_direction_provenance_v2"
+            ).fetchall()
+            self.assertEqual([row[0] for row in provenance], ["batch_gate_v2"])
+        finally:
+            self.conn = original_conn
+            conn.close()
+
+    def test_metadata_direction_upgrade_rejects_orphan_annotation(self):
+        upgrade_root = self.root / "metadata-orphan-provenance-upgrade"
+        upgrade_root.mkdir()
+        (upgrade_root / "ledger.instance-id").write_text(
+            "metadata-orphan-provenance-upgrade\n", encoding="utf-8"
+        )
+        ledger = upgrade_root / "ledger.tsv"
+        ledger.write_bytes(HEADER + ledger_row("orphan upgrade candidate"))
+        conn = history_store.connect(upgrade_root / "history.sqlite3")
+        original_conn = self.conn
+        try:
+            history_store.init_schema(conn)
+            history_store.import_tsv_epoch(conn, ledger)
+            before_provenance = tuple(
+                migration for migration in history_audit_store.MIGRATIONS
+                if migration.component != "metadata-direction-gate-provenance"
+            )
+            with mock.patch.object(
+                history_audit_store, "MIGRATIONS", before_provenance
+            ):
+                history_audit_store.init_schema(conn)
+            self.conn = conn
+            self._register("orphan-profile", "1", "1")
+            candidate = conn.execute(
+                "SELECT candidate_id,raw_sha256 FROM candidates"
+            ).fetchone()
+            work = self._enqueue(
+                "orphan-profile",
+                candidate_id=candidate["candidate_id"],
+                content_sha=candidate["raw_sha256"],
+            )
+            claim = self._claim(work, token="orphan-direction-worker")
+            prior_trigger_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                "AND name='audit_annotation_versions_v2_insert_guard'"
+            ).fetchone()[0]
+            conn.execute("DROP TRIGGER audit_annotation_versions_v2_insert_guard")
+            history_metadata.publish_annotations(
+                conn,
+                claim,
+                [annotation(
+                    "direction",
+                    "axis-a",
+                    direction_identity={
+                        "run_id": "orphan-run",
+                        "batch_id": "orphan-batch",
+                        "direction_id": "orphan-direction",
+                        "contract_sha": "5" * 64,
+                        "validator_version": "orphan-validator",
+                        "artifact_sha": "6" * 64,
+                    },
+                )],
+            )
+            conn.execute(prior_trigger_sql)
+            self.conn = original_conn
+            with self.assertRaises(history_audit_store.AuditMigrationError):
+                history_audit_store.init_schema(conn)
+            self.assertIsNone(conn.execute(
+                "SELECT 1 FROM audit_schema_migrations "
+                "WHERE component='metadata-direction-gate-provenance'"
+            ).fetchone())
+        finally:
+            self.conn = original_conn
+            conn.close()
+
+    def test_metadata_direction_upgrade_accepts_completed_legacy_annotation(self):
+        upgrade_root = self.root / "metadata-legacy-provenance-upgrade"
+        upgrade_root.mkdir()
+        (upgrade_root / "ledger.instance-id").write_text(
+            "metadata-legacy-provenance-upgrade\n", encoding="utf-8"
+        )
+        ledger = upgrade_root / "ledger.tsv"
+        ledger.write_bytes(
+            HEADER + ledger_row("legacy direction one")
+            + ledger_row("legacy direction two")
+        )
+        conn = history_store.connect(upgrade_root / "history.sqlite3")
+        try:
+            history_store.init_schema(conn)
+            history_store.import_tsv_epoch(conn, ledger)
+            before_authority = tuple(
+                migration for migration in history_audit_store.MIGRATIONS
+                if migration.component not in {
+                    "batch-staging-authority",
+                    "batch-direction-gate-authority",
+                    "metadata-direction-gate-provenance",
+                }
+            )
+            with mock.patch.object(
+                history_audit_store, "MIGRATIONS", before_authority
+            ):
+                history_audit_store.init_schema(conn)
+            direction = {
+                "run_id": "legacy-direction-run",
+                "batch_id": "legacy-direction-batch",
+                "direction_id": "legacy-direction-id",
+                "contract_sha": "3" * 64,
+                "validator_version": "direction-validator-v1",
+                "artifact_sha": "4" * 64,
+            }
+            conn.execute(
+                """
+                INSERT INTO audit_run_manifests(
+                  run_id,manifest_schema_version,plan_hash,manifest_json,created_at
+                ) VALUES(?,'history-audit-manifest-v2',?,'{}',
+                         '2026-08-03T00:00:00Z')
+                """,
+                (direction["run_id"], "7" * 64),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_direction_contracts(
+                  run_id,batch_id,direction_id,contract_sha,
+                  validator_version,artifact_sha,created_at
+                ) VALUES(?,?,?,?,?,?,'2026-08-03T00:00:00Z')
+                """,
+                tuple(direction[name] for name in (
+                    "run_id", "batch_id", "direction_id", "contract_sha",
+                    "validator_version", "artifact_sha",
+                )),
+            )
+            candidates = conn.execute(
+                "SELECT candidate_id,raw_sha256,source_sequence FROM candidates "
+                "ORDER BY source_sequence"
+            ).fetchall()
+            staging_ids = ("legacy-metadata-one", "legacy-metadata-two")
+            for index, (staging_id, candidate) in enumerate(
+                zip(staging_ids, candidates)
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO audit_batch_staging(
+                      staging_candidate_id,run_id,batch_id,candidate_hash,
+                      raw_artifact_sha,source_order,created_at
+                    ) VALUES(?,?,?,?,?,?,'2026-08-03T00:00:00Z')
+                    """,
+                    (
+                        staging_id, direction["run_id"], direction["batch_id"],
+                        ("8" if index == 0 else "9") * 64,
+                        candidate["raw_sha256"], index,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO audit_direction_checks(
+                      run_id,batch_id,direction_id,contract_sha,
+                      validator_version,artifact_sha,staging_candidate_id,
+                      semantic_relation,lineage_relation,evidence_sha,checked_at
+                    ) VALUES(?,?,?,?,?,?,?,'distinct','none',?,
+                             '2026-08-03T00:00:00Z')
+                    """,
+                    tuple(direction[name] for name in (
+                        "run_id", "batch_id", "direction_id", "contract_sha",
+                        "validator_version", "artifact_sha",
+                    )) + (staging_id, "6" * 64),
+                )
+            pair_plan_sha = "a" * 64
+            pair_result_sha = "b" * 64
+            conn.execute(
+                """
+                INSERT INTO audit_batch_pairs(
+                  run_id,batch_id,left_staging_candidate_id,
+                  right_staging_candidate_id,pair_plan_sha,pair_result_sha,
+                  created_at
+                ) VALUES(?,?,?,?,?,?,'2026-08-03T00:00:00Z')
+                """,
+                (
+                    direction["run_id"], direction["batch_id"],
+                    staging_ids[0], staging_ids[1], pair_plan_sha,
+                    pair_result_sha,
+                ),
+            )
+            for staging_id, candidate in zip(staging_ids, candidates):
+                activation_sha = hashlib.sha256(
+                    ("legacy-metadata:" + staging_id).encode()
+                ).hexdigest()
+                conn.execute(
+                    "INSERT INTO audit_activation_receipts VALUES(?,?, '{}',?)",
+                    (activation_sha, staging_id, "2026-08-03T00:00:00Z"),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO audit_activation_maps(
+                      staging_candidate_id,legacy_candidate_id,source_sequence,
+                      raw_artifact_sha,pair_plan_sha,pair_result_sha,
+                      activation_receipt_sha,activated_at
+                    ) VALUES(?,?,?,?,?,?,?,'2026-08-03T00:00:00Z')
+                    """,
+                    (
+                        staging_id, candidate["candidate_id"],
+                        candidate["source_sequence"], candidate["raw_sha256"],
+                        pair_plan_sha, pair_result_sha, activation_sha,
+                    ),
+                )
+            conn.commit()
+            history_metadata.register_profile(
+                conn, profile("legacy-profile", "1", "1")
+            )
+            work = history_metadata.enqueue_candidate(
+                conn,
+                candidates[0]["candidate_id"],
+                candidates[0]["raw_sha256"],
+                "legacy-profile",
+            )
+            claim = history_metadata.claim_candidate(
+                conn,
+                work["outbox_id"],
+                "legacy-direction-worker",
+                "2099-01-01T00:00:00Z",
+                now="2026-08-03T00:00:00Z",
+            )
+            history_metadata.publish_annotations(
+                conn,
+                claim,
+                [annotation("direction", "axis-a", direction_identity=direction)],
+            )
+            history_audit_store.init_schema(conn)
+            provenance = conn.execute(
+                "SELECT provenance_kind FROM "
+                "audit_valid_metadata_direction_provenance_v2 "
+                "WHERE candidate_id=?",
+                (candidates[0]["candidate_id"],),
+            ).fetchall()
+            self.assertEqual([row[0] for row in provenance], ["migration_legacy"])
+        finally:
+            conn.close()
 
     def test_outbox_claim_rejects_stale_fence_and_recovers_expired_claim(self):
         self._register()
@@ -892,6 +1395,7 @@ class HistoryMetadataShadowSmoke(unittest.TestCase):
                 if migration.component not in {
                     "metadata-shadow-lifecycle",
                     "metadata-shadow-integrity",
+                    "metadata-direction-gate-provenance",
                 }
             )
             with mock.patch.object(

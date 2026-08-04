@@ -23,6 +23,18 @@ class ProviderCommandCliSmoke(unittest.TestCase):
         self.launch_log = self.root / "provider-launched"
         raw = (
             "#!/bin/sh\n"
+            "if [ \"$1 $2 $3\" = \"--pure debug config\" ]; then\n"
+            "  printf '%s\\n' '{\"model\":\"openai/fixture-model\"}'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1 $2\" = \"models --pure\" ]; then\n"
+            "  printf '%s\\n' 'openai/fixture-model' 'openai/gpt-5.6-sol'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = \"models\" ]; then\n"
+            "  printf '%s\\n' 'gemini/fixture-model' 'gemini-3.6-flash-high'\n"
+            "  exit 0\n"
+            "fi\n"
             "printf '%s\\n' \"$0\" >> \"$PROVIDER_LAUNCH_LOG\"\n"
             "exit 91\n"
         )
@@ -137,9 +149,13 @@ class ProviderCommandCliSmoke(unittest.TestCase):
         for provider in ("codex", "kimi", "grok"):
             with self.subTest(surface="hunt", provider=provider):
                 self.assertEqual(self._payload("hunt", provider)["provider"], provider)
-        for provider in ("codex", "kimi", "grok", "opencode", "agy"):
+        for provider in ("codex", "kimi", "grok", "opencode"):
             with self.subTest(surface="awr", provider=provider):
                 self.assertEqual(self._payload("awr", provider)["provider"], provider)
+        self.assertEqual(
+            self._payload("awr", "agy", model="gemini/fixture-model")["provider"],
+            "agy",
+        )
         for surface, provider in (
             ("hunt", "opencode"),
             ("hunt", "agy"),
@@ -276,25 +292,17 @@ class ProviderCommandCliSmoke(unittest.TestCase):
         self.assertIn("reasoning", completed.stderr.lower())
         self.assertFalse(self.launch_log.exists())
 
-    def test_codex_reasoning_spelling_is_grammar_only_not_provider_validated(self):
-        payload = self._payload(
+    def test_unverified_codex_reasoning_spelling_is_rejected_without_launch(self):
+        completed = self._run(
             "hunt",
             "codex",
             model="MODEL",
             reasoning="not-a-confirmed-provider-effort",
         )
-        self.assertEqual(payload.get("grammar_status"), "accepted")
-        self.assertEqual(payload.get("provider_validation"), "unverified")
-        self.assertEqual(
-            payload.get("requested_reasoning"),
-            "not-a-confirmed-provider-effort",
-        )
-        self.assertIsNone(payload.get("effective_reasoning"))
-        self.assertIsNot(payload.get("reasoning_override_applied"), True)
-        self.assertIn(
-            "model_reasoning_effort=not-a-confirmed-provider-effort",
-            payload["argv"],
-        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, "")
+        self.assertIn("codex", completed.stderr.lower())
+        self.assertIn("reasoning", completed.stderr.lower())
         self.assertFalse(self.launch_log.exists())
 
 

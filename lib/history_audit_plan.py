@@ -3,6 +3,8 @@
 import copy
 import datetime
 import hashlib
+import json
+import pathlib
 
 try:
     from lib import history_contract_v2
@@ -27,12 +29,482 @@ _RESOURCE_FIELDS = (
 )
 
 RUNTIME_PLAN_SCHEMA = "history-audit-plan-v2"
+_HOST_POLICY_ROOT = pathlib.Path(__file__).resolve().parents[1] / "history"
+_TEST_RUNTIME_AUTHORITIES = {}
+_TEST_RUNTIME_AUTHORITY_IDS = {}
+
+
+def _reject_duplicate_json_keys(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise AuditPlanError("invalid_host_policy", "duplicate_json_key")
+        value[key] = item
+    return value
+
+
+def _load_host_policy(filename):
+    """Load one repository-owned policy without accepting duplicate keys."""
+    try:
+        raw = (_HOST_POLICY_ROOT / filename).read_text(encoding="utf-8")
+        return json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=lambda _: (_ for _ in ()).throw(
+                AuditPlanError("invalid_host_policy", filename)
+            ),
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AuditPlanError("invalid_host_policy", filename) from exc
+
+
+def _host_runtime_authority():
+    capacity_registry = _load_host_policy("capacity-profiles-v1.json")
+    budget_policy = _load_host_policy("l2-budget-v1.json")
+    risk_policy = _load_host_policy("risk-policy-v1.json")
+    settlement_policy = _load_host_policy("settlement-policy-v1.json")
+    semantic_policy = _load_host_policy("semantic-release-policy-v1.json")
+    if (
+        not isinstance(capacity_registry, dict)
+        or set(capacity_registry) != {"schema_version", "profiles"}
+        or capacity_registry.get("schema_version") != "capacity-profiles-v1"
+        or not isinstance(capacity_registry.get("profiles"), dict)
+        or not isinstance(risk_policy, dict)
+        or set(risk_policy) != {"schema_version", "risk_policy_version", "rules"}
+        or risk_policy.get("schema_version") != "history-risk-policy-v1"
+        or not isinstance(risk_policy.get("risk_policy_version"), str)
+        or not risk_policy["risk_policy_version"]
+        or not isinstance(risk_policy.get("rules"), list)
+        or not isinstance(settlement_policy, dict)
+        or set(settlement_policy) != {
+            "schema_version", "settlement_policy_id", "valid_result_policy",
+            "retry_policy",
+        }
+        or settlement_policy.get("schema_version")
+        != "history-settlement-policy-v1"
+        or not isinstance(semantic_policy, dict)
+        or semantic_policy.get("schema_version") != "semantic-release-policy-v1"
+        or not isinstance(semantic_policy.get("semantic_policy_profile_id"), str)
+        or not semantic_policy["semantic_policy_profile_id"]
+    ):
+        raise AuditPlanError("invalid_host_policy")
+    risk_rule_ids = []
+    for rule in risk_policy["rules"]:
+        if (
+            not isinstance(rule, dict)
+            or set(rule) != {
+                "rule_id", "fact", "equals", "required_route", "pre_l1"
+            }
+            or not isinstance(rule["rule_id"], str)
+            or not rule["rule_id"]
+            or rule["rule_id"] in risk_rule_ids
+        ):
+            raise AuditPlanError("invalid_host_policy", "risk-policy-v1.json")
+        risk_rule_ids.append(rule["rule_id"])
+    try:
+        risk_policy_sha = _canonical_sha("history-risk-policy-v1", risk_policy)
+        risk_rule_table_sha = _canonical_sha(
+            "history-risk-rule-table-v1", risk_policy["rules"]
+        )
+        settlement_policy_sha = _canonical_sha(
+            "history-settlement-policy-v1", settlement_policy
+        )
+    except history_contract_v2.ContractV2Error as exc:
+        raise AuditPlanError("invalid_host_policy") from exc
+    if (
+        not isinstance(budget_policy, dict)
+        or budget_policy.get("schema_version") != "l2-budget-v1"
+        or budget_policy.get("risk_policy_sha") != risk_policy_sha
+        or budget_policy.get("settlement_policy_sha") != settlement_policy_sha
+    ):
+        raise AuditPlanError("invalid_host_policy", "l2-budget-v1.json")
+    for profile in capacity_registry["profiles"].values():
+        status = profile.get("status") if isinstance(profile, dict) else None
+        if status in {"hard-complete", "hard-complete-test-only"}:
+            _validate_authoritative_capacity_profile(
+                profile, error_code="invalid_host_policy"
+            )
+        elif status != "unbudgetable":
+            raise AuditPlanError(
+                "invalid_host_policy", "capacity-profiles-v1.json"
+            )
+    return {
+        "capacity_profiles": capacity_registry["profiles"],
+        "budget_policy": budget_policy,
+        "risk_policy": risk_policy,
+        "risk_policy_sha": risk_policy_sha,
+        "risk_rule_table_sha": risk_rule_table_sha,
+        "receipt_risk_policy_version": "%s@%s" % (
+            risk_policy["risk_policy_version"], risk_rule_table_sha
+        ),
+        "risk_rule_ids": risk_rule_ids,
+        "settlement_policy": settlement_policy,
+        "settlement_policy_sha": settlement_policy_sha,
+        "semantic_policy_profile_id": semantic_policy[
+            "semantic_policy_profile_id"
+        ],
+    }
 
 
 def _canonical_sha(domain, value):
     return history_contract_v2.framed_sha256(
         domain, history_contract_v2.canonical_bytes(value)
     )
+
+
+def _canonical_equal(left, right):
+    try:
+        return (
+            history_contract_v2.canonical_bytes(left)
+            == history_contract_v2.canonical_bytes(right)
+        )
+    except history_contract_v2.ContractV2Error:
+        return False
+
+
+def _host_authority_for_capacity(capacity_profile_id):
+    authority = _host_runtime_authority()
+    profile = authority["capacity_profiles"].get(capacity_profile_id)
+    if profile is None:
+        raise AuditPlanError("unauthorized_capacity_profile")
+    scope = _capacity_authority_scope(profile)
+    authority = copy.deepcopy(authority)
+    authority["authority_scope"] = scope
+    authority["private_test_authority"] = False
+    authority["authority_id"] = _canonical_sha(
+        "history-runtime-host-authority-v1",
+        {
+            "authority_scope": scope,
+            "capacity_profile": profile,
+            "budget_policy_sha": runtime_budget_policy_sha(
+                authority["budget_policy"]
+            ),
+            "risk_policy_sha": authority["risk_policy_sha"],
+            "receipt_risk_policy_version": authority[
+                "receipt_risk_policy_version"
+            ],
+            "settlement_policy_sha": authority["settlement_policy_sha"],
+            "semantic_policy_profile_id": authority[
+                "semantic_policy_profile_id"
+            ],
+        },
+    )
+    return authority
+
+
+def _test_budget_limits_from_material(material):
+    """Recover only the narrowing shape emitted by the private fake issuer."""
+    host = _host_runtime_authority()
+    try:
+        intent = material["intent"]
+        policy = material["budget_policy"]
+        base_policy = host["budget_policy"]
+        base_intent = base_policy["intents"][intent]
+        candidate = policy["intents"][intent]["candidate"]
+        round_policy = policy["intents"][intent]["round"]
+    except (KeyError, TypeError) as exc:
+        raise AuditPlanError("unauthorized_runtime_authority") from exc
+    resource_fields = {
+        "started_attempts", "input_tokens", "output_tokens",
+        "provider_usage_units",
+    }
+    if (
+        not isinstance(policy, dict)
+        or set(policy) != {
+            "schema_version", "settlement_policy_sha", "risk_policy_sha",
+            "intents",
+        }
+        or policy["schema_version"] != base_policy["schema_version"]
+        or policy["settlement_policy_sha"] != host["settlement_policy_sha"]
+        or policy["risk_policy_sha"] != host["risk_policy_sha"]
+        or not isinstance(policy["intents"], dict)
+        or set(policy["intents"]) != {intent}
+        or not isinstance(round_policy, dict)
+        or set(round_policy) != resource_fields | {"candidates"}
+        or not isinstance(candidate, dict)
+        or set(candidate) != resource_fields
+        or round_policy["candidates"] != base_intent["round"]["candidates"]
+    ):
+        raise AuditPlanError("unauthorized_runtime_authority")
+    limits = {}
+    for field in sorted(resource_fields):
+        pair = (round_policy[field], candidate[field])
+        base_pair = (
+            base_intent["round"][field], base_intent["candidate"][field]
+        )
+        if pair == base_pair:
+            continue
+        if (
+            type(pair[0]) is not int
+            or type(pair[1]) is not int
+            or pair[0] != pair[1]
+            or pair[0] < 0
+            or pair[0] > min(base_pair)
+        ):
+            raise AuditPlanError("unauthorized_runtime_authority")
+        limits[field] = pair[0]
+    return limits
+
+
+def _reconstruct_test_runtime_authority(value):
+    """Rebuild a deterministic fake-only authority in a fresh process."""
+    if (
+        not isinstance(value, dict)
+        or value.get("authority_scope") != "test-only-shadow"
+        or not _is_sha(value.get("authority_id"))
+    ):
+        raise AuditPlanError("unauthorized_runtime_authority")
+    try:
+        capacity = value["capacity_profile"]
+        issued = _issue_test_runtime_authority(
+            provider_pools_ordered=value["provider_pools_ordered"],
+            provider_capabilities=value["provider_capabilities"],
+            intent=value["intent"],
+            budget_limits=_test_budget_limits_from_material(value),
+            semantic_policy_profile_id=value["semantic_policy_profile_id"],
+            matched_router_rule_ids=value["matched_router_rule_ids"],
+            max_output_tokens=capacity["max_output_tokens"],
+        )
+    except (KeyError, TypeError, AuditPlanError) as exc:
+        raise AuditPlanError("unauthorized_runtime_authority") from exc
+    exact_fields = {
+        "authority_id", "authority_scope", "capacity_profile_id",
+        "base_capacity_profile_id", "capacity_profile", "budget_policy",
+        "semantic_policy_profile_id", "risk_policy_version",
+        "matched_router_rule_ids", "risk_policy_sha",
+        "settlement_policy_sha",
+    }
+    if any(
+        field not in value
+        or not _canonical_equal(value[field], issued[field])
+        for field in exact_fields
+    ):
+        raise AuditPlanError("unauthorized_runtime_authority")
+    authority = _TEST_RUNTIME_AUTHORITIES.get(issued["authority_id"])
+    if authority is None:
+        raise AuditPlanError("unauthorized_runtime_authority")
+    return copy.deepcopy(authority)
+
+
+def _resolve_plan_authority(plan):
+    requested = plan.get("authority_id")
+    if requested in _TEST_RUNTIME_AUTHORITIES:
+        return copy.deepcopy(_TEST_RUNTIME_AUTHORITIES[requested])
+    if (
+        requested is not None
+        and plan.get("authority_scope") == "test-only-shadow"
+        and isinstance(plan.get("capacity_profile_id"), str)
+        and plan["capacity_profile_id"].startswith("fake-runtime-")
+    ):
+        return _reconstruct_test_runtime_authority(plan)
+    authority = _host_authority_for_capacity(plan.get("capacity_profile_id"))
+    if requested is not None and requested != authority["authority_id"]:
+        raise AuditPlanError("unauthorized_runtime_authority")
+    return authority
+
+
+def _resolve_material_authority(material):
+    authority_id = material["authority_id"]
+    if authority_id in _TEST_RUNTIME_AUTHORITIES:
+        return copy.deepcopy(_TEST_RUNTIME_AUTHORITIES[authority_id])
+    if (
+        material.get("authority_scope") == "test-only-shadow"
+        and isinstance(material.get("capacity_profile_id"), str)
+        and material["capacity_profile_id"].startswith("fake-runtime-")
+    ):
+        return _reconstruct_test_runtime_authority(material)
+    authority = _host_authority_for_capacity(material["capacity_profile_id"])
+    if authority_id != authority["authority_id"]:
+        raise AuditPlanError("unauthorized_runtime_authority")
+    return authority
+
+
+def _issue_test_runtime_authority(
+    *,
+    provider_pools_ordered,
+    provider_capabilities,
+    intent,
+    started_attempt_limit=None,
+    budget_limits=None,
+    semantic_policy_profile_id="semantic-test-v1",
+    matched_router_rule_ids=(),
+    max_output_tokens=64,
+):
+    """Issue one process-local, fake-only shadow authority for offline tests."""
+    _validate_pools(provider_pools_ordered)
+    host = _host_runtime_authority()
+    providers = {
+        provider
+        for pool in provider_pools_ordered.values()
+        for provider in pool
+    }
+    capability_fields = {
+        "provider", "capability_profile_hash", "model_identity",
+        "reasoning_identity", "model_default", "reasoning_default",
+        "executable", "cli_revision",
+    }
+    if (
+        not isinstance(provider_capabilities, dict)
+        or set(provider_capabilities) != providers
+        or not isinstance(semantic_policy_profile_id, str)
+        or not semantic_policy_profile_id
+        or not isinstance(matched_router_rule_ids, (list, tuple))
+        or any(
+            not isinstance(rule_id, str) or not rule_id
+            for rule_id in matched_router_rule_ids
+        )
+        or len(set(matched_router_rule_ids)) != len(matched_router_rule_ids)
+        or type(max_output_tokens) is not int
+        or max_output_tokens <= 0
+    ):
+        raise AuditPlanError("invalid_test_authority")
+    for provider in sorted(providers):
+        capability = provider_capabilities[provider]
+        if (
+            not isinstance(capability, dict)
+            or set(capability) != capability_fields
+            or capability["provider"] != provider
+            or not _is_sha(capability["capability_profile_hash"])
+            or not isinstance(capability["model_identity"], str)
+            or not capability["model_identity"].startswith("fake-")
+            or not isinstance(capability["reasoning_identity"], str)
+            or not capability["reasoning_identity"]
+            or not isinstance(capability["cli_revision"], str)
+            or not capability["cli_revision"].startswith("fake-")
+            or type(capability["model_default"]) is not bool
+            or type(capability["reasoning_default"]) is not bool
+        ):
+            raise AuditPlanError("invalid_test_authority", provider)
+    base_capacity = host["capacity_profiles"].get("fake-safe-24k-v1")
+    if (
+        not isinstance(base_capacity, dict)
+        or max_output_tokens > base_capacity.get("max_output_tokens", 0)
+    ):
+        raise AuditPlanError("invalid_test_authority")
+    try:
+        base_intent = copy.deepcopy(host["budget_policy"]["intents"][intent])
+    except (KeyError, TypeError) as exc:
+        raise AuditPlanError("invalid_test_authority", "intent") from exc
+    narrowed = copy.deepcopy(budget_limits) if budget_limits is not None else {}
+    if not isinstance(narrowed, dict):
+        raise AuditPlanError("invalid_test_authority", "budget_limits")
+    if started_attempt_limit is not None:
+        if "started_attempts" in narrowed:
+            raise AuditPlanError("invalid_test_authority", "budget_limits")
+        narrowed["started_attempts"] = started_attempt_limit
+    allowed_limits = {
+        "started_attempts", "input_tokens", "output_tokens",
+        "provider_usage_units",
+    }
+    if set(narrowed).difference(allowed_limits):
+        raise AuditPlanError("invalid_test_authority", "budget_limits")
+    for field, limit in narrowed.items():
+        if (
+            type(limit) is not int
+            or limit < 0
+            or any(limit > base_intent[scope][field] for scope in ("round", "candidate"))
+        ):
+            raise AuditPlanError("invalid_test_authority", field)
+        for scope in ("round", "candidate"):
+            base_intent[scope][field] = limit
+    budget_policy = {
+        "schema_version": host["budget_policy"]["schema_version"],
+        "settlement_policy_sha": host["settlement_policy_sha"],
+        "risk_policy_sha": host["risk_policy_sha"],
+        "intents": {intent: base_intent},
+    }
+    identity_material = {
+        "provider_pools_ordered": provider_pools_ordered,
+        "provider_capabilities": provider_capabilities,
+        "max_output_tokens": max_output_tokens,
+    }
+    profile_identity = _canonical_sha(
+        "history-runtime-test-capacity-v1", identity_material
+    )
+    profile_id = f"fake-runtime-{profile_identity[:24]}-v1"
+    bindings = {}
+    for provider in sorted(providers):
+        capability = provider_capabilities[provider]
+        bindings[provider] = {
+            "state": "hard-complete",
+            "capability_profile_hash": capability["capability_profile_hash"],
+            "model_identity": capability["model_identity"],
+            "reasoning_identity": capability["reasoning_identity"],
+            "model_default": capability["model_default"],
+            "reasoning_default": capability["reasoning_default"],
+            "executable": capability["executable"],
+            "cli_revision": capability["cli_revision"],
+            "capability_serializer_revision": "test-runtime-capability-v1",
+            "request_serializer_revision": base_capacity[
+                "serializer_revision"
+            ],
+            "immutable_capacity_identity": "test-only-" + profile_identity,
+            "prompt_sha256": base_capacity["prompt"]["sha256"],
+            "schema_sha256": base_capacity["schema"]["sha256"],
+            "evidence_limit_tokens": base_capacity["evidence_limit_tokens"],
+        }
+    capacity_profile = {
+        "profile_id": profile_id,
+        "base_profile_id": base_capacity["base_profile_id"],
+        "status": "hard-complete-test-only",
+        "counter": copy.deepcopy(base_capacity["counter"]),
+        "context_tokens": base_capacity["context_tokens"],
+        "max_input_tokens": base_capacity["max_input_tokens"],
+        "evidence_limit_tokens": base_capacity["evidence_limit_tokens"],
+        "evidence_max_bytes": base_capacity["evidence_max_bytes"],
+        "max_output_tokens": max_output_tokens,
+        "item_cap": base_capacity["item_cap"],
+        "utilization_ppm": base_capacity["utilization_ppm"],
+        "prompt": copy.deepcopy(base_capacity["prompt"]),
+        "schema": copy.deepcopy(base_capacity["schema"]),
+        "serializer_revision": base_capacity["serializer_revision"],
+        "usage_source": "fake-runtime-usage-v1",
+        "expires_at": base_capacity["expires_at"],
+        "provider_bindings": bindings,
+    }
+    authority_material = {
+        "authority_scope": "test-only-shadow",
+        "capacity_profile": capacity_profile,
+        "budget_policy": budget_policy,
+        "semantic_policy_profile_id": semantic_policy_profile_id,
+        "matched_router_rule_ids": list(matched_router_rule_ids),
+    }
+    fingerprint = _canonical_sha(
+        "history-runtime-test-authority-fingerprint-v1", authority_material
+    )
+    authority_id = _canonical_sha(
+        "history-runtime-test-authority-v1", authority_material
+    )
+    prior_authority_id = _TEST_RUNTIME_AUTHORITY_IDS.get(fingerprint)
+    if prior_authority_id not in (None, authority_id):
+        raise AuditPlanError("invalid_test_authority")
+    _TEST_RUNTIME_AUTHORITY_IDS[fingerprint] = authority_id
+    authority = copy.deepcopy(host)
+    authority.update(
+        {
+            "authority_id": authority_id,
+            "authority_scope": "test-only-shadow",
+            "capacity_profiles": {profile_id: capacity_profile},
+            "budget_policy": budget_policy,
+            "semantic_policy_profile_id": semantic_policy_profile_id,
+            "matched_router_rule_ids": list(matched_router_rule_ids),
+            "private_test_authority": True,
+        }
+    )
+    _TEST_RUNTIME_AUTHORITIES[authority_id] = copy.deepcopy(authority)
+    return {
+        "authority_id": authority_id,
+        "authority_scope": "test-only-shadow",
+        "capacity_profile_id": profile_id,
+        "base_capacity_profile_id": capacity_profile["base_profile_id"],
+        "capacity_profile": copy.deepcopy(capacity_profile),
+        "budget_policy": copy.deepcopy(budget_policy),
+        "semantic_policy_profile_id": semantic_policy_profile_id,
+        "risk_policy_version": host["receipt_risk_policy_version"],
+        "matched_router_rule_ids": list(matched_router_rule_ids),
+        "risk_policy_sha": host["risk_policy_sha"],
+        "settlement_policy_sha": host["settlement_policy_sha"],
+    }
 
 
 def _is_sha(value):
@@ -102,7 +574,8 @@ def runtime_shard_plan_sha(shards):
     normalized = []
     for shard in shards:
         if not isinstance(shard, dict) or set(shard) != {
-            "shard_id", "item_ids", "request_sha256", "serialized_request"
+            "shard_id", "item_ids", "request_sha256", "serialized_request",
+            "final_request_tokens",
         }:
             raise AuditPlanError("invalid_runtime_shards")
         if (
@@ -110,6 +583,8 @@ def runtime_shard_plan_sha(shards):
             or not shard["shard_id"]
             or not isinstance(shard["serialized_request"], str)
             or not _is_sha(shard["request_sha256"])
+            or type(shard["final_request_tokens"]) is not int
+            or shard["final_request_tokens"] <= 0
             or not isinstance(shard["item_ids"], list)
             or not shard["item_ids"]
             or shard["item_ids"] != sorted(shard["item_ids"])
@@ -135,21 +610,338 @@ def runtime_budget_policy_sha(policy):
     return _canonical_sha("history-budget-policy-v1", policy)
 
 
+def _capacity_authority_scope(profile):
+    if not isinstance(profile, dict):
+        raise AuditPlanError("unauthorized_capacity_profile")
+    if profile.get("status") == "hard-complete-test-only":
+        return "test-only-shadow"
+    if profile.get("status") == "hard-complete":
+        return "production"
+    raise AuditPlanError("unbudgetable_provider")
+
+
+def _validate_authoritative_capacity_profile(profile, *, error_code):
+    required = {
+        "profile_id", "base_profile_id", "status", "counter",
+        "context_tokens", "max_input_tokens", "evidence_limit_tokens",
+        "evidence_max_bytes", "max_output_tokens", "item_cap",
+        "utilization_ppm", "prompt", "schema",
+        "serializer_revision", "usage_source", "expires_at",
+        "provider_bindings",
+    }
+
+    def invalid(detail="capacity-profiles-v1.json"):
+        raise AuditPlanError(error_code, detail)
+
+    if not isinstance(profile, dict) or set(profile) != required:
+        invalid()
+    if (
+        profile["status"] not in {"hard-complete", "hard-complete-test-only"}
+        or not isinstance(profile["profile_id"], str)
+        or not profile["profile_id"]
+        or not isinstance(profile["base_profile_id"], str)
+        or not profile["base_profile_id"]
+        or not isinstance(profile["serializer_revision"], str)
+        or not profile["serializer_revision"]
+        or not isinstance(profile["usage_source"], str)
+        or not profile["usage_source"]
+    ):
+        invalid()
+    counter = profile["counter"]
+    if (
+        not isinstance(counter, dict)
+        or set(counter) != {"kind", "revision"}
+        or counter not in (
+            {"kind": "exact", "revision": "fake-utf8-byte-counter-v1"},
+            {
+                "kind": "validated_upper_bound",
+                "revision": "fake-utf8-byte-bound-v1",
+            },
+        )
+    ):
+        invalid()
+    for field in (
+        "context_tokens", "max_input_tokens", "evidence_limit_tokens",
+        "evidence_max_bytes", "max_output_tokens", "item_cap",
+        "utilization_ppm",
+    ):
+        if type(profile[field]) is not int or profile[field] <= 0:
+            invalid()
+    if (
+        profile["max_input_tokens"] + profile["max_output_tokens"]
+        > profile["context_tokens"]
+        or profile["evidence_limit_tokens"] > profile["max_input_tokens"]
+        or profile["utilization_ppm"] > 1_000_000
+    ):
+        invalid()
+    try:
+        expires = datetime.datetime.fromisoformat(profile["expires_at"])
+    except (TypeError, ValueError) as exc:
+        raise AuditPlanError(error_code, "expires_at") from exc
+    if (
+        expires.tzinfo is None
+        or expires <= datetime.datetime.now(datetime.timezone.utc)
+    ):
+        invalid("expires_at")
+    for field in ("prompt", "schema"):
+        artifact = profile[field]
+        if (
+            not isinstance(artifact, dict)
+            or set(artifact) != {"id", "sha256", "text"}
+            or not isinstance(artifact["id"], str)
+            or not artifact["id"]
+            or not isinstance(artifact["text"], str)
+            or hashlib.sha256(artifact["text"].encode("utf-8")).hexdigest()
+            != artifact["sha256"]
+        ):
+            invalid(field)
+    bindings = profile["provider_bindings"]
+    if not isinstance(bindings, dict) or not bindings:
+        invalid("provider_bindings")
+    hard_fields = {
+        "state", "capability_profile_hash", "model_identity",
+        "reasoning_identity", "model_default", "reasoning_default",
+        "executable", "cli_revision", "capability_serializer_revision",
+        "request_serializer_revision", "immutable_capacity_identity",
+        "prompt_sha256", "schema_sha256", "evidence_limit_tokens",
+    }
+    price_fields = {
+        "price_source", "input_currency_micros_per_token",
+        "output_currency_micros_per_token",
+    }
+    for provider, binding in bindings.items():
+        if not isinstance(provider, str) or not provider or not isinstance(binding, dict):
+            invalid("provider_bindings")
+        if binding.get("state") == "unbudgetable":
+            if set(binding) != {"state"}:
+                invalid(provider)
+            continue
+        if (
+            binding.get("state") != "hard-complete"
+            or not hard_fields.issubset(binding)
+            or set(binding).difference(hard_fields | price_fields)
+            or not _is_sha(binding["capability_profile_hash"])
+            or any(
+                not isinstance(binding[field], str) or not binding[field]
+                for field in (
+                    "model_identity", "reasoning_identity", "executable",
+                    "cli_revision", "capability_serializer_revision",
+                    "request_serializer_revision",
+                    "immutable_capacity_identity",
+                )
+            )
+            or type(binding["model_default"]) is not bool
+            or type(binding["reasoning_default"]) is not bool
+            or binding["request_serializer_revision"]
+            != profile["serializer_revision"]
+            or binding["prompt_sha256"] != profile["prompt"]["sha256"]
+            or binding["schema_sha256"] != profile["schema"]["sha256"]
+            or type(binding["evidence_limit_tokens"]) is not int
+            or binding["evidence_limit_tokens"] <= 0
+            or binding["evidence_limit_tokens"]
+            > profile["evidence_limit_tokens"]
+        ):
+            invalid(provider)
+        present_price = price_fields.intersection(binding)
+        if present_price and present_price != price_fields:
+            invalid(provider)
+        if present_price:
+            if (
+                not isinstance(binding["price_source"], str)
+                or not binding["price_source"]
+                or any(
+                    type(binding[field]) is not int or binding[field] < 0
+                    for field in (
+                        "input_currency_micros_per_token",
+                        "output_currency_micros_per_token",
+                    )
+                )
+            ):
+                invalid(provider)
+    return profile
+
+
+def _validate_runtime_capacity_authority(material, authority):
+    capacity_profile_id = material["capacity_profile_id"]
+    registered = authority["capacity_profiles"].get(capacity_profile_id)
+    if registered is None or not _canonical_equal(
+        material["capacity_profile"], registered
+    ):
+        raise AuditPlanError("unauthorized_capacity_profile")
+    if (
+        material["capacity_profile_id"] != registered.get("profile_id")
+        or material["base_capacity_profile_id"]
+        != registered.get("base_profile_id")
+        or material["authority_scope"] != authority["authority_scope"]
+        or material["authority_scope"] != _capacity_authority_scope(registered)
+    ):
+        raise AuditPlanError("unauthorized_capacity_profile")
+    _validate_authoritative_capacity_profile(
+        registered,
+        error_code=(
+            "invalid_capacity_profile"
+            if authority.get("private_test_authority")
+            else "invalid_host_policy"
+        ),
+    )
+    providers = {
+        provider
+        for pool in material["provider_pools_ordered"].values()
+        for provider in pool
+    }
+    bindings = registered.get("provider_bindings")
+    if not isinstance(bindings, dict):
+        raise AuditPlanError("invalid_host_policy", "capacity-profiles-v1.json")
+    capabilities = material["provider_capabilities"]
+    for provider in sorted(providers):
+        binding = bindings.get(provider)
+        capability = capabilities.get(provider)
+        if (
+            not isinstance(binding, dict)
+            or binding.get("state") != "hard-complete"
+            or not isinstance(capability, dict)
+            or binding.get("capability_profile_hash")
+            != capability.get("capability_profile_hash")
+            or binding.get("model_identity") != capability.get("model_identity")
+            or binding.get("reasoning_identity")
+            != capability.get("reasoning_identity")
+            or binding.get("model_default") != capability.get("model_default")
+            or binding.get("reasoning_default")
+            != capability.get("reasoning_default")
+            or binding.get("executable") != capability.get("executable")
+            or binding.get("cli_revision") != capability.get("cli_revision")
+            or binding.get("prompt_sha256") != registered["prompt"]["sha256"]
+            or binding.get("schema_sha256") != registered["schema"]["sha256"]
+            or binding.get("request_serializer_revision")
+            != registered.get("serializer_revision")
+        ):
+            raise AuditPlanError("stale_capacity", provider)
+    return registered
+
+
+def _validate_runtime_policy_authority(material, authority):
+    if (
+        material["settlement_policy_sha"]
+        != authority["settlement_policy_sha"]
+        or material["budget_policy"].get("settlement_policy_sha")
+        != authority["settlement_policy_sha"]
+    ):
+        raise AuditPlanError("unauthorized_settlement_policy")
+    if (
+        material["risk_policy_version"]
+        != authority["receipt_risk_policy_version"]
+        or material["risk_policy_sha"] != authority["risk_policy_sha"]
+        or material["budget_policy"].get("risk_policy_sha")
+        != authority["risk_policy_sha"]
+    ):
+        raise AuditPlanError("unauthorized_risk_policy")
+    if not _canonical_equal(
+        material["budget_policy"], authority["budget_policy"]
+    ):
+        raise AuditPlanError("unauthorized_budget_policy")
+    if (
+        runtime_budget_policy_sha(material["budget_policy"])
+        != material["budget_policy_sha"]
+    ):
+        raise AuditPlanError("invalid_budget")
+    if (
+        material["semantic_policy_profile_id"]
+        != authority["semantic_policy_profile_id"]
+    ):
+        raise AuditPlanError("unauthorized_semantic_policy")
+    matched = material["matched_router_rule_ids"]
+    if authority.get("private_test_authority"):
+        if matched != authority.get("matched_router_rule_ids"):
+            raise AuditPlanError("unauthorized_router_rules")
+    else:
+        rule_order = authority["risk_rule_ids"]
+        if (
+            not isinstance(matched, list)
+            or any(not isinstance(rule_id, str) for rule_id in matched)
+            or len(set(matched)) != len(matched)
+            or any(rule_id not in rule_order for rule_id in matched)
+            or matched != sorted(matched, key=rule_order.index)
+        ):
+            raise AuditPlanError("unauthorized_router_rules")
+
+
+def _validate_runtime_shard_resources(material, intent_policy):
+    capacity = material["capacity_profile"]
+    counter = capacity["counter"]
+    if counter not in (
+        {"kind": "exact", "revision": "fake-utf8-byte-counter-v1"},
+        {
+            "kind": "validated_upper_bound",
+            "revision": "fake-utf8-byte-bound-v1",
+        },
+    ):
+        raise AuditPlanError("unbudgetable_provider")
+    map_pool = material["provider_pools_ordered"]["map"]
+    bindings = capacity["provider_bindings"]
+    pool_input_limit = min(
+        capacity["evidence_limit_tokens"],
+        capacity["max_input_tokens"],
+        *(bindings[provider]["evidence_limit_tokens"] for provider in map_pool),
+    )
+    total_input = 0
+    for shard in material["shards"]:
+        raw = shard["serialized_request"].encode("utf-8")
+        measured_tokens = len(raw)
+        if measured_tokens != shard["final_request_tokens"]:
+            raise AuditPlanError("invalid_runtime_shards")
+        if (
+            len(raw) > capacity["evidence_max_bytes"]
+            or measured_tokens > pool_input_limit
+            or len(shard["item_ids"]) > capacity["item_cap"]
+        ):
+            raise AuditPlanError("runtime_capacity_exceeded")
+        total_input += measured_tokens * len(map_pool)
+    started_attempts = len(material["shards"]) * len(map_pool)
+    total_output = started_attempts * capacity["max_output_tokens"]
+    requested = {
+        "started_attempts": started_attempts,
+        "input_tokens": total_input,
+        "output_tokens": total_output,
+        "provider_usage_units": total_input + total_output,
+    }
+    for field, amount in requested.items():
+        if any(
+            amount > intent_policy[scope][field]
+            for scope in ("round", "candidate")
+        ):
+            raise AuditPlanError("runtime_budget_exceeded")
 _RUNTIME_PLAN_FIELDS = frozenset(
     {
         "schema_version", "run_id", "batch_id", "candidate", "snapshot",
         "provider_pools_ordered", "provider_capability_profile_hashes",
         "provider_capabilities",
-        "capacity_profile", "budget_policy", "budget_policy_sha", "intent",
-        "risk_policy_sha", "settlement_policy_sha", "shard_plan_sha", "shards",
+        "capacity_profile_id", "base_capacity_profile_id", "capacity_profile",
+        "semantic_policy_profile_id", "risk_policy_version",
+        "matched_router_rule_ids", "authority_id", "authority_scope", "budget_policy",
+        "budget_policy_sha", "intent", "risk_policy_sha",
+        "settlement_policy_sha", "shard_plan_sha", "shards",
     }
+)
+_TEST_EXECUTION_BINDING_FIELDS = frozenset(
+    {"schema_version", "fake_executable_sha256", "protocol_revision"}
 )
 
 
 def build_runtime_plan_material(plan):
     if not isinstance(plan, dict):
         raise AuditPlanError("invalid_runtime_plan")
+    if plan.get("schema_version") != RUNTIME_PLAN_SCHEMA:
+        raise AuditPlanError("invalid_runtime_plan")
     try:
+        authority = _resolve_plan_authority(plan)
+        capacity_profile = copy.deepcopy(plan["capacity_profile"])
+        capacity_profile_id = plan["capacity_profile_id"]
+        registered_capacity = authority["capacity_profiles"].get(
+            capacity_profile_id
+        )
+        if not _canonical_equal(registered_capacity, capacity_profile):
+            raise AuditPlanError("unauthorized_capacity_profile")
+        authority_scope = authority["authority_scope"]
         candidate = copy.deepcopy(plan["candidate"])
         snapshot = copy.deepcopy(plan["snapshot"])
         snapshot.pop("records")
@@ -167,7 +959,16 @@ def build_runtime_plan_material(plan):
                 plan["provider_capability_profile_hashes"]
             ),
             "provider_capabilities": copy.deepcopy(plan["provider_capabilities"]),
-            "capacity_profile": copy.deepcopy(plan["capacity_profile"]),
+            "capacity_profile_id": capacity_profile_id,
+            "base_capacity_profile_id": plan["base_capacity_profile_id"],
+            "capacity_profile": capacity_profile,
+            "semantic_policy_profile_id": plan["semantic_policy_profile_id"],
+            "risk_policy_version": plan["risk_policy_version"],
+            "matched_router_rule_ids": copy.deepcopy(
+                plan["matched_router_rule_ids"]
+            ),
+            "authority_id": authority["authority_id"],
+            "authority_scope": authority_scope,
             "budget_policy": copy.deepcopy(plan["budget_policy"]),
             "budget_policy_sha": runtime_budget_policy_sha(plan["budget_policy"]),
             "intent": plan["intent"],
@@ -178,6 +979,10 @@ def build_runtime_plan_material(plan):
                 copy.deepcopy(plan["shards"]), key=lambda shard: shard["shard_id"]
             ),
         }
+        if "test_execution_binding" in plan:
+            material["test_execution_binding"] = copy.deepcopy(
+                plan["test_execution_binding"]
+            )
     except (KeyError, TypeError) as exc:
         raise AuditPlanError("invalid_runtime_plan") from exc
     validate_runtime_plan_material(material)
@@ -185,7 +990,11 @@ def build_runtime_plan_material(plan):
 
 
 def validate_runtime_plan_material(material):
-    if not isinstance(material, dict) or set(material) != _RUNTIME_PLAN_FIELDS:
+    fields = set(material) if isinstance(material, dict) else set()
+    if not isinstance(material, dict) or fields not in (
+        set(_RUNTIME_PLAN_FIELDS),
+        set(_RUNTIME_PLAN_FIELDS) | {"test_execution_binding"},
+    ):
         raise AuditPlanError("invalid_runtime_plan")
     if material["schema_version"] != RUNTIME_PLAN_SCHEMA:
         raise AuditPlanError("invalid_runtime_plan")
@@ -247,17 +1056,23 @@ def validate_runtime_plan_material(material):
         or snapshot["snapshot_id"] != expected_snapshot_id
     ):
         raise AuditPlanError("invalid_runtime_snapshot")
-    intent_policy = _intent_policy(material["budget_policy"], material["intent"])
-    if (
-        runtime_budget_policy_sha(material["budget_policy"])
-        != material["budget_policy_sha"]
-        or material["budget_policy"]["risk_policy_sha"]
-        != material["risk_policy_sha"]
-        or material["budget_policy"]["settlement_policy_sha"]
-        != material["settlement_policy_sha"]
-        or not intent_policy
+    authority = _resolve_material_authority(material)
+    execution_binding = material.get("test_execution_binding")
+    if execution_binding is not None and (
+        material["authority_scope"] != "test-only-shadow"
+        or not isinstance(execution_binding, dict)
+        or set(execution_binding) != _TEST_EXECUTION_BINDING_FIELDS
+        or execution_binding.get("schema_version")
+        != "history-test-execution-binding-v1"
+        or not _is_sha(execution_binding.get("fake_executable_sha256"))
+        or not isinstance(execution_binding.get("protocol_revision"), str)
+        or not execution_binding["protocol_revision"]
     ):
+        raise AuditPlanError("invalid_test_execution_binding")
+    intent_policy = _intent_policy(material["budget_policy"], material["intent"])
+    if not intent_policy:
         raise AuditPlanError("invalid_budget")
+    _validate_runtime_policy_authority(material, authority)
     if runtime_shard_plan_sha(material["shards"]) != material["shard_plan_sha"]:
         raise AuditPlanError("invalid_runtime_shards")
     assigned_ids = [
@@ -265,11 +1080,18 @@ def validate_runtime_plan_material(material):
     ]
     if sorted(assigned_ids) != snapshot["expected_asset_ids"]:
         raise AuditPlanError("invalid_runtime_shards")
+    _validate_pools(material["provider_pools_ordered"])
     capacity = material["capacity_profile"]
     if (
         not isinstance(capacity, dict)
-        or type(capacity.get("max_output_tokens")) is not int
-        or capacity["max_output_tokens"] < 0
+        or any(
+            type(capacity.get(field)) is not int or capacity[field] <= 0
+            for field in (
+                "context_tokens", "max_input_tokens", "evidence_limit_tokens",
+                "evidence_max_bytes", "max_output_tokens", "item_cap",
+                "utilization_ppm",
+            )
+        )
     ):
         raise AuditPlanError("invalid_capacity_profile")
     profiles = material["provider_capability_profile_hashes"]
@@ -310,7 +1132,8 @@ def validate_runtime_plan_material(material):
             or type(capability["reasoning_default"]) is not bool
         ):
             raise AuditPlanError("invalid_provider_capabilities")
-    _validate_pools(material["provider_pools_ordered"])
+    _validate_runtime_capacity_authority(material, authority)
+    _validate_runtime_shard_resources(material, intent_policy)
     return copy.deepcopy(material)
 
 
@@ -951,6 +1774,7 @@ def build_plan(
     }
     plan_material = {
         "schema_version": "history-audit-plan-v1",
+        "authority_scope": _capacity_authority_scope(capacity_profile),
         "snapshot": copy.deepcopy(snapshot),
         "candidate": copy.deepcopy(candidate),
         "provider_pools_ordered": copy.deepcopy(provider_pools),
@@ -988,6 +1812,7 @@ def build_plan(
     )
     return {
         "status": "planned",
+        "authority_scope": plan_material["authority_scope"],
         "plan_sha": plan_sha,
         "capacity_profile_id": capacity_profile["profile_id"],
         "base_capacity_profile_id": capacity_profile["base_profile_id"],
@@ -1002,6 +1827,168 @@ def build_plan(
         "logical_task_keys": logical_tasks,
         "budget_events": reserved_events,
     }
+
+
+def build_test_only_runtime_plan(
+    *,
+    run_id,
+    batch_id,
+    snapshot,
+    candidate,
+    provider_pools_ordered,
+    provider_capabilities,
+    intent,
+    matched_router_rule_ids,
+    semantic_policy_profile_id,
+    test_execution_binding,
+    max_output_tokens=64,
+):
+    """Build one deterministic v2 plan under the private fake-only authority.
+
+    This is deliberately narrower than ``build_plan``: it accepts only the
+    process-local test authority issued below, uses its exact byte counter, and
+    returns a plan whose public material can be reconstructed in another
+    process.  Registered provider commands are neither resolved nor launched.
+    """
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or not isinstance(batch_id, str)
+        or not batch_id
+        or not isinstance(snapshot, dict)
+        or not isinstance(candidate, dict)
+    ):
+        raise AuditPlanError("invalid_runtime_plan")
+    _validate_pools(provider_pools_ordered)
+    if runtime_candidate_hash(candidate) != candidate.get("candidate_hash"):
+        raise AuditPlanError("invalid_runtime_candidate")
+    try:
+        records = runtime_snapshot_records(snapshot["records"])
+    except KeyError as exc:
+        raise AuditPlanError("invalid_runtime_snapshot") from exc
+
+    authority = _issue_test_runtime_authority(
+        provider_pools_ordered=provider_pools_ordered,
+        provider_capabilities=provider_capabilities,
+        intent=intent,
+        semantic_policy_profile_id=semantic_policy_profile_id,
+        matched_router_rule_ids=matched_router_rule_ids,
+        max_output_tokens=max_output_tokens,
+    )
+    if (
+        not isinstance(test_execution_binding, dict)
+        or set(test_execution_binding) != _TEST_EXECUTION_BINDING_FIELDS
+        or test_execution_binding.get("schema_version")
+        != "history-test-execution-binding-v1"
+        or not _is_sha(test_execution_binding.get("fake_executable_sha256"))
+        or not isinstance(test_execution_binding.get("protocol_revision"), str)
+        or not test_execution_binding["protocol_revision"]
+    ):
+        raise AuditPlanError("invalid_test_execution_binding")
+    capacity = authority["capacity_profile"]
+    map_bounds = [
+        capacity["max_input_tokens"],
+        capacity["evidence_limit_tokens"],
+        capacity["evidence_max_bytes"],
+    ]
+    for provider in provider_pools_ordered["map"]:
+        binding = capacity["provider_bindings"].get(provider)
+        if (
+            not isinstance(binding, dict)
+            or binding.get("state") != "hard-complete"
+            or type(binding.get("evidence_limit_tokens")) is not int
+            or binding["evidence_limit_tokens"] <= 0
+        ):
+            raise AuditPlanError("invalid_test_authority", provider)
+        map_bounds.append(binding["evidence_limit_tokens"])
+    target = (min(map_bounds) * capacity["utilization_ppm"]) // 1000000
+    if target <= 0:
+        raise AuditPlanError("invalid_capacity_profile")
+
+    def render_request(selected_items):
+        raw, _ = _serialized_request(
+            snapshot, candidate, capacity, selected_items
+        )
+        if raw.endswith(b"\n"):
+            raw = raw[:-1]
+        return raw, len(raw)
+
+    items = _record_items(records)
+    mutable_shards = []
+    for item in items:
+        selected = None
+        for shard in sorted(
+            mutable_shards,
+            key=lambda value: (
+                value["weight_sum"], len(value["items"]), value["shard_id"]
+            ),
+        ):
+            if len(shard["items"]) >= capacity["item_cap"]:
+                continue
+            _, size = render_request(shard["items"] + [item])
+            if size <= target:
+                selected = shard
+                break
+        if selected is None:
+            _, size = render_request([item])
+            if size > target:
+                raise AuditPlanError("single_item_overflow", item["item_id"])
+            selected = {
+                "shard_id": f"map-{len(mutable_shards):04d}",
+                "items": [],
+                "weight_sum": 0,
+            }
+            mutable_shards.append(selected)
+        selected["items"].append(item)
+        selected["weight_sum"] += item["weight"]
+
+    shards = []
+    for shard in mutable_shards:
+        raw, size = render_request(shard["items"])
+        if size > target or len(shard["items"]) > capacity["item_cap"]:
+            raise AuditPlanError("final_request_overflow")
+        shards.append(
+            {
+                "shard_id": shard["shard_id"],
+                "item_ids": sorted(item["item_id"] for item in shard["items"]),
+                "request_sha256": hashlib.sha256(raw).hexdigest(),
+                "serialized_request": raw.decode("utf-8"),
+                "final_request_tokens": size,
+            }
+        )
+
+    plan = {
+        "schema_version": RUNTIME_PLAN_SCHEMA,
+        "run_id": run_id,
+        "batch_id": batch_id,
+        "candidate": copy.deepcopy(candidate),
+        "snapshot": {**copy.deepcopy(snapshot), "records": records},
+        "provider_pools_ordered": copy.deepcopy(provider_pools_ordered),
+        "provider_capability_profile_hashes": {
+            provider: provider_capabilities[provider][
+                "capability_profile_hash"
+            ]
+            for provider in sorted(provider_capabilities)
+        },
+        "provider_capabilities": copy.deepcopy(provider_capabilities),
+        "intent": intent,
+        "shards": shards,
+        "test_execution_binding": copy.deepcopy(test_execution_binding),
+        **authority,
+    }
+    plan["shard_plan_sha"] = runtime_shard_plan_sha(shards)
+    plan["plan_sha"] = runtime_plan_sha(plan)
+    plan["logical_task_keys"] = [
+        history_contract_v2.logical_task_key(
+            plan["plan_sha"],
+            "map",
+            candidate["candidate_id"],
+            shard["request_sha256"],
+        )
+        for shard in shards
+    ]
+    build_runtime_plan_material(plan)
+    return plan
 
 
 def attempt_manifest(plan, shard_index, ordinal, capability):

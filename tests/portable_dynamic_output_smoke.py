@@ -29,16 +29,13 @@ def _probe(provider, executable_path, model, reasoning):
         "model_override_applied": True,
         "reasoning_override_applied": True,
         "immutable_capacity_identity": "fake-capacity-v1",
-        "evidence_sha256": hashlib.sha256(
-            f"{provider}|{executable_path}|fake-capacity-v1".encode("utf-8")
-        ).hexdigest(),
     }
 
 
 class PortableDynamicOutputSmoke(unittest.TestCase):
     def test_output_sha_is_computed_after_a_dynamic_envelope_is_written(self):
         registry = provider_adapters.load_registry(REGISTRY)
-        capability = provider_adapters.resolve_provider(
+        capability = provider_adapters._resolve_provider_for_test(
             registry,
             "hunt",
             "codex",

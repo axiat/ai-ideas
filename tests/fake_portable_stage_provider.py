@@ -215,6 +215,18 @@ def main():
         _write(pathlib.Path(sys.argv[2]), b"child survived\n")
         return 0
 
+    if sys.argv[1:] == ["--pure", "debug", "config"]:
+        sys.stdout.write('{"model":"openai/fixture-model"}\n')
+        return 0
+
+    if sys.argv[1:] == ["models", "--pure"]:
+        sys.stdout.write("openai/fixture-model\n")
+        return 0
+
+    if sys.argv[1:] == ["models"]:
+        sys.stdout.write("gemini/fixture-model\n")
+        return 0
+
     request = json.loads(_prompt(sys.argv[1:]))
     _record(request)
     mode = os.environ.get("FAKE_PORTABLE_STAGE_MODE", "success")
@@ -278,11 +290,23 @@ def main():
         return 0
 
     kind, content = _artifact(request["stage"], _inner_request(request))
+    binding = request.get("request_binding", {})
     raw = (
         json.dumps(
             {
                 "schema_version": 1,
                 "stage": request["stage"],
+                "request_attestation": {
+                    "schema_version": (
+                        "portable-stage-response-attestation-v1"
+                    ),
+                    "provider_request_binding_sha256": binding.get(
+                        "provider_request_binding_sha256", "0" * 64
+                    ),
+                    "serialized_prompt_sha256": binding.get(
+                        "serialized_prompt_sha256", "0" * 64
+                    ),
+                },
                 "artifacts": [
                     {"artifact_kind": kind, "content": content}
                 ],
@@ -293,6 +317,35 @@ def main():
         )
         + "\n"
     ).encode("utf-8")
+    if mode == "missing-request-attestation":
+        value = json.loads(raw)
+        value.pop("request_attestation")
+        raw = (
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+    if mode in {"wrong-request-attestation", "wrong-prompt-attestation"}:
+        value = json.loads(raw)
+        field = (
+            "provider_request_binding_sha256"
+            if mode == "wrong-request-attestation"
+            else "serialized_prompt_sha256"
+        )
+        value["request_attestation"][field] = "f" * 64
+        raw = (
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
     if mode == "boolean-schema-version":
         value = json.loads(raw)
         value["schema_version"] = True

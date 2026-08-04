@@ -87,7 +87,9 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
     def _receipt(self, object_ids):
         receipt = valid_receipt()
         receipt["raw_request_output_cas_hashes"] = list(object_ids)
-        receipt["minimum_receipt_sha"] = "9" * 64
+        receipt["minimum_receipt_sha"] = history_contract_v2.minimum_receipt_sha(
+            receipt
+        )
         return receipt
 
     def test_descriptor_binds_raw_and_compressed_hash_codec_and_lengths(self):
@@ -146,6 +148,20 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
 
     def test_minimum_receipt_rejects_missing_cas_descriptor(self):
         receipt = self._receipt(["8" * 64])
+        with self.assertRaises(history_cas.CASError):
+            history_cas.write_minimum_receipt(self.conn, receipt)
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM audit_receipts").fetchone()[0], 0
+        )
+
+    def test_overlap_receipt_requires_host_issued_durable_provenance(self):
+        receipt = self._receipt([])
+        receipt.update(
+            final_status="overlap_found",
+            stage_reason_code="match_found",
+            evidence_anchors=["caller-only evidence"],
+        )
+        self.conn.commit()
         with self.assertRaises(history_cas.CASError):
             history_cas.write_minimum_receipt(self.conn, receipt)
         self.assertEqual(
@@ -315,6 +331,26 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
             self.conn.execute("SELECT count(*) FROM audit_receipts").fetchone()[0], 0
         )
 
+    def test_storage_rejects_nonempty_fault_sets_with_complete_coverage(self):
+        descriptor = history_cas.put_object(
+            self.conn, self.cas_root, b"coverage set fault", "permanent"
+        )
+        for field in ("missing_ids", "duplicate_ids", "extra_ids"):
+            receipt = self._receipt([descriptor["object_id"]])
+            receipt[field] = ["asset-1"]
+            receipt["minimum_receipt_sha"] = hashlib.sha256(
+                field.encode("utf-8")
+            ).hexdigest()
+            with self.subTest(field=field):
+                with mock.patch.object(
+                    history_contract_v2, "validate_receipt", return_value=receipt
+                ):
+                    with self.assertRaises(history_cas.CASError):
+                        history_cas.write_minimum_receipt(self.conn, receipt)
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM audit_receipts").fetchone()[0], 0
+        )
+
     def test_coverage_guard_migration_rejects_preexisting_fault_receipt(self):
         legacy_db = self.root / "pre-coverage-guard.sqlite3"
         legacy = history_store.connect(legacy_db)
@@ -398,10 +434,10 @@ class HistoryAuditCasFoundationSmoke(unittest.TestCase):
                 ).fetchone()
             ),
         )
-        self.assertEqual(
-            history_cas.write_minimum_receipt(self.conn, self._receipt([object_id])),
-            "9" * 64,
-        )
+        with self.assertRaises(history_cas.CASError):
+            history_cas.write_minimum_receipt(
+                self.conn, self._receipt([object_id])
+            )
 
 
 if __name__ == "__main__":

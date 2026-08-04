@@ -317,11 +317,17 @@ agy:      agy --dangerously-skip-permissions --disable-slash-commands
 
 Kimi has no reasoning flag in CLI `0.31.1`; an explicit Kimi reasoning value
 is rejected. Hunt allows `codex|kimi|grok`. AwR allows those plus
-`opencode|agy`. Omitted model/reasoning values produce explicit
-`provider-default` capability markers and no override argv. Those markers are
+`opencode|agy`. Omitted reasoning uses the CLI default. Codex, Kimi, and Grok
+also retain omitted model defaults. OpenCode omission requires a pure host
+configuration probe; the resolved backend-qualified safe model enters the
+profile and is passed with explicit `-m`. Every OpenCode/agy model must exactly
+match the bounded local CLI catalog; model and catalog identity are re-probed
+before launch. Agy requires an explicit model. The registry reasoning grammar is a conservative
+verified subset: Codex `high|xhigh`, Grok `high`, OpenCode `high`, agy
+`low|medium|high`, and no Kimi value. Provider-default markers remain
 diagnostic/shadow-only until a probe binds effective model/reasoning or an
 immutable equivalent capacity identity. No registry key, executable basename,
-alias, or fallback contains Claude.
+alias, fallback, or normalized multi-backend model route selects Claude.
 
 **Interfaces:**
 
@@ -1061,9 +1067,9 @@ roles. Process-group timeout and artifact checks are shared.
 
 - [ ] **Step 4: Document locally verified CLI grammar and evidence boundary**
 
-Include these target v2 commands. Local help verifies argument grammar only;
-the capability probe must still verify model availability and effective
-override:
+Include these target v2 commands. Local help verifies argument grammar;
+OpenCode/agy catalog probes verify exact local model spelling without claiming
+account entitlement, capacity, or price:
 
 ```bash
 rtk env HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=codex HUNT_MODEL=gpt-5.6-sol HUNT_REASONING_EFFORT=xhigh ./hunt.sh

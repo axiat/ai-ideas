@@ -424,18 +424,13 @@ def stage_raw_batch(conn, *, snapshot, raw_candidates, direction_receipt):
             ),
         )
         for item in staged:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO audit_batch_staging(
-                  staging_candidate_id, run_id, batch_id, candidate_hash,
-                  raw_artifact_sha, source_order, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    item["staging_candidate_id"], item["run_id"], item["batch_id"],
-                    item["candidate_hash"], item["raw_artifact_sha"],
-                    item["source_order"], _utc_now(),
-                ),
+            history_audit_store.insert_authorized_batch_staging(
+                conn,
+                staging_candidate_id=item["staging_candidate_id"],
+                run_id=item["run_id"], batch_id=item["batch_id"],
+                candidate_hash=item["candidate_hash"],
+                raw_artifact_sha=item["raw_artifact_sha"],
+                source_order=item["source_order"], created_at=_utc_now(),
             )
             stored = conn.execute(
                 "SELECT * FROM audit_batch_staging WHERE staging_candidate_id=?",
@@ -657,16 +652,12 @@ def record_batch_pair_results(conn, staged_batch, pair_plan, pair_results):
 
 
 def record_direction_check(
-    conn, *, staged_candidate, direction_receipt, semantic_relation,
-    lineage_relation, evidence_sha
+    conn, *, staged_candidate, direction_receipt, semantic_relation=None,
+    lineage_relation=None, evidence_sha=None, direction_fit=None,
+    direction_evidence=None,
 ):
-    """Persist one host-owned direction check before activation."""
+    """Replay frozen legacy evidence; v2 verdicts require one batch gate."""
     direction = _direction_identity(direction_receipt)
-    if semantic_relation not in SEMANTIC_RELATIONS:
-        raise ValueError("semantic relation is invalid")
-    if lineage_relation not in LINEAGE_RELATIONS:
-        raise ValueError("lineage relation is invalid")
-    _require_sha(evidence_sha, "direction evidence_sha")
     if not isinstance(staged_candidate, dict):
         raise ValueError("staged candidate is invalid")
     staging_id = staged_candidate.get("staging_candidate_id")
@@ -676,21 +667,19 @@ def record_direction_check(
     ).fetchone()
     if stored is None:
         raise ValueError("staged candidate is not persisted")
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO audit_direction_checks(
-          run_id, batch_id, direction_id, contract_sha, validator_version,
-          artifact_sha, staging_candidate_id, semantic_relation,
-          lineage_relation, evidence_sha, checked_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            stored["run_id"], stored["batch_id"], direction["direction_id"],
-            direction["contract_sha"], direction["validator_version"],
-            direction["artifact_sha"], staging_id, semantic_relation,
-            lineage_relation, evidence_sha, _utc_now(),
-        ),
-    )
+    legacy_values = (semantic_relation, lineage_relation, evidence_sha)
+    v2_values = (direction_fit, direction_evidence)
+    legacy_requested = any(value is not None for value in legacy_values)
+    v2_requested = any(value is not None for value in v2_values)
+    if v2_requested:
+        raise ValueError("direction_gate_authority_required")
+    if not all(value is not None for value in legacy_values):
+        raise ValueError("a complete legacy or v2 direction check is required")
+    if semantic_relation not in SEMANTIC_RELATIONS:
+        raise ValueError("semantic relation is invalid")
+    if lineage_relation not in LINEAGE_RELATIONS:
+        raise ValueError("lineage relation is invalid")
+    _require_sha(evidence_sha, "direction evidence_sha")
     result = {
         "run_id": stored["run_id"],
         "batch_id": stored["batch_id"],
@@ -712,11 +701,47 @@ def record_direction_check(
             result["artifact_sha"], result["staging_candidate_id"],
         ),
     ).fetchone()
-    if persisted is None or any(persisted[name] != result[name] for name in (
+    if persisted is None:
+        raise ValueError("legacy direction migration boundary is immutable")
+    if any(persisted[name] != result[name] for name in (
         "semantic_relation", "lineage_relation", "evidence_sha"
     )):
         raise ValueError("direction check conflicts with durable state")
     return result
+
+
+def record_batch_direction_gate(
+    conn, *, staged_batch, direction_receipt, verdict_tsv
+):
+    """Parse and issue one atomic full-batch direction gate."""
+    snapshot = _validate_staged_batch_snapshot(conn, staged_batch)
+    direction = _direction_identity(direction_receipt)
+    if staged_batch.get("direction_receipt") != direction:
+        raise ValueError("staged batch direction identity does not replay")
+    for item in staged_batch["candidates"]:
+        if not isinstance(item, dict):
+            raise ValueError("staged batch candidate is invalid")
+        stored = conn.execute(
+            "SELECT * FROM audit_batch_staging WHERE staging_candidate_id=?",
+            (item.get("staging_candidate_id"),),
+        ).fetchone()
+        if stored is None or any(
+            item.get(name) != stored[name]
+            for name in (
+                "run_id", "batch_id", "source_order", "candidate_hash",
+                "raw_artifact_sha",
+            )
+        ):
+            raise ValueError("staged batch candidate identity does not replay")
+    return history_audit_store.insert_batch_direction_gate(
+        conn,
+        run_id=staged_batch["run_id"],
+        batch_id=staged_batch["batch_id"],
+        snapshot_id=snapshot["snapshot_id"],
+        current_batch_ids_hash=snapshot["current_batch_ids_hash"],
+        **direction,
+        verdict_tsv=verdict_tsv,
+    )
 
 
 def _activation_receipt(
@@ -844,27 +869,92 @@ def activate_staged_candidate(
         raise ValueError("pair plan is incomplete for the frozen batch member set")
     if member_count > 1 and not any(staging_id in item for item in actual_pairs):
         raise ValueError("staged candidate is outside the completed pair plan")
-    direction_fields = (
-        "run_id", "batch_id", "direction_id", "contract_sha", "validator_version",
-        "artifact_sha", "staging_candidate_id", "semantic_relation",
-        "lineage_relation", "evidence_sha",
-    )
-    if not isinstance(direction_check, dict) or any(
-        name not in direction_check for name in direction_fields
-    ):
-        raise ValueError("direction check is invalid")
-    persisted_direction = conn.execute(
+    authority = conn.execute(
         """
-        SELECT * FROM audit_direction_checks
-        WHERE run_id=? AND batch_id=? AND direction_id=? AND contract_sha=?
-          AND validator_version=? AND artifact_sha=? AND staging_candidate_id=?
+        SELECT authority.*
+        FROM audit_batch_staging_authorities_v2 authority
+        WHERE authority.staging_candidate_id=? AND authority.run_id=?
+          AND authority.batch_id=? AND authority.candidate_hash=?
+          AND authority.raw_artifact_sha=? AND authority.source_order=?
+          AND authority.issued_at=?
         """,
-        tuple(direction_check[name] for name in direction_fields[:7]),
+        (
+            staging_id, staging["run_id"], staging["batch_id"],
+            staging["candidate_hash"], staging["raw_artifact_sha"],
+            staging["source_order"], staging["created_at"],
+        ),
     ).fetchone()
-    if persisted_direction is None or any(
-        persisted_direction[name] != direction_check[name] for name in direction_fields
-    ):
-        raise ValueError("direction check does not match durable state")
+    if authority is None:
+        raise ValueError("staged candidate lacks durable authority")
+    contracts = conn.execute(
+        "SELECT * FROM audit_direction_contracts WHERE run_id=? AND batch_id=?",
+        (frozen["run_id"], frozen["batch_id"]),
+    ).fetchall()
+    if len(contracts) != 1:
+        raise ValueError("batch direction contract is missing or ambiguous")
+    stored_direction = contracts[0]
+    if authority["authority_kind"] == "migration_legacy":
+        prior_activation = conn.execute(
+            "SELECT 1 FROM audit_activation_maps WHERE staging_candidate_id=?",
+            (staging_id,),
+        ).fetchone()
+        legacy = conn.execute(
+            """
+            SELECT * FROM audit_direction_checks
+            WHERE run_id=? AND batch_id=? AND direction_id=? AND contract_sha=?
+              AND validator_version=? AND artifact_sha=?
+              AND staging_candidate_id=?
+            """,
+            (
+                frozen["run_id"], frozen["batch_id"],
+                stored_direction["direction_id"], stored_direction["contract_sha"],
+                stored_direction["validator_version"],
+                stored_direction["artifact_sha"], staging_id,
+            ),
+        ).fetchone()
+        if prior_activation is None or legacy is None:
+            raise ValueError("legacy activation migration boundary is frozen")
+        selected_direction = {
+            "run_id": legacy["run_id"],
+            "batch_id": legacy["batch_id"],
+            "direction_id": legacy["direction_id"],
+            "contract_sha": legacy["contract_sha"],
+            "validator_version": legacy["validator_version"],
+            "artifact_sha": legacy["artifact_sha"],
+            "staging_candidate_id": legacy["staging_candidate_id"],
+            "semantic_relation": legacy["semantic_relation"],
+            "lineage_relation": legacy["lineage_relation"],
+            "evidence_sha": legacy["evidence_sha"],
+        }
+        if direction_check != selected_direction:
+            raise ValueError("direction check does not match frozen legacy evidence")
+    else:
+        gate = history_audit_store.read_batch_direction_gate(
+            conn, run_id=frozen["run_id"], batch_id=frozen["batch_id"]
+        )
+        expected_gate_identity = (
+            frozen["snapshot_id"], frozen["current_batch_ids_hash"],
+            stored_direction["direction_id"], stored_direction["contract_sha"],
+            stored_direction["validator_version"], stored_direction["artifact_sha"],
+        )
+        if gate is None or tuple(gate[name] for name in (
+            "snapshot_id", "current_batch_ids_hash", "direction_id",
+            "contract_sha", "validator_version", "artifact_sha",
+        )) != expected_gate_identity:
+            raise ValueError("batch direction gate does not bind the frozen identity")
+        durable_directions = {
+            item["staging_candidate_id"]: item for item in gate["verdicts"]
+        }
+        if set(durable_directions) != set(frozen["current_batch_ids"]):
+            raise ValueError("direction gate does not cover every frozen member")
+        if any(
+            item["direction_fit"] != "in-scope"
+            for item in durable_directions.values()
+        ):
+            raise ValueError("an out-of-scope verdict permanently vetoes the batch")
+        selected_direction = durable_directions[staging_id]
+        if direction_check != selected_direction:
+            raise ValueError("direction check does not match durable batch gate")
     context = {
         "run_id": frozen["run_id"],
         "batch_id": frozen["batch_id"],
@@ -874,7 +964,7 @@ def activate_staged_candidate(
         "staging_candidate_id": staging_id,
         "candidate_hash": staging["candidate_hash"],
         "raw_artifact_sha": staging["raw_artifact_sha"],
-        "direction_check": {name: direction_check[name] for name in direction_fields},
+        "direction_check": selected_direction,
         "pair_plan_sha": pair["pair_plan_sha"],
         "pair_result_sha": pair["pair_result_sha"],
     }
@@ -1249,6 +1339,8 @@ def build_l1_receipt(
     if not isinstance(snapshot, dict) or not required_snapshot.issubset(snapshot):
         raise ValueError("snapshot fields are incomplete")
     verified_hits = _validated_verified_hits(adjudication["verified_hits"])
+    if verified_hits and qualification_conn is not None:
+        raise ValueError("l1_positive_authority_unavailable")
     if retrieval["coverage_complete"] and (
         retrieval["missing_ids"]
         or retrieval["duplicate_ids"]
@@ -1330,7 +1422,7 @@ def build_l1_receipt(
         "logical_task_hashes": retrieval["logical_task_hashes"],
         "attempt_manifest_hashes": retrieval["attempt_manifest_hashes"],
         "raw_request_output_cas_hashes": retrieval["raw_request_output_cas_hashes"],
-        "minimum_receipt_sha": retrieval["minimum_receipt_sha"],
+        "minimum_receipt_sha": "0" * 64,
         "coverage_complete": retrieval["coverage_complete"],
         "adjudication_complete": adjudication["adjudication_complete"],
         "semantic_policy_qualified": durable_qualified,
@@ -1339,6 +1431,7 @@ def build_l1_receipt(
         "stage_reason_code": stage_reason_code,
         "evidence_anchors": adjudication["evidence_anchors"],
     }
+    receipt["minimum_receipt_sha"] = contract.minimum_receipt_sha(receipt)
     return contract.validate_receipt(receipt)
 
 
@@ -1386,9 +1479,48 @@ def _collapse_l2_exceptional_cards(rows):
     return result
 
 
+def _merge_l2_exceptional_cards(cards):
+    by_lineage = {}
+    for source in cards:
+        if (
+            not isinstance(source, dict)
+            or set(source) != {
+                "lineage_id", "semantic_relation", "item_ids", "evidence"
+            }
+            or source["semantic_relation"] not in _L2_EXCEPTIONAL_RELATIONS
+        ):
+            raise ValueError("derived exceptional card is invalid")
+        card = by_lineage.setdefault(
+            source["lineage_id"],
+            {
+                "lineage_id": source["lineage_id"],
+                "semantic_relation": source["semantic_relation"],
+                "item_ids": [],
+                "evidence": [],
+            },
+        )
+        if (
+            _L2_RELATION_SEVERITY[source["semantic_relation"]]
+            > _L2_RELATION_SEVERITY[card["semantic_relation"]]
+        ):
+            card["semantic_relation"] = source["semantic_relation"]
+        card["item_ids"].extend(copy.deepcopy(source["item_ids"]))
+        card["evidence"].extend(copy.deepcopy(source["evidence"]))
+    result = []
+    for lineage_id in sorted(by_lineage):
+        card = by_lineage[lineage_id]
+        card["item_ids"] = sorted(set(card["item_ids"]))
+        unique = {
+            contract.canonical_bytes(anchor): anchor for anchor in card["evidence"]
+        }
+        card["evidence"] = [unique[key] for key in sorted(unique)]
+        result.append(card)
+    return result
+
+
 def summarize_l2_coverage(
     plan, settlements, semantic_qualification, *, qualification_conn=None,
-    qualification_dependencies=None, now=None
+    qualification_dependencies=None, now=None, adjudication_state=None
 ):
     """Collapse terminal map facts into coverage, cards, gates, and fixed status."""
     if (
@@ -1436,17 +1568,49 @@ def summarize_l2_coverage(
     exhausted_reasons = []
     invalid_schema = False
     invalid_anchor = False
+    truncated = False
+    superseded_faults = []
     for settlement in settlements:
         if not isinstance(settlement, dict):
             raise ValueError("terminal settlement is invalid")
+        if settlement.get("stage", "map") != "map":
+            continue
         state = settlement.get("state")
+        attempt_outcomes = settlement.get("attempt_outcomes", [])
+        if (
+            not isinstance(attempt_outcomes, list)
+            or any(
+                not isinstance(outcome, str) or not outcome
+                for outcome in attempt_outcomes
+            )
+        ):
+            raise ValueError("terminal attempt outcomes are invalid")
+        terminal_outcome = attempt_outcomes[-1] if attempt_outcomes else None
         if state == "superseded":
+            item_ids = settlement.get("item_ids", [])
+            if terminal_outcome is not None and (
+                not isinstance(item_ids, list)
+                or not item_ids
+                or any(
+                    not isinstance(item_id, str) or not item_id
+                    for item_id in item_ids
+                )
+            ):
+                raise ValueError("superseded task item IDs are invalid")
+            superseded_faults.append((set(item_ids), terminal_outcome))
             continue
         if state == "exhausted":
             reason = settlement.get("reason") or "budget_exceeded"
             exhausted_reasons.append(reason)
-            invalid_schema = invalid_schema or reason in {"schema", "stale_snapshot"}
-            invalid_anchor = invalid_anchor or reason == "invalid_anchor"
+            invalid_schema = invalid_schema or reason in {
+                "schema", "stale_snapshot"
+            } or terminal_outcome == "schema"
+            invalid_anchor = (
+                invalid_anchor
+                or reason == "invalid_anchor"
+                or terminal_outcome == "invalid_anchor"
+            )
+            truncated = truncated or terminal_outcome == "truncated"
             continue
         if state != "settled":
             continue
@@ -1465,23 +1629,75 @@ def summarize_l2_coverage(
             observed.append(row["item_id"])
             rows.append(copy.deepcopy(row))
     observed_set = set(observed)
+    for parent_item_ids, terminal_outcome in superseded_faults:
+        if parent_item_ids.issubset(observed_set):
+            continue
+        invalid_schema = invalid_schema or terminal_outcome == "schema"
+        invalid_anchor = invalid_anchor or terminal_outcome == "invalid_anchor"
+        truncated = truncated or terminal_outcome == "truncated"
     duplicate_ids = sorted({item_id for item_id in observed if observed.count(item_id) > 1})
     missing_ids = sorted(set(expected_ids).difference(observed_set))
     extra_ids = sorted(observed_set.difference(expected_ids))
     exceptional = _collapse_l2_exceptional_cards(rows)
+    derived_complete = False
+    derived_conflict = False
+    derived_exhausted_reason = None
+    final_exceptional = exceptional
+    if adjudication_state is not None:
+        required = {
+            "generation_present", "generation_id", "required_detail_count",
+            "required_reduce_count", "detail_complete", "reduce_complete",
+            "detail_cards", "derived_conflict", "exhausted_reason",
+        }
+        if (
+            not isinstance(adjudication_state, dict)
+            or set(adjudication_state) != required
+            or type(adjudication_state["generation_present"]) is not bool
+            or type(adjudication_state["detail_complete"]) is not bool
+            or type(adjudication_state["reduce_complete"]) is not bool
+            or type(adjudication_state["derived_conflict"]) is not bool
+            or type(adjudication_state["required_detail_count"]) is not int
+            or type(adjudication_state["required_reduce_count"]) is not int
+            or not isinstance(adjudication_state["detail_cards"], list)
+        ):
+            raise ValueError("adjudication state is invalid")
+        derived_complete = (
+            adjudication_state["generation_present"]
+            and adjudication_state["detail_complete"]
+            and adjudication_state["reduce_complete"]
+        )
+        derived_conflict = adjudication_state["derived_conflict"]
+        derived_exhausted_reason = adjudication_state["exhausted_reason"]
+        if adjudication_state["detail_cards"]:
+            final_exceptional = _merge_l2_exceptional_cards(
+                exceptional + adjudication_state["detail_cards"]
+            )
+    elif not exceptional:
+        derived_complete = True
     verified_hits = [
-        card for card in exceptional
+        card for card in final_exceptional
         if card["semantic_relation"] in {"blocking_duplicate", "substantive_overlap"}
     ]
     semantic_uncertain = any(
-        card["semantic_relation"] == "uncertain" for card in exceptional
+        card["semantic_relation"] == "uncertain" for card in final_exceptional
     )
+    if derived_exhausted_reason is not None:
+        exhausted_reasons.append(derived_exhausted_reason)
+        invalid_schema = invalid_schema or derived_exhausted_reason in {
+            "schema", "stale_snapshot"
+        }
+        invalid_anchor = invalid_anchor or derived_exhausted_reason == "invalid_anchor"
     coverage_complete = not (
-        missing_ids or duplicate_ids or extra_ids or invalid_schema or invalid_anchor
+        missing_ids
+        or duplicate_ids
+        or extra_ids
+        or invalid_schema
+        or invalid_anchor
+        or truncated
     )
     adjudication_complete = coverage_complete and not (
-        conflicts or exhausted_reasons or semantic_uncertain
-    )
+        conflicts or derived_conflict or exhausted_reasons
+    ) and derived_complete
     exhausted_reason = sorted(exhausted_reasons)[0] if exhausted_reasons else None
     no_match_basis = (
         "l2_exhaustive"
@@ -1489,7 +1705,7 @@ def summarize_l2_coverage(
         and adjudication_complete
         and durable_qualified
         and not verified_hits
-        and not exceptional
+        and not final_exceptional
         else None
     )
     status, reason = derive_final_status(
@@ -1498,7 +1714,7 @@ def summarize_l2_coverage(
         coverage_complete=coverage_complete,
         adjudication_complete=adjudication_complete,
         semantic_policy_qualified=durable_qualified,
-        unresolved_conflict=conflicts or semantic_uncertain,
+        unresolved_conflict=conflicts or derived_conflict or semantic_uncertain,
         exhausted_reason=exhausted_reason,
         no_match_basis=no_match_basis,
     )
@@ -1510,7 +1726,7 @@ def summarize_l2_coverage(
         "extra_ids": extra_ids,
         "invalid_schema": invalid_schema,
         "invalid_anchor": invalid_anchor,
-        "truncated": False,
+        "truncated": truncated,
         "coverage_complete": coverage_complete,
         "adjudication_complete": adjudication_complete,
         "semantic_policy_qualified": durable_qualified,
@@ -1518,9 +1734,9 @@ def summarize_l2_coverage(
         "no_match_basis": no_match_basis if status == "complete_no_match" else None,
         "final_status": status,
         "stage_reason_code": reason,
-        "reducer_input": exceptional,
-        "lineage_vote_count": len(exceptional),
+        "reducer_input": final_exceptional,
+        "lineage_vote_count": len(final_exceptional),
         "evidence_anchors": [
-            anchor for card in exceptional for anchor in card["evidence"]
+            anchor for card in final_exceptional for anchor in card["evidence"]
         ],
     }

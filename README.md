@@ -62,14 +62,19 @@ Historical seven-column rows remain valid. Accepted reports use `ideas/YYYY-MM-D
 
 ## Provider Selection
 
-Omitting model and reasoning overrides preserves the selected CLI's current
-configuration. Hunt accepts `codex`, `kimi`, and `grok`; AwR additionally
-accepts `opencode` and `agy`.
+Omitted reasoning uses the selected CLI's current default. Omitted models use
+the Codex, Kimi, and Grok defaults. OpenCode omission requires a safe host
+configuration probe and launches with that effective model pinned; agy
+requires an explicit model. Every OpenCode/agy model must exactly match the
+current bounded local `models` catalog, whose identity is checked again before
+launch. Hunt accepts `codex`, `kimi`, and `grok`; AwR additionally accepts
+`opencode` and `agy`.
 
 ```bash
 HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=kimi ./hunt.sh
 HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=grok ./hunt.sh
-HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode SIDE_POLL_SEC=0 ./awr-side.sh
+HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode AWR_MODEL=openai/gpt-5.6-sol SIDE_POLL_SEC=0 ./awr-side.sh
+HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high SIDE_POLL_SEC=0 ./awr-side.sh
 ```
 
 Exact model/reasoning spelling for every provider, role-specific overrides,
