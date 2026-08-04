@@ -49,5 +49,5 @@
 ## 9. Independent Verification
 
 - [x] 9.1 Run the full offline regression suite, OpenSpec strict validation, migration/recovery/fault injection, shell syntax checks, and `git diff --check`.
-- [ ] 9.2 Obtain an independent test report and an independent whole-branch code audit, repair every blocking finding, and rerun both until they pass.
-- [ ] 9.3 Confirm that production `complete_no_match` remains vetoed without real qrels and provider-capacity evidence, then record the final evidence boundary.
+- [x] 9.2 Obtain an independent test report and an independent whole-branch code audit, repair every blocking finding, and rerun both until they pass.
+- [x] 9.3 Confirm that production `complete_no_match` remains vetoed without real qrels and provider-capacity evidence, then record the final evidence boundary.
