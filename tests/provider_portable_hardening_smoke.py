@@ -823,6 +823,119 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             self.assertFalse((root / "state/completion.json").exists())
             self.assertFalse((root / "published").exists())
 
+    def test_stdout_hidden_file_in_unreadable_directory_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "agy-hidden-extra-mode-zero"},
+                clear=False,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_stdout_expected_input_requires_regular_single_link(self):
+        modes = (
+            "agy-input-symlink",
+            "agy-input-hardlink",
+            "agy-input-special",
+        )
+        for mode in modes:
+            with (
+                self.subTest(mode=mode),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = pathlib.Path(directory)
+                prepared = self._prepare(
+                    root,
+                    stage="awr-research",
+                    provider="agy",
+                )
+                target = root / "inputs/idea.md"
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "FAKE_PORTABLE_STAGE_MODE": mode,
+                        "FAKE_PORTABLE_LINK_TARGET": str(target),
+                    },
+                    clear=False,
+                ):
+                    with self.assertRaises(
+                        portable_stage.PortableStageError
+                    ) as caught:
+                        portable_stage.run_stage(prepared, timeout_seconds=2)
+                self.assertEqual(caught.exception.code, "unexpected_artifact")
+                imports = root / "state/imports"
+                self.assertFalse(imports.exists() and any(imports.iterdir()))
+                self.assertFalse((root / "state/completion.json").exists())
+                self.assertFalse((root / "published").exists())
+                self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_stdout_directory_swap_out_during_walk_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            real_open_directory = portable_agent._open_directory_at
+            raced = False
+
+            def swap_after_open(parent_descriptor, component, code):
+                nonlocal raced
+                child = real_open_directory(
+                    parent_descriptor,
+                    component,
+                    code,
+                )
+                if component == "input" and not raced:
+                    raced = True
+                    source = root / "inputs/idea.md"
+                    mirror_input = next(
+                        (root / "state").glob("attempt-*/mirror/input")
+                    )
+                    mirror_input.rename(root / "swapped-input")
+                    mirror_input.mkdir(mode=0o700)
+                    os.chmod(mirror_input, 0o700)
+                    replacement = mirror_input / "idea.md"
+                    replacement.write_bytes(source.read_bytes())
+                    os.chmod(replacement, 0o600)
+                    hidden = mirror_input / "hidden.txt"
+                    hidden.write_text("hidden\n", encoding="utf-8")
+                    os.chmod(hidden, 0o600)
+                return child
+
+            with mock.patch.object(
+                portable_agent,
+                "_open_directory_at",
+                swap_after_open,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertTrue(raced)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
     def test_agy_bounded_tmp_schema_is_ignored_and_never_imported(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -957,16 +1070,30 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 stage="awr-research",
                 provider="agy",
             )
-            real_walk = portable_agent.os.walk
+            real_walk = portable_agent._walk_mirror_directory
+            triggered = False
 
-            def trigger_after_root(*args, **kwargs):
-                for current, directories, files in real_walk(*args, **kwargs):
-                    yield current, directories, files
-                    if pathlib.Path(current).name == "mirror":
-                        trigger.write_text("go\n", encoding="utf-8")
-                        deadline = time.monotonic() + 0.5
-                        while not done.exists() and time.monotonic() < deadline:
-                            time.sleep(0.01)
+            def trigger_before_root(
+                directory_descriptor,
+                prefix,
+                visit_non_directory,
+                skipped_root,
+                seen_skipped_root,
+            ):
+                nonlocal triggered
+                if not prefix and not triggered:
+                    triggered = True
+                    trigger.write_text("go\n", encoding="utf-8")
+                    deadline = time.monotonic() + 0.5
+                    while not done.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                return real_walk(
+                    directory_descriptor,
+                    prefix,
+                    visit_non_directory,
+                    skipped_root,
+                    seen_skipped_root,
+                )
 
             with mock.patch.dict(
                 os.environ,
@@ -977,13 +1104,14 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 },
                 clear=False,
             ), mock.patch.object(
-                portable_agent.os,
-                "walk",
-                trigger_after_root,
+                portable_agent,
+                "_walk_mirror_directory",
+                trigger_before_root,
             ):
                 completion = portable_stage.run_stage(
                     prepared, timeout_seconds=2
                 )
+            self.assertTrue(triggered)
             self.assertTrue(
                 (
                     pathlib.Path(prepared["state_root"])
@@ -1525,28 +1653,32 @@ class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
             real_open_directory = portable_agent._open_directory_at
             raced = False
 
-            def replace_then_open(parent_descriptor, component, code):
+            def swap_after_open(parent_descriptor, component, code):
                 nonlocal raced
+                child = real_open_directory(
+                    parent_descriptor,
+                    component,
+                    code,
+                )
                 if component == "output" and not raced:
                     raced = True
                     output = next(state.glob("attempt-*/mirror/output"))
                     raw = (output / "result.json").read_bytes()
-                    output.rename(output.with_name("output-old"))
+                    output.rename(root / "swapped-output")
                     output.mkdir(mode=0o700)
                     os.chmod(output, 0o700)
                     replacement = output / "result.json"
                     replacement.write_bytes(raw)
                     os.chmod(replacement, 0o600)
-                return real_open_directory(
-                    parent_descriptor,
-                    component,
-                    code,
-                )
+                    hidden = output / "hidden.txt"
+                    hidden.write_text("hidden\n", encoding="utf-8")
+                    os.chmod(hidden, 0o600)
+                return child
 
             with mock.patch.object(
                 portable_agent,
                 "_open_directory_at",
-                replace_then_open,
+                swap_after_open,
             ):
                 with self.assertRaises(
                     portable_agent.PortableAgentError

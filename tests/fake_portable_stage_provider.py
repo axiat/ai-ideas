@@ -631,6 +631,27 @@ def main():
         _write(pathlib.Path("provider-created.md"), b"provider artifact\n")
         sys.stdout.buffer.write(raw)
         return 0
+    if mode == "agy-hidden-extra-mode-zero":
+        hidden = pathlib.Path("hidden")
+        _write(hidden / "undeclared.txt", b"hidden provider file\n")
+        os.chmod(hidden, 0)
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode in {
+        "agy-input-symlink",
+        "agy-input-hardlink",
+        "agy-input-special",
+    }:
+        declared = pathlib.Path("input") / request["declared_inputs"][0]
+        declared.unlink()
+        if mode == "agy-input-symlink":
+            declared.symlink_to(os.environ["FAKE_PORTABLE_LINK_TARGET"])
+        elif mode == "agy-input-hardlink":
+            os.link(os.environ["FAKE_PORTABLE_LINK_TARGET"], declared)
+        else:
+            os.mkfifo(declared)
+        sys.stdout.buffer.write(raw)
+        return 0
     if mode == "agy-tmp-schema":
         schema_bytes = 453 * 1024
         _write(

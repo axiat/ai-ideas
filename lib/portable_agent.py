@@ -1091,80 +1091,95 @@ def _validate_tmp_scratch(mirror):
         os.close(mirror_descriptor)
 
 
-def _validate_stdout_mirror(mirror, expected_files):
-    if type(expected_files) is not dict:
-        raise PortableAgentError("unexpected_artifact")
-    mirror = pathlib.Path(mirror)
-    tmp_snapshot = _validate_tmp_scratch(mirror)
-    observed = set()
-    for current, directories, files in os.walk(
-        mirror,
-        topdown=True,
-        followlinks=False,
-    ):
-        current_path = pathlib.Path(current)
-        if current_path == mirror:
-            if ".tmp" not in directories:
-                raise PortableAgentError("unexpected_artifact")
-            directories.remove(".tmp")
-        for name in list(directories):
-            path = current_path / name
-            try:
-                info = path.lstat()
-            except OSError as exc:
-                raise PortableAgentError("unexpected_artifact") from exc
-            if not stat.S_ISDIR(info.st_mode):
-                raise PortableAgentError("unexpected_artifact")
-        for name in files:
-            path = current_path / name
-            relative = path.relative_to(mirror).as_posix()
-            snapshot = expected_files.get(relative)
-            if (
-                type(snapshot) is not dict
-                or set(snapshot) != {"sha256", "byte_count", "mode"}
-                or type(snapshot["sha256"]) is not str
-                or type(snapshot["byte_count"]) is not int
-                or snapshot["byte_count"] < 0
-                or type(snapshot["mode"]) is not int
-            ):
-                raise PortableAgentError("unexpected_artifact")
-            try:
-                info = path.lstat()
-            except OSError as exc:
-                raise PortableAgentError("unexpected_artifact") from exc
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise PortableAgentError("unexpected_artifact")
-            if info.st_mode != snapshot["mode"]:
-                raise PortableAgentError("unexpected_artifact")
-            try:
-                raw = _open_read_stable(
-                    path,
-                    snapshot["byte_count"],
-                    "unexpected_artifact",
-                )
-                final_info = _regular_single_link(
-                    path, "unexpected_artifact"
-                )
-            except PortableAgentError as exc:
-                raise PortableAgentError("unexpected_artifact") from exc
-            if (
-                final_info.st_mode != snapshot["mode"]
-                or len(raw) != snapshot["byte_count"]
-                or hashlib.sha256(raw).hexdigest() != snapshot["sha256"]
-            ):
-                raise PortableAgentError("unexpected_artifact")
-            observed.add(relative)
-    if observed != set(expected_files):
-        raise PortableAgentError("unexpected_artifact")
+def _walk_mirror_directory(
+    directory_descriptor,
+    prefix,
+    visit_non_directory,
+    skipped_root,
+    seen_skipped_root,
+):
     try:
-        final_tmp = (mirror / ".tmp").lstat()
+        before = os.fstat(directory_descriptor)
+        if not stat.S_ISDIR(before.st_mode):
+            raise PortableAgentError("unexpected_artifact")
+        with os.scandir(directory_descriptor) as entries:
+            names = sorted(entry.name for entry in entries)
     except OSError as exc:
         raise PortableAgentError("unexpected_artifact") from exc
-    if _tmp_stat_snapshot(final_tmp) != tmp_snapshot:
+    for name in names:
+        try:
+            info = os.stat(
+                name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        relative_parts = prefix + (name,)
+        relative = pathlib.PurePosixPath(*relative_parts).as_posix()
+        if not prefix and name in skipped_root:
+            if _tmp_stat_snapshot(info) != skipped_root[name]:
+                raise PortableAgentError("unexpected_artifact")
+            seen_skipped_root.add(name)
+            continue
+        if stat.S_ISDIR(info.st_mode):
+            child = _open_directory_at(
+                directory_descriptor,
+                name,
+                "unexpected_artifact",
+            )
+            try:
+                opened = os.fstat(child)
+                if (
+                    not stat.S_ISDIR(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino)
+                    != (info.st_dev, info.st_ino)
+                ):
+                    raise PortableAgentError("unexpected_artifact")
+                child_final = _walk_mirror_directory(
+                    child,
+                    relative_parts,
+                    visit_non_directory,
+                    skipped_root,
+                    seen_skipped_root,
+                )
+            except OSError as exc:
+                raise PortableAgentError("unexpected_artifact") from exc
+            finally:
+                os.close(child)
+            try:
+                final = os.stat(
+                    name,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                raise PortableAgentError("unexpected_artifact") from exc
+            if _tmp_stat_snapshot(final) != _tmp_stat_snapshot(child_final):
+                raise PortableAgentError("unexpected_artifact")
+        else:
+            visit_non_directory(
+                directory_descriptor,
+                name,
+                info,
+                relative,
+            )
+    try:
+        after = os.fstat(directory_descriptor)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    if _tmp_stat_snapshot(after) != _tmp_stat_snapshot(before):
         raise PortableAgentError("unexpected_artifact")
+    return after
 
 
-def _enumerate_mirror_non_directories(mirror):
+def _walk_mirror_descriptors(
+    mirror,
+    visit_non_directory,
+    *,
+    skipped_root=None,
+):
+    skipped_root = dict(skipped_root or {})
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -1187,72 +1202,107 @@ def _enumerate_mirror_non_directories(mirror):
     ):
         os.close(root_descriptor)
         raise PortableAgentError("unexpected_artifact")
-    opened_descriptors = {root_descriptor}
-    pending = [(root_descriptor, ())]
-    observed = set()
+    seen_skipped_root = set()
     try:
-        while pending:
-            directory_descriptor, prefix = pending.pop()
-            try:
-                with os.scandir(directory_descriptor) as entries:
-                    names = sorted(entry.name for entry in entries)
-                for name in names:
-                    try:
-                        info = os.stat(
-                            name,
-                            dir_fd=directory_descriptor,
-                            follow_symlinks=False,
-                        )
-                    except OSError as exc:
-                        raise PortableAgentError(
-                            "unexpected_artifact"
-                        ) from exc
-                    relative_parts = prefix + (name,)
-                    if stat.S_ISDIR(info.st_mode):
-                        child = _open_directory_at(
-                            directory_descriptor,
-                            name,
-                            "unexpected_artifact",
-                        )
-                        try:
-                            child_opened = os.fstat(child)
-                        except OSError as exc:
-                            os.close(child)
-                            raise PortableAgentError(
-                                "unexpected_artifact"
-                            ) from exc
-                        if (child_opened.st_dev, child_opened.st_ino) != (
-                            info.st_dev,
-                            info.st_ino,
-                        ):
-                            os.close(child)
-                            raise PortableAgentError(
-                                "unexpected_artifact"
-                            )
-                        opened_descriptors.add(child)
-                        pending.append((child, relative_parts))
-                    else:
-                        if (
-                            not stat.S_ISREG(info.st_mode)
-                            or info.st_nlink != 1
-                        ):
-                            raise PortableAgentError(
-                                "unexpected_artifact"
-                            )
-                        observed.add(
-                            pathlib.PurePosixPath(
-                                *relative_parts
-                            ).as_posix()
-                        )
-            except OSError as exc:
-                raise PortableAgentError("unexpected_artifact") from exc
-            finally:
-                os.close(directory_descriptor)
-                opened_descriptors.discard(directory_descriptor)
-        return observed
+        root_final = _walk_mirror_directory(
+            root_descriptor,
+            (),
+            visit_non_directory,
+            skipped_root,
+            seen_skipped_root,
+        )
     finally:
-        for descriptor in opened_descriptors:
-            os.close(descriptor)
+        os.close(root_descriptor)
+    try:
+        final = pathlib.Path(mirror).lstat()
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    if (
+        _tmp_stat_snapshot(final) != _tmp_stat_snapshot(root_final)
+        or seen_skipped_root != set(skipped_root)
+    ):
+        raise PortableAgentError("unexpected_artifact")
+
+
+def _validate_stdout_mirror(mirror, expected_files):
+    if type(expected_files) is not dict:
+        raise PortableAgentError("unexpected_artifact")
+    mirror = pathlib.Path(mirror)
+    tmp_snapshot = _validate_tmp_scratch(mirror)
+    observed = set()
+
+    def validate_declared(
+        directory_descriptor,
+        name,
+        info,
+        relative,
+    ):
+        snapshot = expected_files.get(relative)
+        if (
+            type(snapshot) is not dict
+            or set(snapshot) != {"sha256", "byte_count", "mode"}
+            or type(snapshot["sha256"]) is not str
+            or type(snapshot["byte_count"]) is not int
+            or snapshot["byte_count"] < 0
+            or type(snapshot["mode"]) is not int
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_mode != snapshot["mode"]
+        ):
+            raise PortableAgentError("unexpected_artifact")
+        raw = _read_tmp_file_stable(
+            directory_descriptor,
+            name,
+            snapshot["byte_count"],
+        )
+        try:
+            final_info = os.stat(
+                name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        if (
+            _tmp_stat_snapshot(final_info) != _tmp_stat_snapshot(info)
+            or final_info.st_mode != snapshot["mode"]
+            or len(raw) != snapshot["byte_count"]
+            or hashlib.sha256(raw).hexdigest() != snapshot["sha256"]
+        ):
+            raise PortableAgentError("unexpected_artifact")
+        observed.add(relative)
+
+    _walk_mirror_descriptors(
+        mirror,
+        validate_declared,
+        skipped_root={".tmp": tmp_snapshot},
+    )
+    if observed != set(expected_files):
+        raise PortableAgentError("unexpected_artifact")
+    try:
+        final_tmp = (mirror / ".tmp").lstat()
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    if _tmp_stat_snapshot(final_tmp) != tmp_snapshot:
+        raise PortableAgentError("unexpected_artifact")
+
+
+def _enumerate_mirror_non_directories(mirror):
+    observed = set()
+
+    def collect_regular(
+        directory_descriptor,
+        name,
+        info,
+        relative,
+    ):
+        del directory_descriptor, name
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise PortableAgentError("unexpected_artifact")
+        observed.add(relative)
+
+    _walk_mirror_descriptors(mirror, collect_regular)
+    return observed
 
 
 def _revalidate_provider_model_authority(capability):
