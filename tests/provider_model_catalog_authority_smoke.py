@@ -307,6 +307,34 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
             self.assertTrue(pathlib.Path(observed["cwd"]).name.startswith("provider-model-catalog-"))
             self.assertIsNone(observed["launch"])
 
+    def test_agy_catalog_probe_allows_a_thirty_second_observation(self):
+        def delayed_catalog_probe(*_args, timeout_seconds, **_kwargs):
+            if timeout_seconds < 30:
+                return None
+            return 0, b"gemini-safe\n", b""
+
+        with mock.patch.object(
+            provider_adapters,
+            "_run_bounded_default_probe",
+            side_effect=delayed_catalog_probe,
+        ):
+            evidence = provider_adapters._host_model_catalog_probe(
+                "agy", "/fake/agy"
+            )
+
+        self.assertEqual(
+            evidence,
+            {
+                "schema_version": "provider-model-catalog-v1",
+                "provider": "agy",
+                "models": ["gemini-safe"],
+                "probe_revision": "agy-models-v1",
+                "catalog_sha256": (
+                    "5bd869404013cd885e890dc5041c9c0f0ab7f65f358319c68f1937157d460903"
+                ),
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
