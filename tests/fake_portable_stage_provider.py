@@ -219,21 +219,30 @@ def _grok_json_requested(arguments):
 def _grok_transport(inner_raw, mode):
     if mode == "malformed-outer-json":
         return b'{"text":'
-    try:
-        inner_value = json.loads(inner_raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    if mode == "invalid-outer-utf8":
+        return b'{"text":"\xff","stopReason":"end_turn"}'
+    if mode == "outer-array":
+        return b"[]"
+    if mode == "surrogate-text":
+        return b'{"text":"\\ud800","stopReason":"end_turn"}'
+    if mode == "duplicate-key":
         inner_text = inner_raw.decode("utf-8")
     else:
-        reordered = {}
-        for key in (
-            "stage",
-            "artifacts",
-            "schema_version",
-            "request_attestation",
-        ):
-            if key in inner_value:
-                reordered[key] = inner_value[key]
-        inner_text = json.dumps(reordered, ensure_ascii=False, indent=2)
+        try:
+            inner_value = json.loads(inner_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            inner_text = inner_raw.decode("utf-8")
+        else:
+            reordered = {}
+            for key in (
+                "stage",
+                "artifacts",
+                "schema_version",
+                "request_attestation",
+            ):
+                if key in inner_value:
+                    reordered[key] = inner_value[key]
+            inner_text = json.dumps(reordered, ensure_ascii=False, indent=2)
     outer = {
         "text": inner_text,
         "stopReason": "max_tokens" if mode == "max-tokens" else "end_turn",
@@ -254,6 +263,8 @@ def _grok_transport(inner_raw, mode):
     }
     if mode == "missing-text":
         outer.pop("text")
+    if mode == "nonstring-text":
+        outer["text"] = 1
     if mode == "duplicate-outer-text":
         encoded = [
             '"text":' + json.dumps(inner_text, ensure_ascii=False),

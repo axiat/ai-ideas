@@ -679,7 +679,11 @@ def _parse_provider_stdout(provider, raw):
         value = _parse_canonical_stdout(raw)
         return value, raw
     outer = _parse_grok_transport(raw)
-    value = _parse_strict_model_json(outer["text"].encode("utf-8"))
+    try:
+        inner_raw = outer["text"].encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise PortableAgentError("malformed_output") from exc
+    value = _parse_strict_model_json(inner_raw)
     return value, _canonical_json_bytes(value)
 
 
