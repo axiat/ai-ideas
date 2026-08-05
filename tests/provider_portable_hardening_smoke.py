@@ -659,6 +659,28 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 ),
             )
 
+    def test_grok_transport_accepts_bare_inner_model_envelope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "bare-inner-success"},
+                clear=False,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertEqual(
+                imported.read_bytes(),
+                portable_agent._canonical_json_bytes(
+                    json.loads(imported.read_text(encoding="utf-8"))
+                ),
+            )
+
     def test_grok_transport_rejects_invalid_outer_and_inner_responses(self):
         modes = (
             "malformed-outer-json",
@@ -674,6 +696,10 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             "non-nfc-envelope",
             "float-inner-value",
             "wrong-request-attestation",
+            "fence-leading-text",
+            "fence-trailing-text",
+            "fence-wrong-language",
+            "fence-missing-close",
         )
         for mode in modes:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:

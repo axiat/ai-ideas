@@ -243,6 +243,16 @@ def _grok_transport(inner_raw, mode):
                 if key in inner_value:
                     reordered[key] = inner_value[key]
             inner_text = json.dumps(reordered, ensure_ascii=False, indent=2)
+    if mode == "fence-leading-text":
+        inner_text = "provider progress\n```json\n" + inner_text + "\n```"
+    elif mode == "fence-trailing-text":
+        inner_text = "```json\n" + inner_text + "\n```\nprovider progress"
+    elif mode == "fence-wrong-language":
+        inner_text = "```JSON\n" + inner_text + "\n```"
+    elif mode == "fence-missing-close":
+        inner_text = "```json\n" + inner_text
+    elif mode != "bare-inner-success":
+        inner_text = "```json\n" + inner_text + "\n```"
     outer = {
         "text": inner_text,
         "stopReason": "max_tokens" if mode == "max-tokens" else "end_turn",

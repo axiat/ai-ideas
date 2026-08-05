@@ -674,15 +674,26 @@ def _parse_grok_transport(raw):
     return outer
 
 
+def _grok_model_text_bytes(text):
+    try:
+        raw = text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise PortableAgentError("malformed_output") from exc
+    opening = b"```json\n"
+    closing = b"\n```"
+    if raw.startswith(opening):
+        if not raw.endswith(closing):
+            raise PortableAgentError("malformed_output")
+        return raw[len(opening) : -len(closing)]
+    return raw
+
+
 def _parse_provider_stdout(provider, raw):
     if provider != "grok":
         value = _parse_canonical_stdout(raw)
         return value, raw
     outer = _parse_grok_transport(raw)
-    try:
-        inner_raw = outer["text"].encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise PortableAgentError("malformed_output") from exc
+    inner_raw = _grok_model_text_bytes(outer["text"])
     value = _parse_strict_model_json(inner_raw)
     return value, _canonical_json_bytes(value)
 

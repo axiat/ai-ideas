@@ -70,7 +70,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
         return value
 
     @staticmethod
-    def _intent():
+    def _intent(provider="codex"):
         resolve_intent = getattr(
             provider_adapters, "_resolve_command_intent_for_test", None
         )
@@ -82,7 +82,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
         return resolve_intent(
             registry,
             "hunt",
-            "codex",
+            provider,
             model="MODEL",
             reasoning="high",
             executable_lookup=lambda _: str(FAKE),
@@ -160,6 +160,39 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
             state_root=root / "portable-state",
         )
         return prepared, serialized_prompt, input_paths
+
+    def test_grok_exact_fenced_transport_projects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared, _, _ = self._prepare(
+                root,
+                intent=self._intent("grok"),
+            )
+            completion = self._api(portable_stage, "run_stage")(
+                prepared, timeout_seconds=2
+            )
+            self.assertTrue(
+                pathlib.Path(prepared["completion_path"]).is_file()
+            )
+            self.assertEqual(
+                completion["model_envelope_sha256"],
+                hashlib.sha256(
+                    (
+                        pathlib.Path(prepared["state_root"])
+                        / "imports"
+                        / (
+                            completion["model_envelope_sha256"]
+                            + ".json"
+                        )
+                    ).read_bytes()
+                ).hexdigest(),
+            )
+            self.assertTrue(
+                all(
+                    pathlib.Path(path).is_file()
+                    for path in prepared["output_paths"].values()
+                )
+            )
 
     def test_request_binding_changes_with_declared_input_content(self):
         with tempfile.TemporaryDirectory() as directory:
