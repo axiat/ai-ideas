@@ -59,6 +59,9 @@ SCRUBBED_ENVIRONMENT = (
     "ZDOTDIR",
 )
 PRESERVED_PROVIDER_CONFIG_ENVIRONMENT = ("HOME", "CODEX_HOME")
+_TMP_SCRATCH_MAX_ENTRIES = 64
+_TMP_SCRATCH_MAX_FILES = 32
+_TMP_SCRATCH_MAX_BYTES = 1024 * 1024
 
 
 def _safe_relative(value, name):
@@ -867,9 +870,200 @@ def _communicate_bounded(
         selector.close()
 
 
+def _tmp_stat_snapshot(info):
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _read_tmp_file_stable(directory_descriptor, name, maximum):
+    try:
+        before = os.stat(
+            name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise PortableAgentError("unexpected_artifact")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(name, flags, dir_fd=directory_descriptor)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or _tmp_stat_snapshot(opened) != _tmp_stat_snapshot(before)
+        ):
+            raise PortableAgentError("unexpected_artifact")
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(65536, maximum + 1 - total),
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > maximum:
+                raise PortableAgentError("unexpected_artifact")
+        after = os.fstat(descriptor)
+        if _tmp_stat_snapshot(after) != _tmp_stat_snapshot(opened):
+            raise PortableAgentError("unexpected_artifact")
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    finally:
+        os.close(descriptor)
+    try:
+        final = os.stat(
+            name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    if _tmp_stat_snapshot(final) != _tmp_stat_snapshot(after):
+        raise PortableAgentError("unexpected_artifact")
+    return b"".join(chunks)
+
+
+def _validate_tmp_directory(directory_descriptor, budget):
+    try:
+        before = os.fstat(directory_descriptor)
+        if not stat.S_ISDIR(before.st_mode):
+            raise PortableAgentError("unexpected_artifact")
+        with os.scandir(directory_descriptor) as entries:
+            names = sorted(entry.name for entry in entries)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    budget["entries"] += len(names)
+    if budget["entries"] > _TMP_SCRATCH_MAX_ENTRIES:
+        raise PortableAgentError("unexpected_artifact")
+    for name in names:
+        try:
+            info = os.stat(
+                name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        if stat.S_ISDIR(info.st_mode):
+            child = _open_directory_at(
+                directory_descriptor,
+                name,
+                "unexpected_artifact",
+            )
+            try:
+                opened = os.fstat(child)
+                if (
+                    not stat.S_ISDIR(opened.st_mode)
+                    or _tmp_stat_snapshot(opened)
+                    != _tmp_stat_snapshot(info)
+                ):
+                    raise PortableAgentError("unexpected_artifact")
+                _validate_tmp_directory(child, budget)
+                final_opened = os.fstat(child)
+            except OSError as exc:
+                raise PortableAgentError("unexpected_artifact") from exc
+            finally:
+                os.close(child)
+            try:
+                final = os.stat(
+                    name,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                raise PortableAgentError("unexpected_artifact") from exc
+            if _tmp_stat_snapshot(final) != _tmp_stat_snapshot(final_opened):
+                raise PortableAgentError("unexpected_artifact")
+        elif stat.S_ISREG(info.st_mode):
+            budget["files"] += 1
+            if budget["files"] > _TMP_SCRATCH_MAX_FILES:
+                raise PortableAgentError("unexpected_artifact")
+            raw = _read_tmp_file_stable(
+                directory_descriptor,
+                name,
+                _TMP_SCRATCH_MAX_BYTES - budget["bytes"],
+            )
+            budget["bytes"] += len(raw)
+        else:
+            raise PortableAgentError("unexpected_artifact")
+    try:
+        after = os.fstat(directory_descriptor)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    if _tmp_stat_snapshot(after) != _tmp_stat_snapshot(before):
+        raise PortableAgentError("unexpected_artifact")
+
+
+def _validate_tmp_scratch(mirror):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        mirror_descriptor = os.open(str(mirror), flags)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    try:
+        try:
+            before = os.stat(
+                ".tmp",
+                dir_fd=mirror_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        if not stat.S_ISDIR(before.st_mode):
+            raise PortableAgentError("unexpected_artifact")
+        temporary_descriptor = _open_directory_at(
+            mirror_descriptor,
+            ".tmp",
+            "unexpected_artifact",
+        )
+        try:
+            opened = os.fstat(temporary_descriptor)
+            if _tmp_stat_snapshot(opened) != _tmp_stat_snapshot(before):
+                raise PortableAgentError("unexpected_artifact")
+            _validate_tmp_directory(
+                temporary_descriptor,
+                {"entries": 0, "files": 0, "bytes": 0},
+            )
+            final_opened = os.fstat(temporary_descriptor)
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        finally:
+            os.close(temporary_descriptor)
+        try:
+            final = os.stat(
+                ".tmp",
+                dir_fd=mirror_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        if _tmp_stat_snapshot(final) != _tmp_stat_snapshot(final_opened):
+            raise PortableAgentError("unexpected_artifact")
+        return _tmp_stat_snapshot(final)
+    finally:
+        os.close(mirror_descriptor)
+
+
 def _validate_stdout_mirror(mirror, expected_files):
     if type(expected_files) is not dict:
         raise PortableAgentError("unexpected_artifact")
+    mirror = pathlib.Path(mirror)
+    tmp_snapshot = _validate_tmp_scratch(mirror)
     observed = set()
     for current, directories, files in os.walk(
         mirror,
@@ -877,6 +1071,10 @@ def _validate_stdout_mirror(mirror, expected_files):
         followlinks=False,
     ):
         current_path = pathlib.Path(current)
+        if current_path == mirror:
+            if ".tmp" not in directories:
+                raise PortableAgentError("unexpected_artifact")
+            directories.remove(".tmp")
         for name in list(directories):
             path = current_path / name
             try:
@@ -925,6 +1123,12 @@ def _validate_stdout_mirror(mirror, expected_files):
                 raise PortableAgentError("unexpected_artifact")
             observed.add(relative)
     if observed != set(expected_files):
+        raise PortableAgentError("unexpected_artifact")
+    try:
+        final_tmp = (mirror / ".tmp").lstat()
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    if _tmp_stat_snapshot(final_tmp) != tmp_snapshot:
         raise PortableAgentError("unexpected_artifact")
 
 

@@ -613,6 +613,55 @@ def main():
         _write(pathlib.Path("provider-created.md"), b"provider artifact\n")
         sys.stdout.buffer.write(raw)
         return 0
+    if mode == "agy-tmp-schema":
+        schema_bytes = 453 * 1024
+        _write(
+            pathlib.Path(
+                ".tmp/agy/language-server/"
+                "3unleash-repo-schema-v1-codeium-language-server.json"
+            ),
+            b"{" + b" " * (schema_bytes - 2) + b"}",
+        )
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-root-symlink":
+        pathlib.Path(".tmp").rmdir()
+        pathlib.Path(".tmp").symlink_to("input", target_is_directory=True)
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-missing":
+        pathlib.Path(".tmp").rmdir()
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-file-symlink":
+        _write(pathlib.Path(".tmp/target"), b"target\n")
+        pathlib.Path(".tmp/link").symlink_to("target")
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-hardlink":
+        original = pathlib.Path(".tmp/original")
+        _write(original, b"linked\n")
+        os.link(original, pathlib.Path(".tmp/alias"))
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-special":
+        os.mkfifo(pathlib.Path(".tmp/pipe"))
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-oversize":
+        _write(pathlib.Path(".tmp/oversize"), b"x" * (1024 * 1024 + 1))
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-too-many":
+        for index in range(33):
+            _write(pathlib.Path(".tmp") / f"entry-{index:02d}", b"")
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-too-many-directories":
+        for index in range(65):
+            pathlib.Path(".tmp", f"directory-{index:02d}").mkdir()
+        sys.stdout.buffer.write(raw)
+        return 0
     if mode in {
         "overwrite-role",
         "overwrite-declared-input",

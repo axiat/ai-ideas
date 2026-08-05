@@ -822,6 +822,82 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             self.assertFalse((root / "state/completion.json").exists())
             self.assertFalse((root / "published").exists())
 
+    def test_agy_bounded_tmp_schema_is_ignored_and_never_imported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "agy-tmp-schema"},
+                clear=False,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertEqual(
+                {
+                    path.relative_to(root).as_posix()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                },
+                {
+                    "inputs/idea.md",
+                    "published/draft.md",
+                    "state/completion.json",
+                    "state/imports/" + imported.name,
+                    "state/preflight.json",
+                },
+            )
+            self.assertEqual(
+                imported.read_bytes(),
+                portable_agent._canonical_json_bytes(
+                    json.loads(imported.read_text(encoding="utf-8"))
+                ),
+            )
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_agy_unsafe_or_unbounded_tmp_rejects_before_import_or_projection(self):
+        modes = (
+            "agy-tmp-missing",
+            "agy-tmp-root-symlink",
+            "agy-tmp-file-symlink",
+            "agy-tmp-hardlink",
+            "agy-tmp-special",
+            "agy-tmp-oversize",
+            "agy-tmp-too-many",
+            "agy-tmp-too-many-directories",
+        )
+        for mode in modes:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                prepared = self._prepare(
+                    root,
+                    stage="awr-research",
+                    provider="agy",
+                )
+                with mock.patch.dict(
+                    os.environ,
+                    {"FAKE_PORTABLE_STAGE_MODE": mode},
+                    clear=False,
+                ):
+                    with self.assertRaises(
+                        portable_stage.PortableStageError
+                    ) as caught:
+                        portable_stage.run_stage(prepared, timeout_seconds=2)
+                self.assertEqual(caught.exception.code, "unexpected_artifact")
+                imports = root / "state/imports"
+                self.assertFalse(imports.exists() and any(imports.iterdir()))
+                self.assertFalse((root / "state/completion.json").exists())
+                self.assertFalse((root / "published").exists())
+                self.assertFalse(any((root / "state").glob("attempt-*")))
+
     def test_existing_mirror_file_drift_rejects_before_import_or_projection(self):
         modes = (
             "overwrite-role",
