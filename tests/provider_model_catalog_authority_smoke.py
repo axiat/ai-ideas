@@ -317,11 +317,17 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
             provider_adapters,
             "_run_bounded_default_probe",
             side_effect=delayed_catalog_probe,
-        ):
+        ) as probe:
             evidence = provider_adapters._host_model_catalog_probe(
                 "agy", "/fake/agy"
             )
 
+        probe.assert_called_once_with(
+            ["/fake/agy", "models"],
+            cwd=mock.ANY,
+            env=mock.ANY,
+            timeout_seconds=30,
+        )
         self.assertEqual(
             evidence,
             {
