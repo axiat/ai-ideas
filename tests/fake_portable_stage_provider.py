@@ -10,6 +10,28 @@ import sys
 import time
 
 
+EXPECTED_TRANSPORT_INSTRUCTIONS = {
+    "schema_version": "portable-stage-transport-instructions-v1",
+    "precedence": (
+        "These transport instructions override any output-location or "
+        "file-writing instruction in role.md."
+    ),
+    "role": "Treat role.md as artifact-content instructions only.",
+    "mirror": "Do not create, modify, or delete any file in the mirror.",
+    "stdout": (
+        "Emit exactly one UTF-8 NFC canonical JSON object to stdout, with "
+        "lexicographically sorted object keys, compact separators, and "
+        "exactly one trailing LF. The object must match response_schema. "
+        "Do not emit Markdown fences, narration, or any other bytes."
+    ),
+    "request_attestation": (
+        "Copy request_binding.provider_request_binding_sha256 and "
+        "request_binding.serialized_prompt_sha256 exactly into "
+        "request_attestation."
+    ),
+}
+
+
 def _prompt(arguments):
     for flag in ("-p", "--print"):
         if flag in arguments:
@@ -193,6 +215,16 @@ def _record(request):
         "provider": pathlib.Path(sys.argv[0]).name,
         "stage": request.get("stage"),
         "seat_id": request.get("seat_id"),
+        "legacy_file_wording_seen": (
+            "write only the requested output file"
+            in pathlib.Path(request.get("role_path", "role.md"))
+            .read_text(encoding="utf-8")
+            .lower()
+        ),
+        "transport_instructions_valid": (
+            request.get("transport_instructions")
+            == EXPECTED_TRANSPORT_INSTRUCTIONS
+        ),
         "prompt_sha256": hashlib.sha256(
             str(prompt).encode("utf-8")
         ).hexdigest(),
@@ -330,7 +362,7 @@ def main():
     mode = os.environ.get("FAKE_PORTABLE_STAGE_MODE", "success")
     grok_json = _grok_json_requested(arguments)
     output = pathlib.Path("output/result.json")
-    if mode == "mirror-audit":
+    if mode in {"mirror-audit", "agy-portable-audit"}:
         observed = {
             path.as_posix()
             for path in pathlib.Path(".").rglob("*")
@@ -372,6 +404,19 @@ def main():
             "EXPECTED_PROVIDER_CODEX_HOME"
         ):
             return 35
+    if mode == "agy-portable-audit":
+        if pathlib.Path(sys.argv[0]).name != "agy":
+            return 36
+        role_text = pathlib.Path(
+            request.get("role_path", "role.md")
+        ).read_text(encoding="utf-8")
+        if "write only the requested output file" not in role_text.lower():
+            return 37
+        if (
+            request.get("transport_instructions")
+            != EXPECTED_TRANSPORT_INSTRUCTIONS
+        ):
+            return 38
     if mode == "nonzero":
         return 23
     if mode == "timeout":
@@ -518,6 +563,10 @@ def main():
         return 0
     if mode == "second-envelope":
         sys.stdout.buffer.write(raw + raw)
+        return 0
+    if mode == "agy-mirror-write":
+        _write(pathlib.Path("provider-created.md"), b"provider artifact\n")
+        sys.stdout.buffer.write(raw)
         return 0
     if mode == "extra":
         _write(pathlib.Path("output/extra.txt"), b"extra\n")

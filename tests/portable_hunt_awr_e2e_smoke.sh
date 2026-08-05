@@ -556,27 +556,47 @@ run_terminal_failure_skips_cooldown() {
 }
 
 check_awr_result() {
-  local repo=$1 provider_log=$2
-  python3 - "$repo" "$provider_log" <<'PY'
+  local repo=$1 provider_log=$2 profile=${3:-mixed}
+  python3 - "$repo" "$provider_log" "$profile" <<'PY'
 import json
 import pathlib
 import sys
 
 repo = pathlib.Path(sys.argv[1])
 provider_log = pathlib.Path(sys.argv[2])
+profile = sys.argv[3]
 records = [
     json.loads(line)
     for line in provider_log.read_text(encoding="utf-8").splitlines()
     if line.strip()
 ]
 observed = [(item["stage"], item["provider"]) for item in records]
-expected = [
-    ("awr-research", "codex"),
-    ("awr-priorwork", "opencode"),
-    ("awr-judge", "agy"),
-]
+if profile == "mixed":
+    expected = [
+        ("awr-research", "codex"),
+        ("awr-priorwork", "opencode"),
+        ("awr-judge", "agy"),
+    ]
+elif profile == "all-agy":
+    expected = [
+        ("awr-research", "agy"),
+        ("awr-priorwork", "agy"),
+        ("awr-judge", "agy"),
+    ]
+else:
+    raise SystemExit(f"unknown AwR test profile: {profile}")
 if observed != expected:
     raise SystemExit(f"AwR role/provider isolation changed: {observed}")
+if profile == "all-agy":
+    for item in records:
+        if item.get("legacy_file_wording_seen") is not True:
+            raise SystemExit(
+                f"agy did not observe legacy role file wording: {item}"
+            )
+        if item.get("transport_instructions_valid") is not True:
+            raise SystemExit(
+                f"agy did not receive the portable stdout override: {item}"
+            )
 
 outdir = repo / "tmp/awr-side/awr"
 finals = [
@@ -646,11 +666,60 @@ run_awr_v2() {
     sed -n '1,180p' "$log" >&2
     return
   fi
-  if ! check_awr_result "$repo" "$provider_log"; then
+  if ! check_awr_result "$repo" "$provider_log" mixed; then
     fail 'AwR v2 role routing, validators, or receipts'
     return
   fi
   printf 'ok: AwR v2 portable role isolation\n'
+}
+
+run_awr_v2_all_agy() {
+  local repo log provider_log home status
+  repo=$(make_repo awr-v2-all-agy) || {
+    fail 'all-agy AwR fixture setup'
+    return
+  }
+  install_fake_providers "$repo"
+  write_awr_ledger "$repo/ledger.tsv"
+  rm -f "$repo/tmp/ledger.good"
+  log="$CASE_ROOT/awr-v2-all-agy.log"
+  provider_log="$CASE_ROOT/awr-v2-all-agy.providers.jsonl"
+  home="$CASE_ROOT/awr-v2-all-agy-home"
+  mkdir -p "$home"
+  run_bounded "$repo" "$log" \
+    env \
+      "HOME=$home" \
+      "CODEX_HOME=$home/codex-config" \
+      "EXPECTED_PROVIDER_HOME=$home" \
+      "EXPECTED_PROVIDER_CODEX_HOME=$home/codex-config" \
+      "PATH=$repo/.test-bin:$PATH" \
+      "FAKE_PORTABLE_STAGE_LOG=$provider_log" \
+      FAKE_PORTABLE_STAGE_MODE=agy-portable-audit \
+      HISTORY_RUNTIME_ABI=v2 \
+      AWR_PROVIDER=agy \
+      AWR_MODEL=gemini/fixture-model \
+      AWR_RESEARCH_PROVIDER=agy \
+      AWR_PRIORWORK_PROVIDER=agy \
+      AWR_JUDGE_PROVIDER=agy \
+      SIDE_POLL_SEC=0 \
+      SIDE_MAX_ROUNDS=1 \
+      SIDE_MAX_BAD=1 \
+      SIDE_GAP_SEC=0 \
+      SIDE_GAP_MIN_SEC=0 \
+      SIDE_GAP_MAX_SEC=0 \
+      SIDE_COOLDOWN_SEC=0 \
+      bash ./awr-side.sh
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    fail "all-agy AwR v2 bounded scan exited $status"
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  if ! check_awr_result "$repo" "$provider_log" all-agy; then
+    fail 'all-agy AwR stdout override, validators, or receipts'
+    return
+  fi
+  printf 'ok: AwR v2 agy portable stdout override\n'
 }
 
 run_v1_regressions() {
@@ -671,6 +740,7 @@ run_v1_regressions() {
 run_hunt_v2
 run_terminal_failure_skips_cooldown
 run_awr_v2
+run_awr_v2_all_agy
 run_v1_regressions
 
 if [ "$FAILURES" -ne 0 ]; then

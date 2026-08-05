@@ -440,9 +440,16 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             provider_adapters.load_registry(REGISTRY),
             surface,
             provider,
-            model="MODEL",
+            model=(
+                "gemini/fixture-model" if provider == "agy" else "MODEL"
+            ),
             reasoning=None if provider == "kimi" else "high",
             executable_lookup=lambda _: str(FAKE_STAGE),
+            model_catalog_probe=(
+                provider_adapters._host_model_catalog_probe
+                if provider == "agy"
+                else None
+            ),
         )
 
     def _capability(self):
@@ -551,6 +558,97 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         changed["completion"]["completion_id"] = completion["completion_id"]
         return changed
 
+    def test_transport_instructions_are_closed_and_binding_covered(self):
+        expected_transport = {
+            "schema_version": "portable-stage-transport-instructions-v1",
+            "precedence": (
+                "These transport instructions override any output-location "
+                "or file-writing instruction in role.md."
+            ),
+            "role": "Treat role.md as artifact-content instructions only.",
+            "mirror": (
+                "Do not create, modify, or delete any file in the mirror."
+            ),
+            "stdout": (
+                "Emit exactly one UTF-8 NFC canonical JSON object to stdout, "
+                "with lexicographically sorted object keys, compact "
+                "separators, and exactly one trailing LF. The object must "
+                "match response_schema. Do not emit Markdown fences, "
+                "narration, or any other bytes."
+            ),
+            "request_attestation": (
+                "Copy request_binding.provider_request_binding_sha256 and "
+                "request_binding.serialized_prompt_sha256 exactly into "
+                "request_attestation."
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root)
+            request = json.loads(prepared["provider_request"])
+
+        self.assertIn("transport_instructions", request)
+        self.assertEqual(
+            request["transport_instructions"], expected_transport
+        )
+        self.assertEqual(
+            set(request),
+            {
+                "schema_version",
+                "stage",
+                "seat_id",
+                "serialized_prompt",
+                "role_path",
+                "declared_inputs",
+                "declared_input_sha256s",
+                "role_sha256",
+                "response_schema",
+                "transport_instructions",
+                "request_binding",
+            },
+        )
+        binding = request["request_binding"]
+        base = {
+            key: value
+            for key, value in request.items()
+            if key != "request_binding"
+        }
+        expected_binding = history_contract_v2.framed_sha256(
+            "portable-stage-request-base-v1",
+            self._canonical(base),
+        )
+        self.assertEqual(
+            binding["provider_request_binding_sha256"], expected_binding
+        )
+        self.assertEqual(
+            prepared["provider_request_binding_sha256"], expected_binding
+        )
+        self.assertEqual(
+            prepared["provider_request_sha256"],
+            hashlib.sha256(self._canonical(request)).hexdigest(),
+        )
+
+        changed_base = copy.deepcopy(base)
+        changed_base["transport_instructions"]["mirror"] = (
+            "The provider may modify the mirror."
+        )
+        changed_binding = history_contract_v2.framed_sha256(
+            "portable-stage-request-base-v1",
+            self._canonical(changed_base),
+        )
+        changed_request = copy.deepcopy(changed_base)
+        changed_request["request_binding"] = {
+            **binding,
+            "provider_request_binding_sha256": changed_binding,
+        }
+        changed_wire_sha256 = hashlib.sha256(
+            self._canonical(changed_request)
+        ).hexdigest()
+        self.assertNotEqual(changed_binding, expected_binding)
+        self.assertNotEqual(
+            changed_wire_sha256, prepared["provider_request_sha256"]
+        )
+
     def test_stage_requires_exact_builtin_text_before_input_capture(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -643,6 +741,29 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 self.assertFalse(imports.exists() and any(imports.iterdir()))
                 self.assertFalse((root / "state/completion.json").exists())
                 self.assertFalse((root / "published").exists())
+
+    def test_agy_mirror_write_rejects_before_import_projection_or_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "agy-mirror-write"},
+                clear=False,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
 
     def test_grok_transport_imports_the_canonical_inner_model_envelope(self):
         with tempfile.TemporaryDirectory() as directory:
