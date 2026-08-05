@@ -75,8 +75,14 @@ def main():
     if mode == "mode-zero":
         _write(output, valid)
         locked = pathlib.Path(".tmp/locked")
-        locked.mkdir()
+        _write(locked / "cache", b"hidden\n")
         os.chmod(locked, 0)
+        return 0
+    if mode == "replace-input-symlink":
+        _write(output, valid)
+        declared = pathlib.Path("input/declared.txt")
+        declared.unlink()
+        declared.symlink_to(request["symlink_target"])
         return 0
     if mode == "stdout-flood":
         _write(output, valid)

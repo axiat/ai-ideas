@@ -868,7 +868,6 @@ def _communicate_bounded(
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _kill_group(process)
                 raise PortableAgentError("timeout")
             events = selector.select(min(remaining, 0.1))
             if not events:
@@ -888,18 +887,15 @@ def _communicate_bounded(
                     stream.close()
                     continue
                 if enforce and len(capture) + len(chunk) > maximum:
-                    _kill_group(process)
                     raise PortableAgentError("oversize")
                 if len(capture) < maximum:
                     capture.extend(chunk[: maximum - len(capture)])
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            _kill_group(process)
             raise PortableAgentError("timeout")
         try:
             process.wait(timeout=remaining)
         except subprocess.TimeoutExpired as exc:
-            _kill_group(process)
             raise PortableAgentError("timeout") from exc
         return bytes(stdout), bytes(stderr)
     finally:
@@ -1168,6 +1164,97 @@ def _validate_stdout_mirror(mirror, expected_files):
         raise PortableAgentError("unexpected_artifact")
 
 
+def _enumerate_mirror_non_directories(mirror):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        root_before = pathlib.Path(mirror).lstat()
+        if not stat.S_ISDIR(root_before.st_mode):
+            raise PortableAgentError("unexpected_artifact")
+        root_descriptor = os.open(str(mirror), flags)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    try:
+        root_opened = os.fstat(root_descriptor)
+    except OSError as exc:
+        os.close(root_descriptor)
+        raise PortableAgentError("unexpected_artifact") from exc
+    if (
+        not stat.S_ISDIR(root_opened.st_mode)
+        or (root_opened.st_dev, root_opened.st_ino)
+        != (root_before.st_dev, root_before.st_ino)
+    ):
+        os.close(root_descriptor)
+        raise PortableAgentError("unexpected_artifact")
+    opened_descriptors = {root_descriptor}
+    pending = [(root_descriptor, ())]
+    observed = set()
+    try:
+        while pending:
+            directory_descriptor, prefix = pending.pop()
+            try:
+                with os.scandir(directory_descriptor) as entries:
+                    names = sorted(entry.name for entry in entries)
+                for name in names:
+                    try:
+                        info = os.stat(
+                            name,
+                            dir_fd=directory_descriptor,
+                            follow_symlinks=False,
+                        )
+                    except OSError as exc:
+                        raise PortableAgentError(
+                            "unexpected_artifact"
+                        ) from exc
+                    relative_parts = prefix + (name,)
+                    if stat.S_ISDIR(info.st_mode):
+                        child = _open_directory_at(
+                            directory_descriptor,
+                            name,
+                            "unexpected_artifact",
+                        )
+                        try:
+                            child_opened = os.fstat(child)
+                        except OSError as exc:
+                            os.close(child)
+                            raise PortableAgentError(
+                                "unexpected_artifact"
+                            ) from exc
+                        if (child_opened.st_dev, child_opened.st_ino) != (
+                            info.st_dev,
+                            info.st_ino,
+                        ):
+                            os.close(child)
+                            raise PortableAgentError(
+                                "unexpected_artifact"
+                            )
+                        opened_descriptors.add(child)
+                        pending.append((child, relative_parts))
+                    else:
+                        if (
+                            not stat.S_ISREG(info.st_mode)
+                            or info.st_nlink != 1
+                        ):
+                            raise PortableAgentError(
+                                "unexpected_artifact"
+                            )
+                        observed.add(
+                            pathlib.PurePosixPath(
+                                *relative_parts
+                            ).as_posix()
+                        )
+            except OSError as exc:
+                raise PortableAgentError("unexpected_artifact") from exc
+            finally:
+                os.close(directory_descriptor)
+                opened_descriptors.discard(directory_descriptor)
+        return observed
+    finally:
+        for descriptor in opened_descriptors:
+            os.close(descriptor)
+
+
 def _revalidate_provider_model_authority(capability):
     try:
         provider_adapters.revalidate_command_intent_for_launch(capability)
@@ -1349,11 +1436,7 @@ def run_portable_attempt(
             )
         output_path = mirror.joinpath(*relative_output.parts)
         if output_contract["forbid_extra_files"]:
-            observed = {
-                path.relative_to(mirror).as_posix()
-                for path in mirror.rglob("*")
-                if path.is_symlink() or not path.is_dir()
-            }
+            observed = _enumerate_mirror_non_directories(mirror)
             expected = set(copied) | {relative_output.as_posix()}
             if observed != expected:
                 raise PortableAgentError("unexpected_artifact")

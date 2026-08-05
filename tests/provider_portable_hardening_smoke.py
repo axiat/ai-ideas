@@ -1509,12 +1509,88 @@ class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
             self.assertFalse(delayed.exists())
             self.assertFalse(any((root / "state").glob("attempt-*")))
 
-    def test_legacy_success_repairs_attempt_permissions_before_cleanup(self):
+    def test_legacy_unreadable_hidden_file_rejects_and_cleans_attempt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            result = self._run(root / "state", "mode-zero")
-            self.assertEqual(result["value"]["status"], "ok")
+            with self.assertRaises(portable_agent.PortableAgentError) as caught:
+                self._run(root / "state", "mode-zero")
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            self.assertFalse((root / "state/imports").exists())
             self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_legacy_directory_replacement_during_walk_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            state = root / "state"
+            real_open_directory = portable_agent._open_directory_at
+            raced = False
+
+            def replace_then_open(parent_descriptor, component, code):
+                nonlocal raced
+                if component == "output" and not raced:
+                    raced = True
+                    output = next(state.glob("attempt-*/mirror/output"))
+                    raw = (output / "result.json").read_bytes()
+                    output.rename(output.with_name("output-old"))
+                    output.mkdir(mode=0o700)
+                    os.chmod(output, 0o700)
+                    replacement = output / "result.json"
+                    replacement.write_bytes(raw)
+                    os.chmod(replacement, 0o600)
+                return real_open_directory(
+                    parent_descriptor,
+                    component,
+                    code,
+                )
+
+            with mock.patch.object(
+                portable_agent,
+                "_open_directory_at",
+                replace_then_open,
+            ):
+                with self.assertRaises(
+                    portable_agent.PortableAgentError
+                ) as caught:
+                    self._run(state, "success")
+            self.assertTrue(raced)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            self.assertFalse((state / "imports").exists())
+            self.assertFalse(any(state.glob("attempt-*")))
+
+    def test_legacy_expected_input_symlink_rejects_before_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / "source.txt"
+            source.write_text("declared\n", encoding="utf-8")
+            raw = source.read_bytes()
+            state = root / "state"
+            with self.assertRaises(portable_agent.PortableAgentError) as caught:
+                portable_agent.run_portable_attempt(
+                    self._capability(),
+                    inputs=[
+                        {
+                            "source_root": str(root),
+                            "source_path": source.name,
+                            "provenance": "declared-input-v1",
+                            "path": "input/declared.txt",
+                            "sha256": hashlib.sha256(raw).hexdigest(),
+                            "max_bytes": len(raw),
+                        }
+                    ],
+                    output_contract=self._contract(),
+                    prompt=json.dumps(
+                        {
+                            "mode": "replace-input-symlink",
+                            "request_id": "request-1",
+                            "symlink_target": str(source),
+                        }
+                    ),
+                    state_root=state,
+                    timeout_seconds=2,
+                )
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            self.assertFalse((state / "imports").exists())
+            self.assertFalse(any(state.glob("attempt-*")))
 
     def test_legacy_cleanup_failure_rejects_before_import(self):
         with tempfile.TemporaryDirectory() as directory:
