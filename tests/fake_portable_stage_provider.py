@@ -284,6 +284,14 @@ def _grok_transport(inner_raw, mode):
         inner_text = "Provider completed the request. " + fenced
     elif mode == "fence-crlf":
         inner_text = "```json\r\n" + inner_text + "\r\n```"
+    elif mode == "fence-cr-before-close":
+        inner_text = "```json\n" + inner_text + "\r\n```"
+    elif mode == "fence-prefix-inline-delimiter":
+        inner_text = "Provider mentioned ``` in this line.\n" + fenced
+    elif mode == "fence-prefix-indented-delimiter":
+        inner_text = "Provider note:\n  ```\n" + fenced
+    elif mode == "fence-prefix-inline-wrong-language":
+        inner_text = "Provider mentioned ```javascript\n" + fenced
     elif mode == "fence-wrong-language":
         inner_text = "```javascript\n" + inner_text + "\n```"
     elif mode == "fence-wrong-case":

@@ -698,7 +698,9 @@ def _grok_model_text_bytes(text):
         closing_start in line_start_set and raw.endswith(b"```")
     )
     if (
-        len(fence_starts) != 2
+        b"\r" in raw
+        or raw.count(b"```") != 2
+        or len(fence_starts) != 2
         or len(opening_starts) != 1
         or raw.count(opening) != 1
         or not has_terminal_closing
