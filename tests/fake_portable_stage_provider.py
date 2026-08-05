@@ -425,6 +425,17 @@ def main():
     mode = os.environ.get("FAKE_PORTABLE_STAGE_MODE", "success")
     grok_json = _grok_json_requested(arguments)
     output = pathlib.Path("output/result.json")
+    if mode == "grok-compatibility-audit":
+        for name in (
+            "GROK_CLAUDE_SKILLS_ENABLED",
+            "GROK_CLAUDE_RULES_ENABLED",
+            "GROK_CLAUDE_AGENTS_ENABLED",
+            "GROK_CLAUDE_MCPS_ENABLED",
+            "GROK_CLAUDE_HOOKS_ENABLED",
+            "GROK_CLAUDE_SESSIONS_ENABLED",
+        ):
+            if os.environ.get(name) != "false":
+                return 40
     if mode in {"mirror-audit", "agy-portable-audit"}:
         observed = {
             path.as_posix()

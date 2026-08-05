@@ -23,6 +23,14 @@ from lib import provider_adapters
 REGISTRY = ROOT / "history/provider-adapters-v1.json"
 FAKE = ROOT / "tests/fake_portable_agent.py"
 FORBIDDEN_PROVIDER = "cl" + "aude"
+GROK_COMPATIBILITY_DISABLED = {
+    "GROK_CLAUDE_SKILLS_ENABLED": "false",
+    "GROK_CLAUDE_RULES_ENABLED": "false",
+    "GROK_CLAUDE_AGENTS_ENABLED": "false",
+    "GROK_CLAUDE_MCPS_ENABLED": "false",
+    "GROK_CLAUDE_HOOKS_ENABLED": "false",
+    "GROK_CLAUDE_SESSIONS_ENABLED": "false",
+}
 
 
 def catalog(provider, *models):
@@ -116,7 +124,10 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             )
             self.assertNotIn("MODEL", argv)
             self.assertFalse(any("reasoning" in item or "variant" in item or "effort" in item for item in argv))
-            self.assertEqual(environment, {})
+            self.assertEqual(
+                environment,
+                GROK_COMPATIBILITY_DISABLED if name == "grok" else {},
+            )
         for name in ("opencode", "agy"):
             with self.subTest(provider=name), self.assertRaises(self._error()):
                 render(
@@ -295,7 +306,14 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                     intent = self._resolve(surface, provider, model, reasoning)
                 argv, environment = render(intent, pathlib.Path("/mirror"), "PROMPT")
                 self.assertEqual(argv, expected)
-                self.assertEqual(environment, {})
+                self.assertEqual(
+                    environment,
+                    (
+                        GROK_COMPATIBILITY_DISABLED
+                        if provider == "grok"
+                        else {}
+                    ),
+                )
 
     def test_kimi_reasoning_and_unknown_provider_fail_before_launch(self):
         calls = []

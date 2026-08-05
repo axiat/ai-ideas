@@ -102,7 +102,7 @@ _HOST_PROBE_BYTE_LIMIT = 32768
 _HOST_CATALOG_MODEL_LIMIT = 4096
 _MULTI_BACKEND_PROVIDERS = frozenset({"opencode", "agy"})
 _PROVIDER_REGISTRY_V1_SHA256 = (
-    "9bc3335f1166ad0a050ae360504145b32cc2c35cf87b5f818b81ed6806a9afec"
+    "423e8148ec1f705b16d31115e6b29493baf4c5253a1185e96e4f988221800a1b"
 )
 _DYNAMIC_MODEL_ROUTE_MARKERS = frozenset(
     {"auto", "default", "current", "configured"}
@@ -121,6 +121,16 @@ _HOST_PROBE_ENVIRONMENT_KEYS = (
     "PATH",
     "TMPDIR",
     "XDG_CONFIG_HOME",
+)
+_GROK_COMPATIBILITY_ENVIRONMENT = types.MappingProxyType(
+    {
+        "GROK_CLAUDE_SKILLS_ENABLED": "false",
+        "GROK_CLAUDE_RULES_ENABLED": "false",
+        "GROK_CLAUDE_AGENTS_ENABLED": "false",
+        "GROK_CLAUDE_MCPS_ENABLED": "false",
+        "GROK_CLAUDE_HOOKS_ENABLED": "false",
+        "GROK_CLAUDE_SESSIONS_ENABLED": "false",
+    }
 )
 
 
@@ -1812,6 +1822,7 @@ def _render_command_fields(
         if reasoning is not None:
             argv += ["--reasoning-effort", reasoning]
         argv += ["-p", prompt]
+        return argv, dict(_GROK_COMPATIBILITY_ENVIRONMENT)
     elif provider == "opencode":
         argv += ["run", "--pure", "--auto", "--dir", mirror]
         if model is not None:

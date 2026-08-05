@@ -823,6 +823,38 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             self.assertFalse((root / "state/completion.json").exists())
             self.assertFalse((root / "published").exists())
 
+    def test_grok_forces_claude_compatibility_sources_off(self):
+        names = (
+            "GROK_CLAUDE_SKILLS_ENABLED",
+            "GROK_CLAUDE_RULES_ENABLED",
+            "GROK_CLAUDE_AGENTS_ENABLED",
+            "GROK_CLAUDE_MCPS_ENABLED",
+            "GROK_CLAUDE_HOOKS_ENABLED",
+            "GROK_CLAUDE_SESSIONS_ENABLED",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="grok",
+            )
+            hostile = {name: "true" for name in names}
+            hostile["FAKE_PORTABLE_STAGE_MODE"] = (
+                "grok-compatibility-audit"
+            )
+            with mock.patch.dict(os.environ, hostile, clear=False):
+                portable_stage.run_stage(prepared, timeout_seconds=2)
+            preflight = json.loads(
+                pathlib.Path(prepared["preflight_path"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                preflight["provider_command"]["environment"],
+                {name: "false" for name in names},
+            )
+
     def test_stdout_hidden_file_in_unreadable_directory_rejects(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

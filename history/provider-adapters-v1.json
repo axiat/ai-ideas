@@ -14,7 +14,7 @@
     },
     "grok": {
       "executable": "grok",
-      "grammar_revision": "grok-portable-v2",
+      "grammar_revision": "grok-portable-v3",
       "reasoning_values": ["high"]
     },
     "opencode": {
