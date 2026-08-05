@@ -680,12 +680,34 @@ def _grok_model_text_bytes(text):
     except UnicodeEncodeError as exc:
         raise PortableAgentError("malformed_output") from exc
     opening = b"```json\n"
-    closing = b"\n```"
-    if raw.startswith(opening):
-        if not raw.endswith(closing):
-            raise PortableAgentError("malformed_output")
-        return raw[len(opening) : -len(closing)]
-    return raw
+    line_starts = [0]
+    line_starts.extend(
+        index + 1 for index, byte in enumerate(raw) if byte == 0x0A
+    )
+    line_start_set = set(line_starts)
+    fence_starts = [
+        index for index in line_starts if raw.startswith(b"```", index)
+    ]
+    if not fence_starts and opening not in raw:
+        return raw
+    opening_starts = [
+        index for index in line_starts if raw.startswith(opening, index)
+    ]
+    closing_start = len(raw) - len(b"```")
+    has_terminal_closing = (
+        closing_start in line_start_set and raw.endswith(b"```")
+    )
+    if (
+        len(fence_starts) != 2
+        or len(opening_starts) != 1
+        or raw.count(opening) != 1
+        or not has_terminal_closing
+    ):
+        raise PortableAgentError("malformed_output")
+    opening_start = opening_starts[0]
+    if closing_start <= opening_start or raw[closing_start - 1] != 0x0A:
+        raise PortableAgentError("malformed_output")
+    return raw[opening_start + len(opening) : closing_start - 1]
 
 
 def _parse_provider_stdout(provider, raw):

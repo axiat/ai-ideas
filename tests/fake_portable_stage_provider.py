@@ -243,16 +243,31 @@ def _grok_transport(inner_raw, mode):
                 if key in inner_value:
                     reordered[key] = inner_value[key]
             inner_text = json.dumps(reordered, ensure_ascii=False, indent=2)
-    if mode == "fence-leading-text":
-        inner_text = "provider progress\n```json\n" + inner_text + "\n```"
-    elif mode == "fence-trailing-text":
-        inner_text = "```json\n" + inner_text + "\n```\nprovider progress"
+    fenced = "```json\n" + inner_text + "\n```"
+    if mode == "narrated-terminal-fence":
+        inner_text = "Provider completed the request.\n" + fenced
+    elif mode == "fence-duplicate-delimiter":
+        inner_text = fenced + "\n" + fenced
+    elif mode == "fence-non-line-start":
+        inner_text = "Provider completed the request. " + fenced
+    elif mode == "fence-crlf":
+        inner_text = "```json\r\n" + inner_text + "\r\n```"
     elif mode == "fence-wrong-language":
+        inner_text = "```javascript\n" + inner_text + "\n```"
+    elif mode == "fence-wrong-case":
         inner_text = "```JSON\n" + inner_text + "\n```"
     elif mode == "fence-missing-close":
         inner_text = "```json\n" + inner_text
+    elif mode == "fence-trailing-newline":
+        inner_text = fenced + "\n"
+    elif mode == "fence-trailing-space":
+        inner_text = fenced + " "
+    elif mode == "fence-trailing-text":
+        inner_text = fenced + "provider progress"
+    elif mode == "fence-trailing-nul":
+        inner_text = fenced + "\x00"
     elif mode != "bare-inner-success":
-        inner_text = "```json\n" + inner_text + "\n```"
+        inner_text = fenced
     outer = {
         "text": inner_text,
         "stopReason": "max_tokens" if mode == "max-tokens" else "end_turn",
