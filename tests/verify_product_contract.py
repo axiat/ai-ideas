@@ -319,34 +319,155 @@ def _awr_assignment(token):
     return match.groups() if match else None
 
 
-def _awr_effective_assignments(segment, awr_index):
-    assignments = {}
-    cursor = 0
-    while cursor < awr_index:
+def _awr_uncertain_assignments(segment, cursor, assignments):
+    selected = dict(assignments)
+    selection_keys = {
+        "HISTORY_RUNTIME_ABI",
+        "AWR_PROVIDER",
+        "AWR_RESEARCH_PROVIDER",
+        "AWR_PRIORWORK_PROVIDER",
+        "AWR_JUDGE_PROVIDER",
+    }
+    for token in segment[cursor:]:
+        if token == "./awr-side.sh":
+            break
+        assignment = _awr_assignment(token)
+        if assignment and assignment[0] in selection_keys:
+            selected[assignment[0]] = assignment[1]
+    return selected
+
+
+def _awr_command_invocations(segment, cursor=0, inherited=None, depth=0):
+    if depth > 8:
+        return []
+    assignments = dict(inherited or {})
+    inherited_context = inherited is not None
+    assignment_start = cursor
+    while cursor < len(segment):
         assignment = _awr_assignment(segment[cursor])
         if assignment is None:
             break
         assignments[assignment[0]] = assignment[1]
         cursor += 1
-    if cursor == awr_index:
-        return assignments
+    saw_assignment = cursor > assignment_start
+    if cursor >= len(segment):
+        return []
 
-    if segment[cursor] in ("env", "/usr/bin/env"):
-        cursor += 1
-        while cursor < awr_index and segment[cursor].startswith("-"):
+    command = segment[cursor]
+    cursor += 1
+    if command == "./awr-side.sh":
+        return [assignments]
+
+    if command in ("env", "/usr/bin/env"):
+        unsupported_option = False
+        while cursor < len(segment) and segment[cursor].startswith("-"):
+            option = segment[cursor]
             cursor += 1
-        while cursor < awr_index:
-            assignment = _awr_assignment(segment[cursor])
-            if assignment is None:
+            if option == "--":
                 break
-            assignments[assignment[0]] = assignment[1]
-            cursor += 1
-        if cursor == awr_index:
-            return assignments
+            if option in ("-i", "--ignore-environment", "-"):
+                assignments.clear()
+            elif option in ("-u", "--unset"):
+                if cursor >= len(segment):
+                    return []
+                assignments.pop(segment[cursor], None)
+                cursor += 1
+            elif option.startswith("--unset="):
+                assignments.pop(option.split("=", 1)[1], None)
+            elif option in ("-C", "--chdir", "-P", "--path"):
+                if cursor >= len(segment):
+                    return []
+                cursor += 1
+            elif option.startswith(("--chdir=", "--path=")):
+                continue
+            else:
+                unsupported_option = True
+                break
+        if unsupported_option:
+            if "./awr-side.sh" not in segment[cursor:]:
+                return []
+            return [_awr_uncertain_assignments(segment, cursor, assignments)]
+        return _awr_command_invocations(
+            segment, cursor, assignments, depth + 1
+        )
 
-    if segment[cursor] == "caffeinate":
-        return assignments
-    return None
+    if command in ("caffeinate", "/usr/bin/caffeinate"):
+        while cursor < len(segment) and segment[cursor].startswith("-"):
+            option = segment[cursor]
+            cursor += 1
+            if option == "--":
+                break
+            if option in ("-t", "-w"):
+                if cursor >= len(segment):
+                    return []
+                cursor += 1
+        return _awr_command_invocations(
+            segment, cursor, assignments, depth + 1
+        )
+
+    if command in ("bash", "/bin/bash", "sh", "/bin/sh", "zsh", "/bin/zsh"):
+        stdin_mode = False
+        while cursor < len(segment) and segment[cursor].startswith("-"):
+            option = segment[cursor]
+            cursor += 1
+            if option == "--":
+                break
+            if option in ("-O", "--init-file", "--rcfile"):
+                if cursor >= len(segment):
+                    return []
+                cursor += 1
+                continue
+            short_options = (
+                option[1:]
+                if option.startswith("-") and not option.startswith("--")
+                else ""
+            )
+            if option == "-o" or "o" in short_options:
+                if cursor >= len(segment):
+                    return []
+                cursor += 1
+            if "c" in short_options:
+                if cursor >= len(segment):
+                    return []
+                nested = segment[cursor]
+                invocations = []
+                for nested_segment in _awr_shell_segments(nested):
+                    invocations.extend(
+                        _awr_command_invocations(
+                            nested_segment, inherited=assignments, depth=depth + 1
+                        )
+                    )
+                return invocations
+            if "s" in short_options:
+                stdin_mode = True
+        if stdin_mode:
+            return []
+        if cursor < len(segment) and segment[cursor] == "./awr-side.sh":
+            return [assignments]
+        return []
+
+    if command in ("!", "command", "exec", "nohup", "rtk", "time"):
+        while cursor < len(segment) and segment[cursor].startswith("-"):
+            option = segment[cursor]
+            cursor += 1
+            if command == "command" and option in ("-v", "-V"):
+                return []
+            if command == "exec" and option == "-c":
+                assignments.clear()
+            if command == "exec" and option == "-a":
+                if cursor >= len(segment):
+                    return []
+                cursor += 1
+        return _awr_command_invocations(
+            segment, cursor, assignments, depth + 1
+        )
+
+    if command in ("echo", "/bin/echo", "printf", "/usr/bin/printf"):
+        return []
+
+    if "./awr-side.sh" in segment[cursor:] and (saw_assignment or inherited_context):
+        return [_awr_uncertain_assignments(segment, cursor, assignments)]
+    return []
 
 
 def _unsafe_v2_agy_examples(header):
@@ -354,11 +475,8 @@ def _unsafe_v2_agy_examples(header):
     for command in _awr_usage_commands(header):
         command_is_unsafe = False
         for segment in _awr_shell_segments(command):
-            for awr_index, token in enumerate(segment):
-                if token != "./awr-side.sh":
-                    continue
-                assignments = _awr_effective_assignments(segment, awr_index)
-                if not assignments or assignments.get("HISTORY_RUNTIME_ABI") != "v2":
+            for assignments in _awr_command_invocations(segment):
+                if assignments.get("HISTORY_RUNTIME_ABI") != "v2":
                     continue
                 base_provider = assignments.get("AWR_PROVIDER", "codex")
                 base_model = assignments.get("AWR_MODEL", "")
@@ -428,6 +546,17 @@ def assert_awr_provider_usage():
         "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
         "AWR_MODEL=gemini-3.6-flash-high ./awr-side.sh && "
         "HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh",
+        "# caffeinate -is env HISTORY_RUNTIME_ABI=v2 "
+        "AWR_PROVIDER=agy ./awr-side.sh",
+        "# env -u AWR_MODEL HISTORY_RUNTIME_ABI=v2 "
+        "AWR_PROVIDER=agy ./awr-side.sh",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy bash ./awr-side.sh",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "bash -euxo pipefail ./awr-side.sh",
+        "# bash -co pipefail "
+        "'HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh'",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "custom-wrapper ./awr-side.sh",
     )
     for probe in parser_probes:
         if not _unsafe_v2_agy_examples(header + "\n" + probe):
@@ -441,6 +570,21 @@ def assert_awr_provider_usage():
     if _unsafe_v2_agy_examples(header + "\n" + warning_probe):
         raise AssertionError(
             f"AwR usage validator treated prose as a command: {warning_probe!r}"
+        )
+    inert_probe = (
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "caffeinate -is echo ./awr-side.sh"
+    )
+    if _unsafe_v2_agy_examples(header + "\n" + inert_probe):
+        raise AssertionError(
+            f"AwR usage validator treated an argument as execution: {inert_probe!r}"
+        )
+    shell_stdin_probe = (
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy bash -s ./awr-side.sh"
+    )
+    if _unsafe_v2_agy_examples(header + "\n" + shell_stdin_probe):
+        raise AssertionError(
+            f"AwR usage validator treated a shell argv as execution: {shell_stdin_probe!r}"
         )
 
 def shell_code_lines(text):
