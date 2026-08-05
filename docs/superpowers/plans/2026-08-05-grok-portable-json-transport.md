@@ -4,7 +4,7 @@
 
 **Goal:** Make real Grok and agy portable stages cross their provider transports while retaining the strict model-response contract, and avoid retry sleep after the final bounded Hunt round.
 
-**Architecture:** Grok emits one provider-owned outer JSON object and receives a binding-covered provider-specific instruction requiring its final assistant response to be one exact lowercase-`json` LF fence. `portable_agent` validates the outer transport, isolates that unique terminal fence after any reducer-concatenated assistant prefix, strictly parses the inner model envelope, and imports host-canonicalized inner bytes. Every non-Grok provider retains the raw canonical-stdout path; for agy, the binding-covered instruction overrides the legacy role's file-output channel while leaving artifact semantics unchanged. Hunt decides whether a future round exists before applying failure cooldown.
+**Architecture:** Grok emits one provider-owned outer JSON object and receives a binding-covered provider-specific instruction requiring its final assistant response to be one exact lowercase-`json` LF fence. `portable_agent` validates the outer transport, isolates that unique terminal fence after any reducer-concatenated assistant prefix, and strictly parses the inner model envelope. Every non-Grok provider retains the raw canonical-stdout path; for agy, the binding-covered instruction overrides the legacy role's file-output channel while leaving artifact semantics unchanged. Stdout attempts allow only bounded ignored provider scratch under `.tmp`. Both stdout and legacy file-output attempts quiesce the provider process group, validate the disposable mirror, and remove the attempt before durable import. Hunt decides whether a future round exists before applying failure cooldown.
 
 **Tech Stack:** Python 3 standard library, Bash, `unittest`, fake CLI executables, OpenSpec.
 
@@ -19,6 +19,9 @@
 - Only the host-canonicalized inner model envelope SHALL be hashed, imported, projected, and referenced by completion receipts.
 - Grok's binding-covered stdout instruction SHALL require the final assistant response to be one exact lowercase-`json` LF fence, with the canonical object's single trailing LF immediately before the terminal close and no outside bytes or earlier triple-backtick sequence.
 - Codex, Kimi, OpenCode, and agy SHALL retain the current exact raw canonical-stdout contract.
+- Stdout attempts SHALL treat `.tmp` as ignored scratch only when descriptor-relative no-follow validation finds real directories, at most 32 regular single-link files, at most 64 total entries, and at most 1 MiB of stable-read bytes; scratch SHALL never be imported.
+- Provider completion SHALL be followed by process-group termination and a wait for the provider process before validation. Attempt cleanup SHALL repair directory permissions and succeed before durable import; cleanup failure SHALL return `attempt_cleanup_failed` without publication.
+- Legacy `forbid_extra_files` enumeration SHALL use descriptor-relative no-follow traversal and SHALL reject unreadable directories, traversal failures, links, special files, and raced directory replacement instead of skipping them.
 - A failed Hunt round SHALL sleep only when another round can execute; unlimited runs and non-terminal bounded rounds retain `FAIL_SLEEP_MIN`.
 - Automated tests SHALL use fake providers. A completed transport revision MAY receive one real Grok portable-stage smoke; it SHALL use `grok-4.5`, `high`, one bounded AwR judge request, and no full Hunt round. A failed smoke SHALL NOT be blindly retried; a new call requires a diagnosed cause and a new tested transport revision.
 - Before that live smoke, disable every Claude compatibility source with `GROK_CLAUDE_SKILLS_ENABLED=false`, `GROK_CLAUDE_RULES_ENABLED=false`, `GROK_CLAUDE_AGENTS_ENABLED=false`, `GROK_CLAUDE_MCPS_ENABLED=false`, `GROK_CLAUDE_HOOKS_ENABLED=false`, and `GROK_CLAUDE_SESSIONS_ENABLED=false`; inspect the effective Grok configuration and do not launch if any automatically triggered hook, plugin, MCP, fallback, or orchestration path can invoke Claude. An inert command that requires explicit user selection is not an invocation path for this smoke.
@@ -44,7 +47,7 @@
 - Consumes: resolver-issued `ProviderCommandIntent.provider`, bounded provider stdout bytes, and the existing response-schema validator.
 - Produces: `_parse_provider_stdout(provider: str, raw: bytes) -> tuple[object, bytes]`, where the bytes are the canonical model envelope used for hashing and import.
 
-- [ ] **Step 1: Write the provider-command RED tests**
+- [x] **Step 1: Write the provider-command RED tests**
 
 Change the literal Grok argv expectations in `tests/provider_adapters_smoke.py` and `tests/history_audit_cli_smoke.py` from:
 
@@ -60,7 +63,7 @@ to:
 
 Assert that Codex, Kimi, OpenCode, and agy expected argv remain byte-for-byte unchanged.
 
-- [ ] **Step 2: Run the provider-command tests and verify RED**
+- [x] **Step 2: Run the provider-command tests and verify RED**
 
 Run:
 
@@ -71,7 +74,7 @@ python3 tests/history_audit_cli_smoke.py
 
 Expected: both suites fail only because Grok still renders `plain`.
 
-- [ ] **Step 3: Implement the command grammar and registry revision**
+- [x] **Step 3: Implement the command grammar and registry revision**
 
 In `history/provider-adapters-v1.json`, change the registry revision to
 `2026-08-05` and Grok grammar revision to `grok-portable-v2`. In
@@ -91,7 +94,7 @@ and replace `_PROVIDER_REGISTRY_V1_SHA256`. Update registry mutation fixtures
 that contain the tracked revision literal. Do not loosen the byte-exact
 registry check.
 
-- [ ] **Step 4: Run the provider-command tests and verify GREEN**
+- [x] **Step 4: Run the provider-command tests and verify GREEN**
 
 Run:
 
@@ -103,7 +106,7 @@ python3 tests/provider_model_catalog_authority_smoke.py
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Extend the fake provider with the real Grok transport shape**
+- [x] **Step 5: Extend the fake provider with the real Grok transport shape**
 
 When argv selects `--output-format json`, serialize a documented complete
 outer response containing at least:
@@ -135,7 +138,7 @@ outer `text` key, missing `text`, and `stopReason=max_tokens`. Existing inner
 malformation, schema, NFC, duplicate-key, and attestation modes must still act
 inside the Grok outer wrapper.
 
-- [ ] **Step 6: Write the portable-stage RED tests**
+- [x] **Step 6: Write the portable-stage RED tests**
 
 Add tests using `_prepare(..., provider="grok")` that assert:
 
@@ -157,7 +160,7 @@ strings, floating-point inner values, and wrong request attestation.
 Also retain one Codex test showing valid non-canonical raw stdout still raises
 `noncanonical_output` before import.
 
-- [ ] **Step 7: Run the portable-stage tests and verify RED**
+- [x] **Step 7: Run the portable-stage tests and verify RED**
 
 Run:
 
@@ -169,7 +172,7 @@ python3 tests/portable_stage_runtime_smoke.py
 Expected: Grok outer JSON success fails as an invalid model envelope; existing
 non-Grok behavior remains green.
 
-- [ ] **Step 8: Implement the two-layer decoder**
+- [x] **Step 8: Implement the two-layer decoder**
 
 Refactor strict JSON parsing so duplicate-key detection and UTF-8 decoding are
 shared while canonical-byte enforcement remains selectable. Add:
@@ -195,7 +198,7 @@ with the provider-aware decoder. Validate the returned value against the
 response schema, then hash/import/return the canonical model bytes rather than
 the Grok outer stdout.
 
-- [ ] **Step 9: Run the portable-stage tests and verify GREEN**
+- [x] **Step 9: Run the portable-stage tests and verify GREEN**
 
 Run:
 
@@ -207,7 +210,7 @@ bash tests/portable_hunt_awr_e2e_smoke.sh
 
 Expected: all tests pass; the fake Hunt review seat exercises Grok outer JSON.
 
-- [ ] **Step 10: Commit Task 1**
+- [x] **Step 10: Commit Task 1**
 
 ```bash
 git add history/provider-adapters-v1.json lib/provider_adapters.py \
@@ -233,7 +236,7 @@ git commit -m "fix: normalize Grok portable JSON output"
 - Consumes: current shell variables `round`, `ROUND_LIMIT`, `fails`, `MAX_FAILS`, and `FAIL_SLEEP_MIN`.
 - Produces: `fail_round(stage)` with unchanged failure accounting and conditional cooldown.
 
-- [ ] **Step 1: Write the terminal-round RED test**
+- [x] **Step 1: Write the terminal-round RED test**
 
 Add an e2e case that clones the repository, installs fake providers, and runs
 Hunt with:
@@ -253,7 +256,7 @@ Prepend a fake `sleep` executable that appends its arguments to
 failure and `Reached ROUND_LIMIT=1`, and assert `$FAKE_SLEEP_LOG` does not
 exist. This test catches any sleep invocation without spending 60 seconds.
 
-- [ ] **Step 2: Run the e2e test and verify RED**
+- [x] **Step 2: Run the e2e test and verify RED**
 
 Run:
 
@@ -264,7 +267,7 @@ bash tests/portable_hunt_awr_e2e_smoke.sh
 Expected: the new case fails because current `fail_round` invokes the fake
 sleep after the final round.
 
-- [ ] **Step 3: Implement the retry-existence check**
+- [x] **Step 3: Implement the retry-existence check**
 
 Keep archive and failure accounting unchanged. After the `MAX_FAILS` check,
 guard cooldown with:
@@ -275,7 +278,7 @@ if [ "$ROUND_LIMIT" -eq 0 ] || [ "$round" -lt "$ROUND_LIMIT" ]; then
 fi
 ```
 
-- [ ] **Step 4: Run the e2e and shell syntax tests and verify GREEN**
+- [x] **Step 4: Run the e2e and shell syntax tests and verify GREEN**
 
 Run:
 
@@ -286,7 +289,7 @@ bash tests/portable_hunt_awr_e2e_smoke.sh
 
 Expected: all cases pass and the terminal-failure case records no sleep.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```bash
 git add hunt.sh tests/portable_hunt_awr_e2e_smoke.sh
@@ -308,7 +311,7 @@ git commit -m "fix: skip cooldown after final Hunt round"
 - Consumes: the implemented `grok-portable-v2` behavior and terminal-round cooldown behavior.
 - Produces: an OpenSpec scenario and operator documentation matching the tested runtime.
 
-- [ ] **Step 1: Update the OpenSpec provider-response contract**
+- [x] **Step 1: Update the OpenSpec provider-response contract**
 
 Add a requirement stating that an adapter may unwrap a provider-owned machine
 transport before model-envelope validation. Add a Grok scenario requiring
@@ -318,14 +321,14 @@ malformed or incomplete transport. Add unchecked task `8.4` for the live Grok
 transport repair and terminal-round no-sleep regression; Task 4 checks it only
 after the real smoke succeeds.
 
-- [ ] **Step 2: Update backend documentation**
+- [x] **Step 2: Update backend documentation**
 
 Document that Grok portable stages use `--output-format json`; the provider
 wrapper is discarded after its final `text` is validated and canonicalized.
 State that completion hashes refer to the canonical inner model envelope.
 Document that a failed final bounded round exits without `FAIL_SLEEP_MIN`.
 
-- [ ] **Step 3: Check human-readable prose and OpenSpec**
+- [x] **Step 3: Check human-readable prose and OpenSpec**
 
 Run:
 
@@ -341,7 +344,7 @@ git diff --check
 Expected: the prose scan has no newly introduced banned/meta phrasing,
 OpenSpec is valid, and the diff check is clean.
 
-- [ ] **Step 4: Run focused and product regression suites**
+- [x] **Step 4: Run focused and product regression suites**
 
 Run:
 
@@ -361,7 +364,7 @@ python3 tests/verify_product_contract.py fixtures
 
 Expected: every command exits zero.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
 ```bash
 git add docs/backends.md \
@@ -392,7 +395,7 @@ git commit -m "docs: specify Grok portable JSON transport"
   bare JSON or one unique terminal lowercase-`json` fence after an optional
   accumulated prefix.
 
-- [ ] **Step 1: Write the exact-fence RED tests**
+- [x] **Step 1: Write the exact-fence RED tests**
 
 Make the default fake Grok success response mirror the observed live output:
 
@@ -406,7 +409,7 @@ rejection modes for narration followed by bare JSON, another triple-backtick
 sequence, trailing bytes, a wrong fence language or case, CR, and a missing
 closing fence. Every rejection asserts no import, projection, or completion.
 
-- [ ] **Step 2: Run the portable tests and verify RED**
+- [x] **Step 2: Run the portable tests and verify RED**
 
 ```bash
 python3 tests/provider_portable_hardening_smoke.py
@@ -417,7 +420,7 @@ Expected: the exact fenced and reducer-concatenated-prefix successes are
 rejected as `malformed_output`; the bare success and prior rejection cases
 retain their existing behavior.
 
-- [ ] **Step 3: Implement narrow fence normalization**
+- [x] **Step 3: Implement narrow fence normalization**
 
 After the outer `text` string is encoded safely, pass the complete bytes to
 strict JSON parsing when no exact `b"```json\n"` opener exists. Otherwise
@@ -429,7 +432,7 @@ JSON suffix, remove arbitrary suffixes, or repair malformed JSON. The extracted
 bytes continue through duplicate-key, float, constant, NFC, closed-schema, and
 exact-attestation validation before canonical import.
 
-- [ ] **Step 4: Run focused GREEN and commit the code**
+- [x] **Step 4: Run focused GREEN and commit the code**
 
 ```bash
 python3 tests/provider_portable_hardening_smoke.py
@@ -442,7 +445,7 @@ git add lib/portable_agent.py tests/fake_portable_stage_provider.py \
 git commit -m "fix: accept exact Grok JSON response fence"
 ```
 
-- [ ] **Step 5: Update the design, OpenSpec, and backend contract**
+- [x] **Step 5: Update the design, OpenSpec, and backend contract**
 
 Record the exact final-response fence instruction and the reducer's
 separator-free assistant-chunk concatenation. Permit complete bare JSON or one
@@ -450,7 +453,11 @@ unique terminal exact fence after an accumulated prefix; reject narrated bare
 JSON and never search for a JSON suffix. Keep OpenSpec task `8.4` unchecked
 until Step 6 succeeds.
 
-- [ ] **Step 6: Run one real Grok portable-stage smoke**
+- [x] **Step 6: Run one real Grok portable-stage smoke**
+
+The first live attempt exposed reducer-concatenated prefix handling and did not
+qualify. Task 5 records the later transport success and the current-revision
+qualification state.
 
 Repeat the safety inspection from Global Constraints. Create a temporary AwR
 judge request with declared `draft.md`, `priorwork.md`, `task.md`, `rubric.md`,
@@ -482,7 +489,7 @@ model envelope whose SHA matches `model_envelope_sha256`, and a valid nonempty
 `output/judge.md`. Check OpenSpec task `8.4` only after these assertions pass.
 Remove only the exact temporary directory after recording hashes and status.
 
-- [ ] **Step 7: Run final offline regressions and commit documentation**
+- [x] **Step 7: Run final offline regressions and commit documentation**
 
 Run the 11 commands from Task 3 Step 4, `openspec validate
 scalable-history-runtime --strict`, the prose scan, and `git diff --check`.
@@ -548,6 +555,17 @@ Require an independent code review before the live gate.
 
 - [ ] **Step 4: Run one revised real Grok smoke**
 
+The transport smoke before namespace-race commit `e6c8586` completed with
+canonical import, matching model-envelope hash, valid attestation, a completion
+receipt, and a nonempty projected `judge.md`. Completion:
+`ec8e2d309f4617279fd5814840114b4f8a67c08f0094c7adee7511643de25b6e`.
+Model envelope:
+`857ab8bc500f8a04d33389ec76c2fce88dd021364c458cede59e48b28a49d16f`.
+Projected judge:
+`7366478a991437b0589789a784f127f393dd6bde3130a434811b50fd86963d80`.
+No full Hunt or AwR sidecar round ran. The current revision still requires one
+bounded requalification.
+
 Repeat the six compatibility-source disables and effective-configuration
 inspection from Task 4. Run one bounded `grok-4.5`/`high` AwR judge request,
 with no retry. Require canonical import, valid attestation, a completion
@@ -561,6 +579,8 @@ exact temporary smoke directory after verification.
 **Files:**
 
 - Modify: `lib/portable_stage.py`
+- Modify: `lib/portable_agent.py`
+- Modify: `tests/fake_portable_agent.py`
 - Modify: `tests/fake_portable_stage_provider.py`
 - Modify: `tests/provider_portable_hardening_smoke.py`
 - Modify: `tests/portable_hunt_awr_e2e_smoke.sh`
@@ -572,7 +592,8 @@ exact temporary smoke directory after verification.
 
 - Consumes: the portable request base before request-binding computation.
 - Produces: binding-covered `transport_instructions` declaring the
-  provider-specific stdout response channel and read-only mirror contract.
+  provider-specific stdout response channel, declared-file integrity, bounded
+  scratch, process quiescence, and cleanup-before-import contract.
 
 - [x] **Step 1: Write request-binding and agy RED tests**
 
@@ -591,18 +612,20 @@ file-output regression coverage.
 
 Add one closed object to `_provider_request()` before computing its binding.
 It declares that `role.md` controls artifact content, the request controls its
-transport, and the mirror must remain unchanged. Select the stdout member by
-provider before binding: Grok requires the final assistant response to be one
-exact lowercase-`json` LF fence with one trailing LF immediately before the
-terminal close and no outside bytes or earlier delimiter; every non-Grok
+transport, and instructs the model not to create, modify, or delete mirror
+files. Select the stdout member by provider before binding: Grok requires the
+final assistant response to be one exact lowercase-`json` LF fence with one
+trailing LF immediately before the terminal close and no outside bytes or
+earlier delimiter; every non-Grok
 provider requires one raw canonical UTF-8/NFC response-schema
 object with no fence, narration, or extra bytes. Both forms require exact
-request attestation and forbid file creation or modification.
-After provider exit, require the closed declared-file path set and each entry's
-regular/single-link type, exact `st_mode`, stable byte count, and SHA-256. Allow
-the runtime-created `.tmp` directory to remain empty, without describing this
-post-exit check as an OS read-only mount. Do not add an unbound adapter prompt
-or parse any provider brain/artifact file.
+request attestation and forbid model-authored file creation or modification.
+After process-group quiescence, require the closed declared-file path set and
+each entry's regular/single-link type, exact `st_mode`, stable byte count, and
+SHA-256. Undeclared non-scratch files reject; empty directories are ignored.
+The runtime-created `.tmp` is an ignored provider-scratch exception, not a
+response channel. Do not describe post-exit checks as an OS read-only mount,
+add an unbound adapter prompt, or parse any provider brain/artifact file.
 
 - [x] **Step 3: Run focused tests and review**
 
@@ -616,7 +639,41 @@ git diff --check
 
 Require an independent code review before the live gate.
 
-- [ ] **Step 4: Run one real agy smoke**
+- [x] **Step 4: Bound ignored stdout scratch**
+
+Validate `.tmp` through descriptor-relative no-follow traversal. Require the
+root and nested directories to remain real directories and every file to be
+regular and single-link. Permit at most 32 files, 64 total entries, and 1 MiB
+of stable-read bytes. Reject missing or replaced roots, links, special files,
+unreadable or unstable entries, traversal races, and exceeded limits. Never
+import scratch bytes. Traverse the remaining mirror with the same no-follow
+descriptor discipline, skip only the exact validated root `.tmp`, verify final
+child and root namespace identity, and continue to ignore stable empty
+directories.
+Regression fixtures cover a mode-zero directory containing a hidden file,
+declared-path symlink/hardlink/FIFO replacement, and child/root namespace swap.
+
+- [x] **Step 5: Quiesce and remove attempts before import**
+
+After provider communication completes, terminate its process group and wait
+for the provider process before mirror or stdout validation. Before durable
+import, recursively repair attempt-directory permissions, remove the attempt,
+and verify its absence.
+Return `attempt_cleanup_failed` without import, projection, or completion when
+cleanup cannot finish.
+
+- [x] **Step 6: Make legacy extra-file enumeration fail closed**
+
+Replace path-recursive enumeration with descriptor-relative, no-follow
+traversal. Require every non-directory entry to be regular and single-link,
+and reject unreadable directories, traversal failures, links, special files,
+or directory identity drift. Cover a hidden file under a mode-zero directory,
+a symlink occupying an expected declared-input path, and a directory namespace
+replacement that swaps the observed descriptor away from the mirror path.
+This legacy check closes the observed path set and file type/link identity; it
+does not add content or mode immutability for ordinary declared inputs.
+
+- [ ] **Step 7: Run one real agy smoke**
 
 Inspect current agy plugins, agents, model catalog, and effective explicit
 Gemini route without invoking a model. Do not launch if any automatic path can
@@ -625,7 +682,17 @@ with no retry. Require canonical import, the expected declared regular-file set
 and exact type/link/mode/byte-count/SHA snapshot, a completion receipt, and
 nonempty projected `judge.md`.
 
-- [ ] **Step 5: Run full verification**
+The explicit `gemini-3.6-flash-high`/`high` transport smoke before commit
+`e6c8586` completed after bounded runtime scratch validation, with no residual
+attempt directory. Completion:
+`ed8a293bc94c7f060e960e683edef36f89be75e556f9e22757b193c0486a8e5a`.
+Model envelope:
+`0e216d395b06328ad67c4fa6173e1152f2672a717e2457adfee3b2225b615284`.
+Projected judge:
+`81114067dedaf34af0503d23d24ed88e05f9634440f62619246865bd9982ffc2`.
+The current revision still requires one bounded requalification.
+
+- [ ] **Step 8: Run full verification**
 
 Run the eleven Task 3 regression commands, strict OpenSpec validation, prose
 scan, shell syntax checks, and `git diff --check`. Obtain an independent

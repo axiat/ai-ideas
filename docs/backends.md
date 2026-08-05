@@ -182,16 +182,38 @@ triple-backtick sequence may occur in an earlier assistant response. Every
 non-Grok provider, including agy, retains the raw canonical-stdout instruction
 with no fence or narration. For agy, that instruction overrides legacy
 output-location and file-writing statements in the AwR role; `role.md` defines
-artifact content only. All instructions forbid mirror writes and require exact
-request attestation. The host verifies the closed declared-file path set after
-provider exit. Every declared entry must remain a regular single-link file with
-its exact original `st_mode`; a stable
-read must preserve its exact byte count and SHA-256. Added or removed files,
-entry-type, link-count, or mode changes, and content drift reject the attempt
-before import. Directory presence alone is not an output: the runtime-created
-`.tmp` directory may remain empty. The host also validates canonical stdout,
-the closed schema, and attestation. It does not recover output from an agy
-brain directory or a role-named mirror artifact.
+artifact content only. All instructions forbid model-authored mirror writes
+and require exact request attestation. After the provider command finishes,
+the host terminates its process group and waits for the provider process before
+validating any mirror or response bytes.
+Every declared entry must remain a regular single-link file with its exact
+original `st_mode`; a stable read must preserve its exact byte count and
+SHA-256. Added or removed files, entry-type, link-count, or mode changes, and
+content drift reject the attempt before import. The non-scratch mirror uses
+descriptor-relative, no-follow traversal with final child and root namespace
+identity checks. Traversal failures or a raced namespace replacement reject;
+stable empty directories remain ignored.
+
+Stdout portable attempts reserve `.tmp` as bounded ignored provider scratch.
+It must remain a real directory. Descriptor-relative, no-follow traversal
+permits only real nested directories and regular single-link files, with at
+most 32 files, 64 total entries, and 1 MiB of stable-read file bytes. Scratch
+is never imported. A missing or replaced `.tmp`, a symlink, hardlink, special
+file, unreadable or unstable entry, traversal race, or exceeded limit rejects
+the attempt. The host also validates canonical stdout, the closed schema, and
+attestation. It does not recover output from an agy brain directory or a
+role-named mirror artifact.
+
+The disposable attempt is removed before any durable import. Cleanup first
+repairs directory permissions, removes the attempt tree, and verifies its
+absence. Failure returns `attempt_cleanup_failed`; no import, projection, or
+completion is published. Legacy file-output attempts with
+`forbid_extra_files=true` enumerate the complete mirror through directory
+descriptors without following links. Only regular single-link files may occupy
+expected paths; unreadable directories, traversal failures, special files,
+symlinks, and raced child or root directory replacement fail closed instead of
+being skipped. This legacy check closes path, type, and link identity; it does
+not add content or mode immutability for ordinary declared inputs.
 
 Completion hashes, including `model_envelope_sha256`, identify the canonical
 inner model envelope, not a discarded provider transport.

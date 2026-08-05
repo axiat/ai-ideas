@@ -15,9 +15,18 @@ prefix bytes without searching for a JSON suffix.
 Agy received the same portable request but followed the AwR role's legacy
 file-output wording. It generated the requested content, called
 `write_to_file` for `mirror/priorwork.md`, and was rejected by its own artifact
-path policy. Portable v2 instead requires an unchanged mirror and one response
-envelope on stdout. The request did not state that transport precedence
-explicitly.
+path policy. Portable v2 instead requires declared-file integrity and one
+response envelope on stdout. Declared files must retain their exact
+type, link count, mode, bytes, and hash; undeclared non-scratch files are
+forbidden; bounded `.tmp` scratch and empty directories are ignored. The
+request did not state that transport precedence explicitly.
+
+After that precedence was bound, a live agy request emitted the expected
+canonical stdout envelope, while its language server also wrote a schema cache
+under the runtime-supplied `TMPDIR=.tmp`. Treating `.tmp` as empty-only caused
+the otherwise valid attempt to fail as `unexpected_artifact`. Provider runtime
+scratch therefore needs a small ignored allowance without widening the
+declared input or output set.
 
 After a failed final round, `fail_round` sleeps for `FAIL_SLEEP_MIN` before the
 main loop observes `ROUND_LIMIT`. A one-round run can therefore wait 150
@@ -61,9 +70,11 @@ contract.
 
 Every portable request also carries binding-covered `transport_instructions`.
 They state that `role.md` defines artifact content while the request defines
-the output channel and forbid mirror changes. The stdout member is selected by
-provider before the base-request binding is computed. Grok's member requires
-the final assistant response itself to be exactly one lowercase-`json` LF fence
+the output channel, and instruct the model not to create, modify, or delete
+mirror files. The stdout member
+is selected by provider before the base-request binding is computed. Grok's
+member requires the final assistant response itself to be exactly one
+lowercase-`json` LF fence
 containing one canonical UTF-8/NFC `response_schema` object, with no bytes
 outside that fence, one trailing LF immediately before the terminal close, and
 no triple-backtick sequence in an earlier assistant response. Every non-Grok
@@ -73,11 +84,42 @@ AwR role's output-location and file-writing statements. The host still verifies
 the closed declared-file path set after provider exit. Every declared entry
 must remain a regular single-link file with its exact original `st_mode`, byte
 count, and SHA-256, using a stable read for the content checks. Directory
-presence alone is not an output, so the runtime-created `.tmp` directory may
-remain empty. The host then validates canonical stdout, the closed schema, and
-exact attestation, and never recovers an envelope from provider brain state or
-a role-named artifact file. Legacy v1 AwR continues to supply explicit output
+presence alone is not an output. For stdout portable attempts, the
+runtime-created `.tmp` remains a real directory and may contain ignored
+scratch under descriptor-relative, no-follow traversal. Nested entries are
+limited to real directories and regular single-link files; the whole tree is
+limited to 32 files, 64 entries, and 1 MiB of stable-read file bytes. Scratch
+never enters imports, projections, completions, or declared-file identity. A
+missing or replaced `.tmp`, link, special file, unreadable or unstable entry,
+traversal race, or exceeded limit rejects the attempt. The remaining mirror is
+walked through the same descriptor-relative, no-follow discipline. The walker
+skips only the exact validated root `.tmp`, verifies each child and the root
+against their final namespace identities, and ignores stable empty directories.
+The host then validates canonical stdout, the closed schema, and exact
+attestation, and never recovers an envelope from provider brain state or a
+role-named artifact file. Legacy v1 AwR continues to supply explicit output
 paths and does not consume this portable request.
+
+## Attempt Lifecycle
+
+Provider processes start in a new session. When the provider command returns,
+the host terminates the process group and waits for the provider process before
+reading the mirror or accepting stdout. Background descendants in that group
+cannot keep mutating the attempt during validation.
+
+All validation finishes while the attempt remains disposable. Before creating
+or reusing a durable import, cleanup recursively repairs directory permissions,
+removes the exact attempt tree, and verifies that it is absent. Cleanup failure
+returns `attempt_cleanup_failed` and leaves imports, projections, and
+completion receipts untouched.
+
+Legacy file-output attempts with `forbid_extra_files=true` enumerate mirror
+entries through directory descriptors, never follow links, and fail closed on
+open/stat errors or final child/root namespace identity drift. Every
+non-directory entry must be a regular single-link file. Unreadable directories,
+hidden files, symlinks, special files, and raced replacements cannot be
+silently omitted from the extra-file decision. This legacy check does not add
+content or mode immutability for ordinary declared inputs.
 
 ## Failure Handling
 
@@ -91,13 +133,13 @@ between assistant chunks.
 Narration followed by bare JSON remains invalid, and no JSON suffix is located.
 A closed-path-set mismatch, non-regular or multi-link entry, exact-mode change,
 or stable byte-count/SHA mismatch fails mirror validation even if stdout is
-otherwise valid. Directory presence alone is not a file-path-set change, so
-the runtime-created `.tmp` may remain empty. This post-exit validation is not
-an OS-enforced read-only mount. Empty, prefixed, fenced, non-canonical,
-schema-invalid, or unattested agy stdout is never recovered from its brain
-directory or another artifact path. Existing process exit, timeout,
-stdout-size, mirror-artifact, response-schema, and attestation checks remain
-active.
+otherwise valid. Unsafe or unbounded `.tmp` scratch fails at the same point.
+The process-group and post-exit checks are not an OS-enforced read-only mount.
+Empty, prefixed, fenced, non-canonical, schema-invalid, or unattested agy stdout
+is never recovered from its brain directory or another artifact path. Existing
+process exit, timeout, stdout-size, mirror-artifact, response-schema, and
+attestation checks remain active. Attempt cleanup must succeed before any
+validated payload becomes durable.
 
 `fail_round` sleeps only when another round can run. A positive `ROUND_LIMIT`
 already reached by the current round returns directly to the loop, which logs
@@ -123,6 +165,18 @@ Automated checks cover:
   non-Grok raw canonical stdout, and all three fake agy AwR stages;
 - new-file, same-size role/input overwrite, and exact-mode drift rejection
   without artifact import or fallback recovery;
+- accepted bounded `.tmp` cache files plus rejection of missing/replaced roots,
+  links, special files, unreadable entries, unstable growth, and all count or
+  byte-limit violations, with no scratch import;
+- process-group quiescence before mirror validation, permission-repairing
+  cleanup before durable import, and `attempt_cleanup_failed` publication
+  suppression;
+- descriptor-relative legacy extra-file enumeration that rejects hidden files,
+  symlinks, special files, unreadable directories, and raced replacements;
+- descriptor-relative stdout mirror enumeration that rejects mode-zero hidden
+  files, declared-path symlink/hardlink/FIFO replacement, and child/root
+  namespace swap while retaining exact declared-file checks, stable empty
+  directories, and the separately validated `.tmp` exception;
 - immediate exit after a failed final round;
 - the portable runtime, Hunt/AwR integration, product contract, shell syntax,
   and OpenSpec validation suites.
@@ -130,7 +184,21 @@ Automated checks cover:
 Real portable-stage qualification uses one small bounded Grok `grok-4.5`/high
 request and one small bounded agy `gemini-3.6-flash-high`/high request. Each
 qualification requires successful canonical import and projection without a
-full Hunt or AwR sidecar round. Both live qualification gates remain pending.
+full Hunt or AwR sidecar round. Transport smokes before namespace-race commit
+`e6c8586` succeeded. Grok recorded completion
+`ec8e2d309f4617279fd5814840114b4f8a67c08f0094c7adee7511643de25b6e`,
+model envelope
+`857ab8bc500f8a04d33389ec76c2fce88dd021364c458cede59e48b28a49d16f`,
+and projected judge
+`7366478a991437b0589789a784f127f393dd6bde3130a434811b50fd86963d80`.
+Agy recorded completion
+`ed8a293bc94c7f060e960e683edef36f89be75e556f9e22757b193c0486a8e5a`,
+model envelope
+`0e216d395b06328ad67c4fa6173e1152f2672a717e2457adfee3b2225b615284`,
+and projected judge
+`81114067dedaf34af0503d23d24ed88e05f9634440f62619246865bd9982ffc2`.
+No residual attempt directory remained. Both providers require one bounded
+requalification on the current revision before their OpenSpec tasks complete.
 Claude is not invoked.
 
 ## Scope

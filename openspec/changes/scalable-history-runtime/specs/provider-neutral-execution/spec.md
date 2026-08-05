@@ -41,7 +41,7 @@ Omitted reasoning SHALL preserve the selected CLI's current configured default. 
 The adapter's explicit reasoning grammar SHALL be the conservative verified subset recorded in the registry. Omitted reasoning SHALL continue to use the CLI default. Kimi SHALL accept no explicit reasoning value.
 
 ### Requirement: Provider execution uses a portable mirror
-Every portable provider attempt SHALL run in a disposable mirror containing only declared role and input artifacts. The durable database, full ledger, Git metadata, unrelated candidate state, and destination path SHALL be absent; only schema-valid declared outputs and host-owned attempt metadata SHALL return.
+Every portable provider attempt SHALL run in a disposable mirror containing only declared role and input artifacts. The durable database, full ledger, Git metadata, unrelated candidate state, and destination path SHALL be absent; only schema-valid declared outputs and host-owned attempt metadata SHALL return. Provider processes SHALL run in a dedicated process group. After provider communication ends, the host SHALL terminate that process group and wait for the provider process before validating the mirror or response. The host SHALL repair attempt-directory permissions, remove the attempt tree, and verify its absence before creating or reusing any durable import. Cleanup failure SHALL return `attempt_cleanup_failed` without an import, projection, or completion receipt.
 
 #### Scenario: Undeclared durable input is unavailable
 - **WHEN** an agent attempts to read the canonical database or full ledger from the portable mirror
@@ -50,6 +50,19 @@ Every portable provider attempt SHALL run in a disposable mirror containing only
 #### Scenario: Extra output is discarded
 - **WHEN** an agent writes declared output plus additional files
 - **THEN** only the declared output is considered and the attempt fails if the output contract forbids extras
+
+#### Scenario: Provider descendants are quiesced before validation
+- **WHEN** a provider command returns while a descendant in its process group remains alive
+- **THEN** the host terminates the process group and waits for the provider process before mirror or response validation, so descendants in that group cannot continue mutating the attempt during validation
+
+#### Scenario: Attempt cleanup gates durable import
+- **WHEN** an otherwise valid attempt cannot be removed after permission repair
+- **THEN** the stage fails with `attempt_cleanup_failed` and creates no durable import, projection, or completion receipt
+
+#### Scenario: Legacy extra-file enumeration fails closed
+- **WHEN** a legacy file-output attempt sets `forbid_extra_files=true`
+- **THEN** the host enumerates the complete mirror through directory descriptors without following links, accepts only regular single-link non-directory entries, and rejects unreadable directories, traversal failures, symlinks, hardlinks, special files, or raced child/root namespace identity changes instead of omitting them from the observed path set
+- **AND THEN** this check closes the observed path set and file type/link identity without adding content or mode immutability for ordinary declared inputs
 
 ### Requirement: Provider responses attest to the host request
 Every portable request SHALL carry a host-computed base-request binding over its stage, seat, serialized prompt, role SHA, declared-input names and SHAs, and response schema, plus a separate serialized-prompt SHA. The response SHALL echo both values exactly in its closed envelope. The runtime SHALL record the full wire-request SHA separately and SHALL NOT derive provider attestation from host state after the response.
@@ -69,7 +82,13 @@ The complete Grok outer stdout SHALL remain under the 128 KiB model-output limit
 - **THEN** the runtime imports and publishes no artifact and writes no completion receipt
 
 ### Requirement: Portable requests bind stdout transport precedence
-Every portable request SHALL include closed `transport_instructions` in its base request binding. Those instructions SHALL make the request authoritative for transport while preserving `role.md` as artifact-content instructions only and SHALL prohibit mirror changes. Before computing the binding, the host SHALL select the stdout member by provider. For Grok, it SHALL require the final assistant response itself to be exactly one UTF-8/NFC canonical response-schema object inside one exact lowercase-`json` LF fence, with one trailing LF immediately before the terminal close, no bytes outside the fence in that final response, and no triple-backtick sequence in an earlier assistant response. For every non-Grok provider, including agy, it SHALL require the raw canonical object followed by one LF, without narration, a fence, or extra bytes. Both forms SHALL require exact request attestation. After provider exit, the host SHALL independently verify the closed declared-file path set and SHALL require every declared entry to remain a regular single-link file with its exact original `st_mode`, stable byte count, and SHA-256. Directory presence alone SHALL NOT count as an output, so the runtime-created `.tmp` directory MAY remain empty. The host SHALL validate canonical stdout, the closed schema, and attestation before import and SHALL NOT recover output from provider brain state or a role-named artifact file. This fail-closed validation SHALL NOT be represented as an OS-enforced read-only mount.
+Every portable request SHALL include closed `transport_instructions` in its base request binding. Those instructions SHALL make the request authoritative for transport while preserving `role.md` as artifact-content instructions only and SHALL instruct the model not to create, modify, or delete mirror files. Before computing the binding, the host SHALL select the stdout member by provider. For Grok, it SHALL require the final assistant response itself to be exactly one UTF-8/NFC canonical response-schema object inside one exact lowercase-`json` LF fence, with one trailing LF immediately before the terminal close, no bytes outside the fence in that final response, and no triple-backtick sequence in an earlier assistant response. For every non-Grok provider, including agy, it SHALL require the raw canonical object followed by one LF, without narration, a fence, or extra bytes. Both forms SHALL require exact request attestation. After process-group quiescence, the host SHALL independently verify the closed declared-file path set through descriptor-relative no-follow traversal, SHALL retain parent descriptors through child recursion, SHALL revalidate final child and root namespace identity, and SHALL require every declared entry to remain a regular single-link file with its exact original `st_mode`, stable byte count, and SHA-256. Undeclared non-scratch files SHALL reject; stable empty directories SHALL NOT count as outputs. For stdout portable attempts, the runtime-created `.tmp` MAY contain ignored provider scratch only while `.tmp` and every nested directory remain real directories, descriptor-relative traversal follows no links, every file is regular and single-link, and the complete tree contains at most 32 files, 64 entries, and 1,048,576 stable-read file bytes. Scratch SHALL never be imported. The main mirror walk SHALL skip only the exact validated root `.tmp` snapshot and SHALL require it to be observed and unchanged after traversal. A missing or replaced `.tmp`, unreadable or unstable entry, symlink, hardlink, special file, traversal failure, namespace race, or exceeded limit SHALL reject the attempt before durable state. The host SHALL validate canonical stdout, the closed schema, and attestation, then successfully remove the attempt before import, and SHALL NOT recover output from provider brain state or a role-named artifact file. This fail-closed validation SHALL NOT be represented as an OS-enforced read-only mount.
+
+#### Scenario: Stdout declared-file enumeration fails closed
+- **WHEN** a stdout portable mirror contains a file hidden under an unreadable directory, a link or special file, or a child/root namespace replacement races descriptor traversal
+- **THEN** the host rejects the attempt before import instead of omitting the entry or validating one namespace and reading another
+- **AND WHEN** the mirror contains only stable empty directories in addition to its declared files and bounded `.tmp` scratch
+- **THEN** those empty directories do not count as outputs
 
 #### Scenario: Grok receives a binding-covered final-response fence
 - **WHEN** the host prepares a portable Grok request
@@ -79,10 +98,16 @@ Every portable request SHALL include closed `transport_instructions` in its base
 - **WHEN** the host prepares a portable request for any non-Grok provider, including agy
 - **THEN** its binding-covered stdout instruction requires raw canonical JSON with one trailing LF and forbids fences
 
+#### Scenario: Stdout provider scratch is bounded and ignored
+- **WHEN** a stdout portable provider writes runtime cache data under `.tmp`
+- **THEN** the attempt may proceed only when the scratch tree satisfies the no-follow type, link, entry-count, file-count, byte-count, and stable-read constraints, and no scratch byte enters an import, projection, completion, or declared-file identity
+- **AND WHEN** any scratch constraint fails
+- **THEN** the runtime rejects the attempt before durable state
+
 #### Scenario: Portable agy overrides legacy file-output wording
 - **WHEN** a portable agy AwR stage receives a legacy role that names an output file
 - **THEN** the binding-covered transport instructions override only that output location and file-writing channel while the role continues to define artifact content
-- **AND WHEN** agy adds or removes a mirror file, changes a declared entry's type, link count, exact mode, stable byte count, or SHA-256, leaves a file under `.tmp`, or emits empty, prefixed, fenced, non-canonical, schema-invalid, or unattested stdout
+- **AND WHEN** agy adds or removes a declared mirror file, changes a declared entry's type, link count, exact mode, stable byte count, or SHA-256, violates a `.tmp` scratch constraint, or emits empty, prefixed, fenced, non-canonical, schema-invalid, or unattested stdout
 - **THEN** the runtime imports and publishes no artifact, writes no completion receipt, and does not recover output from agy brain state or a mirror artifact
 
 ### Requirement: Ordered pools define execution identity and failover
