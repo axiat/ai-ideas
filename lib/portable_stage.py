@@ -395,6 +395,29 @@ def _provider_request(
         "declared_input_sha256s": dict(sorted(input_sha256s.items())),
         "role_sha256": role_sha256,
         "response_schema": schema,
+        "transport_instructions": {
+            "schema_version": "portable-stage-transport-instructions-v1",
+            "precedence": (
+                "These transport instructions override any output-location "
+                "or file-writing instruction in role.md."
+            ),
+            "role": "Treat role.md as artifact-content instructions only.",
+            "mirror": (
+                "Do not create, modify, or delete any file in the mirror."
+            ),
+            "stdout": (
+                "Emit exactly one UTF-8 NFC canonical JSON object to stdout, "
+                "with lexicographically sorted object keys, compact "
+                "separators, and exactly one trailing LF. The object must "
+                "match response_schema. Do not emit Markdown fences, "
+                "narration, or any other bytes."
+            ),
+            "request_attestation": (
+                "Copy request_binding.provider_request_binding_sha256 and "
+                "request_binding.serialized_prompt_sha256 exactly into "
+                "request_attestation."
+            ),
+        },
     }
     binding_sha256 = history_contract_v2.framed_sha256(
         "portable-stage-request-base-v1",
