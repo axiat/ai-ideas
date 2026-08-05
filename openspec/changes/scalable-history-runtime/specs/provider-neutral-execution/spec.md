@@ -141,8 +141,13 @@ Hard-complete work SHALL require an exact token counter or a validated conservat
 - **THEN** its actual or reserved usage remains included in the run and intent totals
 
 ### Requirement: Claude is never an automatic execution path
-The registered provider set, defaults, failover pools, test fixtures, compatibility adapters, and indirect multi-backend model routes SHALL NOT launch Claude or select it as a fallback. Explicit OpenCode and agy model routes SHALL be normalized and checked before executable lookup; Claude aliases and dynamic `auto|default|current|configured` markers SHALL fail even if a local catalog lists them. The v1 registry SHALL match the tracked byte ABI exactly.
+The registered provider set, defaults, failover pools, test fixtures, compatibility adapters, and indirect multi-backend model routes SHALL NOT launch Claude or select it as a fallback. Explicit OpenCode and agy model routes SHALL be normalized and checked before executable lookup; Claude aliases and dynamic `auto|default|current|configured` markers SHALL fail even if a local catalog lists them. Every rendered portable Grok command and the external Grok worker SHALL force the six Claude compatibility cells for skills, rules, agents, MCPs, hooks, and sessions to `false`; inherited host values SHALL NOT re-enable them. The portable command record and preflight SHALL bind this environment. The v1 registry SHALL match the tracked byte ABI exactly.
 
 #### Scenario: No declared pool can resolve to Claude
 - **WHEN** provider configuration and default pools are validated
 - **THEN** no provider entry, executable alias, or fallback target resolves to Claude
+
+#### Scenario: Grok compatibility discovery is disabled by construction
+- **WHEN** a portable Grok stage or the external Grok worker is launched while host compatibility variables are unset or true
+- **THEN** the child environment contains `false` for all six Claude compatibility cells before Grok starts
+- **AND THEN** a portable preflight records the same closed environment

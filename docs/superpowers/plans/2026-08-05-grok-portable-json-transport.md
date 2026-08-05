@@ -12,7 +12,7 @@
 
 - Never invoke Claude directly or indirectly, including through tests, hooks, providers, or fallbacks.
 - Preserve the uncommitted `ledger.tsv` in the main checkout; implement in an isolated worktree.
-- Grok SHALL use `--output-format json`; the registry SHALL record `grok-portable-v2` and a new byte-exact registry hash.
+- Grok SHALL use `--output-format json`; the registry SHALL record `grok-portable-v3`, including its closed compatibility environment, and a new byte-exact registry hash.
 - Grok outer JSON SHALL reject invalid UTF-8, duplicate keys, non-object roots, missing/non-string `text`, and any `stopReason` other than `end_turn`.
 - Grok outer usage and cost numbers, including finite floating-point values, SHALL be accepted as transport metadata and SHALL never enter the model envelope.
 - Grok inner text SHALL reject duplicate keys, floating-point values, non-finite constants, invalid JSON, and non-NFC strings before schema and request-attestation validation.
@@ -24,7 +24,7 @@
 - Legacy `forbid_extra_files` enumeration SHALL use descriptor-relative no-follow traversal and SHALL reject unreadable directories, traversal failures, links, special files, and raced directory replacement instead of skipping them.
 - A failed Hunt round SHALL sleep only when another round can execute; unlimited runs and non-terminal bounded rounds retain `FAIL_SLEEP_MIN`.
 - Automated tests SHALL use fake providers. A completed transport revision MAY receive one real Grok portable-stage smoke; it SHALL use `grok-4.5`, `high`, one bounded AwR judge request, and no full Hunt round. A failed smoke SHALL NOT be blindly retried; a new call requires a diagnosed cause and a new tested transport revision.
-- Before that live smoke, disable every Claude compatibility source with `GROK_CLAUDE_SKILLS_ENABLED=false`, `GROK_CLAUDE_RULES_ENABLED=false`, `GROK_CLAUDE_AGENTS_ENABLED=false`, `GROK_CLAUDE_MCPS_ENABLED=false`, `GROK_CLAUDE_HOOKS_ENABLED=false`, and `GROK_CLAUDE_SESSIONS_ENABLED=false`; inspect the effective Grok configuration and do not launch if any automatically triggered hook, plugin, MCP, fallback, or orchestration path can invoke Claude. An inert command that requires explicit user selection is not an invocation path for this smoke.
+- Every portable Grok command and `grok-worker.sh` SHALL override all six Claude compatibility sources to `false`: skills, rules, agents, MCPs, hooks, and sessions. The portable command record and preflight SHALL bind that environment. Inspect the remaining effective Grok configuration before a live smoke and do not launch if an automatically triggered hook, plugin, fallback, or orchestration path can invoke Claude. An inert command that requires explicit user selection is not an invocation path for this smoke.
 
 ---
 
@@ -77,12 +77,16 @@ Expected: both suites fail only because Grok still renders `plain`.
 - [x] **Step 3: Implement the command grammar and registry revision**
 
 In `history/provider-adapters-v1.json`, change the registry revision to
-`2026-08-05` and Grok grammar revision to `grok-portable-v2`. In
+`2026-08-05` and Grok grammar revision to `grok-portable-v3`. In
 `_render_command_fields`, render:
 
 ```python
 "--output-format", "json"
 ```
+
+Return a closed environment delta that sets every
+`GROK_CLAUDE_*_ENABLED` compatibility cell to `false`. Host values cannot
+enable those sources for a portable attempt.
 
 Recompute the complete registry file SHA-256 with:
 
@@ -308,7 +312,7 @@ git commit -m "fix: skip cooldown after final Hunt round"
 
 **Interfaces:**
 
-- Consumes: the implemented `grok-portable-v2` behavior and terminal-round cooldown behavior.
+- Consumes: the implemented `grok-portable-v3` behavior and terminal-round cooldown behavior.
 - Produces: an OpenSpec scenario and operator documentation matching the tested runtime.
 
 - [x] **Step 1: Update the OpenSpec provider-response contract**
@@ -455,21 +459,15 @@ until Step 6 succeeds.
 
 - [x] **Step 6: Run one real Grok portable-stage smoke**
 
-The first live attempt exposed reducer-concatenated prefix handling and did not
-qualify. Task 5 records the later transport success and the current-revision
-qualification state.
+A reducer-concatenated prefix is a non-qualifying transport failure until the
+unique terminal fence is isolated. Task 5 records the qualifying transport
+and current-revision evidence.
 
 Repeat the safety inspection from Global Constraints. Create a temporary AwR
 judge request with declared `draft.md`, `priorwork.md`, `task.md`, `rubric.md`,
 and `brainstorming_policy.md`, then run:
 
 ```bash
-GROK_CLAUDE_SKILLS_ENABLED=false \
-GROK_CLAUDE_RULES_ENABLED=false \
-GROK_CLAUDE_AGENTS_ENABLED=false \
-GROK_CLAUDE_MCPS_ENABLED=false \
-GROK_CLAUDE_HOOKS_ENABLED=false \
-GROK_CLAUDE_SESSIONS_ENABLED=false \
 python3 -B lib/portable_stage.py run \
   --surface awr --provider grok --model grok-4.5 --reasoning high \
   --stage awr-judge --seat grok-json-fence-live-smoke \
@@ -483,6 +481,9 @@ python3 -B lib/portable_stage.py run \
   --state-root "$SMOKE_ROOT/state" \
   --timeout-seconds 300
 ```
+
+No shell compatibility override is required. The command record and preflight
+must contain all six forced `false` values.
 
 Run no retry. Require a canonical completion receipt, a canonical imported
 model envelope whose SHA matches `model_envelope_sha256`, and a valid nonempty
@@ -553,18 +554,24 @@ git diff --check
 
 Require an independent code review before the live gate.
 
-- [ ] **Step 4: Run one revised real Grok smoke**
+- [x] **Step 4: Run one revised real Grok smoke**
 
-The transport smoke before namespace-race commit `e6c8586` completed with
-canonical import, matching model-envelope hash, valid attestation, a completion
-receipt, and a nonempty projected `judge.md`. Completion:
-`ec8e2d309f4617279fd5814840114b4f8a67c08f0094c7adee7511643de25b6e`.
+The bounded smoke on final code commit `bd148e1` completed without retry. Its
+preflight bound all six Claude compatibility cells to `false`; no shell-level
+compatibility override was needed. The explicit `grok-4.5`/`high` command
+produced one exact terminal lowercase-`json` fence from session
+`019fd2a4-4731-7282-a28e-67f46557290f`. The session summary recorded
+`grok-4.5`/`high`, persisted assistant records used
+`grok-4.5-build`/`high`, and no tool call invoked Claude. Completion:
+`e7ac65b9a94d0cdf5ca1cb3d4a70c728e7be23dd47544a0afb44de802a2b1665`.
 Model envelope:
-`857ab8bc500f8a04d33389ec76c2fce88dd021364c458cede59e48b28a49d16f`.
-Projected judge:
-`7366478a991437b0589789a784f127f393dd6bde3130a434811b50fd86963d80`.
-No full Hunt or AwR sidecar round ran. The current revision still requires one
-bounded requalification.
+`b3c44fb1cc44418c30c380811789fede5820cc38cd0d79eed85accfe527dda2a`.
+Preflight:
+`6c22c907fbee5b71b76cd79dd9b162f014ddf3a9981d43410039dee3f9f9b888`.
+Projected judge, 291 bytes:
+`93fe96fcafac3d4a541d6e39861d1666c47f9299fefd2d297b77f932f3b57fa8`.
+All JSON receipts were canonical, every hash link matched, and no attempt
+directory remained. No full Hunt or AwR sidecar round ran.
 
 Repeat the six compatibility-source disables and effective-configuration
 inspection from Task 4. Run one bounded `grok-4.5`/`high` AwR judge request,
@@ -620,6 +627,9 @@ earlier delimiter; every non-Grok
 provider requires one raw canonical UTF-8/NFC response-schema
 object with no fence, narration, or extra bytes. Both forms require exact
 request attestation and forbid model-authored file creation or modification.
+The Grok renderer also returns a closed environment delta that forces all six
+Claude compatibility cells to `false`; this delta is part of the command
+profile and preflight.
 After process-group quiescence, require the closed declared-file path set and
 each entry's regular/single-link type, exact `st_mode`, stable byte count, and
 SHA-256. Undeclared non-scratch files reject; empty directories are ignored.
@@ -673,7 +683,7 @@ replacement that swaps the observed descriptor away from the mirror path.
 This legacy check closes the observed path set and file type/link identity; it
 does not add content or mode immutability for ordinary declared inputs.
 
-- [ ] **Step 7: Run one real agy smoke**
+- [x] **Step 7: Run one real agy smoke**
 
 Inspect current agy plugins, agents, model catalog, and effective explicit
 Gemini route without invoking a model. Do not launch if any automatic path can
@@ -682,18 +692,32 @@ with no retry. Require canonical import, the expected declared regular-file set
 and exact type/link/mode/byte-count/SHA snapshot, a completion receipt, and
 nonempty projected `judge.md`.
 
-The explicit `gemini-3.6-flash-high`/`high` transport smoke before commit
-`e6c8586` completed after bounded runtime scratch validation, with no residual
-attempt directory. Completion:
-`ed8a293bc94c7f060e960e683edef36f89be75e556f9e22757b193c0486a8e5a`.
+The bounded smoke on final code commit `bd148e1` completed without retry.
+The preflight command explicitly selected `gemini-3.6-flash-high` and
+`--effort high`; the Agy log propagated `Gemini 3.6 Flash (High)`, loaded zero
+named hooks, and contained no Claude route. Completion:
+`172ad814a6d0179d1b748abf5f294b0e945063af225303ba09d944fe0305d8d6`.
 Model envelope:
-`0e216d395b06328ad67c4fa6173e1152f2672a717e2457adfee3b2225b615284`.
-Projected judge:
-`81114067dedaf34af0503d23d24ed88e05f9634440f62619246865bd9982ffc2`.
-The current revision still requires one bounded requalification.
+`7bd619c6f65a9728a435be855d9dc8aa3f7c94eb3ec4d6b58db990fc7180b3d6`.
+Preflight:
+`c4f110603ae1c67af1ec1d38f00128e9195e89151d8417769957feaa8864e24c`.
+Projected judge, 247 bytes:
+`08c10f0738f5012d45ddf36f4cd73f20444dddcfd1a75f0fbf022128dfbf9b1a`.
+All JSON receipts were canonical, every hash link matched, and no attempt
+directory remained.
 
-- [ ] **Step 8: Run full verification**
+- [x] **Step 8: Run full verification**
 
 Run the eleven Task 3 regression commands, strict OpenSpec validation, prose
 scan, shell syntax checks, and `git diff --check`. Obtain an independent
 whole-branch review before handoff.
+
+The final revision passed all eleven regression commands, 50 portable
+hardening tests, 12 portable-stage runtime tests, both runtime ABI suites,
+Hunt/AwR end-to-end coverage, generation-contract coverage, runtime and
+fixture product-contract checks, the Grok wrapper default/override smoke,
+Python compilation, shell syntax, strict OpenSpec validation, and
+`git diff --check`. Root namespace replacement, cumulative scratch bytes, and
+bounded/unlimited cooldown behavior have explicit regression coverage.
+Independent code and contract reviews reported no Critical or Important
+finding.

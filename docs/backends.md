@@ -184,7 +184,10 @@ declared-input names and SHAs, and response schema, plus a separate prompt SHA.
 The response must echo both values exactly. Missing or wrong attestation fails
 before any artifact is projected or completion is published.
 
-Portable Grok stages request `--output-format json`. The complete
+Portable Grok stages use the `grok-portable-v3` command grammar and request
+`--output-format json`. The rendered command environment forces all six
+`GROK_CLAUDE_*_ENABLED` compatibility cells to `false`, and the command record
+and preflight bind those values. The complete
 provider-owned outer stdout remains under the 128 KiB capture limit. After the
 host validates that transport and its terminal `text`, it accepts complete bare
 inner JSON or one unique terminal Markdown fence after an optional accumulated

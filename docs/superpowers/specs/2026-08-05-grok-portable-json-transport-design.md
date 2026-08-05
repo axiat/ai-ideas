@@ -34,9 +34,14 @@ minutes even though no retry is possible.
 
 ## Transport
 
-The Grok command grammar uses `--output-format json`. The tracked provider
-registry records a new Grok grammar revision, and its byte-exact registry hash
-is updated.
+The `grok-portable-v3` command grammar uses `--output-format json` and returns
+a closed environment delta that forces all six Claude compatibility cells to
+`false`: skills, rules, agents, MCPs, hooks, and sessions. The command record,
+execution profile, and preflight bind this environment, so inherited host
+values cannot re-enable those discovery sources. `grok-worker.sh` applies the
+same overrides to external Hunt stages. Its optional model and reasoning
+variables add flags only when present; omission preserves the Grok CLI's
+current defaults. The tracked registry and byte-exact hash record this grammar.
 
 The complete Grok outer stdout remains under the existing 128 KiB capture
 limit. The portable runtime then decodes it in two layers:
@@ -181,28 +186,33 @@ Automated checks cover:
 - the portable runtime, Hunt/AwR integration, product contract, shell syntax,
   and OpenSpec validation suites.
 
-Real portable-stage qualification uses one small bounded Grok `grok-4.5`/high
-request and one small bounded agy `gemini-3.6-flash-high`/high request. Each
-qualification requires successful canonical import and projection without a
-full Hunt or AwR sidecar round. Transport smokes before namespace-race commit
-`e6c8586` succeeded. Grok recorded completion
-`ec8e2d309f4617279fd5814840114b4f8a67c08f0094c7adee7511643de25b6e`,
+Real portable-stage qualification used one small bounded Grok
+`grok-4.5`/high request and one small bounded agy
+`gemini-3.6-flash-high`/high request on final code commit `bd148e1`. Each
+completed without retry, imported canonical JSON, projected a nonempty judge,
+closed every receipt hash link, and left no attempt directory. Grok recorded
+completion
+`e7ac65b9a94d0cdf5ca1cb3d4a70c728e7be23dd47544a0afb44de802a2b1665`,
 model envelope
-`857ab8bc500f8a04d33389ec76c2fce88dd021364c458cede59e48b28a49d16f`,
+`b3c44fb1cc44418c30c380811789fede5820cc38cd0d79eed85accfe527dda2a`,
 and projected judge
-`7366478a991437b0589789a784f127f393dd6bde3130a434811b50fd86963d80`.
+`93fe96fcafac3d4a541d6e39861d1666c47f9299fefd2d297b77f932f3b57fa8`.
 Agy recorded completion
-`ed8a293bc94c7f060e960e683edef36f89be75e556f9e22757b193c0486a8e5a`,
+`172ad814a6d0179d1b748abf5f294b0e945063af225303ba09d944fe0305d8d6`,
 model envelope
-`0e216d395b06328ad67c4fa6173e1152f2672a717e2457adfee3b2225b615284`,
+`7bd619c6f65a9728a435be855d9dc8aa3f7c94eb3ec4d6b58db990fc7180b3d6`,
 and projected judge
-`81114067dedaf34af0503d23d24ed88e05f9634440f62619246865bd9982ffc2`.
-No residual attempt directory remained. Both providers require one bounded
-requalification on the current revision before their OpenSpec tasks complete.
-Claude is not invoked.
+`08c10f0738f5012d45ddf36f4cd73f20444dddcfd1a75f0fbf022128dfbf9b1a`.
+The Grok preflight recorded all six compatibility overrides, its final
+response used the exact terminal fence, its session summary recorded
+`grok-4.5`/high, and its persisted assistant records used
+`grok-4.5-build`/high. The Agy log propagated `Gemini 3.6 Flash (High)` and
+loaded zero named hooks. Neither live run invoked Claude.
 
 ## Scope
 
-The change does not alter provider selection, model or reasoning defaults,
-portable-mirror inputs, output schemas, hard-complete qualification, or failed
-payload retention. It does not modify `ledger.tsv`.
+Portable provider selection and defaults remain unchanged. The external Grok
+wrapper now preserves the CLI model and reasoning defaults when overrides are
+omitted instead of pinning a model. Portable-mirror inputs, output schemas,
+hard-complete qualification, failed-payload retention, and `ledger.tsv` remain
+unchanged.
