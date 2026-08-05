@@ -558,7 +558,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         changed["completion"]["completion_id"] = completion["completion_id"]
         return changed
 
-    def test_transport_instructions_are_closed_and_binding_covered(self):
+    def test_non_grok_transport_instructions_are_closed_and_binding_covered(self):
         expected_transport = {
             "schema_version": "portable-stage-transport-instructions-v1",
             "precedence": (
@@ -647,6 +647,63 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         self.assertNotEqual(changed_binding, expected_binding)
         self.assertNotEqual(
             changed_wire_sha256, prepared["provider_request_sha256"]
+        )
+
+    def test_grok_transport_instructions_bind_terminal_response_fence(self):
+        expected_transport = {
+            "schema_version": "portable-stage-transport-instructions-v1",
+            "precedence": (
+                "These transport instructions override any output-location "
+                "or file-writing instruction in role.md."
+            ),
+            "role": "Treat role.md as artifact-content instructions only.",
+            "mirror": (
+                "Do not create, modify, or delete any file in the mirror."
+            ),
+            "stdout": (
+                "Make the FINAL ASSISTANT RESPONSE exactly one UTF-8 NFC "
+                "canonical JSON object inside exactly one Markdown fence. "
+                "The opening fence must be the exact lowercase bytes "
+                "```json followed by LF. The JSON object must use "
+                "lexicographically sorted object keys, compact separators, "
+                "and exactly one trailing LF; that LF must be followed "
+                "immediately by the terminal closing bytes ```. The object "
+                "must match response_schema. Do not emit any bytes before "
+                "the opening fence or after the closing fence in the FINAL "
+                "ASSISTANT RESPONSE, and do not emit triple-backtick bytes "
+                "in any earlier assistant response."
+            ),
+            "request_attestation": (
+                "Copy request_binding.provider_request_binding_sha256 and "
+                "request_binding.serialized_prompt_sha256 exactly into "
+                "request_attestation."
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            request = json.loads(prepared["provider_request"])
+
+        self.assertEqual(
+            request["transport_instructions"], expected_transport
+        )
+        base = {
+            key: value
+            for key, value in request.items()
+            if key != "request_binding"
+        }
+        expected_binding = history_contract_v2.framed_sha256(
+            "portable-stage-request-base-v1",
+            self._canonical(base),
+        )
+        self.assertEqual(
+            request["request_binding"][
+                "provider_request_binding_sha256"
+            ],
+            expected_binding,
+        )
+        self.assertEqual(
+            prepared["provider_request_binding_sha256"], expected_binding
         )
 
     def test_stage_requires_exact_builtin_text_before_input_capture(self):
@@ -858,6 +915,57 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 )
             )
 
+    def test_grok_transport_accepts_reducer_joined_terminal_fence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "fence-non-line-start"},
+                clear=False,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertEqual(
+                imported.read_bytes(),
+                portable_agent._canonical_json_bytes(
+                    json.loads(imported.read_text(encoding="utf-8"))
+                ),
+            )
+            self.assertTrue(
+                pathlib.Path(prepared["completion_path"]).is_file()
+            )
+            self.assertTrue(pathlib.Path(prepared["output_root"]).is_dir())
+
+    def test_grok_transport_rejects_narrated_terminal_bare_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "narrated-terminal-bare"},
+                clear=False,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "malformed_output")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+            self.assertTrue(
+                all(
+                    not pathlib.Path(path).exists()
+                    for path in prepared["output_paths"].values()
+                )
+            )
+
     def test_grok_transport_rejects_invalid_outer_and_inner_responses(self):
         modes = (
             "malformed-outer-json",
@@ -874,7 +982,6 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             "float-inner-value",
             "wrong-request-attestation",
             "fence-duplicate-delimiter",
-            "fence-non-line-start",
             "fence-crlf",
             "fence-cr-before-close",
             "fence-prefix-inline-delimiter",

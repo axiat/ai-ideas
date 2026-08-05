@@ -31,6 +31,22 @@ EXPECTED_TRANSPORT_INSTRUCTIONS = {
     ),
 }
 
+GROK_EXPECTED_TRANSPORT_INSTRUCTIONS = {
+    **EXPECTED_TRANSPORT_INSTRUCTIONS,
+    "stdout": (
+        "Make the FINAL ASSISTANT RESPONSE exactly one UTF-8 NFC canonical "
+        "JSON object inside exactly one Markdown fence. The opening fence "
+        "must be the exact lowercase bytes ```json followed by LF. The JSON "
+        "object must use lexicographically sorted object keys, compact "
+        "separators, and exactly one trailing LF; that LF must be followed "
+        "immediately by the terminal closing bytes ```. The object must "
+        "match response_schema. Do not emit any bytes before the opening "
+        "fence or after the closing fence in the FINAL ASSISTANT RESPONSE, "
+        "and do not emit triple-backtick bytes in any earlier assistant "
+        "response."
+    ),
+}
+
 
 def _prompt(arguments):
     for flag in ("-p", "--print"):
@@ -231,7 +247,11 @@ def _record(request):
         ),
         "transport_instructions_valid": (
             request.get("transport_instructions")
-            == EXPECTED_TRANSPORT_INSTRUCTIONS
+            == (
+                GROK_EXPECTED_TRANSPORT_INSTRUCTIONS
+                if _grok_json_requested(sys.argv[1:])
+                else EXPECTED_TRANSPORT_INSTRUCTIONS
+            )
         ),
         "prompt_sha256": hashlib.sha256(
             str(prompt).encode("utf-8")
@@ -284,12 +304,17 @@ def _grok_transport(inner_raw, mode):
                     reordered[key] = inner_value[key]
             inner_text = json.dumps(reordered, ensure_ascii=False, indent=2)
     fenced = "```json\n" + inner_text + "\n```"
-    if mode == "narrated-terminal-fence":
+    if mode == "narrated-terminal-bare":
+        inner_text = (
+            "Provider completed the request.\n"
+            + inner_raw.decode("utf-8")
+        )
+    elif mode == "narrated-terminal-fence":
         inner_text = "Provider completed the request.\n" + fenced
     elif mode == "fence-duplicate-delimiter":
         inner_text = fenced + "\n" + fenced
     elif mode == "fence-non-line-start":
-        inner_text = "Provider completed the request. " + fenced
+        inner_text = "Provider completed the request." + fenced
     elif mode == "fence-crlf":
         inner_text = "```json\r\n" + inner_text + "\r\n```"
     elif mode == "fence-cr-before-close":

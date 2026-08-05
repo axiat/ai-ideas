@@ -378,6 +378,7 @@ def _response_schema(stage):
 
 
 def _provider_request(
+    provider,
     stage,
     seat_id,
     serialized_prompt,
@@ -385,6 +386,27 @@ def _provider_request(
     role_sha256,
     schema,
 ):
+    stdout_instruction = (
+        "Emit exactly one UTF-8 NFC canonical JSON object to stdout, "
+        "with lexicographically sorted object keys, compact "
+        "separators, and exactly one trailing LF. The object must "
+        "match response_schema. Do not emit Markdown fences, "
+        "narration, or any other bytes."
+    )
+    if provider == "grok":
+        stdout_instruction = (
+            "Make the FINAL ASSISTANT RESPONSE exactly one UTF-8 NFC "
+            "canonical JSON object inside exactly one Markdown fence. "
+            "The opening fence must be the exact lowercase bytes "
+            "```json followed by LF. The JSON object must use "
+            "lexicographically sorted object keys, compact separators, "
+            "and exactly one trailing LF; that LF must be followed "
+            "immediately by the terminal closing bytes ```. The object "
+            "must match response_schema. Do not emit any bytes before "
+            "the opening fence or after the closing fence in the FINAL "
+            "ASSISTANT RESPONSE, and do not emit triple-backtick bytes "
+            "in any earlier assistant response."
+        )
     base = {
         "schema_version": "portable-stage-request-v1",
         "stage": stage,
@@ -405,13 +427,7 @@ def _provider_request(
             "mirror": (
                 "Do not create, modify, or delete any file in the mirror."
             ),
-            "stdout": (
-                "Emit exactly one UTF-8 NFC canonical JSON object to stdout, "
-                "with lexicographically sorted object keys, compact "
-                "separators, and exactly one trailing LF. The object must "
-                "match response_schema. Do not emit Markdown fences, "
-                "narration, or any other bytes."
-            ),
+            "stdout": stdout_instruction,
             "request_attestation": (
                 "Copy request_binding.provider_request_binding_sha256 and "
                 "request_binding.serialized_prompt_sha256 exactly into "
@@ -550,6 +566,7 @@ def prepare_stage(
     }
     role_sha256 = _sha(role_raw)
     provider_request, provider_request_binding_sha256 = _provider_request(
+        launch_intent.provider,
         stage,
         seat_id,
         serialized_prompt,
