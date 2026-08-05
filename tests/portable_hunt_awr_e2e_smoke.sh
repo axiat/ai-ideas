@@ -555,6 +555,85 @@ run_terminal_failure_skips_cooldown() {
   printf 'ok: terminal Hunt failure skips cooldown\n'
 }
 
+run_retryable_failure_cooldown_case() {
+  local name=$1 round_limit=$2 max_fails=$3 expected_status=$4
+  local repo log sleep_log home runs status failures sleeps
+  repo=$(make_repo "hunt-retry-cooldown-$name") || {
+    fail "$name Hunt cooldown fixture setup"
+    return
+  }
+  install_fake_providers "$repo"
+  instrument_audit_cli "$repo"
+  write_hunt_ledger "$repo/ledger.tsv"
+  mkdir -p "$repo/tmp"
+  : > "$repo/tmp/near-sa-queue.tsv"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf "%s\\n" "$*" >> "$FAKE_SLEEP_LOG"' \
+    > "$repo/.test-bin/sleep"
+  chmod 755 "$repo/.test-bin/sleep"
+  log="$CASE_ROOT/hunt-retry-cooldown-$name.log"
+  sleep_log="$CASE_ROOT/hunt-retry-cooldown-$name.sleep.log"
+  home="$CASE_ROOT/hunt-retry-cooldown-$name-home"
+  runs="$CASE_ROOT/hunt-retry-cooldown-$name-runs"
+  mkdir -p "$home" "$runs"
+  run_bounded "$repo" "$log" \
+    env \
+      "HOME=$home" \
+      "CODEX_HOME=$home/codex-config" \
+      "EXPECTED_PROVIDER_HOME=$home" \
+      "EXPECTED_PROVIDER_CODEX_HOME=$home/codex-config" \
+      "PATH=$repo/.test-bin:$PATH" \
+      "FAKE_SLEEP_LOG=$sleep_log" \
+      FAKE_PORTABLE_STAGE_MODE=malformed \
+      HISTORY_RUNTIME_ABI=v2 \
+      HUNT_PROVIDER=codex \
+      "AGENT_CMD=$repo/tests/fake_agent.sh" \
+      HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
+      RESUME_FRONT=0 \
+      THEME_MIN_LOW=0 \
+      RESEARCH_RETRY=0 \
+      "ROUND_LIMIT=$round_limit" \
+      "MAX_FAILS=$max_fails" \
+      FAIL_SLEEP_MIN=1 \
+      SA_TARGET=0 \
+      "RUNS_DIR=$runs" \
+      bash ./hunt.sh
+  status=$?
+  if [ "$status" -ne "$expected_status" ]; then
+    fail "$name Hunt cooldown exited $status"
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  failures=$(rg -c 'Round failed at generate' "$log" || true)
+  if [ "$failures" -ne 2 ]; then
+    fail "$name Hunt failure count changed: $failures"
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  sleeps=$(cat "$sleep_log" 2>/dev/null || true)
+  if [ "$sleeps" != 60 ]; then
+    fail "$name Hunt cooldown calls changed: ${sleeps:-none}"
+    return
+  fi
+  if [ "$round_limit" -gt 0 ]; then
+    if ! rg -q "Reached ROUND_LIMIT=$round_limit" "$log"; then
+      fail "$name Hunt did not reach ROUND_LIMIT=$round_limit"
+      sed -n '1,180p' "$log" >&2
+      return
+    fi
+  elif rg -q 'Reached ROUND_LIMIT=' "$log"; then
+    fail "$name Hunt unexpectedly reported a bounded round limit"
+    return
+  fi
+  printf 'ok: %s Hunt retryable failure retains one cooldown\n' "$name"
+}
+
+run_retryable_failures_retain_cooldown() {
+  run_retryable_failure_cooldown_case bounded 2 12 0
+  run_retryable_failure_cooldown_case unlimited 0 2 1
+}
+
 check_awr_result() {
   local repo=$1 provider_log=$2 profile=${3:-mixed}
   python3 - "$repo" "$provider_log" "$profile" <<'PY'
@@ -739,6 +818,7 @@ run_v1_regressions() {
 
 run_hunt_v2
 run_terminal_failure_skips_cooldown
+run_retryable_failures_retain_cooldown
 run_awr_v2
 run_awr_v2_all_agy
 run_v1_regressions

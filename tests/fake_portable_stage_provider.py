@@ -674,6 +674,22 @@ def main():
         )
         sys.stdout.buffer.write(raw)
         return 0
+    if mode == "agy-tmp-exact-limits":
+        for index in range(32):
+            _write(
+                pathlib.Path(".tmp") / f"directory-{index:02d}" / "cache",
+                b"x" * 32768,
+            )
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-aggregate-oversize":
+        _write(pathlib.Path(".tmp/cache-a"), b"x" * (600 * 1024))
+        _write(
+            pathlib.Path(".tmp/cache-b"),
+            b"y" * (424 * 1024 + 1),
+        )
+        sys.stdout.buffer.write(raw)
+        return 0
     if mode == "agy-tmp-root-symlink":
         pathlib.Path(".tmp").rmdir()
         pathlib.Path(".tmp").symlink_to("input", target_is_directory=True)

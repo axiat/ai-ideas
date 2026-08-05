@@ -968,6 +968,62 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             self.assertFalse((root / "published").exists())
             self.assertFalse(any((root / "state").glob("attempt-*")))
 
+    def test_stdout_mirror_root_swap_during_walk_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            real_walk = portable_agent._walk_mirror_directory
+            raced = False
+
+            def swap_after_root_walk(
+                directory_descriptor,
+                prefix,
+                visit_non_directory,
+                skipped_root,
+                seen_skipped_root,
+            ):
+                nonlocal raced
+                result = real_walk(
+                    directory_descriptor,
+                    prefix,
+                    visit_non_directory,
+                    skipped_root,
+                    seen_skipped_root,
+                )
+                if not prefix and not raced:
+                    raced = True
+                    mirror = next(
+                        (root / "state").glob("attempt-*/mirror")
+                    )
+                    displaced = mirror.with_name("mirror-old")
+                    mirror.rename(displaced)
+                    mirror.symlink_to(
+                        displaced.name,
+                        target_is_directory=True,
+                    )
+                return result
+
+            with mock.patch.object(
+                portable_agent,
+                "_walk_mirror_directory",
+                swap_after_root_walk,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertTrue(raced)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
     def test_agy_bounded_tmp_schema_is_ignored_and_never_imported(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -1007,6 +1063,58 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                     json.loads(imported.read_text(encoding="utf-8"))
                 ),
             )
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_agy_tmp_exact_file_entry_and_byte_limits_are_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "agy-tmp-exact-limits"},
+                clear=False,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertTrue(imported.is_file())
+            self.assertTrue((root / "published/draft.md").is_file())
+            self.assertTrue((root / "state/completion.json").is_file())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_agy_tmp_aggregate_bytes_over_limit_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FAKE_PORTABLE_STAGE_MODE": (
+                        "agy-tmp-aggregate-oversize"
+                    )
+                },
+                clear=False,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
             self.assertFalse(any((root / "state").glob("attempt-*")))
 
     def test_agy_unsafe_or_unbounded_tmp_rejects_before_import_or_projection(self):
@@ -1711,6 +1819,53 @@ class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
                 portable_agent,
                 "_open_directory_at",
                 swap_after_open,
+            ):
+                with self.assertRaises(
+                    portable_agent.PortableAgentError
+                ) as caught:
+                    self._run(state, "success")
+            self.assertTrue(raced)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            self.assertFalse((state / "imports").exists())
+            self.assertFalse(any(state.glob("attempt-*")))
+
+    def test_legacy_mirror_root_swap_during_walk_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            state = root / "state"
+            real_walk = portable_agent._walk_mirror_directory
+            raced = False
+
+            def swap_after_root_walk(
+                directory_descriptor,
+                prefix,
+                visit_non_directory,
+                skipped_root,
+                seen_skipped_root,
+            ):
+                nonlocal raced
+                result = real_walk(
+                    directory_descriptor,
+                    prefix,
+                    visit_non_directory,
+                    skipped_root,
+                    seen_skipped_root,
+                )
+                if not prefix and not raced:
+                    raced = True
+                    mirror = next(state.glob("attempt-*/mirror"))
+                    displaced = mirror.with_name("mirror-old")
+                    mirror.rename(displaced)
+                    mirror.symlink_to(
+                        displaced.name,
+                        target_is_directory=True,
+                    )
+                return result
+
+            with mock.patch.object(
+                portable_agent,
+                "_walk_mirror_directory",
+                swap_after_root_walk,
             ):
                 with self.assertRaises(
                     portable_agent.PortableAgentError
