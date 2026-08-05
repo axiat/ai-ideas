@@ -45,7 +45,8 @@
 - [x] 8.1 Add explicit `HISTORY_RUNTIME_ABI=v2` Hunt portable-mirror provider/model/reasoning controls while retaining v1 command compatibility and defaulting migration runs to v1.
 - [x] 8.2 Add AwR provider/model/reasoning controls and role overrides for the full registered AwR provider set.
 - [x] 8.3 Add one locally verified CLI-grammar example per provider with explicit v2 selection and local-catalog/account/capacity boundaries, plus offline end-to-end fake-provider tests, shell syntax gates, and product-contract checks.
-- [ ] 8.4 Repair Grok portable JSON transport with a live Grok `awr-judge` smoke and verify that a failed final Hunt round skips `FAIL_SLEEP_MIN`.
+- [ ] 8.4 Qualify the repaired Grok unique-terminal-fence transport with a live Grok `awr-judge` smoke; the offline transport and final-round no-sleep regressions are implemented.
+- [ ] 8.5 Qualify binding-covered portable stdout instructions with a live agy `awr-judge` smoke; offline request-binding, all-agy AwR, closed-path/type/link/mode/content-integrity, canonical-schema, and attestation regressions are implemented.
 
 ## 9. Independent Verification
 

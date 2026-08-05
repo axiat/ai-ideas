@@ -504,25 +504,26 @@ git commit -m "docs: specify exact Grok JSON fence transport"
 - Consumes: the validated Grok outer `text` string.
 - Produces: bare JSON bytes or the bytes inside one exact terminal lowercase-`json` fence.
 
-- [ ] **Step 1: Write terminal-fence RED tests**
+- [x] **Step 1: Write terminal-fence RED tests**
 
 Add a success fixture with provider narration followed by one LF-delimited
 `json` fence whose closing delimiter ends the `text`. Add rejection fixtures
-for duplicate or non-line-start delimiters, CRLF, wrong label or case, missing
-close, and every byte after the closing delimiter. Every rejection must leave
-imports, projections, and completion absent.
+for duplicate or non-line-start delimiters, any CR byte, wrong label or case,
+missing close, and every byte after the closing delimiter. Every rejection
+must leave imports, projections, and completion absent.
 
-- [ ] **Step 2: Implement the bounded extractor**
+- [x] **Step 2: Implement the bounded extractor**
 
 Keep the complete outer stdout under the existing 128 KiB cap. If no fence
-delimiter line exists, pass the complete `text` to strict JSON parsing. If a
-delimiter exists, require exactly one opener line `b"```json\n"`, exactly one
-closer line `b"```"`, and require the closer's final byte to be the final byte
-of `text`. The opener must begin at byte zero or immediately after LF. Discard
-only the bytes before that opener. Do not trim, normalize, search for an
-arbitrary JSON substring, or repair the extracted body.
+delimiter candidate exists, pass the complete `text` to strict JSON parsing.
+In fenced mode require exactly two triple-backtick sequences and no CR byte,
+exactly one opener line `b"```json\n"`, exactly one closer line `b"```"`, and
+require the closer's final byte to be the final byte of `text`. The opener must
+begin at byte zero or immediately after LF. Discard only the bytes before that
+opener. Do not trim, normalize, search for an arbitrary JSON substring, or
+repair the extracted body.
 
-- [ ] **Step 3: Run focused tests and review**
+- [x] **Step 3: Run focused tests and review**
 
 ```bash
 python3 tests/provider_portable_hardening_smoke.py
@@ -561,25 +562,31 @@ exact temporary smoke directory after verification.
 - Produces: binding-covered `transport_instructions` declaring the stdout-only
   response channel and read-only mirror contract.
 
-- [ ] **Step 1: Write request-binding and agy RED tests**
+- [x] **Step 1: Write request-binding and agy RED tests**
 
 Assert that the request contains closed portable transport instructions and
 that changing them changes both the request binding and wire-request hash.
 Exercise all three agy AwR stages with a fake provider that sees the legacy
 role wording but obeys the portable stdout override. Add a fake agy mode that
 writes a mirror file and exits zero; require `unexpected_artifact` with no
-import, projection, or completion. Retain v1 file-output regression coverage.
+import, projection, or completion. Cover same-size role and declared-input
+overwrites plus exact-mode drift under the same fail-closed outcome. Retain v1
+file-output regression coverage.
 
-- [ ] **Step 2: Add provider-neutral transport instructions**
+- [x] **Step 2: Add provider-neutral transport instructions**
 
 Add one closed object to `_provider_request()` before computing its binding.
 It declares that `role.md` controls artifact content, the request controls its
 transport, the mirror is read-only, and stdout must contain exactly one
 UTF-8/NFC canonical response-schema object with its request attestation. It
 forbids fences, narration, extra bytes, and file creation or modification.
-Do not add an unbound adapter prompt or parse any provider brain/artifact file.
+After provider exit, require the closed declared-file path set and each entry's
+regular/single-link type, exact `st_mode`, stable byte count, and SHA-256. Allow
+the runtime-created `.tmp` directory to remain empty, without describing this
+post-exit check as an OS read-only mount. Do not add an unbound adapter prompt
+or parse any provider brain/artifact file.
 
-- [ ] **Step 3: Run focused tests and review**
+- [x] **Step 3: Run focused tests and review**
 
 ```bash
 python3 tests/provider_portable_hardening_smoke.py
@@ -596,8 +603,9 @@ Require an independent code review before the live gate.
 Inspect current agy plugins, agents, model catalog, and effective explicit
 Gemini route without invoking a model. Do not launch if any automatic path can
 invoke Claude. Run one bounded `gemini-3.6-flash-high`/`high` AwR judge request
-with no retry. Require canonical import, an unchanged mirror, a completion
-receipt, and nonempty projected `judge.md`.
+with no retry. Require canonical import, the expected declared regular-file set
+and exact type/link/mode/byte-count/SHA snapshot, a completion receipt, and
+nonempty projected `judge.md`.
 
 - [ ] **Step 5: Run full verification**
 

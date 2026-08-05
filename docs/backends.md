@@ -159,17 +159,38 @@ declared-input names and SHAs, and response schema, plus a separate prompt SHA.
 The response must echo both values exactly. Missing or wrong attestation fails
 before any artifact is projected or completion is published.
 
-Portable Grok stages request `--output-format json`. After the host validates
-the provider transport and its terminal `text`, it discards that wrapper and
-accepts either bare inner JSON or one exact whole-text Markdown fence labeled
-lowercase `json`, separated by LF with no surrounding text. The host strips
-only those two fence markers; it does not trim, search, or repair the response.
-It then strictly validates and canonicalizes the inner model envelope.
-Completion hashes, including `model_envelope_sha256`, identify the canonical
-inner model envelope, not the discarded provider transport.
+Portable Grok stages request `--output-format json`. The complete
+provider-owned outer stdout remains under the 128 KiB capture limit. After the
+host validates that transport and its terminal `text`, it accepts bare inner
+JSON or provider narration followed by one unique terminal Markdown fence.
+The fenced form has an exact line-start lowercase-`json` opener, an exact
+line-start closing delimiter whose last byte ends `text`, exactly two
+triple-backtick sequences in total, and no CR byte. The host discards only the
+prefix narration and the two fence markers. An additional triple-backtick
+sequence, a non-line-start opener, a different label or case, a missing close,
+CR, or any trailing byte rejects the response. No trimming, substring search,
+normalization, or repair occurs.
 
-This is process-level data minimization, not an OS/container sandbox. A
-host-privileged CLI can still access absolute host paths outside the mirror.
+Every v2 portable request carries binding-covered `transport_instructions`.
+For agy, these override legacy output-location and file-writing statements in
+the AwR role; `role.md` defines artifact content only. The instructions forbid
+mirror writes and require exactly one canonical UTF-8/NFC response-schema
+object on stdout with exact request attestation. The host verifies the
+closed declared-file path set after provider exit. Every declared entry must
+remain a regular single-link file with its exact original `st_mode`; a stable
+read must preserve its exact byte count and SHA-256. Added or removed files,
+entry-type, link-count, or mode changes, and content drift reject the attempt
+before import. Directory presence alone is not an output: the runtime-created
+`.tmp` directory may remain empty. The host also validates canonical stdout,
+the closed schema, and attestation. It does not recover output from an agy
+brain directory or a role-named mirror artifact.
+
+Completion hashes, including `model_envelope_sha256`, identify the canonical
+inner model envelope, not a discarded provider transport.
+
+This post-exit fail-closed check is not an OS-enforced read-only mount or a
+container sandbox. A host-privileged CLI can still access absolute host paths
+outside the mirror.
 Provider authentication and current CLI defaults remain available through the
 provider's normal host configuration.
 

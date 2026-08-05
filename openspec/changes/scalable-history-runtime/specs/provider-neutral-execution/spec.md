@@ -56,7 +56,7 @@ Every portable request SHALL carry a host-computed base-request binding over its
 
 An adapter MAY unwrap provider-owned machine transport before model-envelope validation. The extracted model envelope SHALL still satisfy the strict JSON, closed-schema, request-attestation, and host-canonicalization requirements before import or publication.
 
-Grok terminal text MAY contain bare JSON or one exact whole-text Markdown fence labeled lowercase `json`, with LF separators and no surrounding text. The adapter SHALL strip only those two fence markers and SHALL NOT trim, search, or repair the response.
+The complete Grok outer stdout SHALL remain under the 128 KiB model-output limit. Grok terminal text MAY contain bare JSON or provider narration followed by one unique terminal Markdown fence. Fenced text SHALL contain exactly two triple-backtick sequences and no CR byte; its opener SHALL be an exact LF-delimited line-start lowercase-`json` marker, and its exact line-start closer SHALL end the text. The adapter SHALL discard only prefix narration and those two markers and SHALL NOT trim, normalize, search for an arbitrary JSON substring, or repair the response.
 
 #### Scenario: Missing or mismatched request attestation is rejected
 - **WHEN** a provider response omits either attestation value or returns a different request or prompt SHA
@@ -64,9 +64,18 @@ Grok terminal text MAY contain bare JSON or one exact whole-text Markdown fence 
 
 #### Scenario: Grok native JSON transport is unwrapped safely
 - **WHEN** a portable Grok stage requests native JSON mode and receives a provider transport with terminal `stopReason=end_turn` and `text`
-- **THEN** the adapter validates and extracts terminal `text`, accepts bare JSON or one exact whole-text lowercase-`json` fence, strictly validates the inner closed model envelope and attestations, canonicalizes that inner envelope on the host, and records its canonical import and completion hash
-- **AND WHEN** the transport is malformed, incomplete, non-terminal, lacks valid text, or uses surrounding text, a different fence label, or a missing closing marker
+- **THEN** the adapter validates and extracts terminal `text`, accepts complete bare JSON or one unique terminal lowercase-`json` fence after optional provider narration, strictly validates the inner closed model envelope and attestations, canonicalizes that inner envelope on the host, and records its canonical import and completion hash
+- **AND WHEN** the transport is malformed, incomplete, non-terminal, lacks valid text, or fenced text contains an additional triple-backtick sequence, any CR byte, a non-line-start opener, a different label or case, a missing close, or any trailing byte
 - **THEN** the runtime imports and publishes no artifact and writes no completion receipt
+
+### Requirement: Portable requests bind stdout transport precedence
+Every portable request SHALL include closed `transport_instructions` in its base request binding. Those instructions SHALL make the request authoritative for transport while preserving `role.md` as artifact-content instructions only. They SHALL prohibit mirror changes and require exactly one UTF-8/NFC canonical response-schema object on stdout with one trailing LF and exact request attestation, without narration, fences, or extra bytes. After provider exit, the host SHALL independently verify the closed declared-file path set and SHALL require every declared entry to remain a regular single-link file with its exact original `st_mode`, stable byte count, and SHA-256. Directory presence alone SHALL NOT count as an output, so the runtime-created `.tmp` directory MAY remain empty. The host SHALL validate canonical stdout, the closed schema, and attestation before import and SHALL NOT recover output from provider brain state or a role-named artifact file. This fail-closed validation SHALL NOT be represented as an OS-enforced read-only mount.
+
+#### Scenario: Portable agy overrides legacy file-output wording
+- **WHEN** a portable agy AwR stage receives a legacy role that names an output file
+- **THEN** the binding-covered transport instructions override only that output location and file-writing channel while the role continues to define artifact content
+- **AND WHEN** agy adds or removes a mirror file, changes a declared entry's type, link count, exact mode, stable byte count, or SHA-256, leaves a file under `.tmp`, or emits empty, prefixed, fenced, non-canonical, schema-invalid, or unattested stdout
+- **THEN** the runtime imports and publishes no artifact, writes no completion receipt, and does not recover output from agy brain state or a mirror artifact
 
 ### Requirement: Ordered pools define execution identity and failover
 Each stage SHALL use one ordered provider list that is both its allowlist and failover order. Pool order, resolved-default capability, capacity profile, prompt/schema, or settlement policy changes SHALL create a new plan identity; an attempt's actual provider/model/reasoning SHALL affect attempt provenance but not the logical task identity.
