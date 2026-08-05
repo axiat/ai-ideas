@@ -270,6 +270,125 @@ def assert_backend_defaults():
                 f"agy model default mismatch in {name}: expected {expected!r}, found {assignments!r}"
             )
 
+def _awr_usage_commands(header):
+    commands = []
+    current = []
+    for raw in header.splitlines():
+        stripped = raw.lstrip()
+        if not stripped.startswith("#"):
+            current = []
+            continue
+        line = stripped.removeprefix("#").strip()
+        if current or line.endswith("\\"):
+            continued = line.endswith("\\")
+            current.append(line[:-1].rstrip() if continued else line)
+            if not continued:
+                command = " ".join(current)
+                if "./awr-side.sh" in command:
+                    commands.append(command)
+                current = []
+        elif "./awr-side.sh" in line:
+            commands.append(line)
+    return commands
+
+
+def _awr_shell_segments(command):
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    segments = []
+    current = []
+    for token in tokens:
+        if token and not set(token).difference(";&|()"):
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _awr_assignment(token):
+    match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", token, re.DOTALL)
+    return match.groups() if match else None
+
+
+def _awr_effective_assignments(segment, awr_index):
+    assignments = {}
+    cursor = 0
+    while cursor < awr_index:
+        assignment = _awr_assignment(segment[cursor])
+        if assignment is None:
+            break
+        assignments[assignment[0]] = assignment[1]
+        cursor += 1
+    if cursor == awr_index:
+        return assignments
+
+    if segment[cursor] in ("env", "/usr/bin/env"):
+        cursor += 1
+        while cursor < awr_index and segment[cursor].startswith("-"):
+            cursor += 1
+        while cursor < awr_index:
+            assignment = _awr_assignment(segment[cursor])
+            if assignment is None:
+                break
+            assignments[assignment[0]] = assignment[1]
+            cursor += 1
+        if cursor == awr_index:
+            return assignments
+
+    if segment[cursor] == "caffeinate":
+        return assignments
+    return None
+
+
+def _unsafe_v2_agy_examples(header):
+    unsafe = []
+    for command in _awr_usage_commands(header):
+        command_is_unsafe = False
+        for segment in _awr_shell_segments(command):
+            for awr_index, token in enumerate(segment):
+                if token != "./awr-side.sh":
+                    continue
+                assignments = _awr_effective_assignments(segment, awr_index)
+                if not assignments or assignments.get("HISTORY_RUNTIME_ABI") != "v2":
+                    continue
+                base_provider = assignments.get("AWR_PROVIDER", "codex")
+                base_model = assignments.get("AWR_MODEL", "")
+                if base_provider == "agy" and not base_model:
+                    command_is_unsafe = True
+                    break
+                for role in ("RESEARCH", "PRIORWORK", "JUDGE"):
+                    provider_key = f"AWR_{role}_PROVIDER"
+                    model_key = f"AWR_{role}_MODEL"
+                    provider = assignments.get(provider_key, base_provider)
+                    if provider != "agy":
+                        continue
+                    if model_key in assignments:
+                        model = assignments[model_key]
+                    elif provider == base_provider:
+                        model = base_model
+                    else:
+                        model = ""
+                    if not model:
+                        command_is_unsafe = True
+                        break
+                if command_is_unsafe:
+                    break
+            if command_is_unsafe:
+                break
+        if command_is_unsafe:
+            unsafe.append(command)
+    return unsafe
+
+
 def assert_awr_provider_usage():
     text = (ROOT / "awr-side.sh").read_text()
     header = text.split("set -u", 1)[0]
@@ -293,10 +412,35 @@ def assert_awr_provider_usage():
             raise AssertionError(
                 f"missing AwR provider usage contract: {statement!r}"
             )
-    invalid_example = "HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh"
-    if invalid_example in usage:
+    unsafe = _unsafe_v2_agy_examples(header)
+    if unsafe:
         raise AssertionError(
-            f"AwR usage contains invalid agy example: {invalid_example!r}"
+            f"AwR usage contains agy examples without an effective model: {unsafe!r}"
+        )
+    parser_probes = (
+        "# SIDE_POLL_SEC=0 HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh",
+        "# AWR_JUDGE_PROVIDER=agy HISTORY_RUNTIME_ABI=v2 \\\n"
+        "#   SIDE_POLL_SEC=0 ./awr-side.sh",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh "
+        "AWR_MODEL=gemini-3.6-flash-high",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh "
+        "# add AWR_MODEL=gemini-3.6-flash-high",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "AWR_MODEL=gemini-3.6-flash-high ./awr-side.sh && "
+        "HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh",
+    )
+    for probe in parser_probes:
+        if not _unsafe_v2_agy_examples(header + "\n" + probe):
+            raise AssertionError(
+                f"AwR usage validator missed agy example without model: {probe!r}"
+            )
+    warning_probe = (
+        "# Never run HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "./awr-side.sh without AWR_MODEL."
+    )
+    if _unsafe_v2_agy_examples(header + "\n" + warning_probe):
+        raise AssertionError(
+            f"AwR usage validator treated prose as a command: {warning_probe!r}"
         )
 
 def shell_code_lines(text):
