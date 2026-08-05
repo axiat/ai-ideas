@@ -11,6 +11,7 @@ import stat
 import struct
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -440,9 +441,16 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             provider_adapters.load_registry(REGISTRY),
             surface,
             provider,
-            model="MODEL",
+            model=(
+                "gemini/fixture-model" if provider == "agy" else "MODEL"
+            ),
             reasoning=None if provider == "kimi" else "high",
             executable_lookup=lambda _: str(FAKE_STAGE),
+            model_catalog_probe=(
+                provider_adapters._host_model_catalog_probe
+                if provider == "agy"
+                else None
+            ),
         )
 
     def _capability(self):
@@ -551,6 +559,154 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         changed["completion"]["completion_id"] = completion["completion_id"]
         return changed
 
+    def test_non_grok_transport_instructions_are_closed_and_binding_covered(self):
+        expected_transport = {
+            "schema_version": "portable-stage-transport-instructions-v1",
+            "precedence": (
+                "These transport instructions override any output-location "
+                "or file-writing instruction in role.md."
+            ),
+            "role": "Treat role.md as artifact-content instructions only.",
+            "mirror": (
+                "Do not create, modify, or delete any file in the mirror."
+            ),
+            "stdout": (
+                "Emit exactly one UTF-8 NFC canonical JSON object to stdout, "
+                "with lexicographically sorted object keys, compact "
+                "separators, and exactly one trailing LF. The object must "
+                "match response_schema. Do not emit Markdown fences, "
+                "narration, or any other bytes."
+            ),
+            "request_attestation": (
+                "Copy request_binding.provider_request_binding_sha256 and "
+                "request_binding.serialized_prompt_sha256 exactly into "
+                "request_attestation."
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root)
+            request = json.loads(prepared["provider_request"])
+
+        self.assertIn("transport_instructions", request)
+        self.assertEqual(
+            request["transport_instructions"], expected_transport
+        )
+        self.assertEqual(
+            set(request),
+            {
+                "schema_version",
+                "stage",
+                "seat_id",
+                "serialized_prompt",
+                "role_path",
+                "declared_inputs",
+                "declared_input_sha256s",
+                "role_sha256",
+                "response_schema",
+                "transport_instructions",
+                "request_binding",
+            },
+        )
+        binding = request["request_binding"]
+        base = {
+            key: value
+            for key, value in request.items()
+            if key != "request_binding"
+        }
+        expected_binding = history_contract_v2.framed_sha256(
+            "portable-stage-request-base-v1",
+            self._canonical(base),
+        )
+        self.assertEqual(
+            binding["provider_request_binding_sha256"], expected_binding
+        )
+        self.assertEqual(
+            prepared["provider_request_binding_sha256"], expected_binding
+        )
+        self.assertEqual(
+            prepared["provider_request_sha256"],
+            hashlib.sha256(self._canonical(request)).hexdigest(),
+        )
+
+        changed_base = copy.deepcopy(base)
+        changed_base["transport_instructions"]["mirror"] = (
+            "The provider may modify the mirror."
+        )
+        changed_binding = history_contract_v2.framed_sha256(
+            "portable-stage-request-base-v1",
+            self._canonical(changed_base),
+        )
+        changed_request = copy.deepcopy(changed_base)
+        changed_request["request_binding"] = {
+            **binding,
+            "provider_request_binding_sha256": changed_binding,
+        }
+        changed_wire_sha256 = hashlib.sha256(
+            self._canonical(changed_request)
+        ).hexdigest()
+        self.assertNotEqual(changed_binding, expected_binding)
+        self.assertNotEqual(
+            changed_wire_sha256, prepared["provider_request_sha256"]
+        )
+
+    def test_grok_transport_instructions_bind_terminal_response_fence(self):
+        expected_transport = {
+            "schema_version": "portable-stage-transport-instructions-v1",
+            "precedence": (
+                "These transport instructions override any output-location "
+                "or file-writing instruction in role.md."
+            ),
+            "role": "Treat role.md as artifact-content instructions only.",
+            "mirror": (
+                "Do not create, modify, or delete any file in the mirror."
+            ),
+            "stdout": (
+                "Make the FINAL ASSISTANT RESPONSE exactly one UTF-8 NFC "
+                "canonical JSON object inside exactly one Markdown fence. "
+                "The opening fence must be the exact lowercase bytes "
+                "```json followed by LF. The JSON object must use "
+                "lexicographically sorted object keys, compact separators, "
+                "and exactly one trailing LF; that LF must be followed "
+                "immediately by the terminal closing bytes ```. The object "
+                "must match response_schema. Do not emit any bytes before "
+                "the opening fence or after the closing fence in the FINAL "
+                "ASSISTANT RESPONSE, and do not emit triple-backtick bytes "
+                "in any earlier assistant response."
+            ),
+            "request_attestation": (
+                "Copy request_binding.provider_request_binding_sha256 and "
+                "request_binding.serialized_prompt_sha256 exactly into "
+                "request_attestation."
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            request = json.loads(prepared["provider_request"])
+
+        self.assertEqual(
+            request["transport_instructions"], expected_transport
+        )
+        base = {
+            key: value
+            for key, value in request.items()
+            if key != "request_binding"
+        }
+        expected_binding = history_contract_v2.framed_sha256(
+            "portable-stage-request-base-v1",
+            self._canonical(base),
+        )
+        self.assertEqual(
+            request["request_binding"][
+                "provider_request_binding_sha256"
+            ],
+            expected_binding,
+        )
+        self.assertEqual(
+            prepared["provider_request_binding_sha256"], expected_binding
+        )
+
     def test_stage_requires_exact_builtin_text_before_input_capture(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -643,6 +799,753 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 self.assertFalse(imports.exists() and any(imports.iterdir()))
                 self.assertFalse((root / "state/completion.json").exists())
                 self.assertFalse((root / "published").exists())
+
+    def test_agy_mirror_write_rejects_before_import_projection_or_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "agy-mirror-write"},
+                clear=False,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+
+    def test_grok_forces_claude_compatibility_sources_off(self):
+        names = (
+            "GROK_CLAUDE_SKILLS_ENABLED",
+            "GROK_CLAUDE_RULES_ENABLED",
+            "GROK_CLAUDE_AGENTS_ENABLED",
+            "GROK_CLAUDE_MCPS_ENABLED",
+            "GROK_CLAUDE_HOOKS_ENABLED",
+            "GROK_CLAUDE_SESSIONS_ENABLED",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="grok",
+            )
+            hostile = {name: "true" for name in names}
+            hostile["FAKE_PORTABLE_STAGE_MODE"] = (
+                "grok-compatibility-audit"
+            )
+            with mock.patch.dict(os.environ, hostile, clear=False):
+                portable_stage.run_stage(prepared, timeout_seconds=2)
+            preflight = json.loads(
+                pathlib.Path(prepared["preflight_path"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                preflight["provider_command"]["environment"],
+                {name: "false" for name in names},
+            )
+
+    def test_stdout_hidden_file_in_unreadable_directory_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "agy-hidden-extra-mode-zero"},
+                clear=False,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_stdout_expected_input_requires_regular_single_link(self):
+        modes = (
+            "agy-input-symlink",
+            "agy-input-hardlink",
+            "agy-input-special",
+        )
+        for mode in modes:
+            with (
+                self.subTest(mode=mode),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = pathlib.Path(directory)
+                prepared = self._prepare(
+                    root,
+                    stage="awr-research",
+                    provider="agy",
+                )
+                target = root / "inputs/idea.md"
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "FAKE_PORTABLE_STAGE_MODE": mode,
+                        "FAKE_PORTABLE_LINK_TARGET": str(target),
+                    },
+                    clear=False,
+                ):
+                    with self.assertRaises(
+                        portable_stage.PortableStageError
+                    ) as caught:
+                        portable_stage.run_stage(prepared, timeout_seconds=2)
+                self.assertEqual(caught.exception.code, "unexpected_artifact")
+                imports = root / "state/imports"
+                self.assertFalse(imports.exists() and any(imports.iterdir()))
+                self.assertFalse((root / "state/completion.json").exists())
+                self.assertFalse((root / "published").exists())
+                self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_stdout_directory_swap_out_during_walk_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            real_open_directory = portable_agent._open_directory_at
+            raced = False
+
+            def swap_after_open(parent_descriptor, component, code):
+                nonlocal raced
+                child = real_open_directory(
+                    parent_descriptor,
+                    component,
+                    code,
+                )
+                if component == "input" and not raced:
+                    raced = True
+                    source = root / "inputs/idea.md"
+                    mirror_input = next(
+                        (root / "state").glob("attempt-*/mirror/input")
+                    )
+                    mirror_input.rename(root / "swapped-input")
+                    mirror_input.mkdir(mode=0o700)
+                    os.chmod(mirror_input, 0o700)
+                    replacement = mirror_input / "idea.md"
+                    replacement.write_bytes(source.read_bytes())
+                    os.chmod(replacement, 0o600)
+                    hidden = mirror_input / "hidden.txt"
+                    hidden.write_text("hidden\n", encoding="utf-8")
+                    os.chmod(hidden, 0o600)
+                return child
+
+            with mock.patch.object(
+                portable_agent,
+                "_open_directory_at",
+                swap_after_open,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertTrue(raced)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_stdout_mirror_root_swap_during_walk_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            real_walk = portable_agent._walk_mirror_directory
+            raced = False
+
+            def swap_after_root_walk(
+                directory_descriptor,
+                prefix,
+                visit_non_directory,
+                skipped_root,
+                seen_skipped_root,
+            ):
+                nonlocal raced
+                result = real_walk(
+                    directory_descriptor,
+                    prefix,
+                    visit_non_directory,
+                    skipped_root,
+                    seen_skipped_root,
+                )
+                if not prefix and not raced:
+                    raced = True
+                    mirror = next(
+                        (root / "state").glob("attempt-*/mirror")
+                    )
+                    displaced = mirror.with_name("mirror-old")
+                    mirror.rename(displaced)
+                    mirror.symlink_to(
+                        displaced.name,
+                        target_is_directory=True,
+                    )
+                return result
+
+            with mock.patch.object(
+                portable_agent,
+                "_walk_mirror_directory",
+                swap_after_root_walk,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertTrue(raced)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_agy_bounded_tmp_schema_is_ignored_and_never_imported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "agy-tmp-schema"},
+                clear=False,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertEqual(
+                {
+                    path.relative_to(root).as_posix()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                },
+                {
+                    "inputs/idea.md",
+                    "published/draft.md",
+                    "state/completion.json",
+                    "state/imports/" + imported.name,
+                    "state/preflight.json",
+                },
+            )
+            self.assertEqual(
+                imported.read_bytes(),
+                portable_agent._canonical_json_bytes(
+                    json.loads(imported.read_text(encoding="utf-8"))
+                ),
+            )
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_agy_tmp_exact_file_entry_and_byte_limits_are_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "agy-tmp-exact-limits"},
+                clear=False,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertTrue(imported.is_file())
+            self.assertTrue((root / "published/draft.md").is_file())
+            self.assertTrue((root / "state/completion.json").is_file())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_agy_tmp_aggregate_bytes_over_limit_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FAKE_PORTABLE_STAGE_MODE": (
+                        "agy-tmp-aggregate-oversize"
+                    )
+                },
+                clear=False,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_agy_unsafe_or_unbounded_tmp_rejects_before_import_or_projection(self):
+        modes = (
+            "agy-tmp-missing",
+            "agy-tmp-root-symlink",
+            "agy-tmp-file-symlink",
+            "agy-tmp-hardlink",
+            "agy-tmp-special",
+            "agy-tmp-oversize",
+            "agy-tmp-too-many",
+            "agy-tmp-too-many-directories",
+            "agy-tmp-mode-zero",
+        )
+        for mode in modes:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                prepared = self._prepare(
+                    root,
+                    stage="awr-research",
+                    provider="agy",
+                )
+                with mock.patch.dict(
+                    os.environ,
+                    {"FAKE_PORTABLE_STAGE_MODE": mode},
+                    clear=False,
+                ):
+                    with self.assertRaises(
+                        portable_stage.PortableStageError
+                    ) as caught:
+                        portable_stage.run_stage(prepared, timeout_seconds=2)
+                self.assertEqual(caught.exception.code, "unexpected_artifact")
+                imports = root / "state/imports"
+                self.assertFalse(imports.exists() and any(imports.iterdir()))
+                self.assertFalse((root / "state/completion.json").exists())
+                self.assertFalse((root / "published").exists())
+                self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_successful_provider_exit_quiesces_late_tmp_growth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            trigger = root / "grow-trigger"
+            done = root / "grow-done"
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            real_read = portable_agent._read_tmp_file_stable
+
+            def trigger_after_read(directory_descriptor, name, maximum):
+                raw = real_read(directory_descriptor, name, maximum)
+                if name == "cache":
+                    trigger.write_text("go\n", encoding="utf-8")
+                    deadline = time.monotonic() + 0.5
+                    while not done.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                return raw
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FAKE_PORTABLE_STAGE_MODE": "agy-tmp-late-grow",
+                    "FAKE_PORTABLE_TRIGGER_PATH": str(trigger),
+                    "FAKE_PORTABLE_DONE_PATH": str(done),
+                },
+                clear=False,
+            ), mock.patch.object(
+                portable_agent,
+                "_read_tmp_file_stable",
+                trigger_after_read,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            self.assertTrue(
+                (
+                    pathlib.Path(prepared["state_root"])
+                    / "imports"
+                    / (completion["model_envelope_sha256"] + ".json")
+                ).is_file()
+            )
+            self.assertFalse(done.exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_successful_provider_exit_quiesces_late_root_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            trigger = root / "add-trigger"
+            done = root / "add-done"
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            real_walk = portable_agent._walk_mirror_directory
+            triggered = False
+
+            def trigger_before_root(
+                directory_descriptor,
+                prefix,
+                visit_non_directory,
+                skipped_root,
+                seen_skipped_root,
+            ):
+                nonlocal triggered
+                if not prefix and not triggered:
+                    triggered = True
+                    trigger.write_text("go\n", encoding="utf-8")
+                    deadline = time.monotonic() + 0.5
+                    while not done.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                return real_walk(
+                    directory_descriptor,
+                    prefix,
+                    visit_non_directory,
+                    skipped_root,
+                    seen_skipped_root,
+                )
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FAKE_PORTABLE_STAGE_MODE": "agy-late-root-file",
+                    "FAKE_PORTABLE_TRIGGER_PATH": str(trigger),
+                    "FAKE_PORTABLE_DONE_PATH": str(done),
+                },
+                clear=False,
+            ), mock.patch.object(
+                portable_agent,
+                "_walk_mirror_directory",
+                trigger_before_root,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            self.assertTrue(triggered)
+            self.assertTrue(
+                (
+                    pathlib.Path(prepared["state_root"])
+                    / "imports"
+                    / (completion["model_envelope_sha256"] + ".json")
+                ).is_file()
+            )
+            self.assertFalse(done.exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_cleanup_failure_rejects_before_import_or_projection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            real_rmtree = portable_agent.shutil.rmtree
+
+            def deny_attempt_removal(path, *args, **kwargs):
+                if pathlib.Path(path).name.startswith("attempt-"):
+                    raise PermissionError("injected cleanup failure")
+                return real_rmtree(path, *args, **kwargs)
+
+            with mock.patch.object(
+                portable_agent.shutil,
+                "rmtree",
+                deny_attempt_removal,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "attempt_cleanup_failed")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+            attempts = list((root / "state").glob("attempt-*"))
+            self.assertEqual(len(attempts), 1)
+            portable_agent._repair_attempt_directories(attempts[0])
+            real_rmtree(attempts[0])
+
+    def test_existing_mirror_file_drift_rejects_before_import_or_projection(self):
+        modes = (
+            "overwrite-role",
+            "overwrite-declared-input",
+            "chmod-declared-input",
+        )
+        for mode in modes:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                prepared = self._prepare(root, stage="awr-research")
+                with mock.patch.dict(
+                    os.environ,
+                    {"FAKE_PORTABLE_STAGE_MODE": mode},
+                    clear=False,
+                ):
+                    with self.assertRaises(
+                        portable_stage.PortableStageError
+                    ) as caught:
+                        portable_stage.run_stage(prepared, timeout_seconds=2)
+                self.assertEqual(caught.exception.code, "unexpected_artifact")
+                imports = root / "state/imports"
+                self.assertFalse(imports.exists() and any(imports.iterdir()))
+                self.assertFalse((root / "state/completion.json").exists())
+                self.assertFalse((root / "published").exists())
+
+    def test_grok_transport_imports_the_canonical_inner_model_envelope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            completion = portable_stage.run_stage(prepared, timeout_seconds=2)
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertEqual(
+                imported.read_bytes(),
+                portable_agent._canonical_json_bytes(
+                    json.loads(imported.read_text(encoding="utf-8"))
+                ),
+            )
+
+    def test_grok_transport_accepts_bare_inner_model_envelope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "bare-inner-success"},
+                clear=False,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertEqual(
+                imported.read_bytes(),
+                portable_agent._canonical_json_bytes(
+                    json.loads(imported.read_text(encoding="utf-8"))
+                ),
+            )
+
+    def test_grok_transport_accepts_one_terminal_fence_after_narration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "narrated-terminal-fence"},
+                clear=False,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertEqual(
+                imported.read_bytes(),
+                portable_agent._canonical_json_bytes(
+                    json.loads(imported.read_text(encoding="utf-8"))
+                ),
+            )
+            self.assertTrue(
+                pathlib.Path(prepared["completion_path"]).is_file()
+            )
+            self.assertTrue(
+                all(
+                    pathlib.Path(path).is_file()
+                    for path in prepared["output_paths"].values()
+                )
+            )
+
+    def test_grok_transport_accepts_reducer_joined_terminal_fence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "fence-non-line-start"},
+                clear=False,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertEqual(
+                imported.read_bytes(),
+                portable_agent._canonical_json_bytes(
+                    json.loads(imported.read_text(encoding="utf-8"))
+                ),
+            )
+            self.assertTrue(
+                pathlib.Path(prepared["completion_path"]).is_file()
+            )
+            self.assertTrue(pathlib.Path(prepared["output_root"]).is_dir())
+
+    def test_grok_transport_rejects_narrated_terminal_bare_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "narrated-terminal-bare"},
+                clear=False,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "malformed_output")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+            self.assertTrue(
+                all(
+                    not pathlib.Path(path).exists()
+                    for path in prepared["output_paths"].values()
+                )
+            )
+
+    def test_grok_transport_rejects_overlapping_prefix_fence_runs(self):
+        for mode in (
+            "fence-four-backtick-prefix",
+            "fence-five-backtick-prefix",
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                prepared = self._prepare(root, provider="grok")
+                with mock.patch.dict(
+                    os.environ,
+                    {"FAKE_PORTABLE_STAGE_MODE": mode},
+                    clear=False,
+                ):
+                    with self.assertRaises(
+                        portable_stage.PortableStageError
+                    ) as caught:
+                        portable_stage.run_stage(prepared, timeout_seconds=2)
+                self.assertEqual(caught.exception.code, "malformed_output")
+                imports = root / "state/imports"
+                self.assertFalse(
+                    imports.exists() and any(imports.iterdir())
+                )
+                self.assertFalse(
+                    pathlib.Path(prepared["completion_path"]).exists()
+                )
+                self.assertFalse(
+                    pathlib.Path(prepared["output_root"]).exists()
+                )
+                self.assertTrue(
+                    all(
+                        not pathlib.Path(path).exists()
+                        for path in prepared["output_paths"].values()
+                    )
+                )
+
+    def test_grok_transport_rejects_invalid_outer_and_inner_responses(self):
+        modes = (
+            "malformed-outer-json",
+            "duplicate-outer-text",
+            "invalid-outer-utf8",
+            "outer-array",
+            "nonstring-text",
+            "surrogate-text",
+            "missing-text",
+            "max-tokens",
+            "malformed",
+            "duplicate-key",
+            "non-nfc-envelope",
+            "float-inner-value",
+            "wrong-request-attestation",
+            "fence-duplicate-delimiter",
+            "fence-crlf",
+            "fence-cr-before-close",
+            "fence-prefix-inline-delimiter",
+            "fence-prefix-indented-delimiter",
+            "fence-prefix-inline-wrong-language",
+            "fence-wrong-language",
+            "fence-wrong-case",
+            "fence-missing-close",
+            "fence-trailing-newline",
+            "fence-trailing-space",
+            "fence-trailing-text",
+            "fence-trailing-nul",
+        )
+        for mode in modes:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                prepared = self._prepare(root, provider="grok")
+                with mock.patch.dict(
+                    os.environ,
+                    {"FAKE_PORTABLE_STAGE_MODE": mode},
+                    clear=False,
+                ):
+                    with self.assertRaises(portable_stage.PortableStageError):
+                        portable_stage.run_stage(prepared, timeout_seconds=2)
+                imports = root / "state/imports"
+                self.assertFalse(imports.exists() and any(imports.iterdir()))
+                self.assertFalse((root / "state/completion.json").exists())
+                self.assertTrue(
+                    all(
+                        not pathlib.Path(path).exists()
+                        for path in prepared["output_paths"].values()
+                    )
+                )
+
+    def test_codex_noncanonical_raw_stdout_still_rejects_before_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="codex")
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "noncanonical-raw"},
+                clear=False,
+            ):
+                with self.assertRaises(portable_stage.PortableStageError) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "noncanonical_output")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertTrue(
+                all(
+                    not pathlib.Path(path).exists()
+                    for path in prepared["output_paths"].values()
+                )
+            )
 
     def test_new_import_directory_entry_is_fsynced_before_completion(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -859,6 +1762,180 @@ class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
                 self._run(root / "state", "stdout-flood")
             self.assertEqual(caught.exception.code, "oversize")
             self.assertFalse((root / "state/imports").exists())
+
+    def test_legacy_success_quiesces_remaining_process_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            delayed = root / "background-child-survived"
+            result = self._run(
+                root / "state",
+                "success-background-child",
+                {"delayed_path": str(delayed)},
+            )
+            self.assertEqual(result["value"]["status"], "ok")
+            time.sleep(1.0)
+            self.assertFalse(delayed.exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_legacy_unreadable_hidden_file_rejects_and_cleans_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            with self.assertRaises(portable_agent.PortableAgentError) as caught:
+                self._run(root / "state", "mode-zero")
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            self.assertFalse((root / "state/imports").exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_legacy_directory_replacement_during_walk_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            state = root / "state"
+            real_open_directory = portable_agent._open_directory_at
+            raced = False
+
+            def swap_after_open(parent_descriptor, component, code):
+                nonlocal raced
+                child = real_open_directory(
+                    parent_descriptor,
+                    component,
+                    code,
+                )
+                if component == "output" and not raced:
+                    raced = True
+                    output = next(state.glob("attempt-*/mirror/output"))
+                    raw = (output / "result.json").read_bytes()
+                    output.rename(root / "swapped-output")
+                    output.mkdir(mode=0o700)
+                    os.chmod(output, 0o700)
+                    replacement = output / "result.json"
+                    replacement.write_bytes(raw)
+                    os.chmod(replacement, 0o600)
+                    hidden = output / "hidden.txt"
+                    hidden.write_text("hidden\n", encoding="utf-8")
+                    os.chmod(hidden, 0o600)
+                return child
+
+            with mock.patch.object(
+                portable_agent,
+                "_open_directory_at",
+                swap_after_open,
+            ):
+                with self.assertRaises(
+                    portable_agent.PortableAgentError
+                ) as caught:
+                    self._run(state, "success")
+            self.assertTrue(raced)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            self.assertFalse((state / "imports").exists())
+            self.assertFalse(any(state.glob("attempt-*")))
+
+    def test_legacy_mirror_root_swap_during_walk_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            state = root / "state"
+            real_walk = portable_agent._walk_mirror_directory
+            raced = False
+
+            def swap_after_root_walk(
+                directory_descriptor,
+                prefix,
+                visit_non_directory,
+                skipped_root,
+                seen_skipped_root,
+            ):
+                nonlocal raced
+                result = real_walk(
+                    directory_descriptor,
+                    prefix,
+                    visit_non_directory,
+                    skipped_root,
+                    seen_skipped_root,
+                )
+                if not prefix and not raced:
+                    raced = True
+                    mirror = next(state.glob("attempt-*/mirror"))
+                    displaced = mirror.with_name("mirror-old")
+                    mirror.rename(displaced)
+                    mirror.symlink_to(
+                        displaced.name,
+                        target_is_directory=True,
+                    )
+                return result
+
+            with mock.patch.object(
+                portable_agent,
+                "_walk_mirror_directory",
+                swap_after_root_walk,
+            ):
+                with self.assertRaises(
+                    portable_agent.PortableAgentError
+                ) as caught:
+                    self._run(state, "success")
+            self.assertTrue(raced)
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            self.assertFalse((state / "imports").exists())
+            self.assertFalse(any(state.glob("attempt-*")))
+
+    def test_legacy_expected_input_symlink_rejects_before_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / "source.txt"
+            source.write_text("declared\n", encoding="utf-8")
+            raw = source.read_bytes()
+            state = root / "state"
+            with self.assertRaises(portable_agent.PortableAgentError) as caught:
+                portable_agent.run_portable_attempt(
+                    self._capability(),
+                    inputs=[
+                        {
+                            "source_root": str(root),
+                            "source_path": source.name,
+                            "provenance": "declared-input-v1",
+                            "path": "input/declared.txt",
+                            "sha256": hashlib.sha256(raw).hexdigest(),
+                            "max_bytes": len(raw),
+                        }
+                    ],
+                    output_contract=self._contract(),
+                    prompt=json.dumps(
+                        {
+                            "mode": "replace-input-symlink",
+                            "request_id": "request-1",
+                            "symlink_target": str(source),
+                        }
+                    ),
+                    state_root=state,
+                    timeout_seconds=2,
+                )
+            self.assertEqual(caught.exception.code, "unexpected_artifact")
+            self.assertFalse((state / "imports").exists())
+            self.assertFalse(any(state.glob("attempt-*")))
+
+    def test_legacy_cleanup_failure_rejects_before_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            real_rmtree = portable_agent.shutil.rmtree
+
+            def deny_attempt_removal(path, *args, **kwargs):
+                if pathlib.Path(path).name.startswith("attempt-"):
+                    raise PermissionError("injected cleanup failure")
+                return real_rmtree(path, *args, **kwargs)
+
+            with mock.patch.object(
+                portable_agent.shutil,
+                "rmtree",
+                deny_attempt_removal,
+            ):
+                with self.assertRaises(
+                    portable_agent.PortableAgentError
+                ) as caught:
+                    self._run(root / "state", "success")
+            self.assertEqual(caught.exception.code, "attempt_cleanup_failed")
+            self.assertFalse((root / "state/imports").exists())
+            attempts = list((root / "state").glob("attempt-*"))
+            self.assertEqual(len(attempts), 1)
+            portable_agent._repair_attempt_directories(attempts[0])
+            real_rmtree(attempts[0])
 
 
 if __name__ == "__main__":

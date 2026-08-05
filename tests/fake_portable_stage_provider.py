@@ -10,6 +10,44 @@ import sys
 import time
 
 
+EXPECTED_TRANSPORT_INSTRUCTIONS = {
+    "schema_version": "portable-stage-transport-instructions-v1",
+    "precedence": (
+        "These transport instructions override any output-location or "
+        "file-writing instruction in role.md."
+    ),
+    "role": "Treat role.md as artifact-content instructions only.",
+    "mirror": "Do not create, modify, or delete any file in the mirror.",
+    "stdout": (
+        "Emit exactly one UTF-8 NFC canonical JSON object to stdout, with "
+        "lexicographically sorted object keys, compact separators, and "
+        "exactly one trailing LF. The object must match response_schema. "
+        "Do not emit Markdown fences, narration, or any other bytes."
+    ),
+    "request_attestation": (
+        "Copy request_binding.provider_request_binding_sha256 and "
+        "request_binding.serialized_prompt_sha256 exactly into "
+        "request_attestation."
+    ),
+}
+
+GROK_EXPECTED_TRANSPORT_INSTRUCTIONS = {
+    **EXPECTED_TRANSPORT_INSTRUCTIONS,
+    "stdout": (
+        "Make the FINAL ASSISTANT RESPONSE exactly one UTF-8 NFC canonical "
+        "JSON object inside exactly one Markdown fence. The opening fence "
+        "must be the exact lowercase bytes ```json followed by LF. The JSON "
+        "object must use lexicographically sorted object keys, compact "
+        "separators, and exactly one trailing LF; that LF must be followed "
+        "immediately by the terminal closing bytes ```. The object must "
+        "match response_schema. Do not emit any bytes before the opening "
+        "fence or after the closing fence in the FINAL ASSISTANT RESPONSE, "
+        "and do not emit triple-backtick bytes in any earlier assistant "
+        "response."
+    ),
+}
+
+
 def _prompt(arguments):
     for flag in ("-p", "--print"):
         if flag in arguments:
@@ -22,6 +60,14 @@ def _write(path, raw):
     os.chmod(path.parent, 0o700)
     path.write_bytes(raw)
     os.chmod(path, 0o600)
+
+
+def _overwrite_same_size(path):
+    raw = bytearray(path.read_bytes())
+    if not raw:
+        raise RuntimeError("fixture requires a nonempty declared input")
+    raw[0] ^= 1
+    path.write_bytes(raw)
 
 
 def _inner_request(request):
@@ -193,6 +239,20 @@ def _record(request):
         "provider": pathlib.Path(sys.argv[0]).name,
         "stage": request.get("stage"),
         "seat_id": request.get("seat_id"),
+        "legacy_file_wording_seen": (
+            "write only the requested output file"
+            in pathlib.Path(request.get("role_path", "role.md"))
+            .read_text(encoding="utf-8")
+            .lower()
+        ),
+        "transport_instructions_valid": (
+            request.get("transport_instructions")
+            == (
+                GROK_EXPECTED_TRANSPORT_INSTRUCTIONS
+                if _grok_json_requested(sys.argv[1:])
+                else EXPECTED_TRANSPORT_INSTRUCTIONS
+            )
+        ),
         "prompt_sha256": hashlib.sha256(
             str(prompt).encode("utf-8")
         ).hexdigest(),
@@ -209,10 +269,142 @@ def _record(request):
         )
 
 
+def _grok_json_requested(arguments):
+    return (
+        "--output-format" in arguments
+        and arguments[arguments.index("--output-format") + 1] == "json"
+    )
+
+
+def _grok_transport(inner_raw, mode):
+    if mode == "malformed-outer-json":
+        return b'{"text":'
+    if mode == "invalid-outer-utf8":
+        return b'{"text":"\xff","stopReason":"end_turn"}'
+    if mode == "outer-array":
+        return b"[]"
+    if mode == "surrogate-text":
+        return b'{"text":"\\ud800","stopReason":"end_turn"}'
+    if mode == "duplicate-key":
+        inner_text = inner_raw.decode("utf-8")
+    else:
+        try:
+            inner_value = json.loads(inner_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            inner_text = inner_raw.decode("utf-8")
+        else:
+            reordered = {}
+            for key in (
+                "stage",
+                "artifacts",
+                "schema_version",
+                "request_attestation",
+            ):
+                if key in inner_value:
+                    reordered[key] = inner_value[key]
+            inner_text = json.dumps(reordered, ensure_ascii=False, indent=2)
+    fenced = "```json\n" + inner_text + "\n```"
+    if mode == "narrated-terminal-bare":
+        inner_text = (
+            "Provider completed the request.\n"
+            + inner_raw.decode("utf-8")
+        )
+    elif mode == "narrated-terminal-fence":
+        inner_text = "Provider completed the request.\n" + fenced
+    elif mode == "fence-duplicate-delimiter":
+        inner_text = fenced + "\n" + fenced
+    elif mode == "fence-four-backtick-prefix":
+        inner_text = "`" + fenced
+    elif mode == "fence-five-backtick-prefix":
+        inner_text = "``" + fenced
+    elif mode == "fence-non-line-start":
+        inner_text = "Provider completed the request." + fenced
+    elif mode == "fence-crlf":
+        inner_text = "```json\r\n" + inner_text + "\r\n```"
+    elif mode == "fence-cr-before-close":
+        inner_text = "```json\n" + inner_text + "\r\n```"
+    elif mode == "fence-prefix-inline-delimiter":
+        inner_text = "Provider mentioned ``` in this line.\n" + fenced
+    elif mode == "fence-prefix-indented-delimiter":
+        inner_text = "Provider note:\n  ```\n" + fenced
+    elif mode == "fence-prefix-inline-wrong-language":
+        inner_text = "Provider mentioned ```javascript\n" + fenced
+    elif mode == "fence-wrong-language":
+        inner_text = "```javascript\n" + inner_text + "\n```"
+    elif mode == "fence-wrong-case":
+        inner_text = "```JSON\n" + inner_text + "\n```"
+    elif mode == "fence-missing-close":
+        inner_text = "```json\n" + inner_text
+    elif mode == "fence-trailing-newline":
+        inner_text = fenced + "\n"
+    elif mode == "fence-trailing-space":
+        inner_text = fenced + " "
+    elif mode == "fence-trailing-text":
+        inner_text = fenced + "provider progress"
+    elif mode == "fence-trailing-nul":
+        inner_text = fenced + "\x00"
+    elif mode != "bare-inner-success":
+        inner_text = fenced
+    outer = {
+        "text": inner_text,
+        "stopReason": "max_tokens" if mode == "max-tokens" else "end_turn",
+        "sessionId": "fixture-session",
+        "requestId": "fixture-request",
+        "num_turns": 1,
+        "usage": {
+            "input_tokens": 10,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 5,
+            "reasoning_tokens": 2,
+            "total_tokens": 15,
+        },
+        "modelUsage": {},
+        "total_cost_usd": 0.001,
+        "total_cost_usd_ticks": 10000000,
+    }
+    if mode == "missing-text":
+        outer.pop("text")
+    if mode == "nonstring-text":
+        outer["text"] = 1
+    if mode == "duplicate-outer-text":
+        encoded = [
+            '"text":' + json.dumps(inner_text, ensure_ascii=False),
+            '"text":' + json.dumps(inner_text, ensure_ascii=False),
+        ]
+        encoded.extend(
+            json.dumps(key, ensure_ascii=False)
+            + ":"
+            + json.dumps(value, ensure_ascii=False)
+            for key, value in outer.items()
+            if key != "text"
+        )
+        return ("{" + ",".join(encoded) + "}").encode("utf-8")
+    return json.dumps(outer, ensure_ascii=False, indent=2).encode("utf-8")
+
+
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--delayed-child":
         time.sleep(0.8)
         _write(pathlib.Path(sys.argv[2]), b"child survived\n")
+        return 0
+    if len(sys.argv) == 6 and sys.argv[1] == "--wait-mutate":
+        action = sys.argv[2]
+        trigger = pathlib.Path(sys.argv[3])
+        target = pathlib.Path(sys.argv[4])
+        done = pathlib.Path(sys.argv[5])
+        deadline = time.monotonic() + 2.0
+        while not trigger.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not trigger.exists():
+            return 0
+        if action == "grow":
+            target.write_bytes(b"x" * (1024 * 1024 + 1))
+        elif action == "add":
+            _write(target, b"late provider file\n")
+        else:
+            return 64
+        _write(done, b"mutated\n")
         return 0
 
     if sys.argv[1:] == ["--pure", "debug", "config"]:
@@ -227,11 +419,24 @@ def main():
         sys.stdout.write("gemini/fixture-model\n")
         return 0
 
-    request = json.loads(_prompt(sys.argv[1:]))
+    arguments = sys.argv[1:]
+    request = json.loads(_prompt(arguments))
     _record(request)
     mode = os.environ.get("FAKE_PORTABLE_STAGE_MODE", "success")
+    grok_json = _grok_json_requested(arguments)
     output = pathlib.Path("output/result.json")
-    if mode == "mirror-audit":
+    if mode == "grok-compatibility-audit":
+        for name in (
+            "GROK_CLAUDE_SKILLS_ENABLED",
+            "GROK_CLAUDE_RULES_ENABLED",
+            "GROK_CLAUDE_AGENTS_ENABLED",
+            "GROK_CLAUDE_MCPS_ENABLED",
+            "GROK_CLAUDE_HOOKS_ENABLED",
+            "GROK_CLAUDE_SESSIONS_ENABLED",
+        ):
+            if os.environ.get(name) != "false":
+                return 40
+    if mode in {"mirror-audit", "agy-portable-audit"}:
         observed = {
             path.as_posix()
             for path in pathlib.Path(".").rglob("*")
@@ -273,6 +478,19 @@ def main():
             "EXPECTED_PROVIDER_CODEX_HOME"
         ):
             return 35
+    if mode == "agy-portable-audit":
+        if pathlib.Path(sys.argv[0]).name != "agy":
+            return 36
+        role_text = pathlib.Path(
+            request.get("role_path", "role.md")
+        ).read_text(encoding="utf-8")
+        if "write only the requested output file" not in role_text.lower():
+            return 37
+        if (
+            request.get("transport_instructions")
+            != EXPECTED_TRANSPORT_INSTRUCTIONS
+        ):
+            return 38
     if mode == "nonzero":
         return 23
     if mode == "timeout":
@@ -283,10 +501,18 @@ def main():
         time.sleep(60)
         return 0
     if mode == "malformed":
-        sys.stdout.buffer.write(b"{bad json\n")
+        raw = b"{bad json\n"
+        if grok_json:
+            sys.stdout.buffer.write(_grok_transport(raw, mode))
+            return 0
+        sys.stdout.buffer.write(raw)
         return 0
     if mode == "oversize":
-        sys.stdout.buffer.write(b"x" * (256 * 1024))
+        raw = b"x" * (256 * 1024)
+        if grok_json:
+            sys.stdout.buffer.write(_grok_transport(raw, mode))
+            return 0
+        sys.stdout.buffer.write(raw)
         return 0
 
     kind, content = _artifact(request["stage"], _inner_request(request))
@@ -358,6 +584,18 @@ def main():
             )
             + "\n"
         ).encode("utf-8")
+    if mode == "float-inner-value":
+        value = json.loads(raw)
+        value["schema_version"] = 1.0
+        raw = (
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
     if mode == "non-nfc-envelope":
         value = json.loads(raw)
         value["artifacts"][0]["content"] += "Cafe\u0301\n"
@@ -376,6 +614,12 @@ def main():
             b'{"schema_version":1,"artifacts":',
             1,
         )
+    if mode == "noncanonical-raw":
+        raw = json.dumps(
+            json.loads(raw),
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
     if mode == "extra-envelope":
         value = json.loads(raw)
         value["unexpected"] = True
@@ -394,6 +638,144 @@ def main():
     if mode == "second-envelope":
         sys.stdout.buffer.write(raw + raw)
         return 0
+    if mode == "agy-mirror-write":
+        _write(pathlib.Path("provider-created.md"), b"provider artifact\n")
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-hidden-extra-mode-zero":
+        hidden = pathlib.Path("hidden")
+        _write(hidden / "undeclared.txt", b"hidden provider file\n")
+        os.chmod(hidden, 0)
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode in {
+        "agy-input-symlink",
+        "agy-input-hardlink",
+        "agy-input-special",
+    }:
+        declared = pathlib.Path("input") / request["declared_inputs"][0]
+        declared.unlink()
+        if mode == "agy-input-symlink":
+            declared.symlink_to(os.environ["FAKE_PORTABLE_LINK_TARGET"])
+        elif mode == "agy-input-hardlink":
+            os.link(os.environ["FAKE_PORTABLE_LINK_TARGET"], declared)
+        else:
+            os.mkfifo(declared)
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-schema":
+        schema_bytes = 453 * 1024
+        _write(
+            pathlib.Path(
+                ".tmp/agy/language-server/"
+                "3unleash-repo-schema-v1-codeium-language-server.json"
+            ),
+            b"{" + b" " * (schema_bytes - 2) + b"}",
+        )
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-exact-limits":
+        for index in range(32):
+            _write(
+                pathlib.Path(".tmp") / f"directory-{index:02d}" / "cache",
+                b"x" * 32768,
+            )
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-aggregate-oversize":
+        _write(pathlib.Path(".tmp/cache-a"), b"x" * (600 * 1024))
+        _write(
+            pathlib.Path(".tmp/cache-b"),
+            b"y" * (424 * 1024 + 1),
+        )
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-root-symlink":
+        pathlib.Path(".tmp").rmdir()
+        pathlib.Path(".tmp").symlink_to("input", target_is_directory=True)
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-missing":
+        pathlib.Path(".tmp").rmdir()
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-file-symlink":
+        _write(pathlib.Path(".tmp/target"), b"target\n")
+        pathlib.Path(".tmp/link").symlink_to("target")
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-hardlink":
+        original = pathlib.Path(".tmp/original")
+        _write(original, b"linked\n")
+        os.link(original, pathlib.Path(".tmp/alias"))
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-special":
+        os.mkfifo(pathlib.Path(".tmp/pipe"))
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-oversize":
+        _write(pathlib.Path(".tmp/oversize"), b"x" * (1024 * 1024 + 1))
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-too-many":
+        for index in range(33):
+            _write(pathlib.Path(".tmp") / f"entry-{index:02d}", b"")
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-too-many-directories":
+        for index in range(65):
+            pathlib.Path(".tmp", f"directory-{index:02d}").mkdir()
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-mode-zero":
+        locked = pathlib.Path(".tmp/locked")
+        _write(locked / "cache", b"locked\n")
+        os.chmod(locked, 0)
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode in {"agy-tmp-late-grow", "agy-late-root-file"}:
+        action = "grow" if mode == "agy-tmp-late-grow" else "add"
+        target = (
+            pathlib.Path(".tmp/cache")
+            if action == "grow"
+            else pathlib.Path("late-provider-file")
+        )
+        if action == "grow":
+            _write(target, b"x")
+        subprocess.Popen(
+            [
+                sys.executable,
+                __file__,
+                "--wait-mutate",
+                action,
+                os.environ["FAKE_PORTABLE_TRIGGER_PATH"],
+                str(target.resolve()),
+                os.environ["FAKE_PORTABLE_DONE_PATH"],
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode in {
+        "overwrite-role",
+        "overwrite-declared-input",
+        "chmod-declared-input",
+    }:
+        declared_input = pathlib.Path("input") / request["declared_inputs"][0]
+        if mode == "overwrite-role":
+            _overwrite_same_size(
+                pathlib.Path(request.get("role_path", "role.md"))
+            )
+        elif mode == "overwrite-declared-input":
+            _overwrite_same_size(declared_input)
+        else:
+            os.chmod(declared_input, 0o400)
+        sys.stdout.buffer.write(raw)
+        return 0
     if mode == "extra":
         _write(pathlib.Path("output/extra.txt"), b"extra\n")
         sys.stdout.buffer.write(raw)
@@ -404,6 +786,8 @@ def main():
         output.symlink_to("real.json")
         sys.stdout.buffer.write(raw)
         return 0
+    if grok_json:
+        raw = _grok_transport(raw, mode)
     sys.stdout.buffer.write(raw)
     return 0
 

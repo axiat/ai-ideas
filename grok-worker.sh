@@ -8,8 +8,9 @@
 # Security boundary: the deny rules cover direct file-tool writes and shell
 # writes whose targets Grok can identify statically. Indirect writes can bypass
 # those rules. The workspace sandbox does not block processes or network access,
-# and user-level hooks, plugins, and MCP configuration remain inherited. Ledger
-# integrity therefore rests on hunt.sh's ledger.good snapshot and loop guard.
+# and Grok-native user-level hooks, plugins, and MCP configuration remain
+# inherited. Ledger integrity therefore rests on hunt.sh's ledger.good snapshot
+# and loop guard.
 # Calibration and AwR add filesystem/CWD isolation by running in mirrors; they do
 # not isolate processes or network. Strong isolation requires an outer OS sandbox.
 # GROK_REPO must name the mirror for AwR or this wrapper would resolve its own real
@@ -17,13 +18,18 @@
 #
 # Usage:
 #   AGENT_CMD='./grok-worker.sh' ./hunt.sh
+#   GROK_MODEL=grok-4.5 GROK_REASONING_EFFORT=high \
+#     AGENT_CMD='./grok-worker.sh' ./hunt.sh
 #   FRONT_CMD='./agy-worker.sh' BACK_CMD='./grok-worker.sh' ./hunt.sh
-#   FRONT_CMD='./grok-worker.sh' BACK_CMD='claude -p --strict-mcp-config' ./hunt.sh
 #   PANEL_CMD='./grok-worker.sh' ./calib/run_panel.sh calib/cases/pos-meanflow
 #   SIDE_CMD='./grok-worker.sh' ./awr-side.sh
 # Configuration:
 #   GROK_REPO          Absolute work root; defaults to this script's directory.
-#   GROK_MODEL         Default grok-4.5.
+#   GROK_MODEL         Optional model passed with `-m`; omission preserves the
+#                      Grok CLI's current default.
+#   GROK_REASONING_EFFORT
+#                      Optional reasoning effort; the accepted explicit value
+#                      is `high`. Omission preserves the Grok CLI's default.
 #   GROK_MAX_TURNS     Positive integer; default 80.
 #   GROK_SANDBOX       `workspace` (default) or explicit `off`; unknown profiles
 #                      fail because Grok otherwise warns and continues unsandboxed.
@@ -35,7 +41,8 @@ repo=${GROK_REPO:-$self_dir}
 # Multiple arguments indicate misplaced CLI flags and must fail closed.
 [ "$#" -eq 1 ] || { echo "grok-worker: expected one prompt argument, received $#; configure options through GROK_* variables" >&2; exit 2; }
 prompt=$1
-model=${GROK_MODEL:-grok-4.5}
+model=${GROK_MODEL-}
+reasoning=${GROK_REASONING_EFFORT-}
 max_turns=${GROK_MAX_TURNS:-80}
 sandbox=${GROK_SANDBOX:-workspace}
 bin=${GROK_BIN:-grok}
@@ -43,6 +50,10 @@ disable_web=${GROK_DISABLE_WEB:-0}
 
 case "$max_turns" in ''|*[!0-9]*) echo "grok-worker: GROK_MAX_TURNS must be a positive integer: $max_turns" >&2; exit 2 ;; esac
 [ "$max_turns" -ge 1 ] || { echo "grok-worker: GROK_MAX_TURNS must be at least 1: $max_turns" >&2; exit 2; }
+case "$reasoning" in
+  ''|high) ;;
+  *) echo "grok-worker: GROK_REASONING_EFFORT accepts only high: $reasoning" >&2; exit 2 ;;
+esac
 # Search disablement is a safety switch and rejects unknown values.
 case "$disable_web" in
   ''|0|false|no|off) disable_web=0 ;;
@@ -65,6 +76,12 @@ cd "$repo" || { echo "grok-worker: cannot enter work root $repo" >&2; exit 1; }
 command -v "$bin" >/dev/null 2>&1 || { echo "grok-worker: Grok executable not found: $bin" >&2; exit 2; }
 
 export GROK_DISABLE_AUTOUPDATER=1
+export GROK_CLAUDE_SKILLS_ENABLED=false
+export GROK_CLAUDE_RULES_ENABLED=false
+export GROK_CLAUDE_AGENTS_ENABLED=false
+export GROK_CLAUDE_MCPS_ENABLED=false
+export GROK_CLAUDE_HOOKS_ENABLED=false
+export GROK_CLAUDE_SESSIONS_ENABLED=false
 
 # Best-effort file-tool write denials cover the ledger, fixed inputs, entry
 # scripts, calibration tree, and publication/orchestration files. Relative,
@@ -108,9 +125,10 @@ args=(
   --always-approve
   --no-subagents
   --max-turns "$max_turns"
-  -m "$model"
-  "${denies[@]}"
 )
+[ -z "$model" ] || args+=(-m "$model")
+[ -z "$reasoning" ] || args+=(--reasoning-effort "$reasoning")
+args+=("${denies[@]}")
 [ "$sandbox" = "off" ] || args+=(--sandbox "$sandbox")
 [ "$disable_web" = "1" ] && args+=(--disable-web-search)
 

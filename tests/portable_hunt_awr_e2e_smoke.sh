@@ -488,28 +488,194 @@ run_hunt_v2() {
   printf 'ok: Hunt v2 portable internal stages and legacy external stages\n'
 }
 
+run_terminal_failure_skips_cooldown() {
+  local repo log sleep_log home runs status failures
+  repo=$(make_repo hunt-terminal-failure) || {
+    fail 'terminal Hunt failure fixture setup'
+    return
+  }
+  install_fake_providers "$repo"
+  instrument_audit_cli "$repo"
+  write_hunt_ledger "$repo/ledger.tsv"
+  mkdir -p "$repo/tmp"
+  : > "$repo/tmp/near-sa-queue.tsv"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf "%s\\n" "$*" >> "$FAKE_SLEEP_LOG"' \
+    > "$repo/.test-bin/sleep"
+  chmod 755 "$repo/.test-bin/sleep"
+  log="$CASE_ROOT/hunt-terminal-failure.log"
+  sleep_log="$CASE_ROOT/hunt-terminal-failure.sleep.log"
+  home="$CASE_ROOT/hunt-terminal-failure-home"
+  runs="$CASE_ROOT/hunt-terminal-failure-runs"
+  mkdir -p "$home" "$runs"
+  run_bounded "$repo" "$log" \
+    env \
+      "HOME=$home" \
+      "CODEX_HOME=$home/codex-config" \
+      "EXPECTED_PROVIDER_HOME=$home" \
+      "EXPECTED_PROVIDER_CODEX_HOME=$home/codex-config" \
+      "PATH=$repo/.test-bin:$PATH" \
+      "FAKE_SLEEP_LOG=$sleep_log" \
+      FAKE_PORTABLE_STAGE_MODE=malformed \
+      HISTORY_RUNTIME_ABI=v2 \
+      HUNT_PROVIDER=codex \
+      "AGENT_CMD=$repo/tests/fake_agent.sh" \
+      HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
+      RESUME_FRONT=0 \
+      THEME_MIN_LOW=0 \
+      RESEARCH_RETRY=0 \
+      ROUND_LIMIT=1 \
+      MAX_FAILS=12 \
+      FAIL_SLEEP_MIN=1 \
+      SA_TARGET=0 \
+      "RUNS_DIR=$runs" \
+      bash ./hunt.sh
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    fail "terminal Hunt failure exited $status"
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  failures=$(rg -c 'Round failed at generate' "$log" || true)
+  if [ "$failures" -ne 1 ]; then
+    fail "terminal Hunt failure count changed: $failures"
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  if ! rg -q 'Reached ROUND_LIMIT=1' "$log"; then
+    fail 'terminal Hunt failure did not reach ROUND_LIMIT=1'
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  if [ -e "$sleep_log" ]; then
+    fail 'terminal Hunt failure invoked cooldown sleep'
+    return
+  fi
+  printf 'ok: terminal Hunt failure skips cooldown\n'
+}
+
+run_retryable_failure_cooldown_case() {
+  local name=$1 round_limit=$2 max_fails=$3 expected_status=$4
+  local repo log sleep_log home runs status failures sleeps
+  repo=$(make_repo "hunt-retry-cooldown-$name") || {
+    fail "$name Hunt cooldown fixture setup"
+    return
+  }
+  install_fake_providers "$repo"
+  instrument_audit_cli "$repo"
+  write_hunt_ledger "$repo/ledger.tsv"
+  mkdir -p "$repo/tmp"
+  : > "$repo/tmp/near-sa-queue.tsv"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf "%s\\n" "$*" >> "$FAKE_SLEEP_LOG"' \
+    > "$repo/.test-bin/sleep"
+  chmod 755 "$repo/.test-bin/sleep"
+  log="$CASE_ROOT/hunt-retry-cooldown-$name.log"
+  sleep_log="$CASE_ROOT/hunt-retry-cooldown-$name.sleep.log"
+  home="$CASE_ROOT/hunt-retry-cooldown-$name-home"
+  runs="$CASE_ROOT/hunt-retry-cooldown-$name-runs"
+  mkdir -p "$home" "$runs"
+  run_bounded "$repo" "$log" \
+    env \
+      "HOME=$home" \
+      "CODEX_HOME=$home/codex-config" \
+      "EXPECTED_PROVIDER_HOME=$home" \
+      "EXPECTED_PROVIDER_CODEX_HOME=$home/codex-config" \
+      "PATH=$repo/.test-bin:$PATH" \
+      "FAKE_SLEEP_LOG=$sleep_log" \
+      FAKE_PORTABLE_STAGE_MODE=malformed \
+      HISTORY_RUNTIME_ABI=v2 \
+      HUNT_PROVIDER=codex \
+      "AGENT_CMD=$repo/tests/fake_agent.sh" \
+      HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
+      RESUME_FRONT=0 \
+      THEME_MIN_LOW=0 \
+      RESEARCH_RETRY=0 \
+      "ROUND_LIMIT=$round_limit" \
+      "MAX_FAILS=$max_fails" \
+      FAIL_SLEEP_MIN=1 \
+      SA_TARGET=0 \
+      "RUNS_DIR=$runs" \
+      bash ./hunt.sh
+  status=$?
+  if [ "$status" -ne "$expected_status" ]; then
+    fail "$name Hunt cooldown exited $status"
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  failures=$(rg -c 'Round failed at generate' "$log" || true)
+  if [ "$failures" -ne 2 ]; then
+    fail "$name Hunt failure count changed: $failures"
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  sleeps=$(cat "$sleep_log" 2>/dev/null || true)
+  if [ "$sleeps" != 60 ]; then
+    fail "$name Hunt cooldown calls changed: ${sleeps:-none}"
+    return
+  fi
+  if [ "$round_limit" -gt 0 ]; then
+    if ! rg -q "Reached ROUND_LIMIT=$round_limit" "$log"; then
+      fail "$name Hunt did not reach ROUND_LIMIT=$round_limit"
+      sed -n '1,180p' "$log" >&2
+      return
+    fi
+  elif rg -q 'Reached ROUND_LIMIT=' "$log"; then
+    fail "$name Hunt unexpectedly reported a bounded round limit"
+    return
+  fi
+  printf 'ok: %s Hunt retryable failure retains one cooldown\n' "$name"
+}
+
+run_retryable_failures_retain_cooldown() {
+  run_retryable_failure_cooldown_case bounded 2 12 0
+  run_retryable_failure_cooldown_case unlimited 0 2 1
+}
+
 check_awr_result() {
-  local repo=$1 provider_log=$2
-  python3 - "$repo" "$provider_log" <<'PY'
+  local repo=$1 provider_log=$2 profile=${3:-mixed}
+  python3 - "$repo" "$provider_log" "$profile" <<'PY'
 import json
 import pathlib
 import sys
 
 repo = pathlib.Path(sys.argv[1])
 provider_log = pathlib.Path(sys.argv[2])
+profile = sys.argv[3]
 records = [
     json.loads(line)
     for line in provider_log.read_text(encoding="utf-8").splitlines()
     if line.strip()
 ]
 observed = [(item["stage"], item["provider"]) for item in records]
-expected = [
-    ("awr-research", "codex"),
-    ("awr-priorwork", "opencode"),
-    ("awr-judge", "agy"),
-]
+if profile == "mixed":
+    expected = [
+        ("awr-research", "codex"),
+        ("awr-priorwork", "opencode"),
+        ("awr-judge", "agy"),
+    ]
+elif profile == "all-agy":
+    expected = [
+        ("awr-research", "agy"),
+        ("awr-priorwork", "agy"),
+        ("awr-judge", "agy"),
+    ]
+else:
+    raise SystemExit(f"unknown AwR test profile: {profile}")
 if observed != expected:
     raise SystemExit(f"AwR role/provider isolation changed: {observed}")
+if profile == "all-agy":
+    for item in records:
+        if item.get("legacy_file_wording_seen") is not True:
+            raise SystemExit(
+                f"agy did not observe legacy role file wording: {item}"
+            )
+        if item.get("transport_instructions_valid") is not True:
+            raise SystemExit(
+                f"agy did not receive the portable stdout override: {item}"
+            )
 
 outdir = repo / "tmp/awr-side/awr"
 finals = [
@@ -579,11 +745,60 @@ run_awr_v2() {
     sed -n '1,180p' "$log" >&2
     return
   fi
-  if ! check_awr_result "$repo" "$provider_log"; then
+  if ! check_awr_result "$repo" "$provider_log" mixed; then
     fail 'AwR v2 role routing, validators, or receipts'
     return
   fi
   printf 'ok: AwR v2 portable role isolation\n'
+}
+
+run_awr_v2_all_agy() {
+  local repo log provider_log home status
+  repo=$(make_repo awr-v2-all-agy) || {
+    fail 'all-agy AwR fixture setup'
+    return
+  }
+  install_fake_providers "$repo"
+  write_awr_ledger "$repo/ledger.tsv"
+  rm -f "$repo/tmp/ledger.good"
+  log="$CASE_ROOT/awr-v2-all-agy.log"
+  provider_log="$CASE_ROOT/awr-v2-all-agy.providers.jsonl"
+  home="$CASE_ROOT/awr-v2-all-agy-home"
+  mkdir -p "$home"
+  run_bounded "$repo" "$log" \
+    env \
+      "HOME=$home" \
+      "CODEX_HOME=$home/codex-config" \
+      "EXPECTED_PROVIDER_HOME=$home" \
+      "EXPECTED_PROVIDER_CODEX_HOME=$home/codex-config" \
+      "PATH=$repo/.test-bin:$PATH" \
+      "FAKE_PORTABLE_STAGE_LOG=$provider_log" \
+      FAKE_PORTABLE_STAGE_MODE=agy-portable-audit \
+      HISTORY_RUNTIME_ABI=v2 \
+      AWR_PROVIDER=agy \
+      AWR_MODEL=gemini/fixture-model \
+      AWR_RESEARCH_PROVIDER=agy \
+      AWR_PRIORWORK_PROVIDER=agy \
+      AWR_JUDGE_PROVIDER=agy \
+      SIDE_POLL_SEC=0 \
+      SIDE_MAX_ROUNDS=1 \
+      SIDE_MAX_BAD=1 \
+      SIDE_GAP_SEC=0 \
+      SIDE_GAP_MIN_SEC=0 \
+      SIDE_GAP_MAX_SEC=0 \
+      SIDE_COOLDOWN_SEC=0 \
+      bash ./awr-side.sh
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    fail "all-agy AwR v2 bounded scan exited $status"
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  if ! check_awr_result "$repo" "$provider_log" all-agy; then
+    fail 'all-agy AwR stdout override, validators, or receipts'
+    return
+  fi
+  printf 'ok: AwR v2 agy portable stdout override\n'
 }
 
 run_v1_regressions() {
@@ -602,7 +817,10 @@ run_v1_regressions() {
 }
 
 run_hunt_v2
+run_terminal_failure_skips_cooldown
+run_retryable_failures_retain_cooldown
 run_awr_v2
+run_awr_v2_all_agy
 run_v1_regressions
 
 if [ "$FAILURES" -ne 0 ]; then

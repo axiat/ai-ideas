@@ -77,6 +77,32 @@ HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode AWR_MODEL=openai/gpt-5.6-sol SIDE_P
 HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high SIDE_POLL_SEC=0 ./awr-side.sh
 ```
 
+`HUNT_PROVIDER` controls the portable internal stages. Route Hunt's external
+selector, prescreen, prior-work research, and report stages through Grok with
+`AGENT_CMD`. Omitting both model variables and both reasoning variables keeps
+the Grok CLI's current defaults:
+
+```bash
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=grok \
+AGENT_CMD='./grok-worker.sh' \
+./hunt.sh
+```
+
+Pin the same explicit model and reasoning effort on both paths when a fixed
+run configuration is required:
+
+```bash
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=grok \
+HUNT_MODEL=grok-4.5 \
+HUNT_REASONING_EFFORT=high \
+AGENT_CMD='./grok-worker.sh' \
+GROK_MODEL=grok-4.5 \
+GROK_REASONING_EFFORT=high \
+./hunt.sh
+```
+
 Exact model/reasoning spelling for every provider, role-specific overrides,
 the external Hunt stage boundary, and v1 compatibility are in
 [`docs/backends.md`](docs/backends.md).

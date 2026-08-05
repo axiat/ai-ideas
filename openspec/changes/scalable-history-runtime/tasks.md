@@ -45,6 +45,8 @@
 - [x] 8.1 Add explicit `HISTORY_RUNTIME_ABI=v2` Hunt portable-mirror provider/model/reasoning controls while retaining v1 command compatibility and defaulting migration runs to v1.
 - [x] 8.2 Add AwR provider/model/reasoning controls and role overrides for the full registered AwR provider set.
 - [x] 8.3 Add one locally verified CLI-grammar example per provider with explicit v2 selection and local-catalog/account/capacity boundaries, plus offline end-to-end fake-provider tests, shell syntax gates, and product-contract checks.
+- [x] 8.4 Requalify the binding-covered Grok final-response fence, reducer-joined unique-terminal-fence transport, and closed six-cell compatibility environment with a live Grok `awr-judge` smoke on final code commit `bd148e1`. The no-retry smoke recorded completion `e7ac65b9a94d0cdf5ca1cb3d4a70c728e7be23dd47544a0afb44de802a2b1665`, model envelope `b3c44fb1cc44418c30c380811789fede5820cc38cd0d79eed85accfe527dda2a`, and projected judge `93fe96fcafac3d4a541d6e39861d1666c47f9299fefd2d297b77f932f3b57fa8`.
+- [x] 8.5 Requalify binding-covered non-Grok raw canonical stdout instructions with a live agy `awr-judge` smoke on final code commit `bd148e1` after implementing request binding, descriptor/no-follow declared-file integrity, bounded ignored `.tmp` scratch, process-group quiescence, cleanup-before-import, and legacy descriptor/no-follow extra-file enumeration. The no-retry smoke recorded completion `172ad814a6d0179d1b748abf5f294b0e945063af225303ba09d944fe0305d8d6`, model envelope `7bd619c6f65a9728a435be855d9dc8aa3f7c94eb3ec4d6b58db990fc7180b3d6`, and projected judge `08c10f0738f5012d45ddf36f4cd73f20444dddcfd1a75f0fbf022128dfbf9b1a`.
 
 ## 9. Independent Verification
 

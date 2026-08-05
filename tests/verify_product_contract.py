@@ -270,6 +270,323 @@ def assert_backend_defaults():
                 f"agy model default mismatch in {name}: expected {expected!r}, found {assignments!r}"
             )
 
+def _awr_usage_commands(header):
+    commands = []
+    current = []
+    for raw in header.splitlines():
+        stripped = raw.lstrip()
+        if not stripped.startswith("#"):
+            current = []
+            continue
+        line = stripped.removeprefix("#").strip()
+        if current or line.endswith("\\"):
+            continued = line.endswith("\\")
+            current.append(line[:-1].rstrip() if continued else line)
+            if not continued:
+                command = " ".join(current)
+                if "./awr-side.sh" in command:
+                    commands.append(command)
+                current = []
+        elif "./awr-side.sh" in line:
+            commands.append(line)
+    return commands
+
+
+def _awr_shell_segments(command):
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    segments = []
+    current = []
+    for token in tokens:
+        if token and not set(token).difference(";&|()"):
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _awr_assignment(token):
+    match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", token, re.DOTALL)
+    return match.groups() if match else None
+
+
+def _awr_uncertain_assignments(segment, cursor, assignments):
+    selected = dict(assignments)
+    selection_keys = {
+        "HISTORY_RUNTIME_ABI",
+        "AWR_PROVIDER",
+        "AWR_RESEARCH_PROVIDER",
+        "AWR_PRIORWORK_PROVIDER",
+        "AWR_JUDGE_PROVIDER",
+    }
+    for token in segment[cursor:]:
+        if token == "./awr-side.sh":
+            break
+        assignment = _awr_assignment(token)
+        if assignment and assignment[0] in selection_keys:
+            selected[assignment[0]] = assignment[1]
+    return selected
+
+
+def _awr_command_invocations(segment, cursor=0, inherited=None, depth=0):
+    if depth > 8:
+        return []
+    assignments = dict(inherited or {})
+    inherited_context = inherited is not None
+    assignment_start = cursor
+    while cursor < len(segment):
+        assignment = _awr_assignment(segment[cursor])
+        if assignment is None:
+            break
+        assignments[assignment[0]] = assignment[1]
+        cursor += 1
+    saw_assignment = cursor > assignment_start
+    if cursor >= len(segment):
+        return []
+
+    command = segment[cursor]
+    cursor += 1
+    if command == "./awr-side.sh":
+        return [assignments]
+
+    if command in ("env", "/usr/bin/env"):
+        unsupported_option = False
+        while cursor < len(segment) and segment[cursor].startswith("-"):
+            option = segment[cursor]
+            cursor += 1
+            if option == "--":
+                break
+            if option in ("-i", "--ignore-environment", "-"):
+                assignments.clear()
+            elif option in ("-u", "--unset"):
+                if cursor >= len(segment):
+                    return []
+                assignments.pop(segment[cursor], None)
+                cursor += 1
+            elif option.startswith("--unset="):
+                assignments.pop(option.split("=", 1)[1], None)
+            elif option in ("-C", "--chdir", "-P", "--path"):
+                if cursor >= len(segment):
+                    return []
+                cursor += 1
+            elif option.startswith(("--chdir=", "--path=")):
+                continue
+            else:
+                unsupported_option = True
+                break
+        if unsupported_option:
+            if "./awr-side.sh" not in segment[cursor:]:
+                return []
+            return [_awr_uncertain_assignments(segment, cursor, assignments)]
+        return _awr_command_invocations(
+            segment, cursor, assignments, depth + 1
+        )
+
+    if command in ("caffeinate", "/usr/bin/caffeinate"):
+        while cursor < len(segment) and segment[cursor].startswith("-"):
+            option = segment[cursor]
+            cursor += 1
+            if option == "--":
+                break
+            if option in ("-t", "-w"):
+                if cursor >= len(segment):
+                    return []
+                cursor += 1
+        return _awr_command_invocations(
+            segment, cursor, assignments, depth + 1
+        )
+
+    if command in ("bash", "/bin/bash", "sh", "/bin/sh", "zsh", "/bin/zsh"):
+        stdin_mode = False
+        while cursor < len(segment) and segment[cursor].startswith("-"):
+            option = segment[cursor]
+            cursor += 1
+            if option == "--":
+                break
+            if option in ("-O", "--init-file", "--rcfile"):
+                if cursor >= len(segment):
+                    return []
+                cursor += 1
+                continue
+            short_options = (
+                option[1:]
+                if option.startswith("-") and not option.startswith("--")
+                else ""
+            )
+            if option == "-o" or "o" in short_options:
+                if cursor >= len(segment):
+                    return []
+                cursor += 1
+            if "c" in short_options:
+                if cursor >= len(segment):
+                    return []
+                nested = segment[cursor]
+                invocations = []
+                for nested_segment in _awr_shell_segments(nested):
+                    invocations.extend(
+                        _awr_command_invocations(
+                            nested_segment, inherited=assignments, depth=depth + 1
+                        )
+                    )
+                return invocations
+            if "s" in short_options:
+                stdin_mode = True
+        if stdin_mode:
+            return []
+        if cursor < len(segment) and segment[cursor] == "./awr-side.sh":
+            return [assignments]
+        return []
+
+    if command in ("!", "command", "exec", "nohup", "rtk", "time"):
+        while cursor < len(segment) and segment[cursor].startswith("-"):
+            option = segment[cursor]
+            cursor += 1
+            if command == "command" and option in ("-v", "-V"):
+                return []
+            if command == "exec" and option == "-c":
+                assignments.clear()
+            if command == "exec" and option == "-a":
+                if cursor >= len(segment):
+                    return []
+                cursor += 1
+        return _awr_command_invocations(
+            segment, cursor, assignments, depth + 1
+        )
+
+    if command in ("echo", "/bin/echo", "printf", "/usr/bin/printf"):
+        return []
+
+    if "./awr-side.sh" in segment[cursor:] and (saw_assignment or inherited_context):
+        return [_awr_uncertain_assignments(segment, cursor, assignments)]
+    return []
+
+
+def _unsafe_v2_agy_examples(header):
+    unsafe = []
+    for command in _awr_usage_commands(header):
+        command_is_unsafe = False
+        for segment in _awr_shell_segments(command):
+            for assignments in _awr_command_invocations(segment):
+                if assignments.get("HISTORY_RUNTIME_ABI") != "v2":
+                    continue
+                base_provider = assignments.get("AWR_PROVIDER", "codex")
+                base_model = assignments.get("AWR_MODEL", "")
+                if base_provider == "agy" and not base_model:
+                    command_is_unsafe = True
+                    break
+                for role in ("RESEARCH", "PRIORWORK", "JUDGE"):
+                    provider_key = f"AWR_{role}_PROVIDER"
+                    model_key = f"AWR_{role}_MODEL"
+                    provider = assignments.get(provider_key, base_provider)
+                    if provider != "agy":
+                        continue
+                    if model_key in assignments:
+                        model = assignments[model_key]
+                    elif provider == base_provider:
+                        model = base_model
+                    else:
+                        model = ""
+                    if not model:
+                        command_is_unsafe = True
+                        break
+                if command_is_unsafe:
+                    break
+            if command_is_unsafe:
+                break
+        if command_is_unsafe:
+            unsafe.append(command)
+    return unsafe
+
+
+def assert_awr_provider_usage():
+    text = (ROOT / "awr-side.sh").read_text()
+    header = text.split("set -u", 1)[0]
+    usage_lines = [
+        line.removeprefix("#").strip() for line in header.splitlines()
+    ]
+    usage = " ".join(
+        line[:-1].rstrip() if line.endswith("\\") else line
+        for line in usage_lines
+    )
+    required = (
+        "Codex, Kimi, and Grok model omission preserves the selected CLI default.",
+        "OpenCode model omission uses a safe host configuration probe and pins "
+        "the resolved model.",
+        "agy has no trusted default-identity probe and requires an explicit model.",
+        "HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high "
+        "AWR_REASONING_EFFORT=high ./awr-side.sh",
+    )
+    for statement in required:
+        if statement not in usage:
+            raise AssertionError(
+                f"missing AwR provider usage contract: {statement!r}"
+            )
+    unsafe = _unsafe_v2_agy_examples(header)
+    if unsafe:
+        raise AssertionError(
+            f"AwR usage contains agy examples without an effective model: {unsafe!r}"
+        )
+    parser_probes = (
+        "# SIDE_POLL_SEC=0 HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh",
+        "# AWR_JUDGE_PROVIDER=agy HISTORY_RUNTIME_ABI=v2 \\\n"
+        "#   SIDE_POLL_SEC=0 ./awr-side.sh",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh "
+        "AWR_MODEL=gemini-3.6-flash-high",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh "
+        "# add AWR_MODEL=gemini-3.6-flash-high",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "AWR_MODEL=gemini-3.6-flash-high ./awr-side.sh && "
+        "HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh",
+        "# caffeinate -is env HISTORY_RUNTIME_ABI=v2 "
+        "AWR_PROVIDER=agy ./awr-side.sh",
+        "# env -u AWR_MODEL HISTORY_RUNTIME_ABI=v2 "
+        "AWR_PROVIDER=agy ./awr-side.sh",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy bash ./awr-side.sh",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "bash -euxo pipefail ./awr-side.sh",
+        "# bash -co pipefail "
+        "'HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh'",
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "custom-wrapper ./awr-side.sh",
+    )
+    for probe in parser_probes:
+        if not _unsafe_v2_agy_examples(header + "\n" + probe):
+            raise AssertionError(
+                f"AwR usage validator missed agy example without model: {probe!r}"
+            )
+    warning_probe = (
+        "# Never run HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "./awr-side.sh without AWR_MODEL."
+    )
+    if _unsafe_v2_agy_examples(header + "\n" + warning_probe):
+        raise AssertionError(
+            f"AwR usage validator treated prose as a command: {warning_probe!r}"
+        )
+    inert_probe = (
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "caffeinate -is echo ./awr-side.sh"
+    )
+    if _unsafe_v2_agy_examples(header + "\n" + inert_probe):
+        raise AssertionError(
+            f"AwR usage validator treated an argument as execution: {inert_probe!r}"
+        )
+    shell_stdin_probe = (
+        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy bash -s ./awr-side.sh"
+    )
+    if _unsafe_v2_agy_examples(header + "\n" + shell_stdin_probe):
+        raise AssertionError(
+            f"AwR usage validator treated a shell argv as execution: {shell_stdin_probe!r}"
+        )
+
 def shell_code_lines(text):
     lines = []
     for number, line in enumerate(text.splitlines(), 1):
@@ -513,6 +830,7 @@ def verify_production_evidence_roots():
 
 def verify_runtime():
     assert_backend_defaults()
+    assert_awr_provider_usage()
     assert_no_claude_invocations()
     verify_provider_registry()
     verify_production_evidence_roots()

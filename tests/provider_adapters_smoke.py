@@ -23,6 +23,14 @@ from lib import provider_adapters
 REGISTRY = ROOT / "history/provider-adapters-v1.json"
 FAKE = ROOT / "tests/fake_portable_agent.py"
 FORBIDDEN_PROVIDER = "cl" + "aude"
+GROK_COMPATIBILITY_DISABLED = {
+    "GROK_CLAUDE_SKILLS_ENABLED": "false",
+    "GROK_CLAUDE_RULES_ENABLED": "false",
+    "GROK_CLAUDE_AGENTS_ENABLED": "false",
+    "GROK_CLAUDE_MCPS_ENABLED": "false",
+    "GROK_CLAUDE_HOOKS_ENABLED": "false",
+    "GROK_CLAUDE_SESSIONS_ENABLED": "false",
+}
 
 
 def catalog(provider, *models):
@@ -116,7 +124,10 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             )
             self.assertNotIn("MODEL", argv)
             self.assertFalse(any("reasoning" in item or "variant" in item or "effort" in item for item in argv))
-            self.assertEqual(environment, {})
+            self.assertEqual(
+                environment,
+                GROK_COMPATIBILITY_DISABLED if name == "grok" else {},
+            )
         for name in ("opencode", "agy"):
             with self.subTest(provider=name), self.assertRaises(self._error()):
                 render(
@@ -245,6 +256,64 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             argv, _ = render(capability, pathlib.Path("/mirror"), "PROMPT")
             joined = "\0".join(argv)
             self.assertIn("\0".join(spelling), joined)
+
+    def test_explicit_overrides_render_byte_exact_argv(self):
+        cases = {
+            "codex": [
+                str(FAKE), "-m", "MODEL", "-c",
+                "model_reasoning_effort=high", "-c", "approval_policy=never",
+                "exec", "-s", "workspace-write", "--skip-git-repo-check",
+                "--ephemeral", "PROMPT",
+            ],
+            "kimi": [
+                str(FAKE), "--auto", "--output-format", "text", "-m",
+                "MODEL", "-p", "PROMPT",
+            ],
+            "grok": [
+                str(FAKE), "--always-approve", "--no-memory",
+                "--no-subagents", "--output-format", "json", "--cwd",
+                "/mirror", "-m", "MODEL", "--reasoning-effort", "high",
+                "-p", "PROMPT",
+            ],
+            "opencode": [
+                str(FAKE), "run", "--pure", "--auto", "--dir", "/mirror",
+                "-m", "safe/MODEL", "--variant", "high", "PROMPT",
+            ],
+            "agy": [
+                str(FAKE), "--dangerously-skip-permissions",
+                "--disable-slash-commands", "--output-format", "text",
+                "--add-dir", "/mirror", "--model", "MODEL", "--effort",
+                "high", "--print", "PROMPT",
+            ],
+        }
+        render = self._api(provider_adapters, "render_command")
+        for provider, expected in cases.items():
+            with self.subTest(provider=provider):
+                surface = "hunt" if provider in {"codex", "kimi", "grok"} else "awr"
+                model = "safe/MODEL" if provider == "opencode" else "MODEL"
+                reasoning = None if provider == "kimi" else "high"
+                if provider in {"opencode", "agy"}:
+                    intent = provider_adapters._resolve_command_intent_for_test(
+                        self._registry(),
+                        surface,
+                        provider,
+                        model=model,
+                        reasoning=reasoning,
+                        executable_lookup=lambda _: str(FAKE),
+                        model_catalog_probe=lambda *_: catalog(provider, model),
+                    )
+                else:
+                    intent = self._resolve(surface, provider, model, reasoning)
+                argv, environment = render(intent, pathlib.Path("/mirror"), "PROMPT")
+                self.assertEqual(argv, expected)
+                self.assertEqual(
+                    environment,
+                    (
+                        GROK_COMPATIBILITY_DISABLED
+                        if provider == "grok"
+                        else {}
+                    ),
+                )
 
     def test_kimi_reasoning_and_unknown_provider_fail_before_launch(self):
         calls = []

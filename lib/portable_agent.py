@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 import pathlib
 import secrets
@@ -58,6 +59,9 @@ SCRUBBED_ENVIRONMENT = (
     "ZDOTDIR",
 )
 PRESERVED_PROVIDER_CONFIG_ENVIRONMENT = ("HOME", "CODEX_HOME")
+_TMP_SCRATCH_MAX_ENTRIES = 64
+_TMP_SCRATCH_MAX_FILES = 32
+_TMP_SCRATCH_MAX_BYTES = 1024 * 1024
 
 
 def _safe_relative(value, name):
@@ -270,7 +274,7 @@ def _fsync_directory(path):
 def _copy_inputs(inputs, mirror):
     if not isinstance(inputs, (list, tuple)):
         raise PortableAgentError("invalid_manifest")
-    copied = set()
+    copied = {}
     for item in inputs:
         if not isinstance(item, dict) or set(item) != {
             "source_root", "source_path", "provenance", "path", "sha256",
@@ -311,11 +315,19 @@ def _copy_inputs(inputs, mirror):
         raw = _read_declared_source(
             resolved_root, root_info, source_relative, maximum
         )
-        if hashlib.sha256(raw).hexdigest() != item["sha256"]:
+        raw_sha256 = hashlib.sha256(raw).hexdigest()
+        if raw_sha256 != item["sha256"]:
             raise PortableAgentError("input_sha_mismatch")
         target = mirror.joinpath(*relative.parts)
         _write_owner_only(target, raw, mirror)
-        copied.add(relative.as_posix())
+        target_info = _regular_single_link(target, "unsafe_input")
+        if target_info.st_size != len(raw):
+            raise PortableAgentError("unsafe_input")
+        copied[relative.as_posix()] = {
+            "sha256": raw_sha256,
+            "byte_count": len(raw),
+            "mode": target_info.st_mode,
+        }
     return copied
 
 
@@ -511,6 +523,31 @@ def _validate_response_value(value, contract):
             raise PortableAgentError("schema_mismatch")
 
 
+def _validate_expected_response_attestation(value):
+    fields = {
+        "schema_version",
+        "provider_request_binding_sha256",
+        "serialized_prompt_sha256",
+    }
+    if (
+        type(value) is not dict
+        or set(value) != fields
+        or value.get("schema_version")
+        != "portable-stage-response-attestation-v1"
+        or any(
+            type(value.get(name)) is not str
+            or len(value[name]) != 64
+            or any(character not in "0123456789abcdef" for character in value[name])
+            for name in (
+                "provider_request_binding_sha256",
+                "serialized_prompt_sha256",
+            )
+        )
+    ):
+        raise PortableAgentError("invalid_response_schema")
+    return value
+
+
 def _read_mirror_output(mirror, relative, maximum):
     root = pathlib.Path(mirror).resolve(strict=True)
     directory_descriptor = _open_absolute_directory_no_follow(
@@ -601,24 +638,89 @@ def _require_nfc_json(value):
             _require_nfc_json(item)
 
 
-def _parse_canonical_stdout(raw):
+def _parse_strict_json(raw, *, reject_floats, require_nfc):
+    def parse_float(text):
+        if reject_floats:
+            raise PortableAgentError("malformed_output")
+        value = float(text)
+        if not math.isfinite(value):
+            raise PortableAgentError("malformed_output")
+        return value
+
     try:
         value = json.loads(
             raw.decode("utf-8", errors="strict"),
             object_pairs_hook=_pairs_without_duplicates,
-            parse_float=lambda _: (_ for _ in ()).throw(
-                PortableAgentError("malformed_output")
-            ),
+            parse_float=parse_float,
             parse_constant=lambda _: (_ for _ in ()).throw(
                 PortableAgentError("malformed_output")
             ),
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PortableAgentError("malformed_output") from exc
-    _require_nfc_json(value)
+    if require_nfc:
+        _require_nfc_json(value)
+    return value
+
+
+def _parse_strict_model_json(raw):
+    return _parse_strict_json(raw, reject_floats=True, require_nfc=True)
+
+
+def _parse_canonical_stdout(raw):
+    value = _parse_strict_model_json(raw)
     if raw != _canonical_json_bytes(value):
         raise PortableAgentError("noncanonical_output")
     return value
+
+
+def _parse_grok_transport(raw):
+    outer = _parse_strict_json(raw, reject_floats=False, require_nfc=False)
+    if type(outer) is not dict:
+        raise PortableAgentError("malformed_output")
+    if type(outer.get("text")) is not str:
+        raise PortableAgentError("malformed_output")
+    if outer.get("stopReason") != "end_turn":
+        raise PortableAgentError("malformed_output")
+    return outer
+
+
+def _grok_model_text_bytes(text):
+    try:
+        raw = text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise PortableAgentError("malformed_output") from exc
+    opening = b"```json\n"
+    if opening not in raw:
+        return raw
+    opening_start = raw.find(opening)
+    closing_start = len(raw) - len(b"```")
+    fence_starts = [
+        index
+        for index in range(len(raw) - len(b"```") + 1)
+        if raw.startswith(b"```", index)
+    ]
+    if (
+        b"\r" in raw
+        or raw.count(opening) != 1
+        or opening_start < 0
+        or fence_starts != [opening_start, closing_start]
+        or not raw.endswith(b"```")
+    ):
+        raise PortableAgentError("malformed_output")
+    if closing_start <= opening_start or raw[closing_start - 1] != 0x0A:
+        raise PortableAgentError("malformed_output")
+    return raw[opening_start + len(opening) : closing_start - 1]
+
+
+def _parse_provider_stdout(provider, raw):
+    if provider != "grok":
+        value = _parse_canonical_stdout(raw)
+        return value, raw
+    outer = _parse_grok_transport(raw)
+    inner_raw = _grok_model_text_bytes(outer["text"])
+    value = _parse_strict_model_json(inner_raw)
+    return value, _canonical_json_bytes(value)
 
 
 def _validate_contract(contract):
@@ -668,6 +770,42 @@ def _kill_group(process):
     for stream in (process.stdout, process.stderr):
         if stream is not None:
             stream.close()
+
+
+def _repair_attempt_directories(path):
+    path = pathlib.Path(path)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        return
+    os.chmod(path, 0o700)
+    with os.scandir(path) as entries:
+        children = [path / entry.name for entry in entries]
+    for child in children:
+        _repair_attempt_directories(child)
+
+
+def _attempt_exists(path):
+    try:
+        pathlib.Path(path).lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _remove_attempt(path):
+    try:
+        _repair_attempt_directories(path)
+        shutil.rmtree(path)
+    except OSError as exc:
+        if _attempt_exists(path):
+            raise PortableAgentError("attempt_cleanup_failed") from exc
+    if _attempt_exists(path):
+        raise PortableAgentError("attempt_cleanup_failed")
 
 
 def _environment_is_scrubbed(name):
@@ -730,7 +868,6 @@ def _communicate_bounded(
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _kill_group(process)
                 raise PortableAgentError("timeout")
             events = selector.select(min(remaining, 0.1))
             if not events:
@@ -750,49 +887,422 @@ def _communicate_bounded(
                     stream.close()
                     continue
                 if enforce and len(capture) + len(chunk) > maximum:
-                    _kill_group(process)
                     raise PortableAgentError("oversize")
                 if len(capture) < maximum:
                     capture.extend(chunk[: maximum - len(capture)])
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            _kill_group(process)
             raise PortableAgentError("timeout")
         try:
             process.wait(timeout=remaining)
         except subprocess.TimeoutExpired as exc:
-            _kill_group(process)
             raise PortableAgentError("timeout") from exc
         return bytes(stdout), bytes(stderr)
     finally:
         selector.close()
 
 
-def _validate_stdout_mirror(mirror, expected_files):
-    observed = set()
-    for current, directories, files in os.walk(
-        mirror,
-        topdown=True,
-        followlinks=False,
-    ):
-        current_path = pathlib.Path(current)
-        for name in list(directories):
-            path = current_path / name
+def _tmp_stat_snapshot(info):
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _read_tmp_file_stable(directory_descriptor, name, maximum):
+    try:
+        before = os.stat(
+            name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise PortableAgentError("unexpected_artifact")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(name, flags, dir_fd=directory_descriptor)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or _tmp_stat_snapshot(opened) != _tmp_stat_snapshot(before)
+        ):
+            raise PortableAgentError("unexpected_artifact")
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(65536, maximum + 1 - total),
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > maximum:
+                raise PortableAgentError("unexpected_artifact")
+        after = os.fstat(descriptor)
+        if _tmp_stat_snapshot(after) != _tmp_stat_snapshot(opened):
+            raise PortableAgentError("unexpected_artifact")
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    finally:
+        os.close(descriptor)
+    try:
+        final = os.stat(
+            name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    if _tmp_stat_snapshot(final) != _tmp_stat_snapshot(after):
+        raise PortableAgentError("unexpected_artifact")
+    return b"".join(chunks)
+
+
+def _validate_tmp_directory(directory_descriptor, budget):
+    try:
+        before = os.fstat(directory_descriptor)
+        if not stat.S_ISDIR(before.st_mode):
+            raise PortableAgentError("unexpected_artifact")
+        with os.scandir(directory_descriptor) as entries:
+            names = sorted(entry.name for entry in entries)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    budget["entries"] += len(names)
+    if budget["entries"] > _TMP_SCRATCH_MAX_ENTRIES:
+        raise PortableAgentError("unexpected_artifact")
+    for name in names:
+        try:
+            info = os.stat(
+                name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        if stat.S_ISDIR(info.st_mode):
+            child = _open_directory_at(
+                directory_descriptor,
+                name,
+                "unexpected_artifact",
+            )
             try:
-                info = path.lstat()
+                opened = os.fstat(child)
+                if (
+                    not stat.S_ISDIR(opened.st_mode)
+                    or _tmp_stat_snapshot(opened)
+                    != _tmp_stat_snapshot(info)
+                ):
+                    raise PortableAgentError("unexpected_artifact")
+                _validate_tmp_directory(child, budget)
+                final_opened = os.fstat(child)
             except OSError as exc:
                 raise PortableAgentError("unexpected_artifact") from exc
-            if not stat.S_ISDIR(info.st_mode):
+            finally:
+                os.close(child)
+            try:
+                final = os.stat(
+                    name,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                raise PortableAgentError("unexpected_artifact") from exc
+            if _tmp_stat_snapshot(final) != _tmp_stat_snapshot(final_opened):
                 raise PortableAgentError("unexpected_artifact")
-        for name in files:
-            path = current_path / name
-            relative = path.relative_to(mirror).as_posix()
-            info = path.lstat()
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        elif stat.S_ISREG(info.st_mode):
+            budget["files"] += 1
+            if budget["files"] > _TMP_SCRATCH_MAX_FILES:
                 raise PortableAgentError("unexpected_artifact")
-            observed.add(relative)
+            raw = _read_tmp_file_stable(
+                directory_descriptor,
+                name,
+                _TMP_SCRATCH_MAX_BYTES - budget["bytes"],
+            )
+            budget["bytes"] += len(raw)
+        else:
+            raise PortableAgentError("unexpected_artifact")
+    try:
+        after = os.fstat(directory_descriptor)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    if _tmp_stat_snapshot(after) != _tmp_stat_snapshot(before):
+        raise PortableAgentError("unexpected_artifact")
+
+
+def _validate_tmp_scratch(mirror):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        mirror_descriptor = os.open(str(mirror), flags)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    try:
+        try:
+            before = os.stat(
+                ".tmp",
+                dir_fd=mirror_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        if not stat.S_ISDIR(before.st_mode):
+            raise PortableAgentError("unexpected_artifact")
+        temporary_descriptor = _open_directory_at(
+            mirror_descriptor,
+            ".tmp",
+            "unexpected_artifact",
+        )
+        try:
+            opened = os.fstat(temporary_descriptor)
+            if _tmp_stat_snapshot(opened) != _tmp_stat_snapshot(before):
+                raise PortableAgentError("unexpected_artifact")
+            _validate_tmp_directory(
+                temporary_descriptor,
+                {"entries": 0, "files": 0, "bytes": 0},
+            )
+            final_opened = os.fstat(temporary_descriptor)
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        finally:
+            os.close(temporary_descriptor)
+        try:
+            final = os.stat(
+                ".tmp",
+                dir_fd=mirror_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        if _tmp_stat_snapshot(final) != _tmp_stat_snapshot(final_opened):
+            raise PortableAgentError("unexpected_artifact")
+        return _tmp_stat_snapshot(final)
+    finally:
+        os.close(mirror_descriptor)
+
+
+def _walk_mirror_directory(
+    directory_descriptor,
+    prefix,
+    visit_non_directory,
+    skipped_root,
+    seen_skipped_root,
+):
+    try:
+        before = os.fstat(directory_descriptor)
+        if not stat.S_ISDIR(before.st_mode):
+            raise PortableAgentError("unexpected_artifact")
+        with os.scandir(directory_descriptor) as entries:
+            names = sorted(entry.name for entry in entries)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    for name in names:
+        try:
+            info = os.stat(
+                name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        relative_parts = prefix + (name,)
+        relative = pathlib.PurePosixPath(*relative_parts).as_posix()
+        if not prefix and name in skipped_root:
+            if _tmp_stat_snapshot(info) != skipped_root[name]:
+                raise PortableAgentError("unexpected_artifact")
+            seen_skipped_root.add(name)
+            continue
+        if stat.S_ISDIR(info.st_mode):
+            child = _open_directory_at(
+                directory_descriptor,
+                name,
+                "unexpected_artifact",
+            )
+            try:
+                opened = os.fstat(child)
+                if (
+                    not stat.S_ISDIR(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino)
+                    != (info.st_dev, info.st_ino)
+                ):
+                    raise PortableAgentError("unexpected_artifact")
+                child_final = _walk_mirror_directory(
+                    child,
+                    relative_parts,
+                    visit_non_directory,
+                    skipped_root,
+                    seen_skipped_root,
+                )
+            except OSError as exc:
+                raise PortableAgentError("unexpected_artifact") from exc
+            finally:
+                os.close(child)
+            try:
+                final = os.stat(
+                    name,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                raise PortableAgentError("unexpected_artifact") from exc
+            if _tmp_stat_snapshot(final) != _tmp_stat_snapshot(child_final):
+                raise PortableAgentError("unexpected_artifact")
+        else:
+            visit_non_directory(
+                directory_descriptor,
+                name,
+                info,
+                relative,
+            )
+    try:
+        after = os.fstat(directory_descriptor)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    if _tmp_stat_snapshot(after) != _tmp_stat_snapshot(before):
+        raise PortableAgentError("unexpected_artifact")
+    return after
+
+
+def _walk_mirror_descriptors(
+    mirror,
+    visit_non_directory,
+    *,
+    skipped_root=None,
+):
+    skipped_root = dict(skipped_root or {})
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        root_before = pathlib.Path(mirror).lstat()
+        if not stat.S_ISDIR(root_before.st_mode):
+            raise PortableAgentError("unexpected_artifact")
+        root_descriptor = os.open(str(mirror), flags)
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    try:
+        root_opened = os.fstat(root_descriptor)
+    except OSError as exc:
+        os.close(root_descriptor)
+        raise PortableAgentError("unexpected_artifact") from exc
+    if (
+        not stat.S_ISDIR(root_opened.st_mode)
+        or (root_opened.st_dev, root_opened.st_ino)
+        != (root_before.st_dev, root_before.st_ino)
+    ):
+        os.close(root_descriptor)
+        raise PortableAgentError("unexpected_artifact")
+    seen_skipped_root = set()
+    try:
+        root_final = _walk_mirror_directory(
+            root_descriptor,
+            (),
+            visit_non_directory,
+            skipped_root,
+            seen_skipped_root,
+        )
+    finally:
+        os.close(root_descriptor)
+    try:
+        final = pathlib.Path(mirror).lstat()
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    if (
+        _tmp_stat_snapshot(final) != _tmp_stat_snapshot(root_final)
+        or seen_skipped_root != set(skipped_root)
+    ):
+        raise PortableAgentError("unexpected_artifact")
+
+
+def _validate_stdout_mirror(mirror, expected_files):
+    if type(expected_files) is not dict:
+        raise PortableAgentError("unexpected_artifact")
+    mirror = pathlib.Path(mirror)
+    tmp_snapshot = _validate_tmp_scratch(mirror)
+    observed = set()
+
+    def validate_declared(
+        directory_descriptor,
+        name,
+        info,
+        relative,
+    ):
+        snapshot = expected_files.get(relative)
+        if (
+            type(snapshot) is not dict
+            or set(snapshot) != {"sha256", "byte_count", "mode"}
+            or type(snapshot["sha256"]) is not str
+            or type(snapshot["byte_count"]) is not int
+            or snapshot["byte_count"] < 0
+            or type(snapshot["mode"]) is not int
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_mode != snapshot["mode"]
+        ):
+            raise PortableAgentError("unexpected_artifact")
+        raw = _read_tmp_file_stable(
+            directory_descriptor,
+            name,
+            snapshot["byte_count"],
+        )
+        try:
+            final_info = os.stat(
+                name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError("unexpected_artifact") from exc
+        if (
+            _tmp_stat_snapshot(final_info) != _tmp_stat_snapshot(info)
+            or final_info.st_mode != snapshot["mode"]
+            or len(raw) != snapshot["byte_count"]
+            or hashlib.sha256(raw).hexdigest() != snapshot["sha256"]
+        ):
+            raise PortableAgentError("unexpected_artifact")
+        observed.add(relative)
+
+    _walk_mirror_descriptors(
+        mirror,
+        validate_declared,
+        skipped_root={".tmp": tmp_snapshot},
+    )
     if observed != set(expected_files):
         raise PortableAgentError("unexpected_artifact")
+    try:
+        final_tmp = (mirror / ".tmp").lstat()
+    except OSError as exc:
+        raise PortableAgentError("unexpected_artifact") from exc
+    if _tmp_stat_snapshot(final_tmp) != tmp_snapshot:
+        raise PortableAgentError("unexpected_artifact")
+
+
+def _enumerate_mirror_non_directories(mirror):
+    observed = set()
+
+    def collect_regular(
+        directory_descriptor,
+        name,
+        info,
+        relative,
+    ):
+        del directory_descriptor, name
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise PortableAgentError("unexpected_artifact")
+        observed.add(relative)
+
+    _walk_mirror_descriptors(mirror, collect_regular)
+    return observed
 
 
 def _revalidate_provider_model_authority(capability):
@@ -810,6 +1320,7 @@ def run_portable_stdout_attempt(
     inputs,
     prompt,
     response_schema,
+    expected_response_attestation,
     state_root,
     timeout_seconds,
     max_stdout_bytes=128 * 1024,
@@ -825,17 +1336,24 @@ def run_portable_stdout_attempt(
     if type(max_stdout_bytes) is not int or not 1 <= max_stdout_bytes <= 128 * 1024:
         raise PortableAgentError("invalid_output_contract")
     response_contract = _validate_response_schema_contract(response_schema)
+    expected_attestation = _validate_expected_response_attestation(
+        expected_response_attestation
+    )
     root = pathlib.Path(state_root)
     if root.exists() and (root.is_symlink() or not root.is_dir()):
         raise PortableAgentError("unsafe_state_root")
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
-    attempt = pathlib.Path(tempfile.mkdtemp(prefix="attempt-", dir=root))
-    os.chmod(attempt, 0o700)
-    mirror = attempt / "mirror"
-    mirror.mkdir(mode=0o700)
+    attempt = None
     process = None
+    process_group_quiesced = False
     try:
+        attempt = pathlib.Path(
+            tempfile.mkdtemp(prefix="attempt-", dir=root)
+        )
+        os.chmod(attempt, 0o700)
+        mirror = attempt / "mirror"
+        mirror.mkdir(mode=0o700)
         copied = _copy_inputs(inputs, mirror)
         argv, environment_delta = provider_adapters.render_command(
             capability,
@@ -858,15 +1376,23 @@ def run_portable_stdout_attempt(
             timeout_seconds=timeout_seconds,
             stdout_max_bytes=max_stdout_bytes,
         )
+        _kill_group(process)
+        process_group_quiesced = True
         if process.returncode != 0:
             raise PortableAgentError(
                 "nonzero_exit",
                 {"returncode": process.returncode, "stderr": stderr},
             )
         _validate_stdout_mirror(mirror, copied)
-        value = _parse_canonical_stdout(stdout)
+        value, model_bytes = _parse_provider_stdout(capability.provider, stdout)
         _validate_response_value(value, response_contract)
-        output_sha = hashlib.sha256(stdout).hexdigest()
+        if _canonical_json_bytes(value["request_attestation"]) != _canonical_json_bytes(
+            expected_attestation
+        ):
+            raise PortableAgentError("provider_request_attestation_mismatch")
+        output_sha = hashlib.sha256(model_bytes).hexdigest()
+        _remove_attempt(attempt)
+        attempt = None
         imports = root / "imports"
         _ensure_owner_tree(root, imports)
         imported = imports / (output_sha + ".json")
@@ -877,10 +1403,10 @@ def run_portable_stdout_attempt(
                 "unsafe_import",
                 require_owner_only=True,
             )
-            if existing != stdout:
+            if existing != model_bytes:
                 raise PortableAgentError("import_conflict")
         else:
-            _write_owner_only(imported, stdout, root)
+            _write_owner_only(imported, model_bytes, root)
             _fsync_directory(imports)
         return {
             "provider": capability.provider,
@@ -888,15 +1414,16 @@ def run_portable_stdout_attempt(
             "model_envelope_sha256": output_sha,
             "output_path": str(imported),
             "value": value,
-            "raw": stdout,
+            "raw": model_bytes,
             "stderr": stderr,
         }
     except OSError as exc:
         raise PortableAgentError("process_error") from exc
     finally:
-        if process is not None and process.poll() is None:
+        if process is not None and not process_group_quiesced:
             _kill_group(process)
-        shutil.rmtree(attempt, ignore_errors=True)
+        if attempt is not None:
+            _remove_attempt(attempt)
 
 
 def run_portable_attempt(
@@ -921,12 +1448,16 @@ def run_portable_attempt(
         raise PortableAgentError("unsafe_state_root")
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
-    attempt = pathlib.Path(tempfile.mkdtemp(prefix="attempt-", dir=root))
-    os.chmod(attempt, 0o700)
-    mirror = attempt / "mirror"
-    mirror.mkdir(mode=0o700)
+    attempt = None
     process = None
+    process_group_quiesced = False
     try:
+        attempt = pathlib.Path(
+            tempfile.mkdtemp(prefix="attempt-", dir=root)
+        )
+        os.chmod(attempt, 0o700)
+        mirror = attempt / "mirror"
+        mirror.mkdir(mode=0o700)
         copied = _copy_inputs(inputs, mirror)
         argv, environment_delta = provider_adapters.render_command(
             capability, mirror, prompt
@@ -946,6 +1477,8 @@ def run_portable_attempt(
             timeout_seconds=timeout_seconds,
             stdout_max_bytes=4096,
         )
+        _kill_group(process)
+        process_group_quiesced = True
         if process.returncode != 0:
             raise PortableAgentError(
                 "nonzero_exit",
@@ -953,12 +1486,8 @@ def run_portable_attempt(
             )
         output_path = mirror.joinpath(*relative_output.parts)
         if output_contract["forbid_extra_files"]:
-            observed = {
-                path.relative_to(mirror).as_posix()
-                for path in mirror.rglob("*")
-                if path.is_symlink() or not path.is_dir()
-            }
-            expected = copied | {relative_output.as_posix()}
+            observed = _enumerate_mirror_non_directories(mirror)
+            expected = set(copied) | {relative_output.as_posix()}
             if observed != expected:
                 raise PortableAgentError("unexpected_artifact")
         raw = _read_mirror_output(
@@ -969,6 +1498,8 @@ def run_portable_attempt(
         if expected_sha is not None and output_sha != expected_sha:
             raise PortableAgentError("output_sha_mismatch")
         value = _validate_schema(raw, output_contract)
+        _remove_attempt(attempt)
+        attempt = None
         imports = root / "imports"
         _ensure_owner_tree(root, imports)
         imported = imports / (output_sha + ".json")
@@ -993,6 +1524,7 @@ def run_portable_attempt(
     except OSError as exc:
         raise PortableAgentError("process_error") from exc
     finally:
-        if process is not None and process.poll() is None:
+        if process is not None and not process_group_quiesced:
             _kill_group(process)
-        shutil.rmtree(attempt, ignore_errors=True)
+        if attempt is not None:
+            _remove_attempt(attempt)

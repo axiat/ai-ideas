@@ -20,8 +20,12 @@
 # Usage:
 #   caffeinate -is ./awr-side.sh
 #
-# `HISTORY_RUNTIME_ABI=v2` uses portable provider IDs. Codex is the default;
-# model and reasoning omission preserves the selected CLI's current defaults:
+# `HISTORY_RUNTIME_ABI=v2` uses portable provider IDs. Codex is the default.
+# Omitted reasoning preserves the selected CLI's current default.
+# Codex, Kimi, and Grok model omission preserves the selected CLI default.
+# OpenCode model omission uses a safe host configuration probe and pins the
+# resolved model. agy has no trusted default-identity probe and requires an
+# explicit model.
 #   AWR_PROVIDER / AWR_MODEL / AWR_REASONING_EFFORT
 #   AWR_RESEARCH_PROVIDER / MODEL / REASONING_EFFORT
 #   AWR_PRIORWORK_PROVIDER / MODEL / REASONING_EFFORT
@@ -36,7 +40,8 @@
 #
 # Examples:
 #   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode ./awr-side.sh
-#   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh
+#   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high \
+#     AWR_REASONING_EFFORT=high ./awr-side.sh
 #   HISTORY_RUNTIME_ABI=v1 SIDE_CMD=agy ./awr-side.sh
 #
 # `SIDE_CMD=agy` selects the mirror-local built-in adapter with AGY_MODEL and

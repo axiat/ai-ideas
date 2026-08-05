@@ -63,19 +63,44 @@ the existing `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` process interface. These
 variables never enter v2 internal stages, and `HUNT_PROVIDER` does not change
 their Codex default. A host without Codex must set `AGENT_CMD` or both
 `FRONT_CMD` and `BACK_CMD` to a prompt-taking command that satisfies the
-external stage's file contract. Grammar-only command shapes:
+external stage's file contract. A Kimi command shape is:
 
 ```bash
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=kimi \
 AGENT_CMD='kimi --auto --output-format text -p' \
 ./hunt.sh
+```
 
+`grok-worker.sh` supplies the external file contract and disables all six
+Grok compatibility sources for Claude skills, rules, agents, MCPs, hooks, and
+sessions. With no model or reasoning override, both the portable Grok stages
+and external Grok stages preserve the CLI's current defaults:
+
+```bash
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
 AGENT_CMD='./grok-worker.sh' \
 ./hunt.sh
 ```
+
+The internal `HUNT_*` settings and external-wrapper `GROK_*` settings are
+independent. Pin both paths explicitly when the complete Hunt run must use one
+model and reasoning effort:
+
+```bash
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=grok \
+HUNT_MODEL=grok-4.5 \
+HUNT_REASONING_EFFORT=high \
+AGENT_CMD='./grok-worker.sh' \
+GROK_MODEL=grok-4.5 \
+GROK_REASONING_EFFORT=high \
+./hunt.sh
+```
+
+The wrapper accepts only explicit `GROK_REASONING_EFFORT=high`; omission uses
+the Grok CLI default, and every other value fails before Grok starts.
 
 ## AwR Sidecar
 
@@ -159,8 +184,71 @@ declared-input names and SHAs, and response schema, plus a separate prompt SHA.
 The response must echo both values exactly. Missing or wrong attestation fails
 before any artifact is projected or completion is published.
 
-This is process-level data minimization, not an OS/container sandbox. A
-host-privileged CLI can still access absolute host paths outside the mirror.
+Portable Grok stages use the `grok-portable-v3` command grammar and request
+`--output-format json`. The rendered command environment forces all six
+`GROK_CLAUDE_*_ENABLED` compatibility cells to `false`, and the command record
+and preflight bind those values. The complete
+provider-owned outer stdout remains under the 128 KiB capture limit. After the
+host validates that transport and its terminal `text`, it accepts complete bare
+inner JSON or one unique terminal Markdown fence after an optional accumulated
+prefix. Grok's CLI reducer concatenates assistant chunks without inserting a
+separator, so the exact opener bytes `b"```json\n"` may begin at any byte of
+`text`; line-start placement is not required. Fenced text must contain exactly
+two triple-backtick sequences, exactly one opener, and no CR byte. The closing
+delimiter must be preceded by LF and its final byte must end `text`. The host
+discards only the accumulated prefix and the two fence markers. Narration plus
+bare JSON still fails strict parsing. An additional delimiter, a different
+label or case, a missing close, or any trailing byte also rejects the response.
+No trimming, JSON-suffix search, normalization, or repair occurs.
+
+Every v2 portable request carries binding-covered `transport_instructions`.
+Grok receives a provider-specific stdout instruction: the final assistant
+response itself must be one exact lowercase-`json` LF fence containing the
+canonical UTF-8/NFC response-schema object, whose single trailing LF immediately
+precedes the terminal close. No byte may sit outside that fence, and no
+triple-backtick sequence may occur in an earlier assistant response. Every
+non-Grok provider, including agy, retains the raw canonical-stdout instruction
+with no fence or narration. For agy, that instruction overrides legacy
+output-location and file-writing statements in the AwR role; `role.md` defines
+artifact content only. All instructions forbid model-authored mirror writes
+and require exact request attestation. After the provider command finishes,
+the host terminates its process group and waits for the provider process before
+validating any mirror or response bytes.
+Every declared entry must remain a regular single-link file with its exact
+original `st_mode`; a stable read must preserve its exact byte count and
+SHA-256. Added or removed files, entry-type, link-count, or mode changes, and
+content drift reject the attempt before import. The non-scratch mirror uses
+descriptor-relative, no-follow traversal with final child and root namespace
+identity checks. Traversal failures or a raced namespace replacement reject;
+stable empty directories remain ignored.
+
+Stdout portable attempts reserve `.tmp` as bounded ignored provider scratch.
+It must remain a real directory. Descriptor-relative, no-follow traversal
+permits only real nested directories and regular single-link files, with at
+most 32 files, 64 total entries, and 1 MiB of stable-read file bytes. Scratch
+is never imported. A missing or replaced `.tmp`, a symlink, hardlink, special
+file, unreadable or unstable entry, traversal race, or exceeded limit rejects
+the attempt. The host also validates canonical stdout, the closed schema, and
+attestation. It does not recover output from an agy brain directory or a
+role-named mirror artifact.
+
+The disposable attempt is removed before any durable import. Cleanup first
+repairs directory permissions, removes the attempt tree, and verifies its
+absence. Failure returns `attempt_cleanup_failed`; no import, projection, or
+completion is published. Legacy file-output attempts with
+`forbid_extra_files=true` enumerate the complete mirror through directory
+descriptors without following links. Only regular single-link files may occupy
+expected paths; unreadable directories, traversal failures, special files,
+symlinks, and raced child or root directory replacement fail closed instead of
+being skipped. This legacy check closes path, type, and link identity; it does
+not add content or mode immutability for ordinary declared inputs.
+
+Completion hashes, including `model_envelope_sha256`, identify the canonical
+inner model envelope, not a discarded provider transport.
+
+This post-exit fail-closed check is not an OS-enforced read-only mount or a
+container sandbox. A host-privileged CLI can still access absolute host paths
+outside the mirror.
 Provider authentication and current CLI defaults remain available through the
 provider's normal host configuration.
 
@@ -174,6 +262,9 @@ overrides before state mutation. Hunt v2 continues to allow
 Operational AwR defaults remain `SIDE_POLL_SEC=9000`, `SIDE_MAX_BAD=3`,
 `SIDE_MAX_ROUNDS=3`, `SIDE_GAP_MIN_SEC=60`, `SIDE_GAP_MAX_SEC=600`, and
 `SIDE_COOLDOWN_SEC=3600`.
+
+A failed final bounded Hunt round exits without `FAIL_SLEEP_MIN`; failed rounds
+with another bounded attempt remaining retain the configured cooldown.
 
 ## Literature Monitor
 
