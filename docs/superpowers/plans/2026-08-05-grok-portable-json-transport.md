@@ -20,6 +20,7 @@
 - Codex, Kimi, OpenCode, and agy SHALL retain the current exact raw canonical-stdout contract.
 - A failed Hunt round SHALL sleep only when another round can execute; unlimited runs and non-terminal bounded rounds retain `FAIL_SLEEP_MIN`.
 - Automated tests SHALL use fake providers. One final real Grok portable-stage smoke is allowed; it SHALL use `grok-4.5`, `high`, one bounded AwR judge request, and no full Hunt round.
+- Before that live smoke, disable every Claude compatibility source with `GROK_CLAUDE_SKILLS_ENABLED=false`, `GROK_CLAUDE_RULES_ENABLED=false`, `GROK_CLAUDE_AGENTS_ENABLED=false`, `GROK_CLAUDE_MCPS_ENABLED=false`, `GROK_CLAUDE_HOOKS_ENABLED=false`, and `GROK_CLAUDE_SESSIONS_ENABLED=false`; inspect the effective Grok configuration and do not launch if any remaining hook, plugin, MCP, or command can invoke Claude.
 
 ---
 
@@ -364,6 +365,12 @@ Create a temporary AwR judge request with declared `draft.md`, `priorwork.md`,
 `task.md`, `rubric.md`, and `brainstorming_policy.md`, then run:
 
 ```bash
+GROK_CLAUDE_SKILLS_ENABLED=false \
+GROK_CLAUDE_RULES_ENABLED=false \
+GROK_CLAUDE_AGENTS_ENABLED=false \
+GROK_CLAUDE_MCPS_ENABLED=false \
+GROK_CLAUDE_HOOKS_ENABLED=false \
+GROK_CLAUDE_SESSIONS_ENABLED=false \
 python3 -B lib/portable_stage.py run \
   --surface awr \
   --provider grok \
