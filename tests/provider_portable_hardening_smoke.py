@@ -11,6 +11,7 @@ import stat
 import struct
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -873,6 +874,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             "agy-tmp-oversize",
             "agy-tmp-too-many",
             "agy-tmp-too-many-directories",
+            "agy-tmp-mode-zero",
         )
         for mode in modes:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
@@ -897,6 +899,134 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 self.assertFalse((root / "state/completion.json").exists())
                 self.assertFalse((root / "published").exists())
                 self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_successful_provider_exit_quiesces_late_tmp_growth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            trigger = root / "grow-trigger"
+            done = root / "grow-done"
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            real_read = portable_agent._read_tmp_file_stable
+
+            def trigger_after_read(directory_descriptor, name, maximum):
+                raw = real_read(directory_descriptor, name, maximum)
+                if name == "cache":
+                    trigger.write_text("go\n", encoding="utf-8")
+                    deadline = time.monotonic() + 0.5
+                    while not done.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                return raw
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FAKE_PORTABLE_STAGE_MODE": "agy-tmp-late-grow",
+                    "FAKE_PORTABLE_TRIGGER_PATH": str(trigger),
+                    "FAKE_PORTABLE_DONE_PATH": str(done),
+                },
+                clear=False,
+            ), mock.patch.object(
+                portable_agent,
+                "_read_tmp_file_stable",
+                trigger_after_read,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            self.assertTrue(
+                (
+                    pathlib.Path(prepared["state_root"])
+                    / "imports"
+                    / (completion["model_envelope_sha256"] + ".json")
+                ).is_file()
+            )
+            self.assertFalse(done.exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_successful_provider_exit_quiesces_late_root_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            trigger = root / "add-trigger"
+            done = root / "add-done"
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            real_walk = portable_agent.os.walk
+
+            def trigger_after_root(*args, **kwargs):
+                for current, directories, files in real_walk(*args, **kwargs):
+                    yield current, directories, files
+                    if pathlib.Path(current).name == "mirror":
+                        trigger.write_text("go\n", encoding="utf-8")
+                        deadline = time.monotonic() + 0.5
+                        while not done.exists() and time.monotonic() < deadline:
+                            time.sleep(0.01)
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FAKE_PORTABLE_STAGE_MODE": "agy-late-root-file",
+                    "FAKE_PORTABLE_TRIGGER_PATH": str(trigger),
+                    "FAKE_PORTABLE_DONE_PATH": str(done),
+                },
+                clear=False,
+            ), mock.patch.object(
+                portable_agent.os,
+                "walk",
+                trigger_after_root,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            self.assertTrue(
+                (
+                    pathlib.Path(prepared["state_root"])
+                    / "imports"
+                    / (completion["model_envelope_sha256"] + ".json")
+                ).is_file()
+            )
+            self.assertFalse(done.exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_cleanup_failure_rejects_before_import_or_projection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root,
+                stage="awr-research",
+                provider="agy",
+            )
+            real_rmtree = portable_agent.shutil.rmtree
+
+            def deny_attempt_removal(path, *args, **kwargs):
+                if pathlib.Path(path).name.startswith("attempt-"):
+                    raise PermissionError("injected cleanup failure")
+                return real_rmtree(path, *args, **kwargs)
+
+            with mock.patch.object(
+                portable_agent.shutil,
+                "rmtree",
+                deny_attempt_removal,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "attempt_cleanup_failed")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertFalse((root / "published").exists())
+            attempts = list((root / "state").glob("attempt-*"))
+            self.assertEqual(len(attempts), 1)
+            portable_agent._repair_attempt_directories(attempts[0])
+            real_rmtree(attempts[0])
 
     def test_existing_mirror_file_drift_rejects_before_import_or_projection(self):
         modes = (
@@ -1364,6 +1494,53 @@ class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
                 self._run(root / "state", "stdout-flood")
             self.assertEqual(caught.exception.code, "oversize")
             self.assertFalse((root / "state/imports").exists())
+
+    def test_legacy_success_quiesces_remaining_process_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            delayed = root / "background-child-survived"
+            result = self._run(
+                root / "state",
+                "success-background-child",
+                {"delayed_path": str(delayed)},
+            )
+            self.assertEqual(result["value"]["status"], "ok")
+            time.sleep(1.0)
+            self.assertFalse(delayed.exists())
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_legacy_success_repairs_attempt_permissions_before_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            result = self._run(root / "state", "mode-zero")
+            self.assertEqual(result["value"]["status"], "ok")
+            self.assertFalse(any((root / "state").glob("attempt-*")))
+
+    def test_legacy_cleanup_failure_rejects_before_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            real_rmtree = portable_agent.shutil.rmtree
+
+            def deny_attempt_removal(path, *args, **kwargs):
+                if pathlib.Path(path).name.startswith("attempt-"):
+                    raise PermissionError("injected cleanup failure")
+                return real_rmtree(path, *args, **kwargs)
+
+            with mock.patch.object(
+                portable_agent.shutil,
+                "rmtree",
+                deny_attempt_removal,
+            ):
+                with self.assertRaises(
+                    portable_agent.PortableAgentError
+                ) as caught:
+                    self._run(root / "state", "success")
+            self.assertEqual(caught.exception.code, "attempt_cleanup_failed")
+            self.assertFalse((root / "state/imports").exists())
+            attempts = list((root / "state").glob("attempt-*"))
+            self.assertEqual(len(attempts), 1)
+            portable_agent._repair_attempt_directories(attempts[0])
+            real_rmtree(attempts[0])
 
 
 if __name__ == "__main__":

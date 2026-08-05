@@ -388,6 +388,24 @@ def main():
         time.sleep(0.8)
         _write(pathlib.Path(sys.argv[2]), b"child survived\n")
         return 0
+    if len(sys.argv) == 6 and sys.argv[1] == "--wait-mutate":
+        action = sys.argv[2]
+        trigger = pathlib.Path(sys.argv[3])
+        target = pathlib.Path(sys.argv[4])
+        done = pathlib.Path(sys.argv[5])
+        deadline = time.monotonic() + 2.0
+        while not trigger.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not trigger.exists():
+            return 0
+        if action == "grow":
+            target.write_bytes(b"x" * (1024 * 1024 + 1))
+        elif action == "add":
+            _write(target, b"late provider file\n")
+        else:
+            return 64
+        _write(done, b"mutated\n")
+        return 0
 
     if sys.argv[1:] == ["--pure", "debug", "config"]:
         sys.stdout.write('{"model":"openai/fixture-model"}\n')
@@ -660,6 +678,38 @@ def main():
     if mode == "agy-tmp-too-many-directories":
         for index in range(65):
             pathlib.Path(".tmp", f"directory-{index:02d}").mkdir()
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode == "agy-tmp-mode-zero":
+        locked = pathlib.Path(".tmp/locked")
+        _write(locked / "cache", b"locked\n")
+        os.chmod(locked, 0)
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode in {"agy-tmp-late-grow", "agy-late-root-file"}:
+        action = "grow" if mode == "agy-tmp-late-grow" else "add"
+        target = (
+            pathlib.Path(".tmp/cache")
+            if action == "grow"
+            else pathlib.Path("late-provider-file")
+        )
+        if action == "grow":
+            _write(target, b"x")
+        subprocess.Popen(
+            [
+                sys.executable,
+                __file__,
+                "--wait-mutate",
+                action,
+                os.environ["FAKE_PORTABLE_TRIGGER_PATH"],
+                str(target.resolve()),
+                os.environ["FAKE_PORTABLE_DONE_PATH"],
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
         sys.stdout.buffer.write(raw)
         return 0
     if mode in {

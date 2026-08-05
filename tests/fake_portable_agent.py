@@ -57,6 +57,27 @@ def main():
                     return 20
         _write(output, valid)
         return 0
+    if mode == "success-background-child":
+        _write(output, valid)
+        subprocess.Popen(
+            [
+                sys.executable,
+                __file__,
+                "--delayed-child",
+                request["delayed_path"],
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        return 0
+    if mode == "mode-zero":
+        _write(output, valid)
+        locked = pathlib.Path(".tmp/locked")
+        _write(locked / "cache", b"locked\n")
+        os.chmod(locked, 0)
+        return 0
     if mode == "stdout-flood":
         _write(output, valid)
         sys.stdout.buffer.write(b"x" * (1024 * 1024))

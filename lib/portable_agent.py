@@ -772,6 +772,42 @@ def _kill_group(process):
             stream.close()
 
 
+def _repair_attempt_directories(path):
+    path = pathlib.Path(path)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        return
+    os.chmod(path, 0o700)
+    with os.scandir(path) as entries:
+        children = [path / entry.name for entry in entries]
+    for child in children:
+        _repair_attempt_directories(child)
+
+
+def _attempt_exists(path):
+    try:
+        pathlib.Path(path).lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _remove_attempt(path):
+    try:
+        _repair_attempt_directories(path)
+        shutil.rmtree(path)
+    except OSError as exc:
+        if _attempt_exists(path):
+            raise PortableAgentError("attempt_cleanup_failed") from exc
+    if _attempt_exists(path):
+        raise PortableAgentError("attempt_cleanup_failed")
+
+
 def _environment_is_scrubbed(name):
     if name in {
         "PWD",
@@ -1171,12 +1207,16 @@ def run_portable_stdout_attempt(
         raise PortableAgentError("unsafe_state_root")
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
-    attempt = pathlib.Path(tempfile.mkdtemp(prefix="attempt-", dir=root))
-    os.chmod(attempt, 0o700)
-    mirror = attempt / "mirror"
-    mirror.mkdir(mode=0o700)
+    attempt = None
     process = None
+    process_group_quiesced = False
     try:
+        attempt = pathlib.Path(
+            tempfile.mkdtemp(prefix="attempt-", dir=root)
+        )
+        os.chmod(attempt, 0o700)
+        mirror = attempt / "mirror"
+        mirror.mkdir(mode=0o700)
         copied = _copy_inputs(inputs, mirror)
         argv, environment_delta = provider_adapters.render_command(
             capability,
@@ -1199,6 +1239,8 @@ def run_portable_stdout_attempt(
             timeout_seconds=timeout_seconds,
             stdout_max_bytes=max_stdout_bytes,
         )
+        _kill_group(process)
+        process_group_quiesced = True
         if process.returncode != 0:
             raise PortableAgentError(
                 "nonzero_exit",
@@ -1212,6 +1254,8 @@ def run_portable_stdout_attempt(
         ):
             raise PortableAgentError("provider_request_attestation_mismatch")
         output_sha = hashlib.sha256(model_bytes).hexdigest()
+        _remove_attempt(attempt)
+        attempt = None
         imports = root / "imports"
         _ensure_owner_tree(root, imports)
         imported = imports / (output_sha + ".json")
@@ -1239,9 +1283,10 @@ def run_portable_stdout_attempt(
     except OSError as exc:
         raise PortableAgentError("process_error") from exc
     finally:
-        if process is not None and process.poll() is None:
+        if process is not None and not process_group_quiesced:
             _kill_group(process)
-        shutil.rmtree(attempt, ignore_errors=True)
+        if attempt is not None:
+            _remove_attempt(attempt)
 
 
 def run_portable_attempt(
@@ -1266,12 +1311,16 @@ def run_portable_attempt(
         raise PortableAgentError("unsafe_state_root")
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
-    attempt = pathlib.Path(tempfile.mkdtemp(prefix="attempt-", dir=root))
-    os.chmod(attempt, 0o700)
-    mirror = attempt / "mirror"
-    mirror.mkdir(mode=0o700)
+    attempt = None
     process = None
+    process_group_quiesced = False
     try:
+        attempt = pathlib.Path(
+            tempfile.mkdtemp(prefix="attempt-", dir=root)
+        )
+        os.chmod(attempt, 0o700)
+        mirror = attempt / "mirror"
+        mirror.mkdir(mode=0o700)
         copied = _copy_inputs(inputs, mirror)
         argv, environment_delta = provider_adapters.render_command(
             capability, mirror, prompt
@@ -1291,6 +1340,8 @@ def run_portable_attempt(
             timeout_seconds=timeout_seconds,
             stdout_max_bytes=4096,
         )
+        _kill_group(process)
+        process_group_quiesced = True
         if process.returncode != 0:
             raise PortableAgentError(
                 "nonzero_exit",
@@ -1314,6 +1365,8 @@ def run_portable_attempt(
         if expected_sha is not None and output_sha != expected_sha:
             raise PortableAgentError("output_sha_mismatch")
         value = _validate_schema(raw, output_contract)
+        _remove_attempt(attempt)
+        attempt = None
         imports = root / "imports"
         _ensure_owner_tree(root, imports)
         imported = imports / (output_sha + ".json")
@@ -1338,6 +1391,7 @@ def run_portable_attempt(
     except OSError as exc:
         raise PortableAgentError("process_error") from exc
     finally:
-        if process is not None and process.poll() is None:
+        if process is not None and not process_group_quiesced:
             _kill_group(process)
-        shutil.rmtree(attempt, ignore_errors=True)
+        if attempt is not None:
+            _remove_attempt(attempt)
