@@ -488,6 +488,73 @@ run_hunt_v2() {
   printf 'ok: Hunt v2 portable internal stages and legacy external stages\n'
 }
 
+run_terminal_failure_skips_cooldown() {
+  local repo log sleep_log home runs status failures
+  repo=$(make_repo hunt-terminal-failure) || {
+    fail 'terminal Hunt failure fixture setup'
+    return
+  }
+  install_fake_providers "$repo"
+  instrument_audit_cli "$repo"
+  write_hunt_ledger "$repo/ledger.tsv"
+  mkdir -p "$repo/tmp"
+  : > "$repo/tmp/near-sa-queue.tsv"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf "%s\\n" "$*" >> "$FAKE_SLEEP_LOG"' \
+    > "$repo/.test-bin/sleep"
+  chmod 755 "$repo/.test-bin/sleep"
+  log="$CASE_ROOT/hunt-terminal-failure.log"
+  sleep_log="$CASE_ROOT/hunt-terminal-failure.sleep.log"
+  home="$CASE_ROOT/hunt-terminal-failure-home"
+  runs="$CASE_ROOT/hunt-terminal-failure-runs"
+  mkdir -p "$home" "$runs"
+  run_bounded "$repo" "$log" \
+    env \
+      "HOME=$home" \
+      "CODEX_HOME=$home/codex-config" \
+      "EXPECTED_PROVIDER_HOME=$home" \
+      "EXPECTED_PROVIDER_CODEX_HOME=$home/codex-config" \
+      "PATH=$repo/.test-bin:$PATH" \
+      "FAKE_SLEEP_LOG=$sleep_log" \
+      FAKE_PORTABLE_STAGE_MODE=malformed \
+      HISTORY_RUNTIME_ABI=v2 \
+      HUNT_PROVIDER=codex \
+      "AGENT_CMD=$repo/tests/fake_agent.sh" \
+      HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
+      RESUME_FRONT=0 \
+      THEME_MIN_LOW=0 \
+      RESEARCH_RETRY=0 \
+      ROUND_LIMIT=1 \
+      MAX_FAILS=12 \
+      FAIL_SLEEP_MIN=1 \
+      SA_TARGET=0 \
+      "RUNS_DIR=$runs" \
+      bash ./hunt.sh
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    fail "terminal Hunt failure exited $status"
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  failures=$(rg -c 'Round failed at generate' "$log" || true)
+  if [ "$failures" -ne 1 ]; then
+    fail "terminal Hunt failure count changed: $failures"
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  if ! rg -q 'Reached ROUND_LIMIT=1' "$log"; then
+    fail 'terminal Hunt failure did not reach ROUND_LIMIT=1'
+    sed -n '1,180p' "$log" >&2
+    return
+  fi
+  if [ -e "$sleep_log" ]; then
+    fail 'terminal Hunt failure invoked cooldown sleep'
+    return
+  fi
+  printf 'ok: terminal Hunt failure skips cooldown\n'
+}
+
 check_awr_result() {
   local repo=$1 provider_log=$2
   python3 - "$repo" "$provider_log" <<'PY'
@@ -602,6 +669,7 @@ run_v1_regressions() {
 }
 
 run_hunt_v2
+run_terminal_failure_skips_cooldown
 run_awr_v2
 run_v1_regressions
 

@@ -1426,7 +1426,9 @@ fail_round() {
   fails=$((fails + 1))
   log "Round failed at $stage (${fails}/${MAX_FAILS})"
   [ "$fails" -lt "$MAX_FAILS" ] || return 1
-  sleep_minutes "$FAIL_SLEEP_MIN"
+  if [ "$ROUND_LIMIT" -eq 0 ] || [ "$round" -lt "$ROUND_LIMIT" ]; then
+    sleep_minutes "$FAIL_SLEEP_MIN"
+  fi
 }
 
 reject_direction_round() {
