@@ -159,6 +159,12 @@ declared-input names and SHAs, and response schema, plus a separate prompt SHA.
 The response must echo both values exactly. Missing or wrong attestation fails
 before any artifact is projected or completion is published.
 
+Portable Grok stages request `--output-format json`. After the host validates
+the provider transport and its terminal `text`, it discards that wrapper and
+strictly validates and canonicalizes the inner model envelope. Completion
+hashes, including `model_envelope_sha256`, identify the canonical inner model
+envelope, not the discarded provider transport.
+
 This is process-level data minimization, not an OS/container sandbox. A
 host-privileged CLI can still access absolute host paths outside the mirror.
 Provider authentication and current CLI defaults remain available through the
@@ -174,6 +180,9 @@ overrides before state mutation. Hunt v2 continues to allow
 Operational AwR defaults remain `SIDE_POLL_SEC=9000`, `SIDE_MAX_BAD=3`,
 `SIDE_MAX_ROUNDS=3`, `SIDE_GAP_MIN_SEC=60`, `SIDE_GAP_MAX_SEC=600`, and
 `SIDE_COOLDOWN_SEC=3600`.
+
+A failed final bounded Hunt round exits without `FAIL_SLEEP_MIN`; failed rounds
+with another bounded attempt remaining retain the configured cooldown.
 
 ## Literature Monitor
 

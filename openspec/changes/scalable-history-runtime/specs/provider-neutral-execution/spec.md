@@ -54,9 +54,17 @@ Every portable provider attempt SHALL run in a disposable mirror containing only
 ### Requirement: Provider responses attest to the host request
 Every portable request SHALL carry a host-computed base-request binding over its stage, seat, serialized prompt, role SHA, declared-input names and SHAs, and response schema, plus a separate serialized-prompt SHA. The response SHALL echo both values exactly in its closed envelope. The runtime SHALL record the full wire-request SHA separately and SHALL NOT derive provider attestation from host state after the response.
 
+An adapter MAY unwrap provider-owned machine transport before model-envelope validation. The extracted model envelope SHALL still satisfy the strict JSON, closed-schema, request-attestation, and host-canonicalization requirements before import or publication.
+
 #### Scenario: Missing or mismatched request attestation is rejected
 - **WHEN** a provider response omits either attestation value or returns a different request or prompt SHA
 - **THEN** the runtime publishes no projected artifact and no completion receipt
+
+#### Scenario: Grok native JSON transport is unwrapped safely
+- **WHEN** a portable Grok stage requests native JSON mode and receives a provider transport with terminal `stopReason=end_turn` and `text`
+- **THEN** the adapter validates and extracts the terminal `text`, strictly validates the inner closed model envelope and attestations, canonicalizes that inner envelope on the host, and records its canonical import and completion hash
+- **AND WHEN** the transport is malformed, incomplete, non-terminal, or lacks valid text
+- **THEN** the runtime imports and publishes no artifact and writes no completion receipt
 
 ### Requirement: Ordered pools define execution identity and failover
 Each stage SHALL use one ordered provider list that is both its allowlist and failover order. Pool order, resolved-default capability, capacity profile, prompt/schema, or settlement policy changes SHALL create a new plan identity; an attempt's actual provider/model/reasoning SHALL affect attempt provenance but not the logical task identity.
