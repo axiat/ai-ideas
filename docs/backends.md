@@ -63,19 +63,44 @@ the existing `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` process interface. These
 variables never enter v2 internal stages, and `HUNT_PROVIDER` does not change
 their Codex default. A host without Codex must set `AGENT_CMD` or both
 `FRONT_CMD` and `BACK_CMD` to a prompt-taking command that satisfies the
-external stage's file contract. Grammar-only command shapes:
+external stage's file contract. A Kimi command shape is:
 
 ```bash
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=kimi \
 AGENT_CMD='kimi --auto --output-format text -p' \
 ./hunt.sh
+```
 
+`grok-worker.sh` supplies the external file contract and disables all six
+Grok compatibility sources for Claude skills, rules, agents, MCPs, hooks, and
+sessions. With no model or reasoning override, both the portable Grok stages
+and external Grok stages preserve the CLI's current defaults:
+
+```bash
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
 AGENT_CMD='./grok-worker.sh' \
 ./hunt.sh
 ```
+
+The internal `HUNT_*` settings and external-wrapper `GROK_*` settings are
+independent. Pin both paths explicitly when the complete Hunt run must use one
+model and reasoning effort:
+
+```bash
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=grok \
+HUNT_MODEL=grok-4.5 \
+HUNT_REASONING_EFFORT=high \
+AGENT_CMD='./grok-worker.sh' \
+GROK_MODEL=grok-4.5 \
+GROK_REASONING_EFFORT=high \
+./hunt.sh
+```
+
+The wrapper accepts only explicit `GROK_REASONING_EFFORT=high`; omission uses
+the Grok CLI default, and every other value fails before Grok starts.
 
 ## AwR Sidecar
 
