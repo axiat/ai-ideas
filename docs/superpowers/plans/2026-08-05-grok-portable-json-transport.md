@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make real Grok portable stages accept the CLI's native JSON transport while retaining the strict model-response contract, and avoid retry sleep after the final bounded Hunt round.
+**Goal:** Make real Grok and agy portable stages cross their provider transports while retaining the strict model-response contract, and avoid retry sleep after the final bounded Hunt round.
 
-**Architecture:** Grok emits one provider-owned outer JSON object. `portable_agent` validates that transport, extracts its successful final `text`, strictly parses the inner model envelope, and imports host-canonicalized inner bytes. Other providers retain the raw canonical-stdout path. Hunt decides whether a future round exists before applying failure cooldown.
+**Architecture:** Grok emits one provider-owned outer JSON object. `portable_agent` validates that transport, extracts a unique terminal fenced response when provider narration precedes it, strictly parses the inner model envelope, and imports host-canonicalized inner bytes. Agy receives binding-covered portable transport instructions that override the legacy role's file-output channel while leaving its artifact semantics unchanged. Other providers retain the raw canonical-stdout path. Hunt decides whether a future round exists before applying failure cooldown.
 
 **Tech Stack:** Python 3 standard library, Bash, `unittest`, fake CLI executables, OpenSpec.
 
@@ -485,3 +485,122 @@ git add docs/superpowers/specs/2026-08-05-grok-portable-json-transport-design.md
   openspec/changes/scalable-history-runtime/tasks.md
 git commit -m "docs: specify exact Grok JSON fence transport"
 ```
+
+---
+
+### Task 5: Isolate Grok's unique terminal response
+
+**Files:**
+
+- Modify: `lib/portable_agent.py`
+- Modify: `tests/fake_portable_stage_provider.py`
+- Modify: `tests/provider_portable_hardening_smoke.py`
+- Modify: `docs/superpowers/specs/2026-08-05-grok-portable-json-transport-design.md`
+- Modify: `docs/backends.md`
+- Modify: `openspec/changes/scalable-history-runtime/specs/provider-neutral-execution/spec.md`
+
+**Interfaces:**
+
+- Consumes: the validated Grok outer `text` string.
+- Produces: bare JSON bytes or the bytes inside one exact terminal lowercase-`json` fence.
+
+- [ ] **Step 1: Write terminal-fence RED tests**
+
+Add a success fixture with provider narration followed by one LF-delimited
+`json` fence whose closing delimiter ends the `text`. Add rejection fixtures
+for duplicate or non-line-start delimiters, CRLF, wrong label or case, missing
+close, and every byte after the closing delimiter. Every rejection must leave
+imports, projections, and completion absent.
+
+- [ ] **Step 2: Implement the bounded extractor**
+
+Keep the complete outer stdout under the existing 128 KiB cap. If no fence
+delimiter line exists, pass the complete `text` to strict JSON parsing. If a
+delimiter exists, require exactly one opener line `b"```json\n"`, exactly one
+closer line `b"```"`, and require the closer's final byte to be the final byte
+of `text`. The opener must begin at byte zero or immediately after LF. Discard
+only the bytes before that opener. Do not trim, normalize, search for an
+arbitrary JSON substring, or repair the extracted body.
+
+- [ ] **Step 3: Run focused tests and review**
+
+```bash
+python3 tests/provider_portable_hardening_smoke.py
+python3 tests/portable_stage_runtime_smoke.py
+bash tests/portable_hunt_awr_e2e_smoke.sh
+git diff --check
+```
+
+Require an independent code review before the live gate.
+
+- [ ] **Step 4: Run one revised real Grok smoke**
+
+Repeat the six compatibility-source disables and effective-configuration
+inspection from Task 4. Run one bounded `grok-4.5`/`high` AwR judge request,
+with no retry. Require canonical import, valid attestation, a completion
+receipt, and nonempty projected `judge.md`. Record hashes and remove only the
+exact temporary smoke directory after verification.
+
+---
+
+### Task 6: Bind agy to the portable stdout channel
+
+**Files:**
+
+- Modify: `lib/portable_stage.py`
+- Modify: `tests/fake_portable_stage_provider.py`
+- Modify: `tests/provider_portable_hardening_smoke.py`
+- Modify: `tests/portable_hunt_awr_e2e_smoke.sh`
+- Modify: `docs/backends.md`
+- Modify: `openspec/changes/scalable-history-runtime/specs/provider-neutral-execution/spec.md`
+- Modify: `openspec/changes/scalable-history-runtime/tasks.md`
+
+**Interfaces:**
+
+- Consumes: the portable request base before request-binding computation.
+- Produces: binding-covered `transport_instructions` declaring the stdout-only
+  response channel and read-only mirror contract.
+
+- [ ] **Step 1: Write request-binding and agy RED tests**
+
+Assert that the request contains closed portable transport instructions and
+that changing them changes both the request binding and wire-request hash.
+Exercise all three agy AwR stages with a fake provider that sees the legacy
+role wording but obeys the portable stdout override. Add a fake agy mode that
+writes a mirror file and exits zero; require `unexpected_artifact` with no
+import, projection, or completion. Retain v1 file-output regression coverage.
+
+- [ ] **Step 2: Add provider-neutral transport instructions**
+
+Add one closed object to `_provider_request()` before computing its binding.
+It declares that `role.md` controls artifact content, the request controls its
+transport, the mirror is read-only, and stdout must contain exactly one
+UTF-8/NFC canonical response-schema object with its request attestation. It
+forbids fences, narration, extra bytes, and file creation or modification.
+Do not add an unbound adapter prompt or parse any provider brain/artifact file.
+
+- [ ] **Step 3: Run focused tests and review**
+
+```bash
+python3 tests/provider_portable_hardening_smoke.py
+python3 tests/portable_stage_runtime_smoke.py
+bash tests/portable_hunt_awr_e2e_smoke.sh
+bash tests/runtime_abi_smoke.sh
+git diff --check
+```
+
+Require an independent code review before the live gate.
+
+- [ ] **Step 4: Run one real agy smoke**
+
+Inspect current agy plugins, agents, model catalog, and effective explicit
+Gemini route without invoking a model. Do not launch if any automatic path can
+invoke Claude. Run one bounded `gemini-3.6-flash-high`/`high` AwR judge request
+with no retry. Require canonical import, an unchanged mirror, a completion
+receipt, and nonempty projected `judge.md`.
+
+- [ ] **Step 5: Run full verification**
+
+Run the eleven Task 3 regression commands, strict OpenSpec validation, prose
+scan, shell syntax checks, and `git diff --check`. Obtain an independent
+whole-branch review before handoff.
