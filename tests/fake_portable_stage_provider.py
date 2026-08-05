@@ -313,6 +313,10 @@ def _grok_transport(inner_raw, mode):
         inner_text = "Provider completed the request.\n" + fenced
     elif mode == "fence-duplicate-delimiter":
         inner_text = fenced + "\n" + fenced
+    elif mode == "fence-four-backtick-prefix":
+        inner_text = "`" + fenced
+    elif mode == "fence-five-backtick-prefix":
+        inner_text = "``" + fenced
     elif mode == "fence-non-line-start":
         inner_text = "Provider completed the request." + fenced
     elif mode == "fence-crlf":

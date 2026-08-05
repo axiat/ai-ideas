@@ -966,6 +966,41 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 )
             )
 
+    def test_grok_transport_rejects_overlapping_prefix_fence_runs(self):
+        for mode in (
+            "fence-four-backtick-prefix",
+            "fence-five-backtick-prefix",
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                prepared = self._prepare(root, provider="grok")
+                with mock.patch.dict(
+                    os.environ,
+                    {"FAKE_PORTABLE_STAGE_MODE": mode},
+                    clear=False,
+                ):
+                    with self.assertRaises(
+                        portable_stage.PortableStageError
+                    ) as caught:
+                        portable_stage.run_stage(prepared, timeout_seconds=2)
+                self.assertEqual(caught.exception.code, "malformed_output")
+                imports = root / "state/imports"
+                self.assertFalse(
+                    imports.exists() and any(imports.iterdir())
+                )
+                self.assertFalse(
+                    pathlib.Path(prepared["completion_path"]).exists()
+                )
+                self.assertFalse(
+                    pathlib.Path(prepared["output_root"]).exists()
+                )
+                self.assertTrue(
+                    all(
+                        not pathlib.Path(path).exists()
+                        for path in prepared["output_paths"].values()
+                    )
+                )
+
     def test_grok_transport_rejects_invalid_outer_and_inner_responses(self):
         modes = (
             "malformed-outer-json",

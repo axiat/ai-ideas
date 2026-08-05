@@ -692,11 +692,16 @@ def _grok_model_text_bytes(text):
         return raw
     opening_start = raw.find(opening)
     closing_start = len(raw) - len(b"```")
+    fence_starts = [
+        index
+        for index in range(len(raw) - len(b"```") + 1)
+        if raw.startswith(b"```", index)
+    ]
     if (
         b"\r" in raw
-        or raw.count(b"```") != 2
         or raw.count(opening) != 1
         or opening_start < 0
+        or fence_starts != [opening_start, closing_start]
         or not raw.endswith(b"```")
     ):
         raise PortableAgentError("malformed_output")
