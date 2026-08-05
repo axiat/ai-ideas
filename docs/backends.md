@@ -161,9 +161,12 @@ before any artifact is projected or completion is published.
 
 Portable Grok stages request `--output-format json`. After the host validates
 the provider transport and its terminal `text`, it discards that wrapper and
-strictly validates and canonicalizes the inner model envelope. Completion
-hashes, including `model_envelope_sha256`, identify the canonical inner model
-envelope, not the discarded provider transport.
+accepts either bare inner JSON or one exact whole-text Markdown fence labeled
+lowercase `json`, separated by LF with no surrounding text. The host strips
+only those two fence markers; it does not trim, search, or repair the response.
+It then strictly validates and canonicalizes the inner model envelope.
+Completion hashes, including `model_envelope_sha256`, identify the canonical
+inner model envelope, not the discarded provider transport.
 
 This is process-level data minimization, not an OS/container sandbox. A
 host-privileged CLI can still access absolute host paths outside the mirror.

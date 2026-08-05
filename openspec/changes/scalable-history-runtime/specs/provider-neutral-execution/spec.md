@@ -56,14 +56,16 @@ Every portable request SHALL carry a host-computed base-request binding over its
 
 An adapter MAY unwrap provider-owned machine transport before model-envelope validation. The extracted model envelope SHALL still satisfy the strict JSON, closed-schema, request-attestation, and host-canonicalization requirements before import or publication.
 
+Grok terminal text MAY contain bare JSON or one exact whole-text Markdown fence labeled lowercase `json`, with LF separators and no surrounding text. The adapter SHALL strip only those two fence markers and SHALL NOT trim, search, or repair the response.
+
 #### Scenario: Missing or mismatched request attestation is rejected
 - **WHEN** a provider response omits either attestation value or returns a different request or prompt SHA
 - **THEN** the runtime publishes no projected artifact and no completion receipt
 
 #### Scenario: Grok native JSON transport is unwrapped safely
 - **WHEN** a portable Grok stage requests native JSON mode and receives a provider transport with terminal `stopReason=end_turn` and `text`
-- **THEN** the adapter validates and extracts the terminal `text`, strictly validates the inner closed model envelope and attestations, canonicalizes that inner envelope on the host, and records its canonical import and completion hash
-- **AND WHEN** the transport is malformed, incomplete, non-terminal, or lacks valid text
+- **THEN** the adapter validates and extracts terminal `text`, accepts bare JSON or one exact whole-text lowercase-`json` fence, strictly validates the inner closed model envelope and attestations, canonicalizes that inner envelope on the host, and records its canonical import and completion hash
+- **AND WHEN** the transport is malformed, incomplete, non-terminal, lacks valid text, or uses surrounding text, a different fence label, or a missing closing marker
 - **THEN** the runtime imports and publishes no artifact and writes no completion receipt
 
 ### Requirement: Ordered pools define execution identity and failover
