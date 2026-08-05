@@ -75,7 +75,7 @@ def main():
     if mode == "mode-zero":
         _write(output, valid)
         locked = pathlib.Path(".tmp/locked")
-        _write(locked / "cache", b"locked\n")
+        locked.mkdir()
         os.chmod(locked, 0)
         return 0
     if mode == "stdout-flood":
