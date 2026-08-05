@@ -46,6 +46,14 @@ def _write(path, raw):
     os.chmod(path, 0o600)
 
 
+def _overwrite_same_size(path):
+    raw = bytearray(path.read_bytes())
+    if not raw:
+        raise RuntimeError("fixture requires a nonempty declared input")
+    raw[0] ^= 1
+    path.write_bytes(raw)
+
+
 def _inner_request(request):
     prompt = request.get("serialized_prompt", request.get("prompt", "{}"))
     if isinstance(prompt, dict):
@@ -574,6 +582,22 @@ def main():
         return 0
     if mode == "agy-mirror-write":
         _write(pathlib.Path("provider-created.md"), b"provider artifact\n")
+        sys.stdout.buffer.write(raw)
+        return 0
+    if mode in {
+        "overwrite-role",
+        "overwrite-declared-input",
+        "chmod-declared-input",
+    }:
+        declared_input = pathlib.Path("input") / request["declared_inputs"][0]
+        if mode == "overwrite-role":
+            _overwrite_same_size(
+                pathlib.Path(request.get("role_path", "role.md"))
+            )
+        elif mode == "overwrite-declared-input":
+            _overwrite_same_size(declared_input)
+        else:
+            os.chmod(declared_input, 0o400)
         sys.stdout.buffer.write(raw)
         return 0
     if mode == "extra":

@@ -271,7 +271,7 @@ def _fsync_directory(path):
 def _copy_inputs(inputs, mirror):
     if not isinstance(inputs, (list, tuple)):
         raise PortableAgentError("invalid_manifest")
-    copied = set()
+    copied = {}
     for item in inputs:
         if not isinstance(item, dict) or set(item) != {
             "source_root", "source_path", "provenance", "path", "sha256",
@@ -312,11 +312,19 @@ def _copy_inputs(inputs, mirror):
         raw = _read_declared_source(
             resolved_root, root_info, source_relative, maximum
         )
-        if hashlib.sha256(raw).hexdigest() != item["sha256"]:
+        raw_sha256 = hashlib.sha256(raw).hexdigest()
+        if raw_sha256 != item["sha256"]:
             raise PortableAgentError("input_sha_mismatch")
         target = mirror.joinpath(*relative.parts)
         _write_owner_only(target, raw, mirror)
-        copied.add(relative.as_posix())
+        target_info = _regular_single_link(target, "unsafe_input")
+        if target_info.st_size != len(raw):
+            raise PortableAgentError("unsafe_input")
+        copied[relative.as_posix()] = {
+            "sha256": raw_sha256,
+            "byte_count": len(raw),
+            "mode": target_info.st_mode,
+        }
     return copied
 
 
@@ -870,6 +878,8 @@ def _communicate_bounded(
 
 
 def _validate_stdout_mirror(mirror, expected_files):
+    if type(expected_files) is not dict:
+        raise PortableAgentError("unexpected_artifact")
     observed = set()
     for current, directories, files in os.walk(
         mirror,
@@ -888,8 +898,40 @@ def _validate_stdout_mirror(mirror, expected_files):
         for name in files:
             path = current_path / name
             relative = path.relative_to(mirror).as_posix()
-            info = path.lstat()
+            snapshot = expected_files.get(relative)
+            if (
+                type(snapshot) is not dict
+                or set(snapshot) != {"sha256", "byte_count", "mode"}
+                or type(snapshot["sha256"]) is not str
+                or type(snapshot["byte_count"]) is not int
+                or snapshot["byte_count"] < 0
+                or type(snapshot["mode"]) is not int
+            ):
+                raise PortableAgentError("unexpected_artifact")
+            try:
+                info = path.lstat()
+            except OSError as exc:
+                raise PortableAgentError("unexpected_artifact") from exc
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise PortableAgentError("unexpected_artifact")
+            if info.st_mode != snapshot["mode"]:
+                raise PortableAgentError("unexpected_artifact")
+            try:
+                raw = _open_read_stable(
+                    path,
+                    snapshot["byte_count"],
+                    "unexpected_artifact",
+                )
+                final_info = _regular_single_link(
+                    path, "unexpected_artifact"
+                )
+            except PortableAgentError as exc:
+                raise PortableAgentError("unexpected_artifact") from exc
+            if (
+                final_info.st_mode != snapshot["mode"]
+                or len(raw) != snapshot["byte_count"]
+                or hashlib.sha256(raw).hexdigest() != snapshot["sha256"]
+            ):
                 raise PortableAgentError("unexpected_artifact")
             observed.add(relative)
     if observed != set(expected_files):
@@ -1067,7 +1109,7 @@ def run_portable_attempt(
                 for path in mirror.rglob("*")
                 if path.is_symlink() or not path.is_dir()
             }
-            expected = copied | {relative_output.as_posix()}
+            expected = set(copied) | {relative_output.as_posix()}
             if observed != expected:
                 raise PortableAgentError("unexpected_artifact")
         raw = _read_mirror_output(

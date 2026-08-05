@@ -765,6 +765,31 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             self.assertFalse((root / "state/completion.json").exists())
             self.assertFalse((root / "published").exists())
 
+    def test_existing_mirror_file_drift_rejects_before_import_or_projection(self):
+        modes = (
+            "overwrite-role",
+            "overwrite-declared-input",
+            "chmod-declared-input",
+        )
+        for mode in modes:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                prepared = self._prepare(root, stage="awr-research")
+                with mock.patch.dict(
+                    os.environ,
+                    {"FAKE_PORTABLE_STAGE_MODE": mode},
+                    clear=False,
+                ):
+                    with self.assertRaises(
+                        portable_stage.PortableStageError
+                    ) as caught:
+                        portable_stage.run_stage(prepared, timeout_seconds=2)
+                self.assertEqual(caught.exception.code, "unexpected_artifact")
+                imports = root / "state/imports"
+                self.assertFalse(imports.exists() and any(imports.iterdir()))
+                self.assertFalse((root / "state/completion.json").exists())
+                self.assertFalse((root / "published").exists())
+
     def test_grok_transport_imports_the_canonical_inner_model_envelope(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
