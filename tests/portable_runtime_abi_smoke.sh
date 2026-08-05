@@ -53,7 +53,10 @@ install_fake_providers() {
       '  exit 0' \
       'fi' \
       'if [ "$1" = "models" ]; then' \
-      '  printf "%s\n" gemini/fixture-model' \
+      '  if [ -n "${XDG_CONFIG_HOME:-}" ] && [ -e "$XDG_CONFIG_HOME/agy-catalog-count.enabled" ]; then' \
+      '    case "$0" in */agy) printf "%s\n" "$0" >> "$XDG_CONFIG_HOME/agy-catalog-count" ;; esac' \
+      '  fi' \
+      '  printf "%s\n" gemini-3.6-flash-high gemini/fixture-model' \
       '  exit 0' \
       'fi' \
       'printf "%s\\n" "$0" >> "$PROVIDER_LAUNCH_LOG"' \
@@ -405,6 +408,52 @@ run_awr_role_isolation() {
   fi
 }
 
+run_awr_agy_catalog_dedup_case() {
+  local name=$1 expected_catalog_calls=$2
+  shift 2
+  local repo before after status marker log catalog_dir catalog catalog_calls
+  repo=$(make_repo "awr-v2-agy-catalog-$name") || {
+    record_failure "AwR agy catalog $name fixture setup"
+    return
+  }
+  sed -n '1p' "$repo/ledger.tsv" > "$repo/ledger.tsv.empty"
+  mv "$repo/ledger.tsv.empty" "$repo/ledger.tsv"
+  install_fake_providers "$repo"
+  marker="$SANDBOX_ROOT/awr-v2-agy-catalog-$name.provider-launched"
+  log="$SANDBOX_ROOT/awr-v2-agy-catalog-$name.log"
+  catalog_dir="$SANDBOX_ROOT/awr-v2-agy-catalog-$name.config"
+  catalog="$catalog_dir/agy-catalog-count"
+  mkdir -p "$catalog_dir"
+  : > "$catalog_dir/agy-catalog-count.enabled"
+  before=$(state_digest "$repo")
+  run_bounded "$repo" "$log" \
+    env \
+      "PATH=$repo/.test-bin:$PATH" \
+      "PROVIDER_LAUNCH_LOG=$marker" \
+      "XDG_CONFIG_HOME=$catalog_dir" \
+      HISTORY_RUNTIME_ABI=v2 \
+      AWR_PROVIDER=agy AWR_MODEL=gemini/fixture-model \
+      SIDE_POLL_SEC=bad \
+      "$@" bash ./awr-side.sh
+  status=$?
+  after=$(state_digest "$repo")
+  catalog_calls=0
+  if [ -f "$catalog" ]; then
+    catalog_calls=$(wc -l < "$catalog" | tr -d '[:space:]')
+  fi
+  if [ "$status" -ne 2 ] \
+    || ! grep -q 'must be nonnegative integers' "$log"; then
+    record_failure "AwR agy catalog $name did not reach ordinary validation"
+  elif [ "$after" != "$before" ] || [ -e "$marker" ]; then
+    record_failure "AwR agy catalog $name mutated protected state or launched a provider"
+  elif [ "$catalog_calls" -ne "$expected_catalog_calls" ]; then
+    record_failure "AwR agy catalog $name made $catalog_calls catalog calls instead of $expected_catalog_calls"
+  else
+    printf 'ok: AwR agy catalog %s made %s startup diagnostics\n' \
+      "$name" "$expected_catalog_calls"
+  fi
+}
+
 # Setness is intentional: even an explicitly empty v2 control is migration
 # intent and cannot be silently treated as unset by v1.
 run_hunt_rejection v1-set-empty-provider \
@@ -428,6 +477,9 @@ run_awr_rejection v2-unknown-provider \
   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=unknown
 run_awr_valid_v2_no_fallback
 run_awr_role_isolation
+run_awr_agy_catalog_dedup_case inherited 1
+run_awr_agy_catalog_dedup_case distinct-model 2 \
+  AWR_RESEARCH_MODEL=gemini-3.6-flash-high
 
 if [ "$FAILURES" -ne 0 ]; then
   printf 'failed: portable runtime ABI smoke (%s cases)\n' "$FAILURES" >&2

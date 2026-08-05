@@ -126,9 +126,10 @@ awr_write_role_profile() {
 }
 
 awr_runtime_preflight() {
-  local abi=v1 name role diagnostic provider model reasoning
+  local abi=v1 name role diagnostic provider model reasoning index duplicate
   local base_provider base_model base_reasoning provider_changed
   local provider_name model_name reasoning_name
+  local -a successful_providers successful_models successful_reasonings
   if runtime_variable_is_set HISTORY_RUNTIME_ABI; then
     abi=$HISTORY_RUNTIME_ABI
   fi
@@ -173,6 +174,9 @@ awr_runtime_preflight() {
   diagnostic=$(awr_provider_diagnostic \
     AWR_PROVIDER "$base_provider" "$base_model" "$base_reasoning") \
     || return 2
+  successful_providers=("$base_provider")
+  successful_models=("$base_model")
+  successful_reasonings=("$base_reasoning")
 
   for role in RESEARCH PRIORWORK JUDGE; do
     provider_name=AWR_${role}_PROVIDER
@@ -199,8 +203,21 @@ awr_runtime_preflight() {
     else
       reasoning=$base_reasoning
     fi
+    duplicate=0
+    for ((index = 0; index < ${#successful_providers[@]}; index++)); do
+      if [ "${successful_providers[$index]}" = "$provider" ] \
+        && [ "${successful_models[$index]}" = "$model" ] \
+        && [ "${successful_reasonings[$index]}" = "$reasoning" ]; then
+        duplicate=1
+        break
+      fi
+    done
+    [ "$duplicate" -eq 0 ] || continue
     awr_provider_diagnostic "$provider_name" "$provider" "$model" "$reasoning" \
       >/dev/null || return 2
+    successful_providers+=("$provider")
+    successful_models+=("$model")
+    successful_reasonings+=("$reasoning")
   done
 
   AWR_RUNTIME_ABI=v2
