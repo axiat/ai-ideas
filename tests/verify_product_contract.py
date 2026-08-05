@@ -270,6 +270,35 @@ def assert_backend_defaults():
                 f"agy model default mismatch in {name}: expected {expected!r}, found {assignments!r}"
             )
 
+def assert_awr_provider_usage():
+    text = (ROOT / "awr-side.sh").read_text()
+    header = text.split("set -u", 1)[0]
+    usage_lines = [
+        line.removeprefix("#").strip() for line in header.splitlines()
+    ]
+    usage = " ".join(
+        line[:-1].rstrip() if line.endswith("\\") else line
+        for line in usage_lines
+    )
+    required = (
+        "Codex, Kimi, and Grok model omission preserves the selected CLI default.",
+        "OpenCode model omission uses a safe host configuration probe and pins "
+        "the resolved model.",
+        "agy has no trusted default-identity probe and requires an explicit model.",
+        "HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high "
+        "AWR_REASONING_EFFORT=high ./awr-side.sh",
+    )
+    for statement in required:
+        if statement not in usage:
+            raise AssertionError(
+                f"missing AwR provider usage contract: {statement!r}"
+            )
+    invalid_example = "HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh"
+    if invalid_example in usage:
+        raise AssertionError(
+            f"AwR usage contains invalid agy example: {invalid_example!r}"
+        )
+
 def shell_code_lines(text):
     lines = []
     for number, line in enumerate(text.splitlines(), 1):
@@ -513,6 +542,7 @@ def verify_production_evidence_roots():
 
 def verify_runtime():
     assert_backend_defaults()
+    assert_awr_provider_usage()
     assert_no_claude_invocations()
     verify_provider_registry()
     verify_production_evidence_roots()
