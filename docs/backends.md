@@ -161,23 +161,31 @@ before any artifact is projected or completion is published.
 
 Portable Grok stages request `--output-format json`. The complete
 provider-owned outer stdout remains under the 128 KiB capture limit. After the
-host validates that transport and its terminal `text`, it accepts bare inner
-JSON or provider narration followed by one unique terminal Markdown fence.
-The fenced form has an exact line-start lowercase-`json` opener, an exact
-line-start closing delimiter whose last byte ends `text`, exactly two
-triple-backtick sequences in total, and no CR byte. The host discards only the
-prefix narration and the two fence markers. An additional triple-backtick
-sequence, a non-line-start opener, a different label or case, a missing close,
-CR, or any trailing byte rejects the response. No trimming, substring search,
-normalization, or repair occurs.
+host validates that transport and its terminal `text`, it accepts complete bare
+inner JSON or one unique terminal Markdown fence after an optional accumulated
+prefix. Grok's CLI reducer concatenates assistant chunks without inserting a
+separator, so the exact opener bytes `b"```json\n"` may begin at any byte of
+`text`; line-start placement is not required. Fenced text must contain exactly
+two triple-backtick sequences, exactly one opener, and no CR byte. The closing
+delimiter must be preceded by LF and its final byte must end `text`. The host
+discards only the accumulated prefix and the two fence markers. Narration plus
+bare JSON still fails strict parsing. An additional delimiter, a different
+label or case, a missing close, or any trailing byte also rejects the response.
+No trimming, JSON-suffix search, normalization, or repair occurs.
 
 Every v2 portable request carries binding-covered `transport_instructions`.
-For agy, these override legacy output-location and file-writing statements in
-the AwR role; `role.md` defines artifact content only. The instructions forbid
-mirror writes and require exactly one canonical UTF-8/NFC response-schema
-object on stdout with exact request attestation. The host verifies the
-closed declared-file path set after provider exit. Every declared entry must
-remain a regular single-link file with its exact original `st_mode`; a stable
+Grok receives a provider-specific stdout instruction: the final assistant
+response itself must be one exact lowercase-`json` LF fence containing the
+canonical UTF-8/NFC response-schema object, whose single trailing LF immediately
+precedes the terminal close. No byte may sit outside that fence, and no
+triple-backtick sequence may occur in an earlier assistant response. Every
+non-Grok provider, including agy, retains the raw canonical-stdout instruction
+with no fence or narration. For agy, that instruction overrides legacy
+output-location and file-writing statements in the AwR role; `role.md` defines
+artifact content only. All instructions forbid mirror writes and require exact
+request attestation. The host verifies the closed declared-file path set after
+provider exit. Every declared entry must remain a regular single-link file with
+its exact original `st_mode`; a stable
 read must preserve its exact byte count and SHA-256. Added or removed files,
 entry-type, link-count, or mode changes, and content drift reject the attempt
 before import. Directory presence alone is not an output: the runtime-created

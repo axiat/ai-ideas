@@ -4,7 +4,7 @@
 
 **Goal:** Make real Grok and agy portable stages cross their provider transports while retaining the strict model-response contract, and avoid retry sleep after the final bounded Hunt round.
 
-**Architecture:** Grok emits one provider-owned outer JSON object. `portable_agent` validates that transport, extracts a unique terminal fenced response when provider narration precedes it, strictly parses the inner model envelope, and imports host-canonicalized inner bytes. Agy receives binding-covered portable transport instructions that override the legacy role's file-output channel while leaving its artifact semantics unchanged. Other providers retain the raw canonical-stdout path. Hunt decides whether a future round exists before applying failure cooldown.
+**Architecture:** Grok emits one provider-owned outer JSON object and receives a binding-covered provider-specific instruction requiring its final assistant response to be one exact lowercase-`json` LF fence. `portable_agent` validates the outer transport, isolates that unique terminal fence after any reducer-concatenated assistant prefix, strictly parses the inner model envelope, and imports host-canonicalized inner bytes. Every non-Grok provider retains the raw canonical-stdout path; for agy, the binding-covered instruction overrides the legacy role's file-output channel while leaving artifact semantics unchanged. Hunt decides whether a future round exists before applying failure cooldown.
 
 **Tech Stack:** Python 3 standard library, Bash, `unittest`, fake CLI executables, OpenSpec.
 
@@ -17,6 +17,7 @@
 - Grok outer usage and cost numbers, including finite floating-point values, SHALL be accepted as transport metadata and SHALL never enter the model envelope.
 - Grok inner text SHALL reject duplicate keys, floating-point values, non-finite constants, invalid JSON, and non-NFC strings before schema and request-attestation validation.
 - Only the host-canonicalized inner model envelope SHALL be hashed, imported, projected, and referenced by completion receipts.
+- Grok's binding-covered stdout instruction SHALL require the final assistant response to be one exact lowercase-`json` LF fence, with the canonical object's single trailing LF immediately before the terminal close and no outside bytes or earlier triple-backtick sequence.
 - Codex, Kimi, OpenCode, and agy SHALL retain the current exact raw canonical-stdout contract.
 - A failed Hunt round SHALL sleep only when another round can execute; unlimited runs and non-terminal bounded rounds retain `FAIL_SLEEP_MIN`.
 - Automated tests SHALL use fake providers. A completed transport revision MAY receive one real Grok portable-stage smoke; it SHALL use `grok-4.5`, `high`, one bounded AwR judge request, and no full Hunt round. A failed smoke SHALL NOT be blindly retried; a new call requires a diagnosed cause and a new tested transport revision.
@@ -387,7 +388,9 @@ git commit -m "docs: specify Grok portable JSON transport"
 **Interfaces:**
 
 - Consumes: validated Grok outer `text` and the Task 1 strict inner JSON parser.
-- Produces: `_grok_model_text_bytes(text: str) -> bytes`, accepting bare JSON or one exact whole-text fenced `json` block.
+- Produces: `_grok_model_text_bytes(text: str) -> bytes`, accepting complete
+  bare JSON or one unique terminal lowercase-`json` fence after an optional
+  accumulated prefix.
 
 - [ ] **Step 1: Write the exact-fence RED tests**
 
@@ -397,10 +400,11 @@ Make the default fake Grok success response mirror the observed live output:
 text = "```json\n" + noncanonical_inner_json + "\n```"
 ```
 
-Add a separate bare-inner success mode. Add rejection modes for leading text
-before the fence, trailing text after the fence, a wrong fence language, and a
-missing closing fence. Every rejection asserts no import, projection, or
-completion.
+Add separate bare-inner and reducer-concatenated-prefix success modes. The
+prefix fixture places the exact opener immediately after a non-LF byte. Add
+rejection modes for narration followed by bare JSON, another triple-backtick
+sequence, trailing bytes, a wrong fence language or case, CR, and a missing
+closing fence. Every rejection asserts no import, projection, or completion.
 
 - [ ] **Step 2: Run the portable tests and verify RED**
 
@@ -409,17 +413,21 @@ python3 tests/provider_portable_hardening_smoke.py
 python3 tests/portable_stage_runtime_smoke.py
 ```
 
-Expected: the exact fenced success is rejected as `malformed_output`; the bare
-success and prior rejection cases retain their existing behavior.
+Expected: the exact fenced and reducer-concatenated-prefix successes are
+rejected as `malformed_output`; the bare success and prior rejection cases
+retain their existing behavior.
 
 - [ ] **Step 3: Implement narrow fence normalization**
 
-After the outer `text` string is encoded safely, accept either bare JSON bytes
-or bytes that start exactly with `b"```json\n"` and end exactly with
-`b"\n```"`. Strip only those two markers. Do not trim whitespace, search for a
-JSON substring, remove arbitrary prefixes/suffixes, or repair malformed JSON.
-The extracted bytes continue through duplicate-key, float, constant, NFC,
-closed-schema, and exact-attestation validation before canonical import.
+After the outer `text` string is encoded safely, pass the complete bytes to
+strict JSON parsing when no exact `b"```json\n"` opener exists. Otherwise
+require exactly two triple-backtick sequences, exactly one opener, no CR byte,
+LF before the terminal EOF closer, and no trailing byte. The opener may begin
+at any byte because the reducer inserts no chunk separator. Strip only the
+accumulated prefix and the two markers. Do not trim whitespace, search for a
+JSON suffix, remove arbitrary suffixes, or repair malformed JSON. The extracted
+bytes continue through duplicate-key, float, constant, NFC, closed-schema, and
+exact-attestation validation before canonical import.
 
 - [ ] **Step 4: Run focused GREEN and commit the code**
 
@@ -436,9 +444,11 @@ git commit -m "fix: accept exact Grok JSON response fence"
 
 - [ ] **Step 5: Update the design, OpenSpec, and backend contract**
 
-Record that the real Grok CLI returned one exact whole-text `json` fence.
-Permit only that wrapper or bare JSON, with no surrounding text. Keep OpenSpec
-task `8.4` unchecked until Step 6 succeeds.
+Record the exact final-response fence instruction and the reducer's
+separator-free assistant-chunk concatenation. Permit complete bare JSON or one
+unique terminal exact fence after an accumulated prefix; reject narrated bare
+JSON and never search for a JSON suffix. Keep OpenSpec task `8.4` unchecked
+until Step 6 succeeds.
 
 - [ ] **Step 6: Run one real Grok portable-stage smoke**
 
@@ -506,21 +516,23 @@ git commit -m "docs: specify exact Grok JSON fence transport"
 
 - [x] **Step 1: Write terminal-fence RED tests**
 
-Add a success fixture with provider narration followed by one LF-delimited
-`json` fence whose closing delimiter ends the `text`. Add rejection fixtures
-for duplicate or non-line-start delimiters, any CR byte, wrong label or case,
-missing close, and every byte after the closing delimiter. Every rejection
+Add success fixtures for an exact whole-text fence and for an accumulated
+assistant prefix immediately followed by the exact opener without an inserted
+LF. Add rejection fixtures for narration followed by bare JSON, duplicate or
+extra delimiters, any CR byte, wrong label or case, missing close, missing LF
+before the close, and every byte after the closing delimiter. Every rejection
 must leave imports, projections, and completion absent.
 
 - [x] **Step 2: Implement the bounded extractor**
 
 Keep the complete outer stdout under the existing 128 KiB cap. If no fence
-delimiter candidate exists, pass the complete `text` to strict JSON parsing.
-In fenced mode require exactly two triple-backtick sequences and no CR byte,
-exactly one opener line `b"```json\n"`, exactly one closer line `b"```"`, and
-require the closer's final byte to be the final byte of `text`. The opener must
-begin at byte zero or immediately after LF. Discard only the bytes before that
-opener. Do not trim, normalize, search for an arbitrary JSON substring, or
+opener exists, pass the complete `text` to strict JSON parsing, so narrated bare
+JSON remains invalid. In fenced mode require exactly two triple-backtick
+sequences, exactly one `b"```json\n"` opener, and no CR byte. Accept the opener
+at any byte because the Grok CLI reducer concatenates assistant chunks without
+a separator. Require LF immediately before the terminal `b"```"` closer and
+require the closer's final byte to end `text`. Discard only the bytes before the
+opener and the two markers. Do not trim, normalize, search for a JSON suffix, or
 repair the extracted body.
 
 - [x] **Step 3: Run focused tests and review**
@@ -544,7 +556,7 @@ exact temporary smoke directory after verification.
 
 ---
 
-### Task 6: Bind agy to the portable stdout channel
+### Task 6: Bind provider-specific portable stdout channels
 
 **Files:**
 
@@ -559,13 +571,15 @@ exact temporary smoke directory after verification.
 **Interfaces:**
 
 - Consumes: the portable request base before request-binding computation.
-- Produces: binding-covered `transport_instructions` declaring the stdout-only
-  response channel and read-only mirror contract.
+- Produces: binding-covered `transport_instructions` declaring the
+  provider-specific stdout response channel and read-only mirror contract.
 
 - [x] **Step 1: Write request-binding and agy RED tests**
 
 Assert that the request contains closed portable transport instructions and
 that changing them changes both the request binding and wire-request hash.
+Require Grok's stdout member to bind the exact final-response fence and every
+non-Grok member, including agy, to bind raw canonical stdout without a fence.
 Exercise all three agy AwR stages with a fake provider that sees the legacy
 role wording but obeys the portable stdout override. Add a fake agy mode that
 writes a mirror file and exits zero; require `unexpected_artifact` with no
@@ -573,13 +587,17 @@ import, projection, or completion. Cover same-size role and declared-input
 overwrites plus exact-mode drift under the same fail-closed outcome. Retain v1
 file-output regression coverage.
 
-- [x] **Step 2: Add provider-neutral transport instructions**
+- [x] **Step 2: Add provider-specific transport instructions**
 
 Add one closed object to `_provider_request()` before computing its binding.
 It declares that `role.md` controls artifact content, the request controls its
-transport, the mirror is read-only, and stdout must contain exactly one
-UTF-8/NFC canonical response-schema object with its request attestation. It
-forbids fences, narration, extra bytes, and file creation or modification.
+transport, and the mirror must remain unchanged. Select the stdout member by
+provider before binding: Grok requires the final assistant response to be one
+exact lowercase-`json` LF fence with one trailing LF immediately before the
+terminal close and no outside bytes or earlier delimiter; every non-Grok
+provider requires one raw canonical UTF-8/NFC response-schema
+object with no fence, narration, or extra bytes. Both forms require exact
+request attestation and forbid file creation or modification.
 After provider exit, require the closed declared-file path set and each entry's
 regular/single-link type, exact `st_mode`, stable byte count, and SHA-256. Allow
 the runtime-created `.tmp` directory to remain empty, without describing this
