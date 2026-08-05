@@ -209,6 +209,67 @@ def _record(request):
         )
 
 
+def _grok_json_requested(arguments):
+    return (
+        "--output-format" in arguments
+        and arguments[arguments.index("--output-format") + 1] == "json"
+    )
+
+
+def _grok_transport(inner_raw, mode):
+    if mode == "malformed-outer-json":
+        return b'{"text":'
+    try:
+        inner_value = json.loads(inner_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        inner_text = inner_raw.decode("utf-8")
+    else:
+        reordered = {}
+        for key in (
+            "stage",
+            "artifacts",
+            "schema_version",
+            "request_attestation",
+        ):
+            if key in inner_value:
+                reordered[key] = inner_value[key]
+        inner_text = json.dumps(reordered, ensure_ascii=False, indent=2)
+    outer = {
+        "text": inner_text,
+        "stopReason": "max_tokens" if mode == "max-tokens" else "end_turn",
+        "sessionId": "fixture-session",
+        "requestId": "fixture-request",
+        "num_turns": 1,
+        "usage": {
+            "input_tokens": 10,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 5,
+            "reasoning_tokens": 2,
+            "total_tokens": 15,
+        },
+        "modelUsage": {},
+        "total_cost_usd": 0.001,
+        "total_cost_usd_ticks": 10000000,
+    }
+    if mode == "missing-text":
+        outer.pop("text")
+    if mode == "duplicate-outer-text":
+        encoded = [
+            '"text":' + json.dumps(inner_text, ensure_ascii=False),
+            '"text":' + json.dumps(inner_text, ensure_ascii=False),
+        ]
+        encoded.extend(
+            json.dumps(key, ensure_ascii=False)
+            + ":"
+            + json.dumps(value, ensure_ascii=False)
+            for key, value in outer.items()
+            if key != "text"
+        )
+        return ("{" + ",".join(encoded) + "}").encode("utf-8")
+    return json.dumps(outer, ensure_ascii=False, indent=2).encode("utf-8")
+
+
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--delayed-child":
         time.sleep(0.8)
@@ -227,9 +288,11 @@ def main():
         sys.stdout.write("gemini/fixture-model\n")
         return 0
 
-    request = json.loads(_prompt(sys.argv[1:]))
+    arguments = sys.argv[1:]
+    request = json.loads(_prompt(arguments))
     _record(request)
     mode = os.environ.get("FAKE_PORTABLE_STAGE_MODE", "success")
+    grok_json = _grok_json_requested(arguments)
     output = pathlib.Path("output/result.json")
     if mode == "mirror-audit":
         observed = {
@@ -283,10 +346,18 @@ def main():
         time.sleep(60)
         return 0
     if mode == "malformed":
-        sys.stdout.buffer.write(b"{bad json\n")
+        raw = b"{bad json\n"
+        if grok_json:
+            sys.stdout.buffer.write(_grok_transport(raw, mode))
+            return 0
+        sys.stdout.buffer.write(raw)
         return 0
     if mode == "oversize":
-        sys.stdout.buffer.write(b"x" * (256 * 1024))
+        raw = b"x" * (256 * 1024)
+        if grok_json:
+            sys.stdout.buffer.write(_grok_transport(raw, mode))
+            return 0
+        sys.stdout.buffer.write(raw)
         return 0
 
     kind, content = _artifact(request["stage"], _inner_request(request))
@@ -358,6 +429,18 @@ def main():
             )
             + "\n"
         ).encode("utf-8")
+    if mode == "float-inner-value":
+        value = json.loads(raw)
+        value["schema_version"] = 1.0
+        raw = (
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
     if mode == "non-nfc-envelope":
         value = json.loads(raw)
         value["artifacts"][0]["content"] += "Cafe\u0301\n"
@@ -376,6 +459,12 @@ def main():
             b'{"schema_version":1,"artifacts":',
             1,
         )
+    if mode == "noncanonical-raw":
+        raw = json.dumps(
+            json.loads(raw),
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
     if mode == "extra-envelope":
         value = json.loads(raw)
         value["unexpected"] = True
@@ -404,6 +493,8 @@ def main():
         output.symlink_to("real.json")
         sys.stdout.buffer.write(raw)
         return 0
+    if grok_json:
+        raw = _grok_transport(raw, mode)
     sys.stdout.buffer.write(raw)
     return 0
 

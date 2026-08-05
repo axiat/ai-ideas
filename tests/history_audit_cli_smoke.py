@@ -233,7 +233,7 @@ class ProviderCommandCliSmoke(unittest.TestCase):
                 "high",
                 [
                     "<EXECUTABLE>", "--always-approve", "--no-memory",
-                    "--no-subagents", "--output-format", "plain", "--cwd",
+                    "--no-subagents", "--output-format", "json", "--cwd",
                     "<MIRROR>", "-m", "grok-4.5", "--reasoning-effort", "high",
                     "-p", "<PROMPT>",
                 ],

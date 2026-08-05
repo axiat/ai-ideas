@@ -481,6 +481,8 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 self.assertFalse(
                     pathlib.Path(prepared["completion_path"]).exists()
                 )
+                imports = pathlib.Path(prepared["state_root"]) / "imports"
+                self.assertFalse(imports.exists() and any(imports.iterdir()))
                 self.assertTrue(
                     all(
                         not pathlib.Path(path).exists()

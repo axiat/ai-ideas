@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 import pathlib
 import secrets
@@ -511,6 +512,31 @@ def _validate_response_value(value, contract):
             raise PortableAgentError("schema_mismatch")
 
 
+def _validate_expected_response_attestation(value):
+    fields = {
+        "schema_version",
+        "provider_request_binding_sha256",
+        "serialized_prompt_sha256",
+    }
+    if (
+        type(value) is not dict
+        or set(value) != fields
+        or value.get("schema_version")
+        != "portable-stage-response-attestation-v1"
+        or any(
+            type(value.get(name)) is not str
+            or len(value[name]) != 64
+            or any(character not in "0123456789abcdef" for character in value[name])
+            for name in (
+                "provider_request_binding_sha256",
+                "serialized_prompt_sha256",
+            )
+        )
+    ):
+        raise PortableAgentError("invalid_response_schema")
+    return value
+
+
 def _read_mirror_output(mirror, relative, maximum):
     root = pathlib.Path(mirror).resolve(strict=True)
     directory_descriptor = _open_absolute_directory_no_follow(
@@ -601,24 +627,60 @@ def _require_nfc_json(value):
             _require_nfc_json(item)
 
 
-def _parse_canonical_stdout(raw):
+def _parse_strict_json(raw, *, reject_floats, require_nfc):
+    def parse_float(text):
+        if reject_floats:
+            raise PortableAgentError("malformed_output")
+        value = float(text)
+        if not math.isfinite(value):
+            raise PortableAgentError("malformed_output")
+        return value
+
     try:
         value = json.loads(
             raw.decode("utf-8", errors="strict"),
             object_pairs_hook=_pairs_without_duplicates,
-            parse_float=lambda _: (_ for _ in ()).throw(
-                PortableAgentError("malformed_output")
-            ),
+            parse_float=parse_float,
             parse_constant=lambda _: (_ for _ in ()).throw(
                 PortableAgentError("malformed_output")
             ),
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PortableAgentError("malformed_output") from exc
-    _require_nfc_json(value)
+    if require_nfc:
+        _require_nfc_json(value)
+    return value
+
+
+def _parse_strict_model_json(raw):
+    return _parse_strict_json(raw, reject_floats=True, require_nfc=True)
+
+
+def _parse_canonical_stdout(raw):
+    value = _parse_strict_model_json(raw)
     if raw != _canonical_json_bytes(value):
         raise PortableAgentError("noncanonical_output")
     return value
+
+
+def _parse_grok_transport(raw):
+    outer = _parse_strict_json(raw, reject_floats=False, require_nfc=False)
+    if type(outer) is not dict:
+        raise PortableAgentError("malformed_output")
+    if type(outer.get("text")) is not str:
+        raise PortableAgentError("malformed_output")
+    if outer.get("stopReason") != "end_turn":
+        raise PortableAgentError("malformed_output")
+    return outer
+
+
+def _parse_provider_stdout(provider, raw):
+    if provider != "grok":
+        value = _parse_canonical_stdout(raw)
+        return value, raw
+    outer = _parse_grok_transport(raw)
+    value = _parse_strict_model_json(outer["text"].encode("utf-8"))
+    return value, _canonical_json_bytes(value)
 
 
 def _validate_contract(contract):
@@ -810,6 +872,7 @@ def run_portable_stdout_attempt(
     inputs,
     prompt,
     response_schema,
+    expected_response_attestation,
     state_root,
     timeout_seconds,
     max_stdout_bytes=128 * 1024,
@@ -825,6 +888,9 @@ def run_portable_stdout_attempt(
     if type(max_stdout_bytes) is not int or not 1 <= max_stdout_bytes <= 128 * 1024:
         raise PortableAgentError("invalid_output_contract")
     response_contract = _validate_response_schema_contract(response_schema)
+    expected_attestation = _validate_expected_response_attestation(
+        expected_response_attestation
+    )
     root = pathlib.Path(state_root)
     if root.exists() and (root.is_symlink() or not root.is_dir()):
         raise PortableAgentError("unsafe_state_root")
@@ -864,9 +930,13 @@ def run_portable_stdout_attempt(
                 {"returncode": process.returncode, "stderr": stderr},
             )
         _validate_stdout_mirror(mirror, copied)
-        value = _parse_canonical_stdout(stdout)
+        value, model_bytes = _parse_provider_stdout(capability.provider, stdout)
         _validate_response_value(value, response_contract)
-        output_sha = hashlib.sha256(stdout).hexdigest()
+        if _canonical_json_bytes(value["request_attestation"]) != _canonical_json_bytes(
+            expected_attestation
+        ):
+            raise PortableAgentError("provider_request_attestation_mismatch")
+        output_sha = hashlib.sha256(model_bytes).hexdigest()
         imports = root / "imports"
         _ensure_owner_tree(root, imports)
         imported = imports / (output_sha + ".json")
@@ -877,10 +947,10 @@ def run_portable_stdout_attempt(
                 "unsafe_import",
                 require_owner_only=True,
             )
-            if existing != stdout:
+            if existing != model_bytes:
                 raise PortableAgentError("import_conflict")
         else:
-            _write_owner_only(imported, stdout, root)
+            _write_owner_only(imported, model_bytes, root)
             _fsync_directory(imports)
         return {
             "provider": capability.provider,
@@ -888,7 +958,7 @@ def run_portable_stdout_attempt(
             "model_envelope_sha256": output_sha,
             "output_path": str(imported),
             "value": value,
-            "raw": stdout,
+            "raw": model_bytes,
             "stderr": stderr,
         }
     except OSError as exc:

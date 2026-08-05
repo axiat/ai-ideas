@@ -946,6 +946,15 @@ def run_stage(prepared, timeout_seconds=600):
             timeout_seconds=timeout_seconds,
             max_stdout_bytes=prepared["output_contract"]["max_bytes"],
             response_schema=_response_schema(prepared["stage"]),
+            expected_response_attestation={
+                "schema_version": "portable-stage-response-attestation-v1",
+                "provider_request_binding_sha256": prepared[
+                    "provider_request_binding_sha256"
+                ],
+                "serialized_prompt_sha256": prepared[
+                    "serialized_prompt_sha256"
+                ],
+            },
         )
     except portable_agent.PortableAgentError as exc:
         raise PortableStageError(exc.code, exc.detail) from exc

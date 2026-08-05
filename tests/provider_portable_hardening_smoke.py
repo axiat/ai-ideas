@@ -644,6 +644,75 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 self.assertFalse((root / "state/completion.json").exists())
                 self.assertFalse((root / "published").exists())
 
+    def test_grok_transport_imports_the_canonical_inner_model_envelope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            completion = portable_stage.run_stage(prepared, timeout_seconds=2)
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertEqual(
+                imported.read_bytes(),
+                portable_agent._canonical_json_bytes(
+                    json.loads(imported.read_text(encoding="utf-8"))
+                ),
+            )
+
+    def test_grok_transport_rejects_invalid_outer_and_inner_responses(self):
+        modes = (
+            "malformed-outer-json",
+            "duplicate-outer-text",
+            "missing-text",
+            "max-tokens",
+            "malformed",
+            "non-nfc-envelope",
+            "float-inner-value",
+            "wrong-request-attestation",
+        )
+        for mode in modes:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                prepared = self._prepare(root, provider="grok")
+                with mock.patch.dict(
+                    os.environ,
+                    {"FAKE_PORTABLE_STAGE_MODE": mode},
+                    clear=False,
+                ):
+                    with self.assertRaises(portable_stage.PortableStageError):
+                        portable_stage.run_stage(prepared, timeout_seconds=2)
+                imports = root / "state/imports"
+                self.assertFalse(imports.exists() and any(imports.iterdir()))
+                self.assertFalse((root / "state/completion.json").exists())
+                self.assertTrue(
+                    all(
+                        not pathlib.Path(path).exists()
+                        for path in prepared["output_paths"].values()
+                    )
+                )
+
+    def test_codex_noncanonical_raw_stdout_still_rejects_before_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="codex")
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "noncanonical-raw"},
+                clear=False,
+            ):
+                with self.assertRaises(portable_stage.PortableStageError) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            self.assertEqual(caught.exception.code, "noncanonical_output")
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse((root / "state/completion.json").exists())
+            self.assertTrue(
+                all(
+                    not pathlib.Path(path).exists()
+                    for path in prepared["output_paths"].values()
+                )
+            )
+
     def test_new_import_directory_entry_is_fsynced_before_completion(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

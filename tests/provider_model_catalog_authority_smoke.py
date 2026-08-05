@@ -87,9 +87,9 @@ class RegistryAbiAuthoritySmoke(unittest.TestCase):
             duplicate = root / "duplicate.json"
             duplicate.write_text(
                 REGISTRY.read_text(encoding="utf-8").replace(
-                    '"registry_revision": "2026-08-03",',
+                    '"registry_revision": "2026-08-05",',
                     '"registry_revision": "forged",\n'
-                    '  "registry_revision": "2026-08-03",',
+                    '  "registry_revision": "2026-08-05",',
                 ),
                 encoding="utf-8",
             )
@@ -221,6 +221,11 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
                     response_schema=portable_stage._response_schema(
                         "awr-research"
                     ),
+                    expected_response_attestation={
+                        "schema_version": "portable-stage-response-attestation-v1",
+                        "provider_request_binding_sha256": "0" * 64,
+                        "serialized_prompt_sha256": "0" * 64,
+                    },
                     state_root=pathlib.Path(directory) / "state",
                     timeout_seconds=1,
                 )
@@ -269,6 +274,11 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
                     response_schema=portable_stage._response_schema(
                         "awr-research"
                     ),
+                    expected_response_attestation={
+                        "schema_version": "portable-stage-response-attestation-v1",
+                        "provider_request_binding_sha256": "0" * 64,
+                        "serialized_prompt_sha256": "0" * 64,
+                    },
                     state_root=pathlib.Path(directory) / "state",
                     timeout_seconds=1,
                 )

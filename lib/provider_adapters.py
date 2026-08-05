@@ -102,7 +102,7 @@ _HOST_PROBE_BYTE_LIMIT = 32768
 _HOST_CATALOG_MODEL_LIMIT = 4096
 _MULTI_BACKEND_PROVIDERS = frozenset({"opencode", "agy"})
 _PROVIDER_REGISTRY_V1_SHA256 = (
-    "07954f11103e6474dad0cfbaf9978ae331a75c9bf33b614d9763dec24c7c5a30"
+    "9bc3335f1166ad0a050ae360504145b32cc2c35cf87b5f818b81ed6806a9afec"
 )
 _DYNAMIC_MODEL_ROUTE_MARKERS = frozenset(
     {"auto", "default", "current", "configured"}
@@ -1805,7 +1805,7 @@ def _render_command_fields(
     elif provider == "grok":
         argv += [
             "--always-approve", "--no-memory", "--no-subagents",
-            "--output-format", "plain", "--cwd", mirror,
+            "--output-format", "json", "--cwd", mirror,
         ]
         if model is not None:
             argv += ["-m", model]

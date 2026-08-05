@@ -1,6 +1,6 @@
 {
   "schema_version": "provider-adapters-v1",
-  "registry_revision": "2026-08-03",
+  "registry_revision": "2026-08-05",
   "providers": {
     "codex": {
       "executable": "codex",
@@ -14,7 +14,7 @@
     },
     "grok": {
       "executable": "grok",
-      "grammar_revision": "grok-portable-v1",
+      "grammar_revision": "grok-portable-v2",
       "reasoning_values": ["high"]
     },
     "opencode": {
