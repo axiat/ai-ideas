@@ -19,7 +19,7 @@
 - Only the host-canonicalized inner model envelope SHALL be hashed, imported, projected, and referenced by completion receipts.
 - Codex, Kimi, OpenCode, and agy SHALL retain the current exact raw canonical-stdout contract.
 - A failed Hunt round SHALL sleep only when another round can execute; unlimited runs and non-terminal bounded rounds retain `FAIL_SLEEP_MIN`.
-- Automated tests SHALL use fake providers. One final real Grok portable-stage smoke is allowed; it SHALL use `grok-4.5`, `high`, one bounded AwR judge request, and no full Hunt round.
+- Automated tests SHALL use fake providers. A completed transport revision MAY receive one real Grok portable-stage smoke; it SHALL use `grok-4.5`, `high`, one bounded AwR judge request, and no full Hunt round. A failed smoke SHALL NOT be blindly retried; a new call requires a diagnosed cause and a new tested transport revision.
 - Before that live smoke, disable every Claude compatibility source with `GROK_CLAUDE_SKILLS_ENABLED=false`, `GROK_CLAUDE_RULES_ENABLED=false`, `GROK_CLAUDE_AGENTS_ENABLED=false`, `GROK_CLAUDE_MCPS_ENABLED=false`, `GROK_CLAUDE_HOOKS_ENABLED=false`, and `GROK_CLAUDE_SESSIONS_ENABLED=false`; inspect the effective Grok configuration and do not launch if any automatically triggered hook, plugin, MCP, fallback, or orchestration path can invoke Claude. An inert command that requires explicit user selection is not an invocation path for this smoke.
 
 ---
@@ -313,8 +313,9 @@ Add a requirement stating that an adapter may unwrap a provider-owned machine
 transport before model-envelope validation. Add a Grok scenario requiring
 native JSON mode, successful terminal `text` extraction, strict inner schema
 and attestation validation, host canonicalization, and no publication for
-malformed or incomplete transport. Add checked task `8.4` for the live Grok
-transport repair and terminal-round no-sleep regression.
+malformed or incomplete transport. Add unchecked task `8.4` for the live Grok
+transport repair and terminal-round no-sleep regression; Task 4 checks it only
+after the real smoke succeeds.
 
 - [ ] **Step 2: Update backend documentation**
 
@@ -359,10 +360,91 @@ python3 tests/verify_product_contract.py fixtures
 
 Expected: every command exits zero.
 
-- [ ] **Step 5: Run one real Grok portable-stage smoke**
+- [ ] **Step 5: Commit Task 3**
 
-Create a temporary AwR judge request with declared `draft.md`, `priorwork.md`,
-`task.md`, `rubric.md`, and `brainstorming_policy.md`, then run:
+```bash
+git add docs/backends.md \
+  openspec/changes/scalable-history-runtime/specs/provider-neutral-execution/spec.md \
+  openspec/changes/scalable-history-runtime/tasks.md
+git commit -m "docs: specify Grok portable JSON transport"
+```
+
+---
+
+### Task 4: Normalize Grok's exact JSON fence and verify live
+
+**Files:**
+
+- Modify: `lib/portable_agent.py`
+- Modify: `tests/fake_portable_stage_provider.py`
+- Modify: `tests/provider_portable_hardening_smoke.py`
+- Modify: `tests/portable_stage_runtime_smoke.py`
+- Modify: `docs/superpowers/specs/2026-08-05-grok-portable-json-transport-design.md`
+- Modify: `docs/backends.md`
+- Modify: `openspec/changes/scalable-history-runtime/specs/provider-neutral-execution/spec.md`
+- Modify: `openspec/changes/scalable-history-runtime/tasks.md`
+
+**Interfaces:**
+
+- Consumes: validated Grok outer `text` and the Task 1 strict inner JSON parser.
+- Produces: `_grok_model_text_bytes(text: str) -> bytes`, accepting bare JSON or one exact whole-text fenced `json` block.
+
+- [ ] **Step 1: Write the exact-fence RED tests**
+
+Make the default fake Grok success response mirror the observed live output:
+
+```python
+text = "```json\n" + noncanonical_inner_json + "\n```"
+```
+
+Add a separate bare-inner success mode. Add rejection modes for leading text
+before the fence, trailing text after the fence, a wrong fence language, and a
+missing closing fence. Every rejection asserts no import, projection, or
+completion.
+
+- [ ] **Step 2: Run the portable tests and verify RED**
+
+```bash
+python3 tests/provider_portable_hardening_smoke.py
+python3 tests/portable_stage_runtime_smoke.py
+```
+
+Expected: the exact fenced success is rejected as `malformed_output`; the bare
+success and prior rejection cases retain their existing behavior.
+
+- [ ] **Step 3: Implement narrow fence normalization**
+
+After the outer `text` string is encoded safely, accept either bare JSON bytes
+or bytes that start exactly with `b"```json\n"` and end exactly with
+`b"\n```"`. Strip only those two markers. Do not trim whitespace, search for a
+JSON substring, remove arbitrary prefixes/suffixes, or repair malformed JSON.
+The extracted bytes continue through duplicate-key, float, constant, NFC,
+closed-schema, and exact-attestation validation before canonical import.
+
+- [ ] **Step 4: Run focused GREEN and commit the code**
+
+```bash
+python3 tests/provider_portable_hardening_smoke.py
+python3 tests/portable_stage_runtime_smoke.py
+bash tests/portable_hunt_awr_e2e_smoke.sh
+git diff --check
+git add lib/portable_agent.py tests/fake_portable_stage_provider.py \
+  tests/provider_portable_hardening_smoke.py \
+  tests/portable_stage_runtime_smoke.py
+git commit -m "fix: accept exact Grok JSON response fence"
+```
+
+- [ ] **Step 5: Update the design, OpenSpec, and backend contract**
+
+Record that the real Grok CLI returned one exact whole-text `json` fence.
+Permit only that wrapper or bare JSON, with no surrounding text. Keep OpenSpec
+task `8.4` unchecked until Step 6 succeeds.
+
+- [ ] **Step 6: Run one real Grok portable-stage smoke**
+
+Repeat the safety inspection from Global Constraints. Create a temporary AwR
+judge request with declared `draft.md`, `priorwork.md`, `task.md`, `rubric.md`,
+and `brainstorming_policy.md`, then run:
 
 ```bash
 GROK_CLAUDE_SKILLS_ENABLED=false \
@@ -372,12 +454,8 @@ GROK_CLAUDE_MCPS_ENABLED=false \
 GROK_CLAUDE_HOOKS_ENABLED=false \
 GROK_CLAUDE_SESSIONS_ENABLED=false \
 python3 -B lib/portable_stage.py run \
-  --surface awr \
-  --provider grok \
-  --model grok-4.5 \
-  --reasoning high \
-  --stage awr-judge \
-  --seat grok-json-live-smoke \
+  --surface awr --provider grok --model grok-4.5 --reasoning high \
+  --stage awr-judge --seat grok-json-fence-live-smoke \
   --serialized-prompt "$SMOKE_ROOT/prompt.json" \
   --input "draft.md=$SMOKE_ROOT/draft.md" \
   --input "priorwork.md=$SMOKE_ROOT/priorwork.md" \
@@ -389,16 +467,21 @@ python3 -B lib/portable_stage.py run \
   --timeout-seconds 300
 ```
 
-Assert exit zero, a canonical completion receipt, a canonical imported model
-envelope whose SHA matches `model_envelope_sha256`, and a valid nonempty
-`output/judge.md`. Remove only the exact temporary directory created for this
-smoke after recording hashes and status.
+Run no retry. Require a canonical completion receipt, a canonical imported
+model envelope whose SHA matches `model_envelope_sha256`, and a valid nonempty
+`output/judge.md`. Check OpenSpec task `8.4` only after these assertions pass.
+Remove only the exact temporary directory after recording hashes and status.
 
-- [ ] **Step 6: Commit Task 3**
+- [ ] **Step 7: Run final offline regressions and commit documentation**
+
+Run the 11 commands from Task 3 Step 4, `openspec validate
+scalable-history-runtime --strict`, the prose scan, and `git diff --check`.
+Commit the design, backend, OpenSpec spec, and task-state updates:
 
 ```bash
-git add docs/backends.md \
+git add docs/superpowers/specs/2026-08-05-grok-portable-json-transport-design.md \
+  docs/backends.md \
   openspec/changes/scalable-history-runtime/specs/provider-neutral-execution/spec.md \
   openspec/changes/scalable-history-runtime/tasks.md
-git commit -m "docs: specify Grok portable JSON transport"
+git commit -m "docs: specify exact Grok JSON fence transport"
 ```
