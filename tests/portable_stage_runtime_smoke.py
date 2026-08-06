@@ -381,11 +381,18 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 byte_budget["host_cap_bytes"],
                 portable_stage.HOST_INPUT_MAX_BYTES,
             )
-            self.assertGreaterEqual(
+            self.assertEqual(
                 byte_budget["conservative_total_bytes"],
-                byte_budget["role_bytes"]
-                + sum(byte_budget["declared_input_bytes"].values())
-                + byte_budget["provider_request_bytes"],
+                byte_budget["provider_request_bytes"]
+                + portable_stage._REQUEST_OVERHEAD_BYTES,
+            )
+            request = json.loads(prepared["provider_request"])
+            self.assertIn("role_text", request)
+            self.assertIn("declared_input_texts", request)
+            self.assertIn("host_output_contract", request)
+            self.assertEqual(
+                request["role_text"],
+                (ROOT / "roles/generate.md").read_text(encoding="utf-8"),
             )
             self.assertIsNone(prepared["output_contract"]["sha256"])
             self.assertEqual(

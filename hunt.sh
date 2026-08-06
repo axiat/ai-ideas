@@ -247,6 +247,8 @@ AGENT_CMD=${AGENT_CMD:-codex --search -c approval_policy=never -c sandbox_worksp
 FRONT_CMD=${FRONT_CMD:-$AGENT_CMD}
 BACK_CMD=${BACK_CMD:-$AGENT_CMD}
 FAIL_SLEEP_MIN=${FAIL_SLEEP_MIN:-${1:-150}}
+# Contract/format failures should not burn the long operational cooldown.
+CONTRACT_FAIL_SLEEP_MIN=${CONTRACT_FAIL_SLEEP_MIN:-1}
 NO_HIT_SLEEP_MIN_LO=${NO_HIT_SLEEP_MIN_LO:-1}
 NO_HIT_SLEEP_MIN_HI=${NO_HIT_SLEEP_MIN_HI:-8}
 ALLOW_ZERO_NO_HIT_SLEEP=${ALLOW_ZERO_NO_HIT_SLEEP:-0}
@@ -1422,13 +1424,27 @@ reports_today() {
 
 fail_round() {
   local stage=$1
+  local error_class=${2:-execution}
+  local sleep_for=$FAIL_SLEEP_MIN
   archive_round "failed:$stage" || true
   fails=$((fails + 1))
-  log "Round failed at $stage (${fails}/${MAX_FAILS})"
+  log "Round failed at $stage (${fails}/${MAX_FAILS}) class=$error_class"
   [ "$fails" -lt "$MAX_FAILS" ] || return 1
-  if [ "$ROUND_LIMIT" -eq 0 ] || [ "$round" -lt "$ROUND_LIMIT" ]; then
-    sleep_minutes "$FAIL_SLEEP_MIN"
+  if [ "$error_class" = contract ]; then
+    sleep_for=$CONTRACT_FAIL_SLEEP_MIN
   fi
+  if [ "$ROUND_LIMIT" -eq 0 ] || [ "$round" -lt "$ROUND_LIMIT" ]; then
+    sleep_minutes "$sleep_for"
+  fi
+}
+
+# Capture portable-stage stderr class tag: portable-stage: CODE [class] ...
+portable_error_class_from_text() {
+  local text=$1
+  case "$text" in
+    *' [contract]'*|*'[contract] '*) printf 'contract\n' ;;
+    *) printf 'execution\n' ;;
+  esac
 }
 
 reject_direction_round() {
@@ -1641,13 +1657,21 @@ while :; do
       generation_inputs+=(--input "research_context.md=research_context.md")
     fi
     if [ "$HUNT_RUNTIME_ABI" = v2 ]; then
-      run_portable_generate_stage \
+      portable_err=$RD/history/generate-portable.err
+      if ! run_portable_generate_stage \
         "$internal_profile" \
         "$RD/history/generate-output" \
         "$RD/history/generate-attempt" \
         "$RD/history/generate-prompt.json" \
         "${generation_inputs[@]}" \
-        > "$RD/history/generate-stage.json"
+        > "$RD/history/generate-stage.json" \
+        2> "$portable_err"
+      then
+        portable_msg=$(cat "$portable_err" 2>/dev/null || true)
+        [ -n "$portable_msg" ] && log "$portable_msg"
+        fail_round generate "$(portable_error_class_from_text "$portable_msg")" || exit 1
+        continue
+      fi
     else
       run_contained_stage \
         generate generate \
@@ -1656,10 +1680,10 @@ while :; do
         "$contained_json" \
         "${generation_inputs[@]}" \
         > "$RD/history/generate-stage.json"
-    fi
-    if [ "$?" -ne 0 ]; then
-      fail_round generate || exit 1
-      continue
+      if [ "$?" -ne 0 ]; then
+        fail_round generate || exit 1
+        continue
+      fi
     fi
     if [ ! -s "$RD/history/generate-output/ideas.tsv" ] \
        || [ ! -s "$RD/history/generate-output/ideas.md" ] \
@@ -1667,7 +1691,7 @@ while :; do
        || ! axiom_ok \
          "$RD/history/generate-output/ideas.md" \
          "$RD/history/generate-output/ideas.tsv"; then
-      fail_round generation-contract || exit 1
+      fail_round generation-contract contract || exit 1
       continue
     fi
 

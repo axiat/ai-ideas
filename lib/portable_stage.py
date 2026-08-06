@@ -116,11 +116,40 @@ _COMPLETION_FIELDS = {
 }
 
 
+# Host-side validation failures: short cooldown. Provider/runtime failures keep
+# the long operational sleep.
+_CONTRACT_ERROR_CODES = frozenset(
+    {
+        "invalid_generation_output",
+        "invalid_model_envelope",
+        "invalid_model_artifact",
+        "invalid_history_comparison",
+        "invalid_review_output",
+        "invalid_direction_contract",
+        "noncanonical_direction_contract",
+        "schema_mismatch",
+        "provider_request_attestation_mismatch",
+        "request_too_large",
+        "invalid_serialized_prompt",
+        "unsupported_stage",
+        "invalid_inputs",
+        "duplicate_input",
+        "invalid_seat_id",
+        "provider_surface_mismatch",
+        "response_schema_changed",
+    }
+)
+
+
 class PortableStageError(RuntimeError):
     def __init__(self, code, detail=None):
         self.code = code
         self.detail = detail
-        super().__init__(code)
+        super().__init__(code if detail is None else f"{code}: {detail}")
+
+    @property
+    def error_class(self):
+        return "contract" if self.code in _CONTRACT_ERROR_CODES else "execution"
 
 
 class _FrozenDict(dict):
@@ -407,6 +436,75 @@ def _response_schema(stage):
     return schema
 
 
+def _decode_contract_text(raw, label):
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PortableStageError("invalid_contract_text", label) from exc
+    if "\x00" in text:
+        raise PortableStageError("invalid_contract_text", label)
+    return text
+
+
+def _host_output_contract(stage):
+    """Machine-facing output shape the host will parse after import."""
+    if stage == "generate":
+        return {
+            "schema_version": "portable-stage-host-output-contract-v1",
+            "artifact_kind": "generation-ideas-markdown",
+            "required_prefix": (
+                "Assumption-Removal Attempt: complete I#   OR   "
+                "Assumption-Removal Attempt: incomplete — <candidate>; "
+                "blocked by: <field>"
+            ),
+            "candidate_heading": "## I<n>",
+            "required_fields": [
+                "One-Sentence Story",
+                "Theme",
+                "Form",
+                "Summary",
+                "Minimal Falsification Experiment",
+                "Why It May Be Novel",
+            ],
+            "direction_fields_when_present": [
+                "Direction Axis",
+                "Target Failure",
+                "Direction Evidence",
+            ],
+            "field_line_format": "<Field Name>: <single-line value>",
+            "forbidden_headings": [
+                "# Generation Ideas",
+                "## Idea ",
+                "### Claim",
+                "### Rationale",
+                "### Evaluation plan",
+            ],
+            "example": (
+                "Assumption-Removal Attempt: incomplete — I1; "
+                "blocked by: Crack Evidence\n"
+                "\n"
+                "## I1\n"
+                "One-Sentence Story: ...\n"
+                "Theme: ...\n"
+                "Direction Axis: <allowed_axes id when direction mounted>\n"
+                "Target Failure: <target_failures id when direction mounted>\n"
+                "Direction Evidence: ...\n"
+                "Form: ...\n"
+                "Summary: ...\n"
+                "Minimal Falsification Experiment: ...\n"
+                "Why It May Be Novel: ...\n"
+            ),
+        }
+    return {
+        "schema_version": "portable-stage-host-output-contract-v1",
+        "stage": stage,
+        "note": (
+            "Follow role_text exactly. Host parses the artifact content "
+            "with stage-specific validators."
+        ),
+    }
+
+
 def _provider_request(
     provider,
     stage,
@@ -415,6 +513,9 @@ def _provider_request(
     input_sha256s,
     role_sha256,
     schema,
+    *,
+    role_text,
+    declared_input_texts,
 ):
     stdout_instruction = (
         "Emit exactly one UTF-8 NFC canonical JSON object to stdout, "
@@ -452,23 +553,49 @@ def _provider_request(
             "only subtype=success structured_output is eligible for import. "
             "Do not put Markdown fences or narration inside the structured value."
         )
+    if type(role_text) is not str or not role_text:
+        raise PortableStageError("invalid_contract_text", "role_text")
+    if type(declared_input_texts) is not dict:
+        raise PortableStageError("invalid_contract_text", "declared_input_texts")
+    ordered_inputs = {
+        name: declared_input_texts[name]
+        for name in sorted(declared_input_texts)
+    }
+    for name, text in ordered_inputs.items():
+        if type(text) is not str:
+            raise PortableStageError("invalid_contract_text", name)
+        if name not in input_sha256s:
+            raise PortableStageError("invalid_contract_text", name)
+        if _sha(text.encode("utf-8")) != input_sha256s[name]:
+            raise PortableStageError("contract_text_hash_mismatch", name)
+    if _sha(role_text.encode("utf-8")) != role_sha256:
+        raise PortableStageError("contract_text_hash_mismatch", "role_text")
     base = {
         "schema_version": "portable-stage-request-v1",
         "stage": stage,
         "seat_id": seat_id,
         "serialized_prompt": serialized_prompt,
         "role_path": "role.md",
+        "role_text": role_text,
         "declared_inputs": sorted(input_sha256s),
         "declared_input_sha256s": dict(sorted(input_sha256s.items())),
+        "declared_input_texts": ordered_inputs,
         "role_sha256": role_sha256,
         "response_schema": schema,
+        "host_output_contract": _host_output_contract(stage),
         "transport_instructions": {
             "schema_version": "portable-stage-transport-instructions-v1",
             "precedence": (
-                "These transport instructions override any output-location "
-                "or file-writing instruction in role.md."
+                "role_text, declared_input_texts, host_output_contract, "
+                "response_schema, and these transport instructions are the "
+                "authoritative stage contract. They override any conflicting "
+                "output-location or file-writing wording inside role_text."
             ),
-            "role": "Treat role.md as artifact-content instructions only.",
+            "role": (
+                "Follow role_text and host_output_contract exactly when "
+                "building artifact content. Disk paths role.md and input/* "
+                "are byte-identical audit copies; do not require file tools."
+            ),
             "mirror": (
                 "Do not create, modify, or delete any file in the mirror."
             ),
@@ -610,6 +737,11 @@ def prepare_stage(
         name: _sha(raw) for name, raw in sorted(input_raws.items())
     }
     role_sha256 = _sha(role_raw)
+    role_text = _decode_contract_text(role_raw, "role.md")
+    declared_input_texts = {
+        name: _decode_contract_text(raw, name)
+        for name, raw in sorted(input_raws.items())
+    }
     provider_request, provider_request_binding_sha256 = _provider_request(
         launch_intent.provider,
         stage,
@@ -618,18 +750,23 @@ def prepare_stage(
         input_sha256s,
         role_sha256,
         schema,
+        role_text=role_text,
+        declared_input_texts=declared_input_texts,
     )
     prompt_bytes = serialized_prompt.encode("utf-8")
     provider_request_raw = provider_request.encode("utf-8")
     declared_sizes = {name: len(raw) for name, raw in input_raws.items()}
+    # role_text and declared_input_texts are embedded once inside
+    # provider_request; do not double-count the disk copies.
     conservative_total = (
-        len(role_raw)
-        + sum(declared_sizes.values())
-        + len(provider_request_raw)
+        len(provider_request_raw)
         + _REQUEST_OVERHEAD_BYTES
     )
     if conservative_total > HOST_INPUT_MAX_BYTES:
-        raise PortableStageError("request_too_large")
+        raise PortableStageError(
+            "request_too_large",
+            f"conservative_total_bytes={conservative_total}",
+        )
 
     output = pathlib.Path(os.path.abspath(os.fspath(output_root)))
     state = pathlib.Path(os.path.abspath(os.fspath(state_root)))
@@ -873,7 +1010,10 @@ def _project_outputs(prepared, envelope_raw, input_raws):
         try:
             text = markdown.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise PortableStageError("invalid_generation_output") from exc
+            raise PortableStageError(
+                "invalid_generation_output",
+                "generation markdown is not UTF-8",
+            ) from exc
         contract = None
         if "direction_constraint.json" in input_raws:
             try:
@@ -881,7 +1021,10 @@ def _project_outputs(prepared, envelope_raw, input_raws):
                     input_raws["direction_constraint.json"]
                 )
             except direction_contract.DirectionContractError as exc:
-                raise PortableStageError("invalid_direction_contract") from exc
+                raise PortableStageError(
+                    "invalid_direction_contract",
+                    str(exc),
+                ) from exc
             if canonical != input_raws["direction_constraint.json"]:
                 raise PortableStageError("noncanonical_direction_contract")
         try:
@@ -890,7 +1033,10 @@ def _project_outputs(prepared, envelope_raw, input_raws):
                 direction_contract=contract,
             ).encode("utf-8")
         except history_stage.StageError as exc:
-            raise PortableStageError("invalid_generation_output") from exc
+            raise PortableStageError(
+                "invalid_generation_output",
+                str(exc),
+            ) from exc
         return {
             "ideas.md": markdown,
             "ideas.tsv": tsv,
@@ -1286,6 +1432,11 @@ def _validate_public_preflight(value):
         or any(
             type(size) is not int or size < 0
             for size in budget["declared_input_bytes"].values()
+        )
+        or budget["conservative_total_bytes"]
+        != (
+            budget["provider_request_bytes"]
+            + _REQUEST_OVERHEAD_BYTES
         )
         or budget["conservative_total_bytes"] > HOST_INPUT_MAX_BYTES
     ):
@@ -1722,8 +1873,21 @@ def main(argv=None):
         PortableStageError,
         provider_adapters.ProviderResolutionError,
     ) as exc:
-        code = getattr(exc, "code", str(exc))
-        print(f"portable-stage: {code}", file=sys.stderr)
+        code = getattr(exc, "code", None)
+        if code is None:
+            code = str(exc)
+        detail = getattr(exc, "detail", None)
+        error_class = getattr(exc, "error_class", "execution")
+        if detail:
+            print(
+                f"portable-stage: {code} [{error_class}] ({detail})",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"portable-stage: {code} [{error_class}]",
+                file=sys.stderr,
+            )
         return 2
 
 

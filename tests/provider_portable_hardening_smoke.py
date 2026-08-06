@@ -443,18 +443,27 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         provider="codex",
         executable_path=FAKE_STAGE,
     ):
+        model = {
+            "agy": "gemini/fixture-model",
+            "opencode": "openai/fixture-model",
+        }.get(provider, "MODEL")
         return provider_adapters._resolve_command_intent_for_test(
             provider_adapters.load_registry(REGISTRY),
             surface,
             provider,
-            model=(
-                "gemini/fixture-model" if provider == "agy" else "MODEL"
+            model=model if provider in {"agy", "opencode"} else (
+                None if provider == "kimi" else "MODEL"
             ),
             reasoning=None if provider == "kimi" else "high",
             executable_lookup=lambda _: str(executable_path),
             model_catalog_probe=(
                 provider_adapters._host_model_catalog_probe
-                if provider == "agy"
+                if provider in {"agy", "opencode"}
+                else None
+            ),
+            default_identity_probe=(
+                provider_adapters._host_default_identity_probe
+                if provider == "opencode"
                 else None
             ),
             version_probe=(
@@ -512,10 +521,13 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         else:
             raise AssertionError(stage)
         executable_path = FAKE_STAGE
-        if provider in {"agy", "grok", "claude"}:
-            executable_path = root / provider
-            executable_path.write_bytes(FAKE_STAGE.read_bytes())
-            executable_path.chmod(0o755)
+        if provider in {"agy", "grok", "claude", "opencode", "kimi", "codex"}:
+            # Bind argv[0] basename to the provider under test for transport
+            # selection inside the fake executable.
+            if provider != "codex":
+                executable_path = root / provider
+                executable_path.write_bytes(FAKE_STAGE.read_bytes())
+                executable_path.chmod(0o755)
         prepared = portable_stage.prepare_stage(
             self._intent(surface, provider, executable_path),
             stage=stage,
@@ -577,10 +589,16 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         expected_transport = {
             "schema_version": "portable-stage-transport-instructions-v1",
             "precedence": (
-                "These transport instructions override any output-location "
-                "or file-writing instruction in role.md."
+                "role_text, declared_input_texts, host_output_contract, "
+                "response_schema, and these transport instructions are the "
+                "authoritative stage contract. They override any conflicting "
+                "output-location or file-writing wording inside role_text."
             ),
-            "role": "Treat role.md as artifact-content instructions only.",
+            "role": (
+                "Follow role_text and host_output_contract exactly when "
+                "building artifact content. Disk paths role.md and input/* "
+                "are byte-identical audit copies; do not require file tools."
+            ),
             "mirror": (
                 "Do not create, modify, or delete any file in the mirror."
             ),
@@ -614,13 +632,25 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 "seat_id",
                 "serialized_prompt",
                 "role_path",
+                "role_text",
                 "declared_inputs",
                 "declared_input_sha256s",
+                "declared_input_texts",
                 "role_sha256",
                 "response_schema",
+                "host_output_contract",
                 "transport_instructions",
                 "request_binding",
             },
+        )
+        self.assertEqual(
+            request["role_text"],
+            (ROOT / "roles/generate.md").read_text(encoding="utf-8"),
+        )
+        self.assertIn("generation_brief.json", request["declared_input_texts"])
+        self.assertEqual(
+            request["host_output_contract"]["artifact_kind"],
+            "generation-ideas-markdown",
         )
         binding = request["request_binding"]
         base = {
@@ -668,10 +698,16 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         expected_transport = {
             "schema_version": "portable-stage-transport-instructions-v1",
             "precedence": (
-                "These transport instructions override any output-location "
-                "or file-writing instruction in role.md."
+                "role_text, declared_input_texts, host_output_contract, "
+                "response_schema, and these transport instructions are the "
+                "authoritative stage contract. They override any conflicting "
+                "output-location or file-writing wording inside role_text."
             ),
-            "role": "Treat role.md as artifact-content instructions only.",
+            "role": (
+                "Follow role_text and host_output_contract exactly when "
+                "building artifact content. Disk paths role.md and input/* "
+                "are byte-identical audit copies; do not require file tools."
+            ),
             "mirror": (
                 "Do not create, modify, or delete any file in the mirror."
             ),
@@ -2283,6 +2319,50 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                     portable_stage.verify_public_descriptor(attacked, root)
 
 
+
+    def test_all_providers_inline_stage_contract_without_file_tools(self):
+        """Every Hunt/AwR portable provider must receive role+inputs in -p."""
+        providers = (
+            ("hunt", "codex"),
+            ("hunt", "kimi"),
+            ("hunt", "grok"),
+            ("hunt", "claude"),
+            ("awr", "opencode"),
+            ("awr", "agy"),
+            ("awr", "claude"),
+        )
+        for surface, provider in providers:
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                stage = "generate" if surface == "hunt" else "awr-research"
+                prepared = self._prepare(root, stage=stage, provider=provider)
+                request = json.loads(prepared["provider_request"])
+                self.assertIn("role_text", request)
+                self.assertTrue(request["role_text"].strip())
+                self.assertEqual(
+                    hashlib.sha256(request["role_text"].encode("utf-8")).hexdigest(),
+                    request["role_sha256"],
+                )
+                self.assertIn("declared_input_texts", request)
+                self.assertEqual(
+                    set(request["declared_input_texts"]),
+                    set(request["declared_input_sha256s"]),
+                )
+                for name, body in request["declared_input_texts"].items():
+                    self.assertEqual(
+                        hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                        request["declared_input_sha256s"][name],
+                    )
+                self.assertIn("host_output_contract", request)
+                # Empty-tools providers must not depend on reading role.md from disk.
+                self.assertIn("do not require file tools", request["transport_instructions"]["role"])
+                argv = prepared["provider_command"]["argv"]
+                if provider == "claude":
+                    self.assertIn("--tools", argv)
+                    self.assertEqual(argv[argv.index("--tools") + 1], "")
+
+
+
 class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
     def _capability(self):
         return provider_adapters._resolve_provider_for_test(
@@ -2520,6 +2600,9 @@ class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
             self.assertEqual(len(attempts), 1)
             portable_agent._repair_attempt_directories(attempts[0])
             real_rmtree(attempts[0])
+
+
+
 
 
 if __name__ == "__main__":

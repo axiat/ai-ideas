@@ -335,19 +335,21 @@ bare JSON still fails strict parsing. An additional delimiter, a different
 label or case, a missing close, or any trailing byte also rejects the response.
 No trimming, JSON-suffix search, normalization, or repair occurs.
 
-Every v2 portable request carries binding-covered `transport_instructions`.
-Grok receives a provider-specific stdout instruction: the final assistant
-response itself must be one exact lowercase-`json` LF fence containing the
-canonical UTF-8/NFC response-schema object, whose single trailing LF immediately
-precedes the terminal close. No byte may sit outside that fence, and no
-triple-backtick sequence may occur in an earlier assistant response. Codex,
-Kimi, and OpenCode retain the raw canonical-stdout instruction with no fence
-or narration. Agy requires structured output as specified above. Its request
-instruction overrides legacy output-location and file-writing statements in
-the AwR role; `role.md` defines artifact content only. All instructions forbid
-model-authored mirror writes and require exact request attestation. After the provider command finishes,
-the host terminates its process group and waits for the provider process before
-validating any mirror or response bytes.
+Every v2 portable request carries binding-covered `transport_instructions`
+and the full stage contract inline: `role_text`, `declared_input_texts`,
+`host_output_contract`, and `response_schema`. Disk copies of `role.md` and
+`input/*` remain byte-identical audit material; providers must not depend on
+file tools to learn the contract. Grok receives a provider-specific stdout
+instruction: the final assistant response itself must be one exact
+lowercase-`json` LF fence containing the canonical UTF-8/NFC response-schema
+object, whose single trailing LF immediately precedes the terminal close. No
+byte may sit outside that fence, and no triple-backtick sequence may occur in
+an earlier assistant response. Codex, Kimi, and OpenCode retain the raw
+canonical-stdout instruction with no fence or narration. Agy and Claude require
+structured `structured_output` as specified above. All instructions forbid
+model-authored mirror writes and require exact request attestation. After the
+provider command finishes, the host terminates its process group and waits for
+the provider process before validating any mirror or response bytes.
 Every declared entry must remain a regular single-link file with its exact
 original `st_mode`; a stable read must preserve its exact byte count and
 SHA-256. Added or removed files, entry-type, link-count, or mode changes, and

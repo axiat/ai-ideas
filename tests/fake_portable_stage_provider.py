@@ -13,10 +13,16 @@ import time
 EXPECTED_TRANSPORT_INSTRUCTIONS = {
     "schema_version": "portable-stage-transport-instructions-v1",
     "precedence": (
-        "These transport instructions override any output-location or "
-        "file-writing instruction in role.md."
+        "role_text, declared_input_texts, host_output_contract, "
+        "response_schema, and these transport instructions are the "
+        "authoritative stage contract. They override any conflicting "
+        "output-location or file-writing wording inside role_text."
     ),
-    "role": "Treat role.md as artifact-content instructions only.",
+    "role": (
+        "Follow role_text and host_output_contract exactly when "
+        "building artifact content. Disk paths role.md and input/* "
+        "are byte-identical audit copies; do not require file tools."
+    ),
     "mirror": "Do not create, modify, or delete any file in the mirror.",
     "stdout": (
         "Emit exactly one UTF-8 NFC canonical JSON object to stdout, with "
