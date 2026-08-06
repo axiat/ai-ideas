@@ -774,6 +774,38 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             self.assertEqual(caught.exception.code, "invalid_prepared_stage")
             self.assertFalse((root / "published").exists())
 
+    def test_provider_request_and_launch_share_frozen_response_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, stage="awr-research")
+            request = json.loads(prepared["provider_request"])
+            real_workload = portable_agent.run_portable_stdout_attempt
+            real_frozen_schema = portable_stage._frozen_response_schema
+            frozen = {}
+
+            def capture_frozen_schema(*args, **kwargs):
+                value = real_frozen_schema(*args, **kwargs)
+                frozen["value"] = value
+                return value
+
+            with mock.patch.object(
+                portable_stage,
+                "_frozen_response_schema",
+                side_effect=capture_frozen_schema,
+            ), mock.patch.object(
+                portable_agent,
+                "run_portable_stdout_attempt",
+                wraps=real_workload,
+            ) as workload:
+                portable_stage.run_stage(prepared, timeout_seconds=2)
+            launched_schema = workload.call_args.kwargs["response_schema"]
+            self.assertIs(launched_schema, frozen["value"])
+            self.assertEqual(launched_schema, request["response_schema"])
+            self.assertEqual(
+                portable_stage._canonical_bytes(launched_schema),
+                portable_stage._canonical_bytes(request["response_schema"]),
+            )
+
     def test_executable_substitution_cannot_launch_from_copied_prepared_value(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

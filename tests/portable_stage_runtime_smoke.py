@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """RED contract for portable stage projection and runtime dispatch."""
 
+import copy
 import hashlib
 import inspect
 import json
@@ -215,6 +216,40 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 first["provider_request_sha256"],
                 second["provider_request_sha256"],
             )
+
+    def test_response_schema_drift_fails_before_provider_workload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared, _, _ = self._prepare(
+                root,
+                stage="awr-research",
+                intent=provider_adapters._resolve_command_intent_for_test(
+                    provider_adapters.load_registry(REGISTRY),
+                    "awr",
+                    "codex",
+                    model="MODEL",
+                    reasoning="high",
+                    executable_lookup=lambda _: str(FAKE),
+                ),
+            )
+            changed = copy.deepcopy(
+                portable_stage._response_schema("awr-research")
+            )
+            changed["properties"]["artifacts"]["maxItems"] += 1
+            with mock.patch.object(
+                portable_stage,
+                "_response_schema",
+                return_value=changed,
+            ), mock.patch.object(
+                portable_agent,
+                "run_portable_stdout_attempt",
+            ) as workload:
+                with self.assertRaises(self._error()) as caught:
+                    self._api(portable_stage, "run_stage")(
+                        prepared, timeout_seconds=2
+                    )
+            self.assertEqual(caught.exception.code, "response_schema_changed")
+            workload.assert_not_called()
 
     def test_default_backend_drift_fails_before_provider_workload(self):
         with tempfile.TemporaryDirectory() as directory:

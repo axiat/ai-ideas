@@ -194,7 +194,14 @@ def _thaw_value(value):
     return value
 
 
-def _issue_prepared(public, *, launch_intent, preflight_raw, executable_identity):
+def _issue_prepared(
+    public,
+    *,
+    launch_intent,
+    preflight_raw,
+    response_schema_raw: bytes,
+    executable_identity,
+):
     prepared = dict.__new__(PreparedStage)
     dict.__init__(prepared, _freeze_value(public))
     _PREPARED_STAGES[prepared] = {
@@ -202,6 +209,7 @@ def _issue_prepared(public, *, launch_intent, preflight_raw, executable_identity
         "public_snapshot": _exact_canonical_bytes(public),
         "launch_intent": launch_intent,
         "preflight_raw": preflight_raw,
+        "response_schema_raw": response_schema_raw,
         "executable_identity": executable_identity,
     }
     return prepared
@@ -220,6 +228,19 @@ def _private_prepared(prepared):
     if observed_snapshot != private["public_snapshot"]:
         raise PortableStageError("invalid_prepared_stage")
     return copy.deepcopy(private["public"]), private
+
+
+def _frozen_response_schema(prepared, private):
+    raw = private["response_schema_raw"]
+    expected_sha = prepared["output_contract"]["response_schema_sha256"]
+    current = _canonical_bytes(_response_schema(prepared["stage"]))
+    if _sha(raw) != expected_sha or current != raw:
+        raise PortableStageError("response_schema_changed")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PortableStageError("invalid_prepared_stage") from exc
+    return value
 
 
 def _canonical_bytes(value):
@@ -690,6 +711,7 @@ def prepare_stage(
         public,
         launch_intent=launch_intent,
         preflight_raw=preflight_raw,
+        response_schema_raw=response_schema_raw,
         executable_identity=_executable_identity(launch_intent),
     )
 
@@ -976,6 +998,7 @@ def run_stage(prepared, timeout_seconds=600):
         or _sha(preflight_raw) != prepared["preflight_sha256"]
     ):
         raise PortableStageError("preflight_changed")
+    response_schema = _frozen_response_schema(prepared, private)
     intent = _load_launch_intent(prepared, private)
     try:
         attempt = portable_agent.run_portable_stdout_attempt(
@@ -985,7 +1008,7 @@ def run_stage(prepared, timeout_seconds=600):
             state_root=prepared["state_root"],
             timeout_seconds=timeout_seconds,
             max_stdout_bytes=prepared["output_contract"]["max_bytes"],
-            response_schema=_response_schema(prepared["stage"]),
+            response_schema=response_schema,
             expected_response_attestation={
                 "schema_version": "portable-stage-response-attestation-v1",
                 "provider_request_binding_sha256": prepared[
