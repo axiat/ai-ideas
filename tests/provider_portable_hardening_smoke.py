@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 from lib import direction_contract
 from lib import history_contract_v2
+from lib import history_stage_adapter
 from lib import portable_agent
 from lib import portable_stage
 from lib import provider_adapters
@@ -752,6 +753,236 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             ),
         )
 
+    def test_all_portable_stage_schemas_pin_integer_version_with_bounds(self):
+        self.assertEqual(len(portable_stage._ROLES), 7)
+        for stage in portable_stage._ROLES:
+            with self.subTest(stage=stage):
+                self.assertEqual(
+                    portable_stage._response_schema(stage)["properties"][
+                        "schema_version"
+                    ],
+                    {"maximum": 1, "minimum": 1, "type": "integer"},
+                )
+
+        for stage in ("generate", "history-compare", "review", "meta"):
+            with self.subTest(legacy_stage=stage):
+                self.assertEqual(
+                    history_stage_adapter.stage_response_schema(stage)[
+                        "properties"
+                    ]["schema_version"],
+                    {"enum": [1], "type": "integer"},
+                )
+
+    def test_closed_response_schema_accepts_equal_type_exact_integer_bounds(self):
+        schema = portable_stage._response_schema("awr-research")
+        contract = portable_agent._validate_response_schema_contract(schema)
+        self.assertEqual(contract["schema_version"], 1)
+
+    def test_closed_response_schema_rejects_malformed_version_bounds(self):
+        schema = portable_stage._response_schema("awr-research")
+        malformed_versions = {
+            "missing-minimum": {"maximum": 1, "type": "integer"},
+            "missing-maximum": {"minimum": 1, "type": "integer"},
+            "extra-enum": {
+                "enum": [1],
+                "maximum": 1,
+                "minimum": 1,
+                "type": "integer",
+            },
+            "extra-const": {
+                "const": 1,
+                "maximum": 1,
+                "minimum": 1,
+                "type": "integer",
+            },
+            "unequal-bounds": {
+                "maximum": 2,
+                "minimum": 1,
+                "type": "integer",
+            },
+            "equal-zero-bounds": {
+                "maximum": 0,
+                "minimum": 0,
+                "type": "integer",
+            },
+            "equal-two-bounds": {
+                "maximum": 2,
+                "minimum": 2,
+                "type": "integer",
+            },
+            "boolean-bound": {
+                "maximum": 1,
+                "minimum": True,
+                "type": "integer",
+            },
+            "float-bound": {
+                "maximum": 1.0,
+                "minimum": 1,
+                "type": "integer",
+            },
+        }
+        for name, version in malformed_versions.items():
+            with self.subTest(name=name):
+                changed = copy.deepcopy(schema)
+                changed["properties"]["schema_version"] = version
+                with self.assertRaises(
+                    portable_agent.PortableAgentError
+                ) as caught:
+                    portable_agent._validate_response_schema_contract(
+                        changed
+                    )
+                self.assertEqual(
+                    caught.exception.code, "invalid_response_schema"
+                )
+
+    def test_inner_schema_version_requires_exact_bounded_integer(self):
+        contract = portable_agent._validate_response_schema_contract(
+            portable_stage._response_schema("awr-research")
+        )
+        value = {
+            "artifacts": [
+                {
+                    "artifact_kind": "awr-draft-markdown",
+                    "content": "bounded\n",
+                }
+            ],
+            "request_attestation": {
+                "provider_request_binding_sha256": "a" * 64,
+                "schema_version": (
+                    "portable-stage-response-attestation-v1"
+                ),
+                "serialized_prompt_sha256": "b" * 64,
+            },
+            "schema_version": 1,
+            "stage": "awr-research",
+        }
+        portable_agent._validate_response_value(value, contract)
+        for version in (True, 0, 2, 1.0):
+            with self.subTest(version=version):
+                changed = copy.deepcopy(value)
+                changed["schema_version"] = version
+                with self.assertRaises(
+                    portable_agent.PortableAgentError
+                ) as caught:
+                    portable_agent._validate_response_value(
+                        changed, contract
+                    )
+                self.assertEqual(caught.exception.code, "schema_mismatch")
+
+    def test_agy_numeric_enum_workaround_preserves_schema_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            marker = root / "schema-before-prompt.json"
+            log = root / "provider.jsonl"
+            prepared = self._prepare(
+                root, stage="awr-research", provider="agy"
+            )
+            request_schema = json.loads(prepared["provider_request"])[
+                "response_schema"
+            ]
+            captured = {}
+            real_frozen_schema = portable_stage._frozen_response_schema
+            real_workload = portable_agent.run_portable_stdout_attempt
+            real_parse = portable_agent._parse_agy_transport
+
+            def capture_frozen_schema(*args, **kwargs):
+                value = real_frozen_schema(*args, **kwargs)
+                captured["frozen"] = value
+                return value
+
+            def capture_workload(*args, **kwargs):
+                captured["launch"] = kwargs["response_schema"]
+                return real_workload(*args, **kwargs)
+
+            def capture_outer(raw, response_schema):
+                captured["outer"] = json.loads(raw.decode("utf-8"))[
+                    "json_schema"
+                ]
+                captured["decoder"] = response_schema
+                return real_parse(raw, response_schema)
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FAKE_PORTABLE_PREPROMPT_MARKER": str(marker),
+                    "FAKE_PORTABLE_STAGE_LOG": str(log),
+                    "FAKE_PORTABLE_STAGE_MODE": (
+                        "agy-reject-numeric-enum"
+                    ),
+                },
+                clear=False,
+            ), mock.patch.object(
+                portable_stage,
+                "_frozen_response_schema",
+                side_effect=capture_frozen_schema,
+            ), mock.patch.object(
+                portable_agent,
+                "run_portable_stdout_attempt",
+                side_effect=capture_workload,
+            ), mock.patch.object(
+                portable_agent,
+                "_parse_agy_transport",
+                side_effect=capture_outer,
+            ):
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+
+            expected_raw = self._canonical(request_schema)
+            self.assertEqual(marker.read_bytes(), expected_raw[:-1])
+            self.assertIs(captured["launch"], captured["frozen"])
+            self.assertIs(captured["decoder"], captured["launch"])
+            for observed in (
+                captured["frozen"],
+                captured["launch"],
+                captured["outer"],
+            ):
+                self.assertEqual(self._canonical(observed), expected_raw)
+            record = json.loads(log.read_text(encoding="utf-8"))
+            self.assertTrue(record["structured_transport_valid"])
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            self.assertTrue(imported.is_file())
+            self.assertTrue((root / "published/draft.md").is_file())
+            self.assertTrue(
+                pathlib.Path(prepared["completion_path"]).is_file()
+            )
+
+    def test_agy_pre_prompt_schema_rejection_keeps_only_preflight_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            marker = root / "provider-rejected"
+            prepared = self._prepare(
+                root, stage="awr-research", provider="agy"
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FAKE_PORTABLE_PREPROMPT_MARKER": str(marker),
+                    "FAKE_PORTABLE_STAGE_MODE": (
+                        "agy-reject-schema-before-prompt"
+                    ),
+                },
+                clear=False,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(
+                        prepared, timeout_seconds=2
+                    )
+            self.assertEqual(caught.exception.code, "nonzero_exit")
+            self.assertEqual(marker.read_bytes(), b"rejected-before-prompt\n")
+            state = pathlib.Path(prepared["state_root"])
+            self.assertTrue(pathlib.Path(prepared["preflight_path"]).is_file())
+            self.assertFalse(
+                pathlib.Path(prepared["completion_path"]).exists()
+            )
+            self.assertFalse((state / "imports").exists())
+            self.assertFalse(any(state.glob("attempt-*")))
+            self.assertFalse(pathlib.Path(prepared["output_root"]).exists())
+
     def test_stage_requires_exact_builtin_text_before_input_capture(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -1425,7 +1656,9 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 {"FAKE_PORTABLE_STAGE_MODE": mode},
                 clear=False,
             ):
-                with self.assertRaises(portable_stage.PortableStageError):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
                     portable_stage.run_stage(prepared, timeout_seconds=2)
             imports = root / "state/imports"
             self.assertFalse(imports.exists() and any(imports.iterdir()))
@@ -1439,6 +1672,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                     for path in prepared["output_paths"].values()
                 )
             )
+            return caught.exception
 
     def test_agy_structured_transport_imports_only_structured_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1477,7 +1711,8 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             "duplicate-outer-status",
         ):
             with self.subTest(mode=mode):
-                self._assert_agy_transport_rejects(mode)
+                caught = self._assert_agy_transport_rejects(mode)
+                self.assertEqual(caught.code, "malformed_output")
 
     def test_agy_structured_transport_normalizes_deep_ignored_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1529,7 +1764,8 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             "agy-array-payload",
         ):
             with self.subTest(mode=mode):
-                self._assert_agy_transport_rejects(mode)
+                caught = self._assert_agy_transport_rejects(mode)
+                self.assertEqual(caught.code, "malformed_output")
 
     def test_agy_structured_transport_requires_type_exact_schema_echo(self):
         for mode in (
@@ -1539,7 +1775,8 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             "agy-schema-int-bool",
         ):
             with self.subTest(mode=mode):
-                self._assert_agy_transport_rejects(mode)
+                caught = self._assert_agy_transport_rejects(mode)
+                self.assertEqual(caught.code, "malformed_output")
 
     def test_agy_structured_transport_rejects_non_strict_inner_values(self):
         for mode in (
@@ -1549,17 +1786,22 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             "surrogate-inner-value",
         ):
             with self.subTest(mode=mode):
-                self._assert_agy_transport_rejects(mode)
+                caught = self._assert_agy_transport_rejects(mode)
+                self.assertEqual(caught.code, "malformed_output")
 
     def test_agy_structured_transport_preserves_closed_schema_validation(self):
-        for mode in (
-            "extra-envelope",
-            "boolean-schema-version",
-            "missing-request-attestation",
-            "wrong-request-attestation",
-        ):
+        expected_codes = {
+            "extra-envelope": "schema_mismatch",
+            "boolean-schema-version": "schema_mismatch",
+            "missing-request-attestation": "schema_mismatch",
+            "wrong-request-attestation": (
+                "provider_request_attestation_mismatch"
+            ),
+        }
+        for mode, expected_code in expected_codes.items():
             with self.subTest(mode=mode):
-                self._assert_agy_transport_rejects(mode)
+                caught = self._assert_agy_transport_rejects(mode)
+                self.assertEqual(caught.code, expected_code)
 
     def test_grok_transport_accepts_bare_inner_model_envelope(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -158,6 +158,19 @@ schema already covered by the request binding, with only its terminal LF
 removed for argv. The launch command and provider object therefore use the
 same schema identity.
 
+A controlled Agy 1.1.10 qualification observed its Gemini
+function-declaration conversion rejecting the numeric enum `[1]` for
+`schema_version` before model generation. Every portable stage therefore pins
+that field with `type=integer` and `minimum=maximum=1`. The host accepts only
+the built-in integer `1`; missing, unequal, Boolean, floating-point, or non-one
+bounds invalidate the response schema. The legacy history-stage schemas retain
+their original representation and are normalized only in the portable stage
+copy.
+
+If Agy rejects the inline schema before prompt or model work, the host retains
+the preflight receipt, removes the disposable attempt, and creates no import,
+projected output, or completion receipt.
+
 The outer provider JSON must have `status=SUCCESS`, an object-valued
 `structured_output`, and a `json_schema` canonical byte match to the frozen
 schema. The host validates the selected inner object with the closed response

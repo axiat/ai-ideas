@@ -336,9 +336,13 @@ def _agy_transport(inner_raw, arguments, mode):
             changed, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
     elif mode == "agy-schema-int-float":
-        schema_member = schema_raw.replace(b'"enum":[1]', b'"enum":[1.0]', 1)
+        schema_member = schema_raw.replace(
+            b'"maximum":1', b'"maximum":1.0', 1
+        )
     elif mode == "agy-schema-int-bool":
-        schema_member = schema_raw.replace(b'"enum":[1]', b'"enum":[true]', 1)
+        schema_member = schema_raw.replace(
+            b'"minimum":1', b'"minimum":true', 1
+        )
     else:
         schema_member = schema_raw
 
@@ -528,11 +532,32 @@ def main():
         return 0
 
     arguments = sys.argv[1:]
-    request = json.loads(_prompt(arguments))
-    _record(request)
     mode = os.environ.get("FAKE_PORTABLE_STAGE_MODE", "success")
     grok_json = _grok_json_requested(arguments)
     agy_json = _agy_json_requested(arguments)
+    if mode == "agy-reject-schema-before-prompt" and agy_json:
+        marker = os.environ.get("FAKE_PORTABLE_PREPROMPT_MARKER")
+        if marker:
+            _write(pathlib.Path(marker), b"rejected-before-prompt\n")
+        return 67
+    if mode == "agy-reject-numeric-enum" and agy_json:
+        try:
+            schema_raw = _flag_value(
+                arguments, "--json-schema"
+            ).encode("utf-8")
+            version_schema = json.loads(schema_raw.decode("utf-8"))[
+                "properties"
+            ]["schema_version"]
+        except (KeyError, TypeError, ValueError, IndexError):
+            return 65
+        numeric_enum = version_schema.get("enum", [])
+        if any(type(value) in {int, float} for value in numeric_enum):
+            return 66
+        marker = os.environ.get("FAKE_PORTABLE_PREPROMPT_MARKER")
+        if marker:
+            _write(pathlib.Path(marker), schema_raw)
+    request = json.loads(_prompt(arguments))
+    _record(request)
     output = pathlib.Path("output/result.json")
     if mode == "grok-compatibility-audit":
         for name in (

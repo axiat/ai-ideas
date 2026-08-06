@@ -377,11 +377,12 @@ def _validate_response_schema_contract(schema):
     artifacts = properties["artifacts"]
     if (
         type(version) is not dict
-        or set(version) != {"enum", "type"}
+        or set(version) != {"maximum", "minimum", "type"}
         or version.get("type") != "integer"
-        or type(version.get("enum")) is not list
-        or len(version["enum"]) != 1
-        or type(version["enum"][0]) is not int
+        or type(version.get("minimum")) is not int
+        or type(version.get("maximum")) is not int
+        or version["minimum"] != 1
+        or version["maximum"] != 1
         or type(stage) is not dict
         or set(stage) != {"enum", "type"}
         or stage.get("type") != "string"
@@ -464,7 +465,7 @@ def _validate_response_schema_contract(schema):
     ):
         raise PortableAgentError("invalid_response_schema")
     return {
-        "schema_version": version["enum"][0],
+        "schema_version": version["minimum"],
         "stage": stage["enum"][0],
         "artifact_kinds": tuple(kind["enum"]),
         "content_max_length": content["maxLength"],

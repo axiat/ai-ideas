@@ -369,7 +369,11 @@ def _response_schema(stage):
                     "type": "array",
                 },
                 "request_attestation": _request_attestation_schema(),
-                "schema_version": {"enum": [1], "type": "integer"},
+                "schema_version": {
+                    "maximum": 1,
+                    "minimum": 1,
+                    "type": "integer",
+                },
                 "stage": {"enum": [stage], "type": "string"},
             },
             "required": [
@@ -386,6 +390,11 @@ def _response_schema(stage):
         )
     except ValueError as exc:
         raise PortableStageError("unsupported_stage") from exc
+    schema["properties"]["schema_version"] = {
+        "maximum": 1,
+        "minimum": 1,
+        "type": "integer",
+    }
     schema["properties"]["request_attestation"] = (
         _request_attestation_schema()
     )

@@ -18,6 +18,17 @@ contained intermediate model attempts and is unsuitable as an artifact
 source. [Agy 1.1.8 introduced the structured output flags used by this
 design](https://antigravity.google/changelog?plan=free).
 
+A bounded Agy 1.1.10 qualification exposed a second schema dialect before
+model generation. The portable response schema used a numeric `enum: [1]`
+for `schema_version`; Agy converted it through Gemini's function-declaration
+path, and the backend rejected the converted first enum entry as empty.
+[Gemini structured output supports integer `minimum` and `maximum`](https://ai.google.dev/gemini-api/docs/structured-output),
+while [Gemini function declarations represent integer enum values as
+strings](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/function-calling).
+The portable
+contract keeps the model value as a built-in integer and expresses its fixed
+value with equal integer bounds.
+
 ## Decision
 
 AwR v2 uses Agy structured JSON transport. Agy text output is not accepted as
@@ -55,6 +66,15 @@ preflight and output contract, compares the current stage schema with the
 frozen bytes, and fails before provider rendering when they differ. The
 provider request, inline argv schema, outer schema-echo comparison, and inner
 value validation all consume the same frozen schema.
+
+All seven portable stage schemas encode `schema_version` exactly as
+`{"maximum":1,"minimum":1,"type":"integer"}`. The portable host validator
+requires built-in integer bounds equal to `1`, derives the contract version
+from that value, and separately requires the inner value to be built-in
+integer `1`. Missing bounds, extra `enum` or `const`, unequal bounds, any
+non-one value, and Boolean or floating-point bounds fail closed. The legacy
+history-stage adapter retains its existing schema; only the portable copy is
+normalized before binding and freezing.
 
 The Agy-specific transport instruction requires one structured final value
 matching `response_schema`. It states that the CLI owns stdout framing and that
@@ -129,6 +149,9 @@ Test-first coverage includes:
   non-object `structured_output`, and missing or mismatched `json_schema`;
 - inner duplicate keys where representable, non-NFC strings, floating-point
   values, closed-schema violations, and request-attestation mismatches;
+- all seven portable schema shapes, type-exact fixed version bounds, Agy's
+  pre-prompt numeric-enum rejection, and failure durability after provider
+  schema rejection;
 - proof that noisy `response` text cannot become an artifact;
 - unchanged strict raw canonical decoding for Codex, Kimi, and OpenCode and
   unchanged Grok transport handling;
@@ -139,6 +162,22 @@ After offline suites pass, one bounded real Agy 1.1.8-or-newer stage with an
 explicit Gemini model qualifies the provider transport. Qualification verifies
 the selected model and effort, successful structured output, canonical import,
 closed receipt hashes, attempt cleanup, and absence of Claude execution.
+
+## Qualification Evidence
+
+The bounded `awr-judge` attempt at code commit `41815fb` selected
+`gemini-3.6-flash-high` with effort `high` and reached Agy exactly once. Agy
+resolved Gemini 3.6 Flash (High), registered the frozen schema, and failed
+before model generation with `INVALID_ARGUMENT` at
+`parameters.properties[schema_version].enum[0]`: the converted enum entry was
+empty. The portable runtime returned `nonzero_exit`. Preflight SHA-256 was
+`4b182dbe0ef316ad9ad1c56cd596c03a8ba7e1470201beeae0623ae44d68b213`; the
+Agy diagnostic log SHA-256 was
+`282430a2fd5fc8a0865c9fe6d807e1e933dc19f447cc8fa3e07c6df8769cc8d2`.
+Only `state/preflight.json` remained: no attempt directory, import, projected
+output, or completion receipt was created. The log confirmed the explicit
+Gemini route and no Claude execution. This failed attempt does not satisfy
+qualification, so OpenSpec task 8.6 remains unchecked.
 
 ## Scope
 
