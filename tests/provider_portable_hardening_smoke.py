@@ -1714,22 +1714,17 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 caught = self._assert_agy_transport_rejects(mode)
                 self.assertEqual(caught.code, "malformed_output")
 
-    def test_agy_structured_transport_normalizes_deep_ignored_metadata(self):
+    def test_agy_structured_transport_normalizes_outer_json_recursion_error(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             prepared = self._prepare(
                 root, stage="awr-research", provider="agy"
             )
+            parser = mock.Mock(wraps=json)
+            parser.JSONDecodeError = json.JSONDecodeError
+            parser.loads.side_effect = RecursionError
             caught = None
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "FAKE_PORTABLE_STAGE_MODE": (
-                        "agy-deep-ignored-metadata"
-                    )
-                },
-                clear=False,
-            ):
+            with mock.patch.object(portable_agent, "json", parser):
                 try:
                     portable_stage.run_stage(prepared, timeout_seconds=2)
                 except (
