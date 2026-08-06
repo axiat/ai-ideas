@@ -746,9 +746,17 @@ def claude_invocation_lines(text):
             failures.append(number)
     return failures
 
-def assert_no_claude_invocations():
+def assert_no_implicit_provider_fallbacks():
+    """Reject unselected shell fallbacks; explicit provider workers remain valid."""
     failures = []
+    allow_names = {
+        "claude-worker.sh",
+        "grok-worker.sh",
+        "agy-worker.sh",
+    }
     for path in executable_shell_paths():
+        if path.name in allow_names:
+            continue
         text = read_text(path)
         if text is None:
             continue
@@ -759,52 +767,36 @@ def assert_no_claude_invocations():
             for number in claude_invocation_lines(text)
         )
     if failures:
-        raise AssertionError("automatic Claude invocation remains in " + ", ".join(failures))
-
-def provider_registry_forbidden_paths(value, path="$"):
-    forbidden = "cl" + "aude"
-    failures = []
-    if isinstance(value, dict):
-        for key, item in value.items():
-            child = f"{path}.{key}"
-            if forbidden in str(key).lower():
-                failures.append(child)
-            failures.extend(provider_registry_forbidden_paths(item, child))
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            failures.extend(provider_registry_forbidden_paths(item, f"{path}[{index}]"))
-    elif isinstance(value, str) and forbidden in value.lower():
-        failures.append(path)
-    return failures
+        raise AssertionError(
+            "implicit Claude shell fallback remains in " + ", ".join(failures)
+        )
 
 def verify_provider_registry():
     registry = json.loads((ROOT / "history/provider-adapters-v1.json").read_text())
-    expected_providers = ["codex", "kimi", "grok", "opencode", "agy"]
+    expected_providers = ["codex", "kimi", "grok", "opencode", "agy", "claude"]
     if list(registry) != ["schema_version", "registry_revision", "providers", "surfaces"]:
         raise AssertionError("provider registry fields changed")
     if list(registry["providers"]) != expected_providers:
         raise AssertionError("provider registry set or order changed")
     if registry["surfaces"] != {
-        "hunt": expected_providers[:3],
+        "hunt": ["codex", "kimi", "grok", "claude"],
         "awr": expected_providers,
     }:
         raise AssertionError("provider surface eligibility changed")
-    failures = provider_registry_forbidden_paths(registry)
-    if failures:
-        raise AssertionError("forbidden provider registry path: " + ", ".join(failures))
-
-    forbidden = "cl" + "aude"
-    scanner_vectors = (
-        {"providers": {forbidden: {}}},
-        {"aliases": {"portable": forbidden}},
-        {"default_provider": forbidden},
-        {"wrapper": f"/tmp/{forbidden}"},
-    )
-    if any(not provider_registry_forbidden_paths(vector) for vector in scanner_vectors):
-        raise AssertionError("provider registry forbidden-path scanner regressed")
-    shell_vector = f"BACKEND=/tmp/{forbidden}\nsudo env $BACKEND --print prompt\n"
+    claude = registry["providers"]["claude"]
+    if (
+        claude.get("executable") != "claude"
+        or claude.get("grammar_revision") != "claude-portable-v1"
+        or claude.get("reasoning_values")
+        != ["low", "medium", "high", "xhigh", "max"]
+    ):
+        raise AssertionError("Claude provider registry entry drifted")
+    shell_vector = "BACKEND=/tmp/claude\nsudo env $BACKEND --print prompt\n"
     if not claude_invocation_lines(shell_vector):
         raise AssertionError("tainted wrapper command scanner regressed")
+    fallback_vector = 'AGENT_CMD=${AGENT_CMD:-claude -p}\n$AGENT_CMD prompt\n'
+    if not claude_invocation_lines(fallback_vector):
+        raise AssertionError("implicit fallback scanner regressed")
 
 
 def verify_production_evidence_roots():
@@ -830,12 +822,14 @@ def verify_production_evidence_roots():
 
 
 def assert_structured_json_operator_contract():
-    """Bind the public Agy structured-transport instructions."""
+    """Bind the public structured-transport instructions for Agy and Claude."""
     registry = json.loads((ROOT / "history/provider-adapters-v1.json").read_text())
     if registry["providers"]["agy"].get("grammar_revision") != "agy-portable-v2":
         raise AssertionError("Agy structured JSON registry revision changed")
+    if registry["providers"]["claude"].get("grammar_revision") != "claude-portable-v1":
+        raise AssertionError("Claude structured JSON registry revision changed")
     required = {
-        "README.md": ["Agy 1.1.8+", "docs/backends.md"],
+        "README.md": ["Agy 1.1.8+", "docs/backends.md", "claude"],
         "docs/getting-started.md": ["Agy 1.1.8+", "docs/backends.md"],
         "docs/backends.md": [
             "--output-format json",
@@ -847,6 +841,9 @@ def assert_structured_json_operator_contract():
             "minimum=maximum=1",
             "during preflight and immediately before launch",
             "at either check",
+            "claude-portable-v1",
+            "HUNT_PROVIDER=claude",
+            "subtype=success",
         ],
     }
     for name, needles in required.items():
@@ -861,7 +858,7 @@ def assert_structured_json_operator_contract():
 def verify_runtime():
     assert_backend_defaults()
     assert_awr_provider_usage()
-    assert_no_claude_invocations()
+    assert_no_implicit_provider_fallbacks()
     verify_provider_registry()
     verify_production_evidence_roots()
     assert_structured_json_operator_contract()

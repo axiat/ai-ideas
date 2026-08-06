@@ -21,8 +21,10 @@ PROVIDERS = (
     ("hunt", "codex"),
     ("hunt", "kimi"),
     ("hunt", "grok"),
+    ("hunt", "claude"),
     ("awr", "opencode"),
     ("awr", "agy"),
+    ("awr", "claude"),
 )
 
 
@@ -252,6 +254,7 @@ class ProviderHostCapabilityEvidenceRed(unittest.TestCase):
             "grok": ("-m", "--reasoning-effort"),
             "opencode": ("-m", "--variant"),
             "agy": ("--model", "--effort"),
+            "claude": ("--model", "--effort"),
         }
         for surface, provider in PROVIDERS:
             with self.subTest(provider=provider):
@@ -290,10 +293,14 @@ class ProviderHostCapabilityEvidenceRed(unittest.TestCase):
                             "FIXTURE_PROMPT",
                         )
                     continue
+                render_kwargs = {}
+                if provider == "claude":
+                    render_kwargs["response_schema"] = {"type": "object"}
                 argv, _ = provider_adapters.render_command(
                     capability,
                     pathlib.Path("/fixture/mirror"),
                     "FIXTURE_PROMPT",
+                    **render_kwargs,
                 )
                 for spelling in expected_spelling[provider]:
                     self.assertTrue(

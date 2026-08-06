@@ -113,7 +113,7 @@ deny_file 'tmp/ledger.good'   # Trusted ledger baseline sits outside the later l
 deny_tree 'tmp/runs'          # Bash-owned immutable per-run audit archive.
 for p in \
   PROGRAM.md rubric.md brainstorming_policy.md research_context.md \
-  hunt.sh publish.sh settle.sh agy-worker.sh grok-worker.sh awr-side.sh
+  hunt.sh publish.sh settle.sh agy-worker.sh grok-worker.sh claude-worker.sh awr-side.sh
 do
   deny_file "$p"
 done

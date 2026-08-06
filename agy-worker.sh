@@ -7,7 +7,7 @@
 # remains a missing tmp/round output and is rejected by hunt.sh.
 #
 # Usage:
-#   FRONT_CMD='./agy-worker.sh' BACK_CMD='claude -p' ./hunt.sh
+#   FRONT_CMD='./agy-worker.sh' BACK_CMD='./claude-worker.sh' ./hunt.sh
 # Configuration:
 #   AGY_MODEL          Full model ID printed by `agy models`; default
 #                      `gemini-3.6-flash-high`. Verify the selected-model line

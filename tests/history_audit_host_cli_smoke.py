@@ -73,7 +73,7 @@ class HistoryAuditHostCliSmoke(unittest.TestCase):
             "printf '%s\\n' \"$0\" >> \"$REAL_PROVIDER_LAUNCH_LOG\"\n"
             "exit 97\n"
         )
-        for provider in ("codex", "kimi", "grok", "opencode", "agy"):
+        for provider in ("codex", "kimi", "grok", "opencode", "agy", "claude"):
             executable = self.bin / provider
             executable.write_text(trap, encoding="utf-8")
             executable.chmod(0o700)

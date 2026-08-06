@@ -40,7 +40,7 @@ make_repo() {
 install_fake_providers() {
   local repo=$1 provider executable
   mkdir -p "$repo/.test-bin"
-  for provider in codex kimi grok opencode agy; do
+  for provider in codex kimi grok opencode agy claude; do
     executable="$repo/.test-bin/$provider"
     printf '%s\n' \
       '#!/bin/sh' \

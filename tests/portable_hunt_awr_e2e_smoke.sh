@@ -54,7 +54,7 @@ instrument_audit_cli() {
 install_fake_providers() {
   local repo=$1 provider
   mkdir -p "$repo/.test-bin"
-  for provider in codex kimi grok opencode agy; do
+  for provider in codex kimi grok opencode agy claude; do
     cp "$repo/tests/fake_portable_stage_provider.py" \
       "$repo/.test-bin/$provider"
     chmod 755 "$repo/.test-bin/$provider"

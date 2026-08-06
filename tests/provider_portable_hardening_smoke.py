@@ -512,7 +512,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         else:
             raise AssertionError(stage)
         executable_path = FAKE_STAGE
-        if provider in {"agy", "grok"}:
+        if provider in {"agy", "grok", "claude"}:
             executable_path = root / provider
             executable_path.write_bytes(FAKE_STAGE.read_bytes())
             executable_path.chmod(0o755)
@@ -733,6 +733,37 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             root = pathlib.Path(directory)
             prepared = self._prepare(
                 root, stage="awr-research", provider="agy"
+            )
+            request = json.loads(prepared["provider_request"])
+        self.assertEqual(
+            request["transport_instructions"]["stdout"], expected_stdout
+        )
+        base = {
+            key: value
+            for key, value in request.items()
+            if key != "request_binding"
+        }
+        self.assertEqual(
+            request["request_binding"][
+                "provider_request_binding_sha256"
+            ],
+            history_contract_v2.framed_sha256(
+                "portable-stage-request-base-v1",
+                self._canonical(base),
+            ),
+        )
+
+    def test_claude_transport_instructions_bind_structured_result(self):
+        expected_stdout = (
+            "Return exactly one JSON object matching response_schema as the "
+            "structured final result. The Claude CLI owns the outer stdout JSON; "
+            "only subtype=success structured_output is eligible for import. "
+            "Do not put Markdown fences or narration inside the structured value."
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root, stage="awr-research", provider="claude"
             )
             request = json.loads(prepared["provider_request"])
         self.assertEqual(
@@ -1796,6 +1827,97 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         for mode, expected_code in expected_codes.items():
             with self.subTest(mode=mode):
                 caught = self._assert_agy_transport_rejects(mode)
+                self.assertEqual(caught.code, expected_code)
+
+    def _assert_claude_transport_rejects(self, mode):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root, stage="awr-research", provider="claude"
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": mode},
+                clear=False,
+            ):
+                with self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse(
+                pathlib.Path(prepared["completion_path"]).exists()
+            )
+            self.assertFalse(pathlib.Path(prepared["output_root"]).exists())
+            self.assertTrue(
+                all(
+                    not pathlib.Path(path).exists()
+                    for path in prepared["output_paths"].values()
+                )
+            )
+            return caught.exception
+
+    def test_claude_structured_transport_imports_only_structured_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root, stage="awr-research", provider="claude"
+            )
+            completion = portable_stage.run_stage(
+                prepared, timeout_seconds=2
+            )
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            raw = imported.read_bytes()
+            self.assertEqual(
+                raw,
+                portable_agent._canonical_json_bytes(
+                    json.loads(raw.decode("utf-8"))
+                ),
+            )
+            self.assertEqual(
+                hashlib.sha256(raw).hexdigest(),
+                completion["model_envelope_sha256"],
+            )
+            self.assertNotIn(b"ignored", raw)
+            self.assertTrue((root / "published/draft.md").is_file())
+            self.assertTrue(
+                pathlib.Path(prepared["completion_path"]).is_file()
+            )
+
+    def test_claude_structured_transport_rejects_invalid_outer(self):
+        for mode in (
+            "malformed-outer-json",
+            "invalid-outer-utf8",
+            "outer-array",
+            "duplicate-outer-subtype",
+            "claude-missing-subtype",
+            "claude-error-subtype",
+            "claude-is-error",
+            "claude-missing-is-error",
+            "claude-missing-payload",
+            "claude-null-payload",
+            "claude-array-payload",
+            "claude-text-only",
+        ):
+            with self.subTest(mode=mode):
+                caught = self._assert_claude_transport_rejects(mode)
+                self.assertEqual(caught.code, "malformed_output")
+
+    def test_claude_structured_transport_preserves_closed_schema_validation(self):
+        expected_codes = {
+            "extra-envelope": "schema_mismatch",
+            "boolean-schema-version": "schema_mismatch",
+            "missing-request-attestation": "schema_mismatch",
+            "wrong-request-attestation": (
+                "provider_request_attestation_mismatch"
+            ),
+        }
+        for mode, expected_code in expected_codes.items():
+            with self.subTest(mode=mode):
+                caught = self._assert_claude_transport_rejects(mode)
                 self.assertEqual(caught.code, expected_code)
 
     def test_grok_transport_accepts_bare_inner_model_envelope(self):

@@ -100,17 +100,17 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             version_probe=probe_fn,
         )
 
-    def test_hunt_accepts_exactly_codex_kimi_grok(self):
+    def test_hunt_accepts_exactly_codex_kimi_grok_claude(self):
         accepted = []
-        for name in ("codex", "kimi", "grok"):
+        for name in ("codex", "kimi", "grok", "claude"):
             accepted.append(self._resolve("hunt", name).provider)
-        self.assertEqual(accepted, ["codex", "kimi", "grok"])
+        self.assertEqual(accepted, ["codex", "kimi", "grok", "claude"])
         for name in ("opencode", "agy", "unknown"):
             with self.assertRaises(self._error()):
                 self._resolve("hunt", name)
 
-    def test_awr_adds_opencode_and_agy(self):
-        providers = ["codex", "kimi", "grok", "opencode", "agy"]
+    def test_awr_adds_opencode_agy_and_claude(self):
+        providers = ["codex", "kimi", "grok", "opencode", "agy", "claude"]
         self.assertEqual(
             [self._resolve("awr", name).provider for name in providers], providers
         )
@@ -128,6 +128,16 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                 environment,
                 GROK_COMPATIBILITY_DISABLED if name == "grok" else {},
             )
+        claude = self._resolve("hunt", "claude")
+        argv, environment = render(
+            claude,
+            pathlib.Path("/tmp/disposable-mirror"),
+            "PROMPT",
+            response_schema={"type": "object"},
+        )
+        self.assertNotIn("--model", argv)
+        self.assertNotIn("--effort", argv)
+        self.assertEqual(environment, {})
         for name in ("opencode", "agy"):
             with self.subTest(provider=name), self.assertRaises(self._error()):
                 render(
@@ -235,10 +245,15 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             "grok": ["-m", "MODEL", "--reasoning-effort", "high"],
             "opencode": ["-m", "safe/MODEL", "--variant", "high"],
             "agy": ["--model", "MODEL", "--effort", "high"],
+            "claude": ["--model", "MODEL", "--effort", "high"],
         }
         render = self._api(provider_adapters, "render_command")
         for name, spelling in cases.items():
-            surface = "hunt" if name in ("codex", "kimi", "grok") else "awr"
+            surface = (
+                "hunt"
+                if name in ("codex", "kimi", "grok", "claude")
+                else "awr"
+            )
             reasoning = None if name == "kimi" else "high"
             model = "safe/MODEL" if name == "opencode" else "MODEL"
             if name in ("opencode", "agy"):
@@ -254,7 +269,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                 )
             else:
                 capability = self._resolve(surface, name, model, reasoning)
-            if name == "agy":
+            if name in ("agy", "claude"):
                 argv, _ = render(
                     capability,
                     pathlib.Path("/mirror"),
@@ -304,11 +319,24 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                 '{"type":"string"}},"type":"object"}',
                 "--print", "PROMPT",
             ],
+            "claude": [
+                str(FAKE), "--bare", "--dangerously-skip-permissions",
+                "--tools", "", "--output-format", "json", "--add-dir",
+                "/mirror", "--model", "MODEL", "--effort", "high",
+                "--json-schema",
+                '{"additionalProperties":false,"properties":{"answer":'
+                '{"type":"string"}},"type":"object"}',
+                "-p", "PROMPT",
+            ],
         }
         render = self._api(provider_adapters, "render_command")
         for provider, expected in cases.items():
             with self.subTest(provider=provider):
-                surface = "hunt" if provider in {"codex", "kimi", "grok"} else "awr"
+                surface = (
+                    "hunt"
+                    if provider in {"codex", "kimi", "grok", "claude"}
+                    else "awr"
+                )
                 model = "safe/MODEL" if provider == "opencode" else "MODEL"
                 reasoning = None if provider == "kimi" else "high"
                 if provider in {"opencode", "agy"}:
@@ -324,7 +352,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                     )
                 else:
                     intent = self._resolve(surface, provider, model, reasoning)
-                if provider == "agy":
+                if provider in {"agy", "claude"}:
                     argv, environment = render(
                         intent,
                         pathlib.Path("/mirror"),
@@ -387,6 +415,33 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                 response_schema=schema,
             )
 
+    def test_claude_runtime_render_requires_and_canonicalizes_inline_schema(self):
+        schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "additionalProperties": False,
+        }
+        intent = self._resolve("hunt", "claude", "MODEL", "high")
+        with self.assertRaises(self._error()):
+            provider_adapters.render_command(
+                intent, pathlib.Path("/mirror"), "PROMPT"
+            )
+        argv, _ = provider_adapters.render_command(
+            intent,
+            pathlib.Path("/mirror"),
+            "PROMPT",
+            response_schema=schema,
+        )
+        argument = argv[argv.index("--json-schema") + 1]
+        self.assertEqual(
+            argument,
+            '{"additionalProperties":false,"properties":{"answer":'
+            '{"type":"string"}},"type":"object"}',
+        )
+        self.assertFalse(argument.endswith("\n"))
+        self.assertIn("--bare", argv)
+        self.assertEqual(argv[argv.index("--tools") + 1], "")
+
     def test_kimi_reasoning_and_unknown_provider_fail_before_launch(self):
         calls = []
         def no_launch_probe(*args):
@@ -432,8 +487,10 @@ class ProviderAdaptersSmoke(unittest.TestCase):
         for surface, provider in (
             ("hunt", "codex"),
             ("hunt", "grok"),
+            ("hunt", "claude"),
             ("awr", "opencode"),
             ("awr", "agy"),
+            ("awr", "claude"),
         ):
             calls = []
 
@@ -640,12 +697,24 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                 )
             )
 
-    def test_registry_and_resolved_commands_have_no_claude_path(self):
+    def test_registry_includes_claude_and_keeps_other_providers_clean(self):
         registry = self._registry()
-        self.assertNotIn(FORBIDDEN_PROVIDER, json.dumps(registry, default=list).lower())
+        providers = list(registry["providers"])
+        self.assertEqual(
+            providers,
+            ["codex", "kimi", "grok", "opencode", "agy", "claude"],
+        )
+        self.assertEqual(
+            list(registry["surfaces"]["hunt"]),
+            ["codex", "kimi", "grok", "claude"],
+        )
         render = self._api(provider_adapters, "render_command")
-        for name in ("codex", "kimi", "grok", "opencode", "agy"):
-            surface = "hunt" if name in ("codex", "kimi", "grok") else "awr"
+        for name in ("codex", "kimi", "grok", "opencode", "agy", "claude"):
+            surface = (
+                "hunt"
+                if name in ("codex", "kimi", "grok", "claude")
+                else "awr"
+            )
             model = None if surface == "hunt" else "safe-provider/model"
             if name in ("opencode", "agy"):
                 resolved = provider_adapters._resolve_command_intent_for_test(
@@ -666,16 +735,20 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                 pathlib.Path("/mirror"),
                 "P",
                 response_schema=(
-                    {"type": "object"} if name == "agy" else None
+                    {"type": "object"} if name in ("agy", "claude") else None
                 ),
             )
-            self.assertNotIn(FORBIDDEN_PROVIDER, "\0".join(argv).lower())
-        with self.assertRaises(self._error()):
-            provider_adapters._resolve_provider_for_test(
-                registry, "hunt", "codex",
-                executable_lookup=lambda _: "/tmp/" + FORBIDDEN_PROVIDER,
-                version_probe=probe,
-            )
+            if name == "claude":
+                self.assertIn("--output-format", argv)
+                self.assertIn("json", argv)
+                self.assertIn("--json-schema", argv)
+                self.assertIn("--bare", argv)
+            else:
+                # Ignore argv[0]; disposable paths may contain unrelated substrings.
+                self.assertNotIn(
+                    FORBIDDEN_PROVIDER,
+                    "\0".join(argv[1:]).lower(),
+                )
 
     def test_pool_failover_cannot_escape_declared_order(self):
         resolve_pool = self._api(provider_adapters, "_resolve_pool_for_test")

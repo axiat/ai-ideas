@@ -3,14 +3,15 @@
 `HISTORY_RUNTIME_ABI=v2` is the provider-neutral runtime. Internal stages use
 registered provider IDs and portable mirrors. Omitted reasoning preserves the
 selected CLI's current configuration. Omitted models preserve the Codex, Kimi,
-and Grok defaults; OpenCode requires a safe host probe and is launched with the
-resolved model pinned; agy requires an explicit model. OpenCode and agy models
-must be exact members of their current bounded local CLI catalogs.
+Grok, and Claude defaults; OpenCode requires a safe host probe and is launched
+with the resolved model pinned; agy requires an explicit model. OpenCode and
+agy models must be exact members of their current bounded local CLI catalogs.
 
 ## Hunt
 
-Generation, history comparison, and review accept `codex`, `kimi`, or `grok`.
-The default is Codex with its current configured model and reasoning effort:
+Generation, history comparison, and review accept `codex`, `kimi`, `grok`, or
+`claude`. The default is Codex with its current configured model and reasoning
+effort:
 
 ```bash
 HISTORY_RUNTIME_ABI=v2 ./hunt.sh
@@ -35,14 +36,21 @@ HUNT_PROVIDER=grok \
 HUNT_MODEL=grok-4.5 \
 HUNT_REASONING_EFFORT=high \
 ./hunt.sh
+
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=claude \
+HUNT_MODEL=sonnet \
+HUNT_REASONING_EFFORT=high \
+./hunt.sh
 ```
 
 These spellings are adapter inputs only. The checks did not query Codex, Kimi,
-or Grok for model availability, account entitlement, or capacity.
+Grok, or Claude for model availability, account entitlement, or capacity.
 
 The accepted explicit reasoning values are a conservative verified subset:
-Codex `high|xhigh`, Grok `high`, and no value for Kimi. Other explicit values
-fail before executable lookup. Omission continues to use the CLI default.
+Codex `high|xhigh`, Grok `high`, Claude `low|medium|high|xhigh|max`, and no
+value for Kimi. Other explicit values fail before executable lookup. Omission
+continues to use the CLI default.
 
 Kimi CLI `0.31.1` has no reasoning flag; setting
 `HUNT_REASONING_EFFORT` with `HUNT_PROVIDER=kimi` fails preflight. Per-seat
@@ -102,10 +110,38 @@ GROK_REASONING_EFFORT=high \
 The wrapper accepts only explicit `GROK_REASONING_EFFORT=high`; omission uses
 the Grok CLI default, and every other value fails before Grok starts.
 
+`claude-worker.sh` supplies the external file contract for Claude. Portable
+internal Claude stages use grammar `claude-portable-v1` directly. With no model
+or effort override, both paths preserve the Claude CLI's current defaults:
+
+```bash
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=claude \
+AGENT_CMD='./claude-worker.sh' \
+./hunt.sh
+```
+
+Pin both paths when a fixed run configuration is required:
+
+```bash
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=claude \
+HUNT_MODEL=sonnet \
+HUNT_REASONING_EFFORT=high \
+AGENT_CMD='./claude-worker.sh' \
+CLAUDE_MODEL=sonnet \
+CLAUDE_REASONING_EFFORT=high \
+./hunt.sh
+```
+
+The wrapper accepts explicit `CLAUDE_REASONING_EFFORT` values
+`low|medium|high|xhigh|max`; omission uses the Claude CLI default, and every
+other value fails before Claude starts.
+
 ## AwR Sidecar
 
-AwR adds `opencode` and `agy`. Codex with its current CLI configuration remains
-the default:
+AwR adds `opencode`, `agy`, and `claude`. Codex with its current CLI
+configuration remains the default:
 
 ```bash
 HISTORY_RUNTIME_ABI=v2 SIDE_POLL_SEC=0 ./awr-side.sh
@@ -127,15 +163,24 @@ AWR_MODEL=gemini-3.6-flash-high \
 AWR_REASONING_EFFORT=high \
 SIDE_POLL_SEC=0 \
 ./awr-side.sh
+
+HISTORY_RUNTIME_ABI=v2 \
+AWR_PROVIDER=claude \
+AWR_MODEL=sonnet \
+AWR_REASONING_EFFORT=high \
+SIDE_POLL_SEC=0 \
+./awr-side.sh
 ```
 
 The host checks OpenCode models against `opencode models --pure` and agy models
 against `agy models`. Catalog membership does not establish account
-entitlement, capacity, or price.
+entitlement, capacity, or price. Claude does not use a model catalog probe;
+omitted Claude models preserve the CLI default, and explicit `--model` values
+are passed through.
 
 OpenCode accepts an omitted model only when the host-owned
 `opencode --pure debug config` probe returns a backend-qualified model outside
-the forbidden Claude/Anthropic and dynamic routes. The effective model must
+the multi-backend Anthropic-alias and dynamic routes. The effective model must
 also appear exactly in `opencode models --pure`. The effective model, catalog
 probe revision, and canonical catalog SHA enter the profile. Configuration and
 catalog are re-probed immediately before launch, and the model is passed to
@@ -143,7 +188,8 @@ catalog are re-probed immediately before launch, and the model is passed to
 workload execution.
 Agy has no trusted default-identity probe, so every agy role requires
 `AWR_MODEL` or its role-specific `AWR_*_MODEL`; the value must appear exactly
-in `agy models`.
+in `agy models`. The canonical Claude execution path is provider id `claude`,
+not an OpenCode or agy Anthropic-family model string.
 
 ## Agy Structured JSON Transport
 
@@ -198,17 +244,49 @@ and projected `judge.md` SHA-256 was
 The canonical completion and import, exact request attestation, projected
 artifact bytes, and output descriptor all matched. No attempt directory
 remained. The workload log selected Gemini 3.6 Flash (High), registered the
-fixed-bound schema, and contained no Claude or Anthropic execution marker;
-catalog probes created no print-mode conversation or generation request.
+fixed-bound schema, and contained no OpenCode Anthropic-alias execution
+marker; catalog probes created no print-mode conversation or generation request.
 
 `auto`, `default`, `current`, and `configured` route markers are rejected even
 when a CLI catalog lists them. The v1 provider registry is an exact tracked
 byte ABI; changed registry revision, grammar, reasoning set, key duplication,
 or reformatting is rejected.
 
-The accepted AwR-specific reasoning values are OpenCode `high` and agy
-`low|medium|high`. OpenCode `max|minimal` may appear in CLI examples but are
-not verified by this adapter revision. Omitted reasoning uses the CLI default.
+## Claude Structured JSON Transport
+
+Claude Hunt and AwR roles use grammar `claude-portable-v1`. The portable
+command is bare non-interactive print with JSON output, an inline
+`--json-schema`, disposable `--add-dir` mirror, empty tool set, and unattended
+permission bypass:
+
+```text
+claude --bare --dangerously-skip-permissions --tools ''
+  --output-format json --add-dir <mirror>
+  [--model <model>] [--effort <low|medium|high|xhigh|max>]
+  --json-schema <canonical-schema-without-terminal-LF>
+  -p <prompt>
+```
+
+The outer provider JSON must have `is_error=false`, `subtype=success`, and an
+object-valued `structured_output`. The host validates that object with the
+closed response schema and exact request attestation, then imports its
+canonical UTF-8 JSON bytes. Claude does not echo the schema. String `result`,
+usage, cost, session ids, and `stop_reason` cannot supply an artifact. Claude
+has no text fallback and does not recover JSON from fences, mirror artifacts,
+or session state.
+
+```bash
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=claude \
+HUNT_MODEL=sonnet \
+HUNT_REASONING_EFFORT=high \
+./hunt.sh
+```
+
+The accepted AwR-specific reasoning values are OpenCode `high`, agy
+`low|medium|high`, and Claude `low|medium|high|xhigh|max`. OpenCode
+`max|minimal` may appear in CLI examples but are not verified by this adapter
+revision. Omitted reasoning uses the CLI default.
 
 Role-specific controls are `AWR_RESEARCH_*`, `AWR_PRIORWORK_*`, and
 `AWR_JUDGE_*`. For example:

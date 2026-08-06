@@ -445,6 +445,13 @@ def _provider_request(
             "import. Do not put Markdown fences or narration inside the "
             "structured value."
         )
+    elif provider == "claude":
+        stdout_instruction = (
+            "Return exactly one JSON object matching response_schema as the "
+            "structured final result. The Claude CLI owns the outer stdout JSON; "
+            "only subtype=success structured_output is eligible for import. "
+            "Do not put Markdown fences or narration inside the structured value."
+        )
     base = {
         "schema_version": "portable-stage-request-v1",
         "stage": stage,

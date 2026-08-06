@@ -58,6 +58,16 @@ AGY_EXPECTED_TRANSPORT_INSTRUCTIONS = {
     ),
 }
 
+CLAUDE_EXPECTED_TRANSPORT_INSTRUCTIONS = {
+    **EXPECTED_TRANSPORT_INSTRUCTIONS,
+    "stdout": (
+        "Return exactly one JSON object matching response_schema as the "
+        "structured final result. The Claude CLI owns the outer stdout JSON; "
+        "only subtype=success structured_output is eligible for import. "
+        "Do not put Markdown fences or narration inside the structured value."
+    ),
+}
+
 
 def _prompt(arguments):
     for flag in ("-p", "--print"):
@@ -264,18 +274,25 @@ def _record(request):
                 else (
                     AGY_EXPECTED_TRANSPORT_INSTRUCTIONS
                     if _agy_json_requested(sys.argv[1:])
-                    else EXPECTED_TRANSPORT_INSTRUCTIONS
+                    else (
+                        CLAUDE_EXPECTED_TRANSPORT_INSTRUCTIONS
+                        if _claude_json_requested(sys.argv[1:])
+                        else EXPECTED_TRANSPORT_INSTRUCTIONS
+                    )
                 )
             )
         ),
         "structured_transport_valid": (
-            _agy_json_requested(sys.argv[1:])
+            (
+                _agy_json_requested(sys.argv[1:])
+                or _claude_json_requested(sys.argv[1:])
+            )
             and sys.argv[1:].count("--json-schema") == 1
             and json.loads(
                 _flag_value(sys.argv[1:], "--json-schema")
             )
             == request.get("response_schema")
-        ) if pathlib.Path(sys.argv[0]).name == "agy" else None,
+        ) if pathlib.Path(sys.argv[0]).name in {"agy", "claude"} else None,
         "prompt_sha256": hashlib.sha256(
             str(prompt).encode("utf-8")
         ).hexdigest(),
@@ -307,6 +324,67 @@ def _agy_json_requested(arguments):
     return pathlib.Path(sys.argv[0]).name == "agy" and (
         _flag_value(arguments, "--output-format") == "json"
     )
+
+
+def _claude_json_requested(arguments):
+    return pathlib.Path(sys.argv[0]).name == "claude" and (
+        _flag_value(arguments, "--output-format") == "json"
+    )
+
+
+def _claude_transport(inner_raw, arguments, mode):
+    del arguments  # schema is host-bound; Claude does not echo it
+    if mode == "malformed-outer-json":
+        return b'{"subtype":'
+    if mode == "invalid-outer-utf8":
+        return b'{"subtype":"success","result":"\xff"}'
+    if mode == "outer-array":
+        return b"[]"
+    if mode == "duplicate-outer-subtype":
+        return (
+            b'{"subtype":"success","subtype":"success",'
+            b'"is_error":false,"structured_output":'
+            + inner_raw.rstrip(b"\n")
+            + b"}"
+        )
+
+    subtype = None if mode == "claude-missing-subtype" else (
+        "error" if mode == "claude-error-subtype" else "success"
+    )
+    is_error = True if mode == "claude-is-error" else False
+    if mode == "claude-missing-is-error":
+        is_error_member = None
+    else:
+        is_error_member = is_error
+
+    if mode == "claude-missing-payload":
+        payload = None
+    elif mode == "claude-null-payload":
+        payload = b"null"
+    elif mode == "claude-array-payload":
+        payload = b"[]"
+    elif mode == "claude-text-only":
+        payload = None
+    else:
+        payload = inner_raw.rstrip(b"\n")
+
+    members = [
+        b'"type":"result"',
+        b'"result":"{\\"ignored\\":true}"',
+        b'"stop_reason":"end_turn"',
+        b'"session_id":"fixture-session"',
+        b'"total_cost_usd":0.001',
+        b'"usage":{"input_tokens":10,"output_tokens":5}',
+    ]
+    if subtype is not None:
+        members.append(b'"subtype":' + json.dumps(subtype).encode("utf-8"))
+    if is_error_member is not None:
+        members.append(
+            b'"is_error":' + json.dumps(is_error_member).encode("utf-8")
+        )
+    if payload is not None:
+        members.append(b'"structured_output":' + payload)
+    return b"{" + b",".join(members) + b"}\n"
 
 
 def _agy_transport(inner_raw, arguments, mode):
@@ -372,6 +450,8 @@ def _agy_transport(inner_raw, arguments, mode):
 def _provider_transport(inner_raw, arguments, mode):
     if _agy_json_requested(arguments):
         return _agy_transport(inner_raw, arguments, mode)
+    if _claude_json_requested(arguments):
+        return _claude_transport(inner_raw, arguments, mode)
     if _grok_json_requested(arguments):
         return _grok_transport(inner_raw, mode)
     return inner_raw
@@ -528,6 +608,7 @@ def main():
     mode = os.environ.get("FAKE_PORTABLE_STAGE_MODE", "success")
     grok_json = _grok_json_requested(arguments)
     agy_json = _agy_json_requested(arguments)
+    claude_json = _claude_json_requested(arguments)
     if mode == "agy-reject-schema-before-prompt" and agy_json:
         marker = os.environ.get("FAKE_PORTABLE_PREPROMPT_MARKER")
         if marker:
@@ -773,6 +854,8 @@ def main():
         ).encode("utf-8")
     if agy_json:
         raw = _agy_transport(raw, arguments, mode)
+    if claude_json:
+        raw = _claude_transport(raw, arguments, mode)
     if mode == "stdout-prefix":
         sys.stdout.buffer.write(b"provider progress\n" + raw)
         return 0

@@ -25,12 +25,12 @@ except ImportError:
     import history_contract_v2
 
 
-_PROVIDERS = ("codex", "kimi", "grok", "opencode", "agy")
+_PROVIDERS = ("codex", "kimi", "grok", "opencode", "agy", "claude")
 _SURFACES = {
-    "hunt": ("codex", "kimi", "grok"),
+    "hunt": ("codex", "kimi", "grok", "claude"),
     "awr": _PROVIDERS,
 }
-_FORBIDDEN = "cl" + "aude"
+_STRUCTURED_JSON_PROVIDERS = frozenset({"agy", "claude"})
 _PROBE_FACT_FIELDS = frozenset(
     {
         "cli_revision",
@@ -107,7 +107,7 @@ _AGY_VERSION_PATTERN = re.compile(
 _HOST_CATALOG_MODEL_LIMIT = 4096
 _MULTI_BACKEND_PROVIDERS = frozenset({"opencode", "agy"})
 _PROVIDER_REGISTRY_V1_SHA256 = (
-    "47d34bb362a276d50e3267e83b894b07f50313e308cad863bf6a5a99fba5d03c"
+    "1b7722b9dca6f4cb2f38df155aba119348d47fe1ba5d28135496115ef339c150"
 )
 _DYNAMIC_MODEL_ROUTE_MARKERS = frozenset(
     {"auto", "default", "current", "configured"}
@@ -443,8 +443,6 @@ def load_registry(path):
             raise ProviderResolutionError(
                 "provider reasoning grammar is invalid"
             )
-    if any(_FORBIDDEN in item.lower() for item in _walk_strings(value)):
-        raise ProviderResolutionError("forbidden provider path in registry")
     return _issue_registry(value)
 
 
@@ -873,8 +871,6 @@ def _resolve_grammar(
     if type(executable_path) is not str or not executable_path:
         raise ProviderResolutionError("provider executable is unavailable")
     executable_path = str(pathlib.Path(executable_path).resolve())
-    if _FORBIDDEN in pathlib.Path(executable_path).name.lower():
-        raise ProviderResolutionError("forbidden provider executable")
     return executable, executable_path, model, reasoning
 
 
@@ -1247,7 +1243,7 @@ def _command_record_from_fields(
         _COMMAND_RECORD_PROMPT,
         (
             _COMMAND_RECORD_RESPONSE_SCHEMA
-            if provider == "agy"
+            if provider in _STRUCTURED_JSON_PROVIDERS
             else None
         ),
     )
@@ -1912,6 +1908,23 @@ def _render_command_fields(
             "--json-schema", response_schema_argument,
             "--print", prompt,
         ]
+    elif provider == "claude":
+        if type(response_schema_argument) is not str:
+            raise ProviderResolutionError(
+                "Claude requires an inline response schema"
+            )
+        argv += [
+            "--bare", "--dangerously-skip-permissions", "--tools", "",
+            "--output-format", "json", "--add-dir", mirror,
+        ]
+        if model is not None:
+            argv += ["--model", model]
+        if reasoning is not None:
+            argv += ["--effort", reasoning]
+        argv += [
+            "--json-schema", response_schema_argument,
+            "-p", prompt,
+        ]
     else:
         raise ProviderResolutionError("capability provider is not renderable")
     return argv, {}
@@ -1936,10 +1949,10 @@ def render_command(
     if schema_path is not None:
         raise ProviderResolutionError("provider grammar has no schema-path flag")
     response_schema_argument = None
-    if capability.provider == "agy":
+    if capability.provider in _STRUCTURED_JSON_PROVIDERS:
         if type(response_schema) is not dict:
             raise ProviderResolutionError(
-                "Agy requires a response-schema object"
+                f"{capability.provider.capitalize()} requires a response-schema object"
             )
         raw_schema = _exact_json_bytes(response_schema)
         if (

@@ -87,9 +87,9 @@ class RegistryAbiAuthoritySmoke(unittest.TestCase):
             duplicate = root / "duplicate.json"
             duplicate.write_text(
                 REGISTRY.read_text(encoding="utf-8").replace(
-                    '"registry_revision": "2026-08-06",',
+                    '"registry_revision": "2026-08-07",',
                     '"registry_revision": "forged",\n'
-                    '  "registry_revision": "2026-08-06",',
+                    '  "registry_revision": "2026-08-07",',
                 ),
                 encoding="utf-8",
             )

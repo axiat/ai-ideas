@@ -42,7 +42,7 @@ class ProviderCommandCliSmoke(unittest.TestCase):
             "printf '%s\\n' \"$0\" >> \"$PROVIDER_LAUNCH_LOG\"\n"
             "exit 91\n"
         )
-        for provider in ("codex", "kimi", "grok", "opencode", "agy"):
+        for provider in ("codex", "kimi", "grok", "opencode", "agy", "claude"):
             executable = self.bin / provider
             executable.write_text(raw, encoding="utf-8")
             executable.chmod(0o755)
@@ -109,7 +109,7 @@ class ProviderCommandCliSmoke(unittest.TestCase):
             if flag in argv:
                 argv[argv.index(flag) + 1] = "<MIRROR>"
         provider = payload["provider"]
-        if provider in {"kimi", "grok"}:
+        if provider in {"kimi", "grok", "claude"}:
             argv[argv.index("-p") + 1] = "<PROMPT>"
         elif provider == "agy":
             argv[argv.index("--print") + 1] = "<PROMPT>"
@@ -150,10 +150,10 @@ class ProviderCommandCliSmoke(unittest.TestCase):
         self.assertEqual(payload.get("environment"), {})
 
     def test_provider_command_enforces_closed_surface_sets_before_launch(self):
-        for provider in ("codex", "kimi", "grok"):
+        for provider in ("codex", "kimi", "grok", "claude"):
             with self.subTest(surface="hunt", provider=provider):
                 self.assertEqual(self._payload("hunt", provider)["provider"], provider)
-        for provider in ("codex", "kimi", "grok", "opencode"):
+        for provider in ("codex", "kimi", "grok", "opencode", "claude"):
             with self.subTest(surface="awr", provider=provider):
                 self.assertEqual(self._payload("awr", provider)["provider"], provider)
         self.assertEqual(
@@ -264,6 +264,18 @@ class ProviderCommandCliSmoke(unittest.TestCase):
                     "--add-dir", "<MIRROR>", "--model", "gemini-3.6-flash-high",
                     "--effort", "high", "--json-schema", "RESPONSE_SCHEMA",
                     "--print", "<PROMPT>",
+                ],
+            ),
+            (
+                "hunt",
+                "claude",
+                "sonnet",
+                "high",
+                [
+                    "<EXECUTABLE>", "--bare", "--dangerously-skip-permissions",
+                    "--tools", "", "--output-format", "json", "--add-dir",
+                    "<MIRROR>", "--model", "sonnet", "--effort", "high",
+                    "--json-schema", "RESPONSE_SCHEMA", "-p", "<PROMPT>",
                 ],
             ),
         )

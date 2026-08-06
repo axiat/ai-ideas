@@ -1,6 +1,6 @@
 {
   "schema_version": "provider-adapters-v1",
-  "registry_revision": "2026-08-06",
+  "registry_revision": "2026-08-07",
   "providers": {
     "codex": {
       "executable": "codex",
@@ -26,20 +26,27 @@
       "executable": "agy",
       "grammar_revision": "agy-portable-v2",
       "reasoning_values": ["low", "medium", "high"]
+    },
+    "claude": {
+      "executable": "claude",
+      "grammar_revision": "claude-portable-v1",
+      "reasoning_values": ["low", "medium", "high", "xhigh", "max"]
     }
   },
   "surfaces": {
     "hunt": [
       "codex",
       "kimi",
-      "grok"
+      "grok",
+      "claude"
     ],
     "awr": [
       "codex",
       "kimi",
       "grok",
       "opencode",
-      "agy"
+      "agy",
+      "claude"
     ]
   }
 }

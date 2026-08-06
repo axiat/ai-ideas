@@ -55,7 +55,7 @@ class HistoryAuditCliLifecycleSmoke(unittest.TestCase):
             "printf '%s\\n' \"$0\" >> \"$PROVIDER_LAUNCH_LOG\"\n"
             "exit 91\n"
         )
-        for provider in ("codex", "kimi", "grok", "opencode", "agy"):
+        for provider in ("codex", "kimi", "grok", "opencode", "agy", "claude"):
             executable = self.bin / provider
             executable.write_text(fake, encoding="utf-8")
             executable.chmod(0o755)

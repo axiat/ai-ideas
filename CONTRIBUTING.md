@@ -11,7 +11,10 @@ dates, sources, verdicts, evidence classifications, URLs, numeric claims, and
 category semantics. [`PROGRAM.md`](PROGRAM.md) is the canonical loop and
 schema contract.
 
-Backend work must retain explicit provider selection. No default, fallback, hook, test, worker, or orchestration path may start Claude unless the current command explicitly selects it.
+Backend work must retain explicit provider selection. No default, fallback,
+hook, test, worker, or orchestration path may start any provider through an
+unselected shell fallback such as `${CMD:-provider ...}`. Explicit selection
+(`HUNT_PROVIDER=claude`, `AWR_PROVIDER=claude`, `./claude-worker.sh`) is valid.
 
 ## Local Validation
 

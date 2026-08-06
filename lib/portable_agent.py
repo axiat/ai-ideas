@@ -715,6 +715,30 @@ def _parse_agy_transport(raw, response_schema):
     return value, model_raw
 
 
+def _parse_claude_transport(raw, response_schema):
+    del response_schema  # host validates the imported object; Claude has no schema echo
+    outer = _parse_strict_json(
+        raw, reject_floats=False, require_nfc=False
+    )
+    if type(outer) is not dict:
+        raise PortableAgentError("malformed_output")
+    if outer.get("is_error") is not False or outer.get("subtype") != "success":
+        raise PortableAgentError("malformed_output")
+    if type(outer.get("structured_output")) is not dict:
+        raise PortableAgentError("malformed_output")
+    try:
+        model_raw = _canonical_json_bytes(outer["structured_output"])
+    except (
+        TypeError,
+        ValueError,
+        UnicodeEncodeError,
+        RecursionError,
+    ) as exc:
+        raise PortableAgentError("malformed_output") from exc
+    value = _parse_strict_model_json(model_raw)
+    return value, model_raw
+
+
 def _grok_model_text_bytes(text):
     try:
         raw = text.encode("utf-8")
@@ -746,6 +770,8 @@ def _grok_model_text_bytes(text):
 def _parse_provider_stdout(provider, raw, response_schema):
     if provider == "agy":
         return _parse_agy_transport(raw, response_schema)
+    if provider == "claude":
+        return _parse_claude_transport(raw, response_schema)
     if provider != "grok":
         value = _parse_canonical_stdout(raw)
         return value, raw

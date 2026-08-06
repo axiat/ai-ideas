@@ -5,9 +5,9 @@
 - Bash with arrays, process substitution, `PIPESTATUS`, and indirect variable expansion
 - Git with a writable checkout and a configured `origin`
 - An authenticated Codex CLI for the default Hunt v2 path
-- For Kimi or Grok internal stages: that authenticated CLI plus either authenticated Codex for external stages or explicit compatible `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD`
-- An authenticated supported CLI for AwR v2; AwR accepts Codex, Kimi, Grok, OpenCode, and agy
-- AwR with agy requires Agy 1.1.8+ and an explicit catalog model; [docs/backends.md](backends.md#agy-structured-json-transport) defines its transport and failure contract
+- For Kimi, Grok, or Claude internal stages: that authenticated CLI plus either authenticated Codex for external stages or explicit compatible `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD`
+- An authenticated supported CLI for AwR v2; AwR accepts Codex, Kimi, Grok, OpenCode, agy, and Claude
+- AwR with agy requires Agy 1.1.8+ and an explicit catalog model; Claude uses grammar `claude-portable-v1`; [docs/backends.md](backends.md) defines both structured-JSON transports
 - Network access for model search, repository publication, and settlement fetches
 - `gh auth status` passing for pull-request creation
 - A writable archive root; the default is `$HOME/.ai-ideas-runs/$(basename "$PWD")`
@@ -35,11 +35,11 @@ HISTORY_RUNTIME_ABI=v2 ./hunt.sh
 
 `./hunt.sh` immediately starts model and retrieval work. It has no dry-run mode. Canonical decisions commit to SQLite and project to `ledger.tsv`. A successful Strong Accept path also creates `ideas/YYYY-MM-DD_hunt*.md`, invokes `publish.sh`, pushes `hunt/YYYY-MM-DD`, and creates or repairs its pull request.
 
-Selecting `HUNT_PROVIDER=kimi` or `HUNT_PROVIDER=grok` changes only internal
-generation, comparison, and review. Selector, prescreen, external prior-work
-research, and report assembly keep their Codex command default. A host without
-Codex must configure compatible external commands as described in
-[`backends.md`](backends.md).
+Selecting `HUNT_PROVIDER=kimi`, `HUNT_PROVIDER=grok`, or `HUNT_PROVIDER=claude`
+changes only internal generation, comparison, and review. Selector, prescreen,
+external prior-work research, and report assembly keep their Codex command
+default. A host without Codex must configure compatible external commands as
+described in [`backends.md`](backends.md).
 
 Primary defaults:
 
@@ -64,6 +64,7 @@ SA_TARGET=3 ./hunt.sh
 ./hunt.sh 30
 HISTORY_NEAR_SA=tmp/near-sa-queue.tsv ./hunt.sh
 HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=kimi ./hunt.sh
+HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=claude HUNT_MODEL=sonnet ./hunt.sh
 ```
 
 The positional argument changes the failure cooldown in minutes. `SA_TARGET=0` removes the daily target and leaves termination to the operator. `HISTORY_NEAR_SA` participates only in a first-time bootstrap epoch; a missing, unsafe, or semantically mismatched queue fails closed before agents start.

@@ -25,10 +25,10 @@ The main loop writes live state under `tmp/round/`, canonical history to `.ai-id
 
 The default v2 path requires Bash, Git, an authenticated Codex CLI, network
 access, and an authenticated `gh` session for publication. Hunt v2 supports
-Codex, Kimi, and Grok for its internal stages. Selecting Kimi or Grok does not
-change the Codex default used by selector, prescreen, external research, and
-report stages; a host without Codex must configure compatible
-`AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` values.
+Codex, Kimi, Grok, and Claude for its internal stages. Selecting a non-Codex
+internal provider does not change the Codex default used by selector,
+prescreen, external research, and report stages; a host without Codex must
+configure compatible `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` values.
 
 ```bash
 git clone git@github.com:axiat/ai-ideas.git
@@ -63,32 +63,40 @@ Historical seven-column rows remain valid. Accepted reports use `ideas/YYYY-MM-D
 ## Provider Selection
 
 Omitted reasoning uses the selected CLI's current default. Omitted models use
-the Codex, Kimi, and Grok defaults. OpenCode omission requires a safe host
+the Codex, Kimi, Grok, and Claude defaults. OpenCode omission requires a safe host
 configuration probe and launches with that effective model pinned; agy
 requires an explicit model. Every OpenCode/agy model must exactly match the
 current bounded local `models` catalog, whose identity is checked again before
-launch. Hunt accepts `codex`, `kimi`, and `grok`; AwR additionally accepts
-`opencode` and `agy`.
+launch. Hunt accepts `codex`, `kimi`, `grok`, and `claude`; AwR additionally
+accepts `opencode` and `agy`.
 
-AwR with agy requires Agy 1.1.8+ and an explicit catalog model. The transport,
-preflight, and failure contract is in [docs/backends.md](docs/backends.md#agy-structured-json-transport).
+AwR with agy requires Agy 1.1.8+ and an explicit catalog model. Claude and Agy
+use structured JSON transports; the contracts are in
+[docs/backends.md](docs/backends.md).
 
 ```bash
 HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=kimi ./hunt.sh
 HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=grok ./hunt.sh
+HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=claude ./hunt.sh
 HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode AWR_MODEL=openai/gpt-5.6-sol SIDE_POLL_SEC=0 ./awr-side.sh
 HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high SIDE_POLL_SEC=0 ./awr-side.sh
+HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=claude AWR_MODEL=sonnet SIDE_POLL_SEC=0 ./awr-side.sh
 ```
 
 `HUNT_PROVIDER` controls the portable internal stages. Route Hunt's external
-selector, prescreen, prior-work research, and report stages through Grok with
-`AGENT_CMD`. Omitting both model variables and both reasoning variables keeps
-the Grok CLI's current defaults:
+selector, prescreen, prior-work research, and report stages through an explicit
+worker with `AGENT_CMD`. Omitting both model variables and both reasoning
+variables keeps the selected CLI's current defaults:
 
 ```bash
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
 AGENT_CMD='./grok-worker.sh' \
+./hunt.sh
+
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=claude \
+AGENT_CMD='./claude-worker.sh' \
 ./hunt.sh
 ```
 
@@ -103,6 +111,15 @@ HUNT_REASONING_EFFORT=high \
 AGENT_CMD='./grok-worker.sh' \
 GROK_MODEL=grok-4.5 \
 GROK_REASONING_EFFORT=high \
+./hunt.sh
+
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=claude \
+HUNT_MODEL=sonnet \
+HUNT_REASONING_EFFORT=high \
+AGENT_CMD='./claude-worker.sh' \
+CLAUDE_MODEL=sonnet \
+CLAUDE_REASONING_EFFORT=high \
 ./hunt.sh
 ```
 
