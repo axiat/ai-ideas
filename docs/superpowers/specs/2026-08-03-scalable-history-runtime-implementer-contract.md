@@ -3,6 +3,7 @@
 Status: approved for implementation on 2026-08-03  
 Design manifest: `ba90e154d8101068d7d372014208b3642dec74bc87574f36f90a300adccbcf7f`  
 OpenSpec change: `openspec/changes/scalable-history-runtime/`
+Amendment: [2026-08-06 Agy structured JSON transport](2026-08-06-agy-structured-json-transport-design.md)
 
 ## P0 Boundary
 

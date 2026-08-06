@@ -5,7 +5,7 @@ The current history runtime bounds model context but cannot prove a scalable no-
 ## What Changes
 
 - Add a versioned audit ABI with canonical identity, frozen history watermarks, current-batch exclusion, shared relation/status semantics, deterministic task settlement, coverage/adjudication receipts, and content-addressed trace storage.
-- Add a portable-mirror provider layer. Hunt supports Codex, Kimi, and Grok; AwR additionally supports OpenCode and agy. Each provider uses its own current default model unless an explicit model and supported reasoning setting are supplied.
+- Add a portable-mirror provider layer. Hunt supports Codex, Kimi, and Grok; AwR additionally supports OpenCode and agy. Codex, Kimi, and Grok preserve current model defaults, OpenCode resolves and pins a safe host probe, and agy requires an explicit catalog model and supported reasoning setting.
 - Add token-and-item capacity profiles, per-intent round/candidate budget gates, and append-only usage counters covering retries, failover, split children, detail, and reduce work.
 - Add the M0 flat retrieval baseline, additive versioned metadata shadow, a minimal exhaustive sharded L2 audit, and a deterministic risk router. Metadata, tags, summaries, and clusters never become default exclusion filters.
 - Add lineage-temporal qrels shadow evaluation and release qualifications. Production `complete_no_match` remains vetoed without a valid execution receipt, complete adjudication, and a currently qualified semantic policy.

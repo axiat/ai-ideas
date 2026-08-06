@@ -828,12 +828,38 @@ def verify_production_evidence_roots():
             "shipped production evidence roots must remain empty"
         )
 
+
+def assert_structured_json_operator_contract():
+    """Bind the public Agy structured-transport instructions."""
+    registry = json.loads((ROOT / "history/provider-adapters-v1.json").read_text())
+    if registry["providers"]["agy"].get("grammar_revision") != "agy-portable-v2":
+        raise AssertionError("Agy structured JSON registry revision changed")
+    required = {
+        "README.md": ["Agy 1.1.8+", "docs/backends.md"],
+        "docs/getting-started.md": ["Agy 1.1.8+", "docs/backends.md"],
+        "docs/backends.md": [
+            "--output-format json",
+            "--json-schema",
+            "structured_output",
+            "no text fallback",
+        ],
+    }
+    for name, needles in required.items():
+        text = (ROOT / name).read_text()
+        for needle in needles:
+            if needle not in text:
+                raise AssertionError(
+                    f"missing structured JSON operator contract {needle!r} in {name}"
+                )
+
+
 def verify_runtime():
     assert_backend_defaults()
     assert_awr_provider_usage()
     assert_no_claude_invocations()
     verify_provider_registry()
     verify_production_evidence_roots()
+    assert_structured_json_operator_contract()
     verify_awr_state_aliases()
     assert_text_contract(runtime_paths())
     required = {

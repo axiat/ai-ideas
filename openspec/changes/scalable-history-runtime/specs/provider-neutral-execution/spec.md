@@ -30,6 +30,10 @@ Omitted reasoning SHALL preserve the selected CLI's current configured default. 
 - **WHEN** agy is selected without an explicit model
 - **THEN** preflight fails before workload execution
 
+#### Scenario: Agy structured transport version gates preflight and launch
+- **WHEN** agy is selected with an installed version missing, malformed, older than `1.1.8`, or changed between preflight and launch
+- **THEN** preflight or launch revalidation fails before workload execution
+
 #### Scenario: Multi-backend catalog authority drifts
 - **WHEN** an OpenCode or agy model is absent from the bounded catalog, uses a dynamic route marker, or the launch-time catalog identity differs from preflight
 - **THEN** preflight or launch revalidation fails before workload execution
@@ -81,8 +85,16 @@ The complete Grok outer stdout SHALL remain under the 128 KiB model-output limit
 - **AND WHEN** the transport is malformed, incomplete, non-terminal, lacks valid text, contains narration followed by bare JSON, or fenced text contains another triple-backtick sequence, more than one exact opener, any CR byte, a different label or case, no LF before the terminal close, a missing close, or any trailing byte
 - **THEN** the runtime imports and publishes no artifact and writes no completion receipt
 
+#### Scenario: Agy structured JSON transport is unwrapped safely
+- **WHEN** a portable agy stage requests `--output-format json` with the exact inline `--json-schema` for its frozen response schema and receives a provider object with `status=SUCCESS`, `json_schema`, and `structured_output`
+- **THEN** the runtime requires `structured_output` to be an object, requires the canonical `json_schema` echo to match the frozen schema exactly, validates the inner value and attestation under the closed response schema, and imports only host-canonicalized inner bytes
+- **AND WHEN** the outer JSON is malformed or duplicate-keyed, `status` is absent or not `SUCCESS`, `structured_output` is absent or not an object, or `json_schema` is absent or mismatched
+- **THEN** the runtime imports and publishes no artifact and writes no completion receipt
+- **AND WHEN** provider `response` text contains valid-looking JSON, fences, or narration
+- **THEN** the runtime does not recover an artifact from `response` or any text fallback
+
 ### Requirement: Portable requests bind stdout transport precedence
-Every portable request SHALL include closed `transport_instructions` in its base request binding. Those instructions SHALL make the request authoritative for transport while preserving `role.md` as artifact-content instructions only and SHALL instruct the model not to create, modify, or delete mirror files. Before computing the binding, the host SHALL select the stdout member by provider. For Grok, it SHALL require the final assistant response itself to be exactly one UTF-8/NFC canonical response-schema object inside one exact lowercase-`json` LF fence, with one trailing LF immediately before the terminal close, no bytes outside the fence in that final response, and no triple-backtick sequence in an earlier assistant response. For every non-Grok provider, including agy, it SHALL require the raw canonical object followed by one LF, without narration, a fence, or extra bytes. Both forms SHALL require exact request attestation. After process-group quiescence, the host SHALL independently verify the closed declared-file path set through descriptor-relative no-follow traversal, SHALL retain parent descriptors through child recursion, SHALL revalidate final child and root namespace identity, and SHALL require every declared entry to remain a regular single-link file with its exact original `st_mode`, stable byte count, and SHA-256. Undeclared non-scratch files SHALL reject; stable empty directories SHALL NOT count as outputs. For stdout portable attempts, the runtime-created `.tmp` MAY contain ignored provider scratch only while `.tmp` and every nested directory remain real directories, descriptor-relative traversal follows no links, every file is regular and single-link, and the complete tree contains at most 32 files, 64 entries, and 1,048,576 stable-read file bytes. Scratch SHALL never be imported. The main mirror walk SHALL skip only the exact validated root `.tmp` snapshot and SHALL require it to be observed and unchanged after traversal. A missing or replaced `.tmp`, unreadable or unstable entry, symlink, hardlink, special file, traversal failure, namespace race, or exceeded limit SHALL reject the attempt before durable state. The host SHALL validate canonical stdout, the closed schema, and attestation, then successfully remove the attempt before import, and SHALL NOT recover output from provider brain state or a role-named artifact file. This fail-closed validation SHALL NOT be represented as an OS-enforced read-only mount.
+Every portable request SHALL include closed `transport_instructions` in its base request binding. Those instructions SHALL make the request authoritative for transport while preserving `role.md` as artifact-content instructions only and SHALL instruct the model not to create, modify, or delete mirror files. Before computing the binding, the host SHALL select the response path by provider. Grok SHALL use provider JSON with terminal fenced model text. Agy SHALL use provider JSON whose successful `structured_output` value is the only eligible model envelope and whose `json_schema` exactly echoes the frozen inline schema. Codex, Kimi, and OpenCode SHALL emit a raw canonical object followed by one LF, without narration, a fence, or extra bytes. Every path SHALL require exact request attestation. After process-group quiescence, the host SHALL independently verify the closed declared-file path set through descriptor-relative no-follow traversal, SHALL retain parent descriptors through child recursion, SHALL revalidate final child and root namespace identity, and SHALL require every declared entry to remain a regular single-link file with its exact original `st_mode`, stable byte count, and SHA-256. Undeclared non-scratch files SHALL reject; stable empty directories SHALL NOT count as outputs. For stdout portable attempts, the runtime-created `.tmp` MAY contain ignored provider scratch only while `.tmp` and every nested directory remain real directories, descriptor-relative traversal follows no links, every file is regular and single-link, and the complete tree contains at most 32 files, 64 entries, and 1,048,576 stable-read file bytes. Scratch SHALL never be imported. The main mirror walk SHALL skip only the exact validated root `.tmp` snapshot and SHALL require it to be observed and unchanged after traversal. A missing or replaced `.tmp`, unreadable or unstable entry, symlink, hardlink, special file, traversal failure, namespace race, or exceeded limit SHALL reject the attempt before durable state. The host SHALL validate the selected transport, the closed schema, and attestation, then successfully remove the attempt before import, and SHALL NOT recover output from provider brain state or a role-named artifact file. This fail-closed validation SHALL NOT be represented as an OS-enforced read-only mount.
 
 #### Scenario: Stdout declared-file enumeration fails closed
 - **WHEN** a stdout portable mirror contains a file hidden under an unreadable directory, a link or special file, or a child/root namespace replacement races descriptor traversal
@@ -94,9 +106,13 @@ Every portable request SHALL include closed `transport_instructions` in its base
 - **WHEN** the host prepares a portable Grok request
 - **THEN** its binding-covered stdout instruction requires the final assistant response to contain exactly one canonical response-schema object inside the exact lowercase-`json` LF fence, without outside bytes in that final response or an earlier triple-backtick sequence
 
-#### Scenario: Non-Grok providers retain raw canonical stdout
-- **WHEN** the host prepares a portable request for any non-Grok provider, including agy
+#### Scenario: Codex, Kimi, and OpenCode retain raw canonical stdout
+- **WHEN** the host prepares a portable request for Codex, Kimi, or OpenCode
 - **THEN** its binding-covered stdout instruction requires raw canonical JSON with one trailing LF and forbids fences
+
+#### Scenario: Agy receives binding-covered structured output instructions
+- **WHEN** the host prepares a portable agy request
+- **THEN** its binding-covered transport instruction requires a `status=SUCCESS` provider object with one `structured_output` object matching the frozen response schema, an exact `json_schema` echo, and no narration or fence inside that structured value
 
 #### Scenario: Stdout provider scratch is bounded and ignored
 - **WHEN** a stdout portable provider writes runtime cache data under `.tmp`
@@ -107,7 +123,7 @@ Every portable request SHALL include closed `transport_instructions` in its base
 #### Scenario: Portable agy overrides legacy file-output wording
 - **WHEN** a portable agy AwR stage receives a legacy role that names an output file
 - **THEN** the binding-covered transport instructions override only that output location and file-writing channel while the role continues to define artifact content
-- **AND WHEN** agy adds or removes a declared mirror file, changes a declared entry's type, link count, exact mode, stable byte count, or SHA-256, violates a `.tmp` scratch constraint, or emits empty, prefixed, fenced, non-canonical, schema-invalid, or unattested stdout
+- **AND WHEN** agy adds or removes a declared mirror file, changes a declared entry's type, link count, exact mode, stable byte count, or SHA-256, violates a `.tmp` scratch constraint, or emits malformed outer JSON, an invalid `status`/`structured_output`/`json_schema`, a schema-invalid inner value, or an unattested structured value
 - **THEN** the runtime imports and publishes no artifact, writes no completion receipt, and does not recover output from agy brain state or a mirror artifact
 
 ### Requirement: Ordered pools define execution identity and failover

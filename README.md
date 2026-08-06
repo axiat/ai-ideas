@@ -70,6 +70,9 @@ current bounded local `models` catalog, whose identity is checked again before
 launch. Hunt accepts `codex`, `kimi`, and `grok`; AwR additionally accepts
 `opencode` and `agy`.
 
+AwR with agy requires Agy 1.1.8+ and an explicit catalog model. The transport,
+preflight, and failure contract is in [docs/backends.md](docs/backends.md#agy-structured-json-transport).
+
 ```bash
 HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=kimi ./hunt.sh
 HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=grok ./hunt.sh

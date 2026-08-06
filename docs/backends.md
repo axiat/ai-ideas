@@ -145,6 +145,28 @@ Agy has no trusted default-identity probe, so every agy role requires
 `AWR_MODEL` or its role-specific `AWR_*_MODEL`; the value must appear exactly
 in `agy models`.
 
+## Agy Structured JSON Transport
+
+Agy AwR requires Agy 1.1.8+ and an explicit catalog model. The host probes
+`agy --version` during preflight and immediately before launch; a missing,
+malformed, older, or changed version prevents workload execution.
+
+The portable command uses `--output-format json` and an inline
+`--json-schema`. The schema is the exact frozen compact canonical response
+schema already covered by the request binding, with only its terminal LF
+removed for argv. The launch command and provider object therefore use the
+same schema identity.
+
+The outer provider JSON must have `status=SUCCESS`, an object-valued
+`structured_output`, and a `json_schema` canonical byte match to the frozen
+schema. The host validates the selected inner object with the closed response
+schema and exact request attestation, then imports its canonical UTF-8 JSON
+bytes. `response`, usage, duration, and other outer metadata cannot supply an
+artifact. Malformed outer JSON, a non-success status, missing or mismatched
+schema, invalid inner value, or attestation mismatch produces no import,
+projection, or completion receipt. Agy has no text fallback and does not
+recover JSON from `response`, fences, mirror artifacts, or brain state.
+
 `auto`, `default`, `current`, and `configured` route markers are rejected even
 when a CLI catalog lists them. The v1 provider registry is an exact tracked
 byte ABI; changed registry revision, grammar, reasoning set, key duplication,
@@ -206,12 +228,12 @@ Grok receives a provider-specific stdout instruction: the final assistant
 response itself must be one exact lowercase-`json` LF fence containing the
 canonical UTF-8/NFC response-schema object, whose single trailing LF immediately
 precedes the terminal close. No byte may sit outside that fence, and no
-triple-backtick sequence may occur in an earlier assistant response. Every
-non-Grok provider, including agy, retains the raw canonical-stdout instruction
-with no fence or narration. For agy, that instruction overrides legacy
-output-location and file-writing statements in the AwR role; `role.md` defines
-artifact content only. All instructions forbid model-authored mirror writes
-and require exact request attestation. After the provider command finishes,
+triple-backtick sequence may occur in an earlier assistant response. Codex,
+Kimi, and OpenCode retain the raw canonical-stdout instruction with no fence
+or narration. Agy requires structured output as specified above. Its request
+instruction overrides legacy output-location and file-writing statements in
+the AwR role; `role.md` defines artifact content only. All instructions forbid
+model-authored mirror writes and require exact request attestation. After the provider command finishes,
 the host terminates its process group and waits for the provider process before
 validating any mirror or response bytes.
 Every declared entry must remain a regular single-link file with its exact
@@ -228,7 +250,7 @@ permits only real nested directories and regular single-link files, with at
 most 32 files, 64 total entries, and 1 MiB of stable-read file bytes. Scratch
 is never imported. A missing or replaced `.tmp`, a symlink, hardlink, special
 file, unreadable or unstable entry, traversal race, or exceeded limit rejects
-the attempt. The host also validates canonical stdout, the closed schema, and
+the attempt. The host also validates the selected transport, the closed schema, and
 attestation. It does not recover output from an agy brain directory or a
 role-named mirror artifact.
 
