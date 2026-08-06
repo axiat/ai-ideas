@@ -120,6 +120,7 @@ _COMPLETION_FIELDS = {
 # the long operational sleep.
 _CONTRACT_ERROR_CODES = frozenset(
     {
+        # Host projection / stage DSL
         "invalid_generation_output",
         "invalid_model_envelope",
         "invalid_model_artifact",
@@ -129,6 +130,12 @@ _CONTRACT_ERROR_CODES = frozenset(
         "noncanonical_direction_contract",
         "schema_mismatch",
         "provider_request_attestation_mismatch",
+        # Provider transport envelope shape (not backend outage)
+        "malformed_output",
+        "noncanonical_output",
+        # Request assembly / binding
+        "invalid_contract_text",
+        "contract_text_hash_mismatch",
         "request_too_large",
         "invalid_serialized_prompt",
         "unsupported_stage",
@@ -557,14 +564,17 @@ def _provider_request(
         raise PortableStageError("invalid_contract_text", "role_text")
     if type(declared_input_texts) is not dict:
         raise PortableStageError("invalid_contract_text", "declared_input_texts")
+    if set(declared_input_texts) != set(input_sha256s):
+        raise PortableStageError(
+            "invalid_contract_text",
+            "declared_input_texts keys must equal input_sha256s",
+        )
     ordered_inputs = {
         name: declared_input_texts[name]
         for name in sorted(declared_input_texts)
     }
     for name, text in ordered_inputs.items():
         if type(text) is not str:
-            raise PortableStageError("invalid_contract_text", name)
-        if name not in input_sha256s:
             raise PortableStageError("invalid_contract_text", name)
         if _sha(text.encode("utf-8")) != input_sha256s[name]:
             raise PortableStageError("contract_text_hash_mismatch", name)

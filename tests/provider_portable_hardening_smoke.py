@@ -2361,6 +2361,45 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                     self.assertIn("--tools", argv)
                     self.assertEqual(argv[argv.index("--tools") + 1], "")
 
+    def test_contract_error_class_covers_transport_and_assembly_codes(self):
+        contract_codes = (
+            "invalid_generation_output",
+            "malformed_output",
+            "noncanonical_output",
+            "schema_mismatch",
+            "provider_request_attestation_mismatch",
+            "invalid_contract_text",
+            "contract_text_hash_mismatch",
+            "request_too_large",
+        )
+        for code in contract_codes:
+            with self.subTest(code=code):
+                err = portable_stage.PortableStageError(code, "detail")
+                self.assertEqual(err.error_class, "contract")
+                self.assertIn(code, str(err))
+        execution = portable_stage.PortableStageError("timeout")
+        self.assertEqual(execution.error_class, "execution")
+
+    def test_provider_request_rejects_partial_declared_input_texts(self):
+        role = (ROOT / "roles/generate.md").read_text(encoding="utf-8")
+        role_sha = hashlib.sha256(role.encode("utf-8")).hexdigest()
+        body = "brief\n"
+        body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        with self.assertRaises(portable_stage.PortableStageError) as caught:
+            portable_stage._provider_request(
+                "claude",
+                "generate",
+                "seat",
+                '{"schema_version":1,"stage":"generate"}\n',
+                {"generation_brief.json": body_sha, "generation_policy.md": body_sha},
+                role_sha,
+                portable_stage._response_schema("generate"),
+                role_text=role,
+                declared_input_texts={"generation_brief.json": body},
+            )
+        self.assertEqual(caught.exception.code, "invalid_contract_text")
+        self.assertEqual(caught.exception.error_class, "contract")
+
 
 
 class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
