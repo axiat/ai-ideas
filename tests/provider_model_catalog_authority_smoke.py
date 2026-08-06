@@ -236,6 +236,54 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
             )
             render.assert_not_called()
 
+    def test_unsupported_agy_revalidation_stops_before_catalog_render_or_popen(self):
+        intent = self.resolve(
+            "agy", "gemini-safe", models=("gemini-safe",)
+        )
+        catalog_probe = mock.Mock(
+            side_effect=AssertionError("catalog must not be reached")
+        )
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            provider_adapters,
+            "_host_agy_version_probe",
+            return_value=b"1.1.7\n",
+        ), mock.patch.object(
+            provider_adapters,
+            "_host_model_catalog_probe",
+            catalog_probe,
+        ), mock.patch.object(
+            provider_adapters,
+            "render_command",
+            side_effect=AssertionError("render must not be reached"),
+        ) as render, mock.patch.object(
+            portable_agent.subprocess,
+            "Popen",
+            side_effect=AssertionError("Popen must not be reached"),
+        ) as popen:
+            with self.assertRaises(portable_agent.PortableAgentError) as caught:
+                portable_agent.run_portable_stdout_attempt(
+                    intent,
+                    inputs=[],
+                    prompt="PROMPT",
+                    response_schema=portable_stage._response_schema(
+                        "awr-research"
+                    ),
+                    expected_response_attestation={
+                        "schema_version": "portable-stage-response-attestation-v1",
+                        "provider_request_binding_sha256": "0" * 64,
+                        "serialized_prompt_sha256": "0" * 64,
+                    },
+                    state_root=pathlib.Path(directory) / "state",
+                    timeout_seconds=1,
+                )
+            self.assertEqual(
+                caught.exception.code,
+                "provider_model_authority_changed",
+            )
+            catalog_probe.assert_not_called()
+            render.assert_not_called()
+            popen.assert_not_called()
+
     def test_stdout_runner_revalidates_again_immediately_before_popen(self):
         intent = self.resolve(
             "agy", "gemini-safe", models=("gemini-safe",)
