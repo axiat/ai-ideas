@@ -676,6 +676,10 @@ if profile == "all-agy":
             raise SystemExit(
                 f"agy did not receive the portable stdout override: {item}"
             )
+        if item.get("structured_transport_valid") is not True:
+            raise SystemExit(
+                f"agy did not receive one matching inline schema: {item}"
+            )
 
 outdir = repo / "tmp/awr-side/awr"
 finals = [

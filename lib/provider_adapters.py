@@ -71,6 +71,7 @@ _COMMAND_RECORD_FIELDS = frozenset(
 )
 _COMMAND_RECORD_MIRROR = "/portable-mirror"
 _COMMAND_RECORD_PROMPT = "PROMPT"
+_COMMAND_RECORD_RESPONSE_SCHEMA = "RESPONSE_SCHEMA"
 _PROFILE_DESCRIPTOR_FIELDS = frozenset(
     {
         "surface",
@@ -106,7 +107,7 @@ _AGY_VERSION_PATTERN = re.compile(
 _HOST_CATALOG_MODEL_LIMIT = 4096
 _MULTI_BACKEND_PROVIDERS = frozenset({"opencode", "agy"})
 _PROVIDER_REGISTRY_V1_SHA256 = (
-    "423e8148ec1f705b16d31115e6b29493baf4c5253a1185e96e4f988221800a1b"
+    "47d34bb362a276d50e3267e83b894b07f50313e308cad863bf6a5a99fba5d03c"
 )
 _DYNAMIC_MODEL_ROUTE_MARKERS = frozenset(
     {"auto", "default", "current", "configured"}
@@ -1244,6 +1245,11 @@ def _command_record_from_fields(
         reasoning,
         _COMMAND_RECORD_MIRROR,
         _COMMAND_RECORD_PROMPT,
+        (
+            _COMMAND_RECORD_RESPONSE_SCHEMA
+            if provider == "agy"
+            else None
+        ),
     )
     return {
         "schema_version": "provider-command-v1",
@@ -1846,7 +1852,13 @@ def _resolve_provider_with_test_host_probe_runner(
 
 
 def _render_command_fields(
-    provider, executable_path, model, reasoning, mirror, prompt
+    provider,
+    executable_path,
+    model,
+    reasoning,
+    mirror,
+    prompt,
+    response_schema_argument=None,
 ):
     mirror = str(pathlib.Path(mirror))
     argv = [executable_path]
@@ -1885,21 +1897,34 @@ def _render_command_fields(
             argv += ["--variant", reasoning]
         argv += [prompt]
     elif provider == "agy":
+        if type(response_schema_argument) is not str:
+            raise ProviderResolutionError(
+                "Agy requires an inline response schema"
+            )
         argv += [
             "--dangerously-skip-permissions", "--disable-slash-commands",
-            "--output-format", "text", "--add-dir", mirror,
+            "--output-format", "json", "--add-dir", mirror,
+            "--model", model,
         ]
-        if model is not None:
-            argv += ["--model", model]
         if reasoning is not None:
             argv += ["--effort", reasoning]
-        argv += ["--print", prompt]
+        argv += [
+            "--json-schema", response_schema_argument,
+            "--print", prompt,
+        ]
     else:
         raise ProviderResolutionError("capability provider is not renderable")
     return argv, {}
 
 
-def render_command(capability, mirror, prompt, schema_path=None):
+def render_command(
+    capability,
+    mirror,
+    prompt,
+    schema_path=None,
+    *,
+    response_schema=None,
+):
     """Return closed argv and a minimal environment delta."""
     if not (
         capability_is_issued(capability)
@@ -1910,6 +1935,26 @@ def render_command(capability, mirror, prompt, schema_path=None):
         raise ProviderResolutionError("prompt must be text")
     if schema_path is not None:
         raise ProviderResolutionError("provider grammar has no schema-path flag")
+    response_schema_argument = None
+    if capability.provider == "agy":
+        if type(response_schema) is not dict:
+            raise ProviderResolutionError(
+                "Agy requires a response-schema object"
+            )
+        raw_schema = _exact_json_bytes(response_schema)
+        if (
+            not raw_schema.endswith(b"\n")
+            or raw_schema.endswith(b"\n\n")
+        ):
+            raise ProviderResolutionError(
+                "response schema is not canonical JSON"
+            )
+        try:
+            response_schema_argument = raw_schema[:-1].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ProviderResolutionError(
+                "response schema is not UTF-8"
+            ) from exc
     if (
         capability.provider in _MULTI_BACKEND_PROVIDERS
         and capability_is_issued(capability)
@@ -1938,6 +1983,7 @@ def render_command(capability, mirror, prompt, schema_path=None):
         capability.reasoning_override,
         mirror,
         prompt,
+        response_schema_argument,
     )
 
 

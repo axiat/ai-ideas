@@ -436,7 +436,12 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
 
 
 class PortableStageHardeningSmoke(unittest.TestCase):
-    def _intent(self, surface="hunt", provider="codex"):
+    def _intent(
+        self,
+        surface="hunt",
+        provider="codex",
+        executable_path=FAKE_STAGE,
+    ):
         return provider_adapters._resolve_command_intent_for_test(
             provider_adapters.load_registry(REGISTRY),
             surface,
@@ -445,7 +450,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 "gemini/fixture-model" if provider == "agy" else "MODEL"
             ),
             reasoning=None if provider == "kimi" else "high",
-            executable_lookup=lambda _: str(FAKE_STAGE),
+            executable_lookup=lambda _: str(executable_path),
             model_catalog_probe=(
                 provider_adapters._host_model_catalog_probe
                 if provider == "agy"
@@ -505,8 +510,13 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             surface = "awr"
         else:
             raise AssertionError(stage)
+        executable_path = FAKE_STAGE
+        if provider in {"agy", "grok"}:
+            executable_path = root / provider
+            executable_path.write_bytes(FAKE_STAGE.read_bytes())
+            executable_path.chmod(0o755)
         prepared = portable_stage.prepare_stage(
-            self._intent(surface, provider),
+            self._intent(surface, provider, executable_path),
             stage=stage,
             seat_id=stage + "-seat-1",
             serialized_prompt=serialized,
@@ -708,6 +718,38 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         )
         self.assertEqual(
             prepared["provider_request_binding_sha256"], expected_binding
+        )
+
+    def test_agy_transport_instructions_bind_structured_result(self):
+        expected_stdout = (
+            "Return exactly one JSON object matching response_schema as the "
+            "structured final result. The Agy CLI owns the outer stdout JSON; "
+            "only a status=SUCCESS structured_output member is eligible for "
+            "import. Do not put Markdown fences or narration inside the "
+            "structured value."
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root, stage="awr-research", provider="agy"
+            )
+            request = json.loads(prepared["provider_request"])
+        self.assertEqual(
+            request["transport_instructions"]["stdout"], expected_stdout
+        )
+        base = {
+            key: value
+            for key, value in request.items()
+            if key != "request_binding"
+        }
+        self.assertEqual(
+            request["request_binding"][
+                "provider_request_binding_sha256"
+            ],
+            history_contract_v2.framed_sha256(
+                "portable-stage-request-base-v1",
+                self._canonical(base),
+            ),
         )
 
     def test_stage_requires_exact_builtin_text_before_input_capture(self):
@@ -1085,6 +1127,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                     if path.is_file()
                 },
                 {
+                    "agy",
                     "inputs/idea.md",
                     "published/draft.md",
                     "state/completion.json",
@@ -1370,6 +1413,115 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                     json.loads(imported.read_text(encoding="utf-8"))
                 ),
             )
+
+    def _assert_agy_transport_rejects(self, mode):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root, stage="awr-research", provider="agy"
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": mode},
+                clear=False,
+            ):
+                with self.assertRaises(portable_stage.PortableStageError):
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse(
+                pathlib.Path(prepared["completion_path"]).exists()
+            )
+            self.assertFalse(pathlib.Path(prepared["output_root"]).exists())
+            self.assertTrue(
+                all(
+                    not pathlib.Path(path).exists()
+                    for path in prepared["output_paths"].values()
+                )
+            )
+
+    def test_agy_structured_transport_imports_only_structured_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root, stage="awr-research", provider="agy"
+            )
+            completion = portable_stage.run_stage(
+                prepared, timeout_seconds=2
+            )
+            imported = pathlib.Path(prepared["state_root"]) / "imports" / (
+                completion["model_envelope_sha256"] + ".json"
+            )
+            raw = imported.read_bytes()
+            self.assertEqual(
+                raw,
+                portable_agent._canonical_json_bytes(
+                    json.loads(raw.decode("utf-8"))
+                ),
+            )
+            self.assertEqual(
+                hashlib.sha256(raw).hexdigest(),
+                completion["model_envelope_sha256"],
+            )
+            self.assertNotIn(b"noisy-response", raw)
+            self.assertTrue((root / "published/draft.md").is_file())
+            self.assertTrue(
+                pathlib.Path(prepared["completion_path"]).is_file()
+            )
+
+    def test_agy_structured_transport_rejects_invalid_outer(self):
+        for mode in (
+            "malformed-outer-json",
+            "invalid-outer-utf8",
+            "outer-array",
+            "duplicate-outer-status",
+        ):
+            with self.subTest(mode=mode):
+                self._assert_agy_transport_rejects(mode)
+
+    def test_agy_structured_transport_requires_success_status(self):
+        for mode in ("agy-missing-status", "agy-failure-status"):
+            with self.subTest(mode=mode):
+                self._assert_agy_transport_rejects(mode)
+
+    def test_agy_structured_transport_requires_object_payload(self):
+        for mode in (
+            "agy-missing-payload",
+            "agy-null-payload",
+            "agy-array-payload",
+        ):
+            with self.subTest(mode=mode):
+                self._assert_agy_transport_rejects(mode)
+
+    def test_agy_structured_transport_requires_type_exact_schema_echo(self):
+        for mode in (
+            "agy-missing-schema",
+            "agy-mutated-schema",
+            "agy-schema-int-float",
+            "agy-schema-int-bool",
+        ):
+            with self.subTest(mode=mode):
+                self._assert_agy_transport_rejects(mode)
+
+    def test_agy_structured_transport_rejects_non_strict_inner_values(self):
+        for mode in (
+            "duplicate-key",
+            "float-inner-value",
+            "non-nfc-envelope",
+            "surrogate-inner-value",
+        ):
+            with self.subTest(mode=mode):
+                self._assert_agy_transport_rejects(mode)
+
+    def test_agy_structured_transport_preserves_closed_schema_validation(self):
+        for mode in (
+            "extra-envelope",
+            "boolean-schema-version",
+            "missing-request-attestation",
+            "wrong-request-attestation",
+        ):
+            with self.subTest(mode=mode):
+                self._assert_agy_transport_rejects(mode)
 
     def test_grok_transport_accepts_bare_inner_model_envelope(self):
         with tempfile.TemporaryDirectory() as directory:

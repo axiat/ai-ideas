@@ -260,9 +260,10 @@ class ProviderCommandCliSmoke(unittest.TestCase):
                 "high",
                 [
                     "<EXECUTABLE>", "--dangerously-skip-permissions",
-                    "--disable-slash-commands", "--output-format", "text",
+                    "--disable-slash-commands", "--output-format", "json",
                     "--add-dir", "<MIRROR>", "--model", "gemini-3.6-flash-high",
-                    "--effort", "high", "--print", "<PROMPT>",
+                    "--effort", "high", "--json-schema", "RESPONSE_SCHEMA",
+                    "--print", "<PROMPT>",
                 ],
             ),
         )

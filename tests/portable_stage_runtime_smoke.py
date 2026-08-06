@@ -71,7 +71,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
         return value
 
     @staticmethod
-    def _intent(provider="codex"):
+    def _intent(provider="codex", executable_path=FAKE):
         resolve_intent = getattr(
             provider_adapters, "_resolve_command_intent_for_test", None
         )
@@ -86,7 +86,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
             provider,
             model="MODEL",
             reasoning="high",
-            executable_lookup=lambda _: str(FAKE),
+            executable_lookup=lambda _: str(executable_path),
         )
 
     def _prepare(
@@ -165,9 +165,12 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
     def test_grok_exact_fenced_transport_projects(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
+            executable = root / "grok"
+            executable.write_bytes(FAKE.read_bytes())
+            executable.chmod(0o755)
             prepared, _, _ = self._prepare(
                 root,
-                intent=self._intent("grok"),
+                intent=self._intent("grok", executable),
             )
             completion = self._api(portable_stage, "run_stage")(
                 prepared, timeout_seconds=2

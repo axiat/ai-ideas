@@ -164,7 +164,21 @@ class ProviderHostCapabilityEvidenceRed(unittest.TestCase):
                 self.assertFalse(intent.hard_complete_eligible)
                 self.assertIsNone(intent.effective_model)
                 self.assertIsNone(intent.effective_reasoning)
-                self.assertEqual(environment, {})
+                self.assertEqual(
+                    environment,
+                    (
+                        {
+                            "GROK_CLAUDE_SKILLS_ENABLED": "false",
+                            "GROK_CLAUDE_RULES_ENABLED": "false",
+                            "GROK_CLAUDE_AGENTS_ENABLED": "false",
+                            "GROK_CLAUDE_MCPS_ENABLED": "false",
+                            "GROK_CLAUDE_HOOKS_ENABLED": "false",
+                            "GROK_CLAUDE_SESSIONS_ENABLED": "false",
+                        }
+                        if provider == "grok"
+                        else {}
+                    ),
+                )
                 for spelling in absent[provider]:
                     self.assertFalse(
                         any(item == spelling or item.startswith(spelling) for item in argv),

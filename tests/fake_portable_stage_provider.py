@@ -47,6 +47,17 @@ GROK_EXPECTED_TRANSPORT_INSTRUCTIONS = {
     ),
 }
 
+AGY_EXPECTED_TRANSPORT_INSTRUCTIONS = {
+    **EXPECTED_TRANSPORT_INSTRUCTIONS,
+    "stdout": (
+        "Return exactly one JSON object matching response_schema as the "
+        "structured final result. The Agy CLI owns the outer stdout JSON; "
+        "only a status=SUCCESS structured_output member is eligible for "
+        "import. Do not put Markdown fences or narration inside the "
+        "structured value."
+    ),
+}
+
 
 def _prompt(arguments):
     for flag in ("-p", "--print"):
@@ -250,9 +261,21 @@ def _record(request):
             == (
                 GROK_EXPECTED_TRANSPORT_INSTRUCTIONS
                 if _grok_json_requested(sys.argv[1:])
-                else EXPECTED_TRANSPORT_INSTRUCTIONS
+                else (
+                    AGY_EXPECTED_TRANSPORT_INSTRUCTIONS
+                    if _agy_json_requested(sys.argv[1:])
+                    else EXPECTED_TRANSPORT_INSTRUCTIONS
+                )
             )
         ),
+        "structured_transport_valid": (
+            _agy_json_requested(sys.argv[1:])
+            and sys.argv[1:].count("--json-schema") == 1
+            and json.loads(
+                _flag_value(sys.argv[1:], "--json-schema")
+            )
+            == request.get("response_schema")
+        ) if pathlib.Path(sys.argv[0]).name == "agy" else None,
         "prompt_sha256": hashlib.sha256(
             str(prompt).encode("utf-8")
         ).hexdigest(),
@@ -269,11 +292,85 @@ def _record(request):
         )
 
 
+def _flag_value(arguments, flag):
+    index = arguments.index(flag)
+    return arguments[index + 1]
+
+
 def _grok_json_requested(arguments):
-    return (
-        "--output-format" in arguments
-        and arguments[arguments.index("--output-format") + 1] == "json"
+    return pathlib.Path(sys.argv[0]).name == "grok" and (
+        _flag_value(arguments, "--output-format") == "json"
     )
+
+
+def _agy_json_requested(arguments):
+    return pathlib.Path(sys.argv[0]).name == "agy" and (
+        _flag_value(arguments, "--output-format") == "json"
+    )
+
+
+def _agy_transport(inner_raw, arguments, mode):
+    schema_raw = _flag_value(arguments, "--json-schema").encode("utf-8")
+    if mode == "malformed-outer-json":
+        return b'{"status":'
+    if mode == "invalid-outer-utf8":
+        return b'{"status":"SUCCESS","response":"\xff"}'
+    if mode == "outer-array":
+        return b"[]"
+    if mode == "duplicate-outer-status":
+        return (
+            b'{"status":"SUCCESS","status":"SUCCESS",'
+            b'"json_schema":' + schema_raw
+            + b',"structured_output":' + inner_raw.rstrip(b"\n") + b"}"
+        )
+
+    status = None if mode == "agy-missing-status" else (
+        "FAILURE" if mode == "agy-failure-status" else "SUCCESS"
+    )
+    if mode == "agy-missing-schema":
+        schema_member = None
+    elif mode == "agy-mutated-schema":
+        changed = json.loads(schema_raw.decode("utf-8"))
+        changed["additionalProperties"] = True
+        schema_member = json.dumps(
+            changed, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    elif mode == "agy-schema-int-float":
+        schema_member = schema_raw.replace(b'"enum":[1]', b'"enum":[1.0]', 1)
+    elif mode == "agy-schema-int-bool":
+        schema_member = schema_raw.replace(b'"enum":[1]', b'"enum":[true]', 1)
+    else:
+        schema_member = schema_raw
+
+    if mode == "agy-missing-payload":
+        payload = None
+    elif mode == "agy-null-payload":
+        payload = b"null"
+    elif mode == "agy-array-payload":
+        payload = b"[]"
+    else:
+        payload = inner_raw.rstrip(b"\n")
+
+    members = [
+        b'"duration_ms":1.25',
+        b'"response":"provider narration ```json noisy-response ```"',
+        b'"usage":{"input_tokens":10.0,"output_tokens":5}',
+    ]
+    if schema_member is not None:
+        members.append(b'"json_schema":' + schema_member)
+    if status is not None:
+        members.append(b'"status":' + json.dumps(status).encode("utf-8"))
+    if payload is not None:
+        members.append(b'"structured_output":' + payload)
+    return b"{" + b",".join(members) + b"}\n"
+
+
+def _provider_transport(inner_raw, arguments, mode):
+    if _agy_json_requested(arguments):
+        return _agy_transport(inner_raw, arguments, mode)
+    if _grok_json_requested(arguments):
+        return _grok_transport(inner_raw, mode)
+    return inner_raw
 
 
 def _grok_transport(inner_raw, mode):
@@ -428,6 +525,7 @@ def main():
     _record(request)
     mode = os.environ.get("FAKE_PORTABLE_STAGE_MODE", "success")
     grok_json = _grok_json_requested(arguments)
+    agy_json = _agy_json_requested(arguments)
     output = pathlib.Path("output/result.json")
     if mode == "grok-compatibility-audit":
         for name in (
@@ -492,9 +590,21 @@ def main():
             return 37
         if (
             request.get("transport_instructions")
-            != EXPECTED_TRANSPORT_INSTRUCTIONS
+            != AGY_EXPECTED_TRANSPORT_INSTRUCTIONS
         ):
             return 38
+        if not agy_json:
+            return 39
+        if arguments.count("--json-schema") != 1:
+            return 40
+        try:
+            observed_schema = json.loads(
+                _flag_value(arguments, "--json-schema")
+            )
+        except (ValueError, IndexError):
+            return 41
+        if observed_schema != request.get("response_schema"):
+            return 42
     if mode == "nonzero":
         return 23
     if mode == "timeout":
@@ -506,17 +616,11 @@ def main():
         return 0
     if mode == "malformed":
         raw = b"{bad json\n"
-        if grok_json:
-            sys.stdout.buffer.write(_grok_transport(raw, mode))
-            return 0
-        sys.stdout.buffer.write(raw)
+        sys.stdout.buffer.write(_provider_transport(raw, arguments, mode))
         return 0
     if mode == "oversize":
         raw = b"x" * (256 * 1024)
-        if grok_json:
-            sys.stdout.buffer.write(_grok_transport(raw, mode))
-            return 0
-        sys.stdout.buffer.write(raw)
+        sys.stdout.buffer.write(_provider_transport(raw, arguments, mode))
         return 0
 
     kind, content = _artifact(request["stage"], _inner_request(request))
@@ -612,6 +716,12 @@ def main():
             )
             + "\n"
         ).encode("utf-8")
+    if mode == "surrogate-inner-value":
+        raw = raw.replace(
+            b'"content":"',
+            b'"content":"\\ud800',
+            1,
+        )
     if mode == "duplicate-key":
         raw = raw.replace(
             b'{"artifacts":',
@@ -636,6 +746,8 @@ def main():
             )
             + "\n"
         ).encode("utf-8")
+    if agy_json:
+        raw = _agy_transport(raw, arguments, mode)
     if mode == "stdout-prefix":
         sys.stdout.buffer.write(b"provider progress\n" + raw)
         return 0

@@ -685,6 +685,26 @@ def _parse_grok_transport(raw):
     return outer
 
 
+def _parse_agy_transport(raw, response_schema):
+    outer = _parse_strict_json(
+        raw, reject_floats=False, require_nfc=False
+    )
+    if type(outer) is not dict or outer.get("status") != "SUCCESS":
+        raise PortableAgentError("malformed_output")
+    if type(outer.get("structured_output")) is not dict:
+        raise PortableAgentError("malformed_output")
+    try:
+        observed_schema = _canonical_json_bytes(outer.get("json_schema"))
+        expected_schema = _canonical_json_bytes(response_schema)
+        model_raw = _canonical_json_bytes(outer["structured_output"])
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise PortableAgentError("malformed_output") from exc
+    if observed_schema != expected_schema:
+        raise PortableAgentError("malformed_output")
+    value = _parse_strict_model_json(model_raw)
+    return value, model_raw
+
+
 def _grok_model_text_bytes(text):
     try:
         raw = text.encode("utf-8")
@@ -713,7 +733,9 @@ def _grok_model_text_bytes(text):
     return raw[opening_start + len(opening) : closing_start - 1]
 
 
-def _parse_provider_stdout(provider, raw):
+def _parse_provider_stdout(provider, raw, response_schema):
+    if provider == "agy":
+        return _parse_agy_transport(raw, response_schema)
     if provider != "grok":
         value = _parse_canonical_stdout(raw)
         return value, raw
@@ -1359,6 +1381,7 @@ def run_portable_stdout_attempt(
             capability,
             mirror,
             prompt,
+            response_schema=response_schema,
         )
         environment = _provider_environment(mirror, environment_delta)
         _revalidate_provider_model_authority(capability)
@@ -1384,7 +1407,9 @@ def run_portable_stdout_attempt(
                 {"returncode": process.returncode, "stderr": stderr},
             )
         _validate_stdout_mirror(mirror, copied)
-        value, model_bytes = _parse_provider_stdout(capability.provider, stdout)
+        value, model_bytes = _parse_provider_stdout(
+            capability.provider, stdout, response_schema
+        )
         _validate_response_value(value, response_contract)
         if _canonical_json_bytes(value["request_attestation"]) != _canonical_json_bytes(
             expected_attestation

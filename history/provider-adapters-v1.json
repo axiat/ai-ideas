@@ -1,6 +1,6 @@
 {
   "schema_version": "provider-adapters-v1",
-  "registry_revision": "2026-08-05",
+  "registry_revision": "2026-08-06",
   "providers": {
     "codex": {
       "executable": "codex",
@@ -24,7 +24,7 @@
     },
     "agy": {
       "executable": "agy",
-      "grammar_revision": "agy-portable-v1",
+      "grammar_revision": "agy-portable-v2",
       "reasoning_values": ["low", "medium", "high"]
     }
   },

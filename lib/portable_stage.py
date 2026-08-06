@@ -428,6 +428,14 @@ def _provider_request(
             "ASSISTANT RESPONSE, and do not emit triple-backtick bytes "
             "in any earlier assistant response."
         )
+    elif provider == "agy":
+        stdout_instruction = (
+            "Return exactly one JSON object matching response_schema as the "
+            "structured final result. The Agy CLI owns the outer stdout JSON; "
+            "only a status=SUCCESS structured_output member is eligible for "
+            "import. Do not put Markdown fences or narration inside the "
+            "structured value."
+        )
     base = {
         "schema_version": "portable-stage-request-v1",
         "stage": stage,

@@ -254,11 +254,26 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                 )
             else:
                 capability = self._resolve(surface, name, model, reasoning)
-            argv, _ = render(capability, pathlib.Path("/mirror"), "PROMPT")
+            if name == "agy":
+                argv, _ = render(
+                    capability,
+                    pathlib.Path("/mirror"),
+                    "PROMPT",
+                    response_schema={"type": "object"},
+                )
+            else:
+                argv, _ = render(
+                    capability, pathlib.Path("/mirror"), "PROMPT"
+                )
             joined = "\0".join(argv)
             self.assertIn("\0".join(spelling), joined)
 
     def test_explicit_overrides_render_byte_exact_argv(self):
+        response_schema = {
+            "additionalProperties": False,
+            "properties": {"answer": {"type": "string"}},
+            "type": "object",
+        }
         cases = {
             "codex": [
                 str(FAKE), "-m", "MODEL", "-c",
@@ -282,9 +297,12 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             ],
             "agy": [
                 str(FAKE), "--dangerously-skip-permissions",
-                "--disable-slash-commands", "--output-format", "text",
+                "--disable-slash-commands", "--output-format", "json",
                 "--add-dir", "/mirror", "--model", "MODEL", "--effort",
-                "high", "--print", "PROMPT",
+                "high", "--json-schema",
+                '{"additionalProperties":false,"properties":{"answer":'
+                '{"type":"string"}},"type":"object"}',
+                "--print", "PROMPT",
             ],
         }
         render = self._api(provider_adapters, "render_command")
@@ -306,7 +324,17 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                     )
                 else:
                     intent = self._resolve(surface, provider, model, reasoning)
-                argv, environment = render(intent, pathlib.Path("/mirror"), "PROMPT")
+                if provider == "agy":
+                    argv, environment = render(
+                        intent,
+                        pathlib.Path("/mirror"),
+                        "PROMPT",
+                        response_schema=response_schema,
+                    )
+                else:
+                    argv, environment = render(
+                        intent, pathlib.Path("/mirror"), "PROMPT"
+                    )
                 self.assertEqual(argv, expected)
                 self.assertEqual(
                     environment,
@@ -316,6 +344,48 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                         else {}
                     ),
                 )
+
+    def test_agy_runtime_render_requires_and_canonicalizes_inline_schema(self):
+        schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "additionalProperties": False,
+        }
+        intent = provider_adapters._resolve_command_intent_for_test(
+            self._registry(),
+            "awr",
+            "agy",
+            model="MODEL",
+            reasoning="high",
+            executable_lookup=lambda _: str(FAKE),
+            model_catalog_probe=lambda *_: catalog("agy", "MODEL"),
+            version_probe=lambda *_: b"1.1.10\n",
+        )
+        with self.assertRaises(self._error()):
+            provider_adapters.render_command(
+                intent, pathlib.Path("/mirror"), "PROMPT"
+            )
+        argv, _ = provider_adapters.render_command(
+            intent,
+            pathlib.Path("/mirror"),
+            "PROMPT",
+            response_schema=schema,
+        )
+        argument = argv[argv.index("--json-schema") + 1]
+        self.assertEqual(
+            argument,
+            '{"additionalProperties":false,"properties":{"answer":'
+            '{"type":"string"}},"type":"object"}',
+        )
+        self.assertFalse(argument.endswith("\n"))
+        with self.assertRaises(self._error()):
+            provider_adapters.render_command(
+                intent,
+                pathlib.Path("/mirror"),
+                "PROMPT",
+                "/legacy/schema.json",
+                response_schema=schema,
+            )
 
     def test_kimi_reasoning_and_unknown_provider_fail_before_launch(self):
         calls = []
@@ -595,6 +665,9 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                 resolved,
                 pathlib.Path("/mirror"),
                 "P",
+                response_schema=(
+                    {"type": "object"} if name == "agy" else None
+                ),
             )
             self.assertNotIn(FORBIDDEN_PROVIDER, "\0".join(argv).lower())
         with self.assertRaises(self._error()):
