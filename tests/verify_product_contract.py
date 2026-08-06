@@ -1118,8 +1118,13 @@ def verify_awr_state_aliases():
     }
     alias_rows = [number for number, _ in entries]
     alias_keys = [key for _, key in entries]
-    if set(alias_rows) != eligible_rows or len(alias_rows) != len(set(alias_rows)):
-        raise AssertionError("AwR state aliases no longer cover each eligible physical row exactly once")
+    alias_row_set = set(alias_rows)
+    if len(alias_rows) != len(alias_row_set):
+        raise AssertionError("AwR state aliases contain duplicate physical rows")
+    # This frozen migration map contains only rows that had legacy state; later
+    # append-only eligible rows have no legacy state and therefore no alias.
+    if not alias_row_set <= eligible_rows:
+        raise AssertionError("AwR state aliases contain rows that are no longer eligible")
     # Ten duplicate source ideas share their historical state key. The frozen
     # projection below protects that intentional many-to-one compatibility map.
     if len(set(alias_keys)) != 361:

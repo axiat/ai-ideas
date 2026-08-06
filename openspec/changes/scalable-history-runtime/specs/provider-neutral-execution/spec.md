@@ -112,7 +112,8 @@ Every portable request SHALL include closed `transport_instructions` in its base
 
 #### Scenario: Agy receives binding-covered structured output instructions
 - **WHEN** the host prepares a portable agy request
-- **THEN** its binding-covered transport instruction requires a `status=SUCCESS` provider object with one `structured_output` object matching the frozen response schema, an exact `json_schema` echo, and no narration or fence inside that structured value
+- **THEN** its binding-covered transport instruction requires one structured value matching the frozen response schema, declares only successful `structured_output` eligible for import, and forbids narration or a fence inside that value
+- **AND THEN** command rendering and the host decoder independently require `status=SUCCESS` and an exact `json_schema` echo
 
 #### Scenario: Stdout provider scratch is bounded and ignored
 - **WHEN** a stdout portable provider writes runtime cache data under `.tmp`

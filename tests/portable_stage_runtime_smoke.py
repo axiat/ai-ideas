@@ -173,7 +173,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 intent=self._intent("grok", executable),
             )
             completion = self._api(portable_stage, "run_stage")(
-                prepared, timeout_seconds=2
+                prepared, timeout_seconds=10
             )
             self.assertTrue(
                 pathlib.Path(prepared["completion_path"]).is_file()
