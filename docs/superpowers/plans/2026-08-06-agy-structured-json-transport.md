@@ -464,7 +464,7 @@ Document the Agy minimum version, preflight behavior, exact inline schema, outer
 Run:
 
 ```bash
-rtk rg -n 'TBD|TODO|PLACEHOLDER|旧图|之前那版|这页|本节|下面来说|边界|一句话' \
+rtk rg -n 'TBD|TODO|PLACEHOLDER|old figure|previous version|this page|this section|below|scope|one sentence' \
   docs/backends.md README.md docs/getting-started.md \
   docs/superpowers/specs/2026-08-03-scalable-history-runtime-implementer-contract.md \
   openspec/changes/scalable-history-runtime

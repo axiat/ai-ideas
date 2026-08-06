@@ -337,7 +337,7 @@ Document that a failed final bounded round exits without `FAIL_SLEEP_MIN`.
 Run:
 
 ```bash
-rg -n 'TBD|TODO|PLACEHOLDER|旧|之前那版|这页|本节|下面来说|边界' \
+rg -n 'TBD|TODO|PLACEHOLDER|old|previous version|this page|this section|below|scope' \
   docs/backends.md \
   openspec/changes/scalable-history-runtime/specs/provider-neutral-execution/spec.md \
   openspec/changes/scalable-history-runtime/tasks.md || true
