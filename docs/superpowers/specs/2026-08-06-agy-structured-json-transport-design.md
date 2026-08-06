@@ -22,8 +22,8 @@ design](https://antigravity.google/changelog?plan=free).
 
 AwR v2 uses Agy structured JSON transport. Agy text output is not accepted as
 a fallback. The minimum supported Agy version is 1.1.8. Provider resolution
-and launch revalidation fail before workload execution when the installed Agy
-version is missing, malformed, older, or changes with the executable.
+and launch revalidation each fail before workload execution when the observed
+Agy version is unavailable, malformed, or older than 1.1.8.
 
 The tracked Agy grammar revision changes from `agy-portable-v1` to
 `agy-portable-v2`. The execution profile and receipts therefore distinguish
@@ -123,7 +123,7 @@ controlled only by the declared AwR provider pool.
 Test-first coverage includes:
 
 - Agy command argv, inline schema, minimum-version acceptance, old-version
-  rejection, malformed-version rejection, and launch-time version drift;
+  rejection, malformed-version rejection, and launch-time version gate;
 - successful outer JSON import with canonical host bytes and matching schema;
 - malformed and duplicate-key outer JSON, non-success status, absent or
   non-object `structured_output`, and missing or mismatched `json_schema`;

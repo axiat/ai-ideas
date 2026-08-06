@@ -148,8 +148,9 @@ in `agy models`.
 ## Agy Structured JSON Transport
 
 Agy AwR requires Agy 1.1.8+ and an explicit catalog model. The host probes
-`agy --version` during preflight and immediately before launch; a missing,
-malformed, older, or changed version prevents workload execution.
+`agy --version` during preflight and immediately before launch; an unavailable
+CLI, malformed version, or version below 1.1.8 at either check prevents
+workload execution.
 
 The portable command uses `--output-format json` and an inline
 `--json-schema`. The schema is the exact frozen compact canonical response

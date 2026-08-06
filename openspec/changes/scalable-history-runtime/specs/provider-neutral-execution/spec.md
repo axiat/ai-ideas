@@ -31,8 +31,8 @@ Omitted reasoning SHALL preserve the selected CLI's current configured default. 
 - **THEN** preflight fails before workload execution
 
 #### Scenario: Agy structured transport version gates preflight and launch
-- **WHEN** agy is selected with an installed version missing, malformed, older than `1.1.8`, or changed between preflight and launch
-- **THEN** preflight or launch revalidation fails before workload execution
+- **WHEN** the Agy version observed at preflight or launch is unavailable, malformed, or older than `1.1.8`
+- **THEN** that check fails before workload execution
 
 #### Scenario: Multi-backend catalog authority drifts
 - **WHEN** an OpenCode or agy model is absent from the bounded catalog, uses a dynamic route marker, or the launch-time catalog identity differs from preflight

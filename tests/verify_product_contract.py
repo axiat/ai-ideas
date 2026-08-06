@@ -842,6 +842,8 @@ def assert_structured_json_operator_contract():
             "--json-schema",
             "structured_output",
             "no text fallback",
+            "during preflight and immediately before launch",
+            "at either check",
         ],
     }
     for name, needles in required.items():
