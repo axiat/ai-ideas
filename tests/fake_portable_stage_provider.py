@@ -356,6 +356,13 @@ def _agy_transport(inner_raw, arguments, mode):
         b'"response":"provider narration ```json noisy-response ```"',
         b'"usage":{"input_tokens":10.0,"output_tokens":5}',
     ]
+    if mode == "agy-deep-ignored-metadata":
+        members.append(
+            b'"ignored_metadata":'
+            + b"[" * 1100
+            + b"null"
+            + b"]" * 1100
+        )
     if schema_member is not None:
         members.append(b'"json_schema":' + schema_member)
     if status is not None:

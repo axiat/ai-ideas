@@ -1479,6 +1479,44 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             with self.subTest(mode=mode):
                 self._assert_agy_transport_rejects(mode)
 
+    def test_agy_structured_transport_normalizes_deep_ignored_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(
+                root, stage="awr-research", provider="agy"
+            )
+            caught = None
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FAKE_PORTABLE_STAGE_MODE": (
+                        "agy-deep-ignored-metadata"
+                    )
+                },
+                clear=False,
+            ):
+                try:
+                    portable_stage.run_stage(prepared, timeout_seconds=2)
+                except (
+                    portable_stage.PortableStageError,
+                    RecursionError,
+                ) as exc:
+                    caught = exc
+            imports = root / "state/imports"
+            self.assertFalse(imports.exists() and any(imports.iterdir()))
+            self.assertFalse(
+                pathlib.Path(prepared["completion_path"]).exists()
+            )
+            self.assertFalse(pathlib.Path(prepared["output_root"]).exists())
+            self.assertTrue(
+                all(
+                    not pathlib.Path(path).exists()
+                    for path in prepared["output_paths"].values()
+                )
+            )
+            self.assertIs(type(caught), portable_stage.PortableStageError)
+            self.assertEqual(caught.code, "malformed_output")
+
     def test_agy_structured_transport_requires_success_status(self):
         for mode in ("agy-missing-status", "agy-failure-status"):
             with self.subTest(mode=mode):

@@ -656,10 +656,14 @@ def _parse_strict_json(raw, *, reject_floats, require_nfc):
                 PortableAgentError("malformed_output")
             ),
         )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if require_nfc:
+            _require_nfc_json(value)
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        RecursionError,
+    ) as exc:
         raise PortableAgentError("malformed_output") from exc
-    if require_nfc:
-        _require_nfc_json(value)
     return value
 
 
@@ -697,7 +701,12 @@ def _parse_agy_transport(raw, response_schema):
         observed_schema = _canonical_json_bytes(outer.get("json_schema"))
         expected_schema = _canonical_json_bytes(response_schema)
         model_raw = _canonical_json_bytes(outer["structured_output"])
-    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+    except (
+        TypeError,
+        ValueError,
+        UnicodeEncodeError,
+        RecursionError,
+    ) as exc:
         raise PortableAgentError("malformed_output") from exc
     if observed_schema != expected_schema:
         raise PortableAgentError("malformed_output")
