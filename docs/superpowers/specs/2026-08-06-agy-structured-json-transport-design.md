@@ -176,8 +176,34 @@ Agy diagnostic log SHA-256 was
 `282430a2fd5fc8a0865c9fe6d807e1e933dc19f447cc8fa3e07c6df8769cc8d2`.
 Only `state/preflight.json` remained: no attempt directory, import, projected
 output, or completion receipt was created. The log confirmed the explicit
-Gemini route and no Claude execution. This failed attempt does not satisfy
-qualification, so OpenSpec task 8.6 remains unchecked.
+Gemini route and no Claude execution. No immediate retry followed this failed
+attempt; qualification resumed only on the new tested and independently
+reviewed revision.
+
+The final-revision qualification at commit
+`5ddb26ea700cd2cd89d47b5272c458c0f77cb38b` made one bounded `awr-judge`
+workload call with `gemini-3.6-flash-high` and effort `high`; it exited zero.
+The receipt remained `authority=shadow-only` with
+`provider_validation=unverified`, so this evidence qualifies transport rather
+than hard-complete authority.
+Completion ID was
+`100474d9a5195c2fc2480144c2d88c8623ef34e3bcaf21a1a602a3718de36ac8`.
+The model-envelope SHA-256 was
+`9328a29525d36e3c57cf99c2054a3131c535b65a811472a4113d4e1f6ddcd0e2`,
+preflight SHA-256 was
+`8697237ad67b0546d15253ccf47989084815524aba7a33237ab65dd1b81658d4`,
+projected `judge.md` SHA-256 was
+`b331bd6a7a32b069dc4f5e2373385525498e668f76b960db8c9e2dac8cc0aaff`,
+and the main Agy diagnostic log SHA-256 was
+`dc3fbbec9cb31c8c062c0c15e7e50e231010bb3483737d7637dfcd58b2e80cc7`.
+The completion and import were canonical JSON with one terminal LF; the import
+hash, request attestation, projected artifact bytes, byte count, and output
+descriptor matched exactly. No attempt directory remained. The workload log
+registered `schema_version` with built-in integer bounds
+`minimum=maximum=1`, selected Gemini 3.6 Flash (High), and contained no Claude
+or Anthropic execution marker. Four catalog probes initialized Agy without
+print mode, a conversation, or a generation request. OpenSpec task 8.6 is
+therefore satisfied.
 
 ## Scope
 

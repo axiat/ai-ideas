@@ -181,6 +181,26 @@ schema, invalid inner value, or attestation mismatch produces no import,
 projection, or completion receipt. Agy has no text fallback and does not
 recover JSON from `response`, fences, mirror artifacts, or brain state.
 
+The final-revision qualification at commit
+`5ddb26ea700cd2cd89d47b5272c458c0f77cb38b` ran one bounded `awr-judge`
+workload with `gemini-3.6-flash-high` and effort `high`; it exited zero.
+The receipt remains `authority=shadow-only` with
+`provider_validation=unverified`; the result qualifies this transport path,
+not hard-complete authority.
+Completion ID was
+`100474d9a5195c2fc2480144c2d88c8623ef34e3bcaf21a1a602a3718de36ac8`,
+model-envelope SHA-256 was
+`9328a29525d36e3c57cf99c2054a3131c535b65a811472a4113d4e1f6ddcd0e2`,
+preflight SHA-256 was
+`8697237ad67b0546d15253ccf47989084815524aba7a33237ab65dd1b81658d4`,
+and projected `judge.md` SHA-256 was
+`b331bd6a7a32b069dc4f5e2373385525498e668f76b960db8c9e2dac8cc0aaff`.
+The canonical completion and import, exact request attestation, projected
+artifact bytes, and output descriptor all matched. No attempt directory
+remained. The workload log selected Gemini 3.6 Flash (High), registered the
+fixed-bound schema, and contained no Claude or Anthropic execution marker;
+catalog probes created no print-mode conversation or generation request.
+
 `auto`, `default`, `current`, and `configured` route markers are rejected even
 when a CLI catalog lists them. The v1 provider registry is an exact tracked
 byte ABI; changed registry revision, grammar, reasoning set, key duplication,
