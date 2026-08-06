@@ -44,9 +44,17 @@ agy --dangerously-skip-permissions --disable-slash-commands \
 
 `CANONICAL_RESPONSE_SCHEMA` is the compact canonical JSON encoding of the
 same response schema already covered by the portable request binding. It is
-passed inline, so no schema file is added to the mirror. The diagnostic command
-record uses a fixed `RESPONSE_SCHEMA` placeholder while the launch command uses
-the bound stage schema.
+passed inline after removing only the canonical codec's one terminal LF, so no
+schema file is added to the mirror. No trimming or whitespace normalization is
+permitted. The diagnostic command record uses a fixed `RESPONSE_SCHEMA`
+placeholder while the launch command uses the bound stage schema.
+
+`prepare_stage()` freezes the exact canonical response-schema bytes alongside
+the opaque prepared authority. `run_stage()` verifies their hash against the
+preflight and output contract, compares the current stage schema with the
+frozen bytes, and fails before provider rendering when they differ. The
+provider request, inline argv schema, outer schema-echo comparison, and inner
+value validation all consume the same frozen schema.
 
 The Agy-specific transport instruction requires one structured final value
 matching `response_schema`. It states that the CLI owns stdout framing and that
@@ -64,8 +72,9 @@ The provider-specific decoder performs these checks in order:
    invalid.
 2. Require `status` to equal `SUCCESS` and require exactly one
    `structured_output` member whose value is a JSON object.
-3. Require `json_schema` to be structurally identical to the exact stage
-   response schema supplied on the command line.
+3. Require `json_schema` to be type-exactly identical to the exact stage
+   response schema supplied on the command line. Canonical byte comparison
+   distinguishes integer `1` from float `1.0` and Boolean `true`.
 4. Ignore `response`, usage, duration, conversation identifiers, and other
    provider metadata as artifact sources.
 5. Validate `structured_output` with the existing strict model-value rules:
@@ -83,21 +92,27 @@ missing or non-object `structured_output`, and a missing or mismatched
 
 ## Version Gate
 
-The host-owned Agy probe runs bounded `agy --version` and accepts one canonical
-semantic version line at or above 1.1.8. Provider profile construction and the
-immediate launch revalidation both apply this gate. The issued command intent
-already captures the executable byte identity; executable drift invalidates
-the intent. The Agy catalog probe and explicit non-Claude model requirement
-remain active.
+The host-owned Agy probe runs bounded `agy --version` with the existing
+five-second and 32 KiB diagnostic limits. It requires exit zero, empty stderr,
+and stdout matching exactly `MAJOR.MINOR.PATCH\n`, where each component is `0`
+or a non-zero decimal integer without a leading zero. CRLF, additional lines,
+prerelease/build suffixes, malformed UTF-8, and versions below 1.1.8 fail.
+Provider profile construction and immediate launch revalidation both apply
+this gate. The issued command intent already captures the executable byte
+identity; executable drift invalidates the intent. The Agy catalog probe and
+explicit non-Claude model requirement remain active.
 
 ## Failure Handling
 
 Malformed or duplicate-key outer JSON, a non-success status, schema-echo
 mismatch, absent structured output, invalid inner JSON types, response-schema
 failure, and attestation mismatch produce no durable import, projected
-artifact, or completion receipt. The adapter never searches `response` for a
-JSON suffix, repairs malformed model text, consumes Markdown fences, reads Agy
-brain state, or recovers a mirror artifact.
+artifact, or completion receipt. Outer transport failures use
+`malformed_output`; closed inner-value violations use `schema_mismatch`; exact
+attestation drift uses `provider_request_attestation_mismatch`; frozen schema
+drift uses `response_schema_changed`. The adapter never searches `response`
+for a JSON suffix, repairs malformed model text, consumes Markdown fences,
+reads Agy brain state, or recovers a mirror artifact.
 
 An unsupported Agy version fails preflight. Runtime failure never falls back
 to text transport or another model. Provider selection and failover remain
