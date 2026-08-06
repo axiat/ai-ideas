@@ -99,6 +99,10 @@ _HOST_PROBE_OBSERVATION_FIELDS = frozenset(
 _HOST_PROBE_TIMEOUT_SECONDS = 5
 _HOST_CATALOG_PROBE_TIMEOUT_SECONDS = 30
 _HOST_PROBE_BYTE_LIMIT = 32768
+_AGY_STRUCTURED_JSON_MIN_VERSION = (1, 1, 8)
+_AGY_VERSION_PATTERN = re.compile(
+    rb"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\n"
+)
 _HOST_CATALOG_MODEL_LIMIT = 4096
 _MULTI_BACKEND_PROVIDERS = frozenset({"opencode", "agy"})
 _PROVIDER_REGISTRY_V1_SHA256 = (
@@ -635,6 +639,44 @@ def _host_default_identity_probe(provider, executable_path):
     }
 
 
+def _parse_agy_cli_revision(raw):
+    if type(raw) is not bytes:
+        raise ProviderResolutionError("agy CLI version is unavailable")
+    match = _AGY_VERSION_PATTERN.fullmatch(raw)
+    if match is None:
+        raise ProviderResolutionError("agy CLI version is unavailable")
+    version = tuple(int(part) for part in match.groups())
+    if version < _AGY_STRUCTURED_JSON_MIN_VERSION:
+        raise ProviderResolutionError("agy structured output is unsupported")
+    return raw[:-1].decode("ascii")
+
+
+def _host_agy_version_probe(provider, executable_path):
+    """Read a bounded Agy CLI revision without starting a model workload."""
+    if provider != "agy":
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="agy-version-probe-") as directory:
+            observation = _run_bounded_default_probe(
+                [executable_path, "--version"],
+                cwd=directory,
+                env=_host_probe_environment(),
+            )
+    except OSError:
+        return None
+    if observation is None:
+        return None
+    returncode, stdout, stderr = observation
+    if (
+        returncode != 0
+        or stderr
+        or len(stdout) > _HOST_PROBE_BYTE_LIMIT
+        or len(stderr) > _HOST_PROBE_BYTE_LIMIT
+    ):
+        return None
+    return stdout
+
+
 def _host_model_catalog_probe(provider, executable_path):
     """Read a bounded local CLI model catalog without starting a model workload."""
     argv_tail = {
@@ -990,6 +1032,7 @@ def _resolve_command_intent(
     executable_lookup,
     default_identity_probe=None,
     model_catalog_probe=None,
+    version_probe=None,
 ):
     executable, executable_path, model, reasoning = _resolve_grammar(
         registry,
@@ -1006,6 +1049,10 @@ def _resolve_command_intent(
     model_catalog_probe_revision = None
     model_catalog_sha256 = None
     if provider in _MULTI_BACKEND_PROVIDERS:
+        if provider == "agy":
+            if not callable(version_probe):
+                raise ProviderResolutionError("agy CLI version is unavailable")
+            _parse_agy_cli_revision(version_probe(provider, executable_path))
         if model is None:
             if not callable(default_identity_probe):
                 raise ProviderResolutionError(
@@ -1082,6 +1129,7 @@ def resolve_command_intent(
         executable_lookup=_host_executable_lookup,
         default_identity_probe=_host_default_identity_probe,
         model_catalog_probe=_host_model_catalog_probe,
+        version_probe=_host_agy_version_probe,
     )
 
 
@@ -1095,6 +1143,7 @@ def _resolve_command_intent_for_test(
     executable_lookup,
     default_identity_probe=None,
     model_catalog_probe=None,
+    version_probe=None,
 ):
     """Resolve a fake executable for offline tests; authority stays shadow-only."""
     return _resolve_command_intent(
@@ -1106,6 +1155,7 @@ def _resolve_command_intent_for_test(
         executable_lookup=executable_lookup,
         default_identity_probe=default_identity_probe,
         model_catalog_probe=model_catalog_probe,
+        version_probe=version_probe,
     )
 
 
@@ -1115,6 +1165,10 @@ def revalidate_command_intent_for_launch(intent):
         raise ProviderResolutionError("command intent is not resolver-issued")
     if intent.provider not in _MULTI_BACKEND_PROVIDERS:
         return True
+    if intent.provider == "agy":
+        _parse_agy_cli_revision(
+            _host_agy_version_probe(intent.provider, intent.executable_path)
+        )
     effective_model = intent.requested_model
     default_probe_revision = None
     if effective_model is None:

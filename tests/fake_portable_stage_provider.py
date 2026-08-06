@@ -407,6 +407,10 @@ def main():
         _write(done, b"mutated\n")
         return 0
 
+    if sys.argv[1:] == ["--version"]:
+        sys.stdout.write("1.1.10\n")
+        return 0
+
     if sys.argv[1:] == ["--pure", "debug", "config"]:
         sys.stdout.write('{"model":"openai/fixture-model"}\n')
         return 0

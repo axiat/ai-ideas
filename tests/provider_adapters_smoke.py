@@ -250,6 +250,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                     reasoning=reasoning,
                     executable_lookup=lambda _: str(FAKE),
                     model_catalog_probe=lambda *_: catalog(name, model),
+                    version_probe=lambda *_: b"1.1.10\n",
                 )
             else:
                 capability = self._resolve(surface, name, model, reasoning)
@@ -301,6 +302,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                         reasoning=reasoning,
                         executable_lookup=lambda _: str(FAKE),
                         model_catalog_probe=lambda *_: catalog(provider, model),
+                        version_probe=lambda *_: b"1.1.10\n",
                     )
                 else:
                     intent = self._resolve(surface, provider, model, reasoning)
@@ -452,6 +454,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                 "agy",
                 executable_lookup=lambda _: str(FAKE),
                 default_identity_probe=lambda *_: evidence,
+                version_probe=lambda *_: b"1.1.10\n",
             )
 
         descriptor = {
@@ -584,6 +587,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                     model_catalog_probe=lambda *_, name=name, model=model: catalog(
                         name, model
                     ),
+                    version_probe=lambda *_: b"1.1.10\n",
                 )
             else:
                 resolved = self._resolve(surface, name, model=model)

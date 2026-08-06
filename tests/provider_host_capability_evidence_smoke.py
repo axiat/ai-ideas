@@ -200,6 +200,7 @@ class ProviderHostCapabilityEvidenceRed(unittest.TestCase):
                 "awr",
                 "agy",
                 executable_lookup=lambda _: str(FAKE_EXECUTABLE),
+                version_probe=lambda *_: b"1.1.10\n",
             )
 
     def test_raw_observations_derive_effective_defaults_for_all_registered_providers(self):

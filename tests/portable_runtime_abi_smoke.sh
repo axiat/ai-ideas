@@ -52,6 +52,10 @@ install_fake_providers() {
       '  printf "%s\n" openai/fixture-model' \
       '  exit 0' \
       'fi' \
+      'if [ "$1" = "--version" ]; then' \
+      '  printf "%s\n" 1.1.10' \
+      '  exit 0' \
+      'fi' \
       'if [ "$1" = "models" ]; then' \
       '  if [ -n "${XDG_CONFIG_HOME:-}" ] && [ -e "$XDG_CONFIG_HOME/agy-catalog-count.enabled" ]; then' \
       '    case "$0" in */agy) printf "%s\n" "$0" >> "$XDG_CONFIG_HOME/agy-catalog-count" ;; esac' \

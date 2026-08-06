@@ -118,6 +118,7 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
                 None if default is None else lambda *_: default_identity(default)
             ),
             model_catalog_probe=lambda *_: catalog(provider, *models),
+            version_probe=lambda *_: b"1.1.10\n",
         )
 
     def test_dynamic_routes_fail_even_when_the_catalog_lists_them(self):
@@ -252,6 +253,10 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
             "_host_model_catalog_probe",
             side_effect=lambda *_: current["catalog"],
         ), mock.patch.object(
+            provider_adapters,
+            "_host_agy_version_probe",
+            return_value=b"1.1.10\n",
+        ), mock.patch.object(
             portable_agent,
             "_copy_inputs",
             side_effect=drift_during_input_copy,
@@ -350,6 +355,70 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
                 ),
             },
         )
+
+
+class AgyStructuredOutputVersionSmoke(unittest.TestCase):
+    def setUp(self):
+        self.registry = provider_adapters.load_registry(REGISTRY)
+
+    def test_agy_version_requires_canonical_supported_semver(self):
+        accepted = (b"1.1.8\n", b"1.1.10\n", b"2.0.0\n")
+        rejected = (
+            b"1.1.7\n", b"01.1.8\n", b"1.01.8\n", b"1.1.08\n",
+            b"1.1.8\r\n", b"v1.1.8\n", b"1.1.8-beta\n",
+            b"1.1.8+build\n", b"1.1.8\nextra\n", b"\xff\n",
+        )
+        for raw in accepted:
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    provider_adapters._parse_agy_cli_revision(raw),
+                    raw[:-1].decode("ascii"),
+                )
+        for raw in rejected:
+            with self.subTest(raw=raw), self.assertRaises(
+                provider_adapters.ProviderResolutionError
+            ):
+                provider_adapters._parse_agy_cli_revision(raw)
+
+    def test_host_agy_version_probe_is_bounded_and_exact(self):
+        cases = (
+            (None, None),
+            ((1, b"1.1.8\n", b""), None),
+            ((0, b"1.1.8\n", b"diagnostic\n"), None),
+            ((0, b"x" * 32769, b""), None),
+            ((0, b"1.1.8\n", b""), b"1.1.8\n"),
+        )
+        for observation, expected in cases:
+            with self.subTest(observation=observation), mock.patch.object(
+                provider_adapters,
+                "_run_bounded_default_probe",
+                return_value=observation,
+            ) as runner:
+                self.assertEqual(
+                    provider_adapters._host_agy_version_probe("agy", "/fake/agy"),
+                    expected,
+                )
+                runner.assert_called_once_with(
+                    ["/fake/agy", "--version"],
+                    cwd=mock.ANY,
+                    env=mock.ANY,
+                )
+
+    def test_unsupported_agy_short_circuits_catalog_render_and_workload(self):
+        catalog_probe = mock.Mock(
+            side_effect=AssertionError("catalog must not be reached")
+        )
+        with self.assertRaises(provider_adapters.ProviderResolutionError):
+            provider_adapters._resolve_command_intent_for_test(
+                self.registry,
+                "awr",
+                "agy",
+                model="gemini-safe",
+                executable_lookup=lambda _: str(FAKE),
+                version_probe=lambda *_: b"1.1.7\n",
+                model_catalog_probe=catalog_probe,
+            )
+        catalog_probe.assert_not_called()
 
 
 if __name__ == "__main__":

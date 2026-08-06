@@ -451,6 +451,9 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 if provider == "agy"
                 else None
             ),
+            version_probe=(
+                (lambda *_: b"1.1.10\n") if provider == "agy" else None
+            ),
         )
 
     def _capability(self):

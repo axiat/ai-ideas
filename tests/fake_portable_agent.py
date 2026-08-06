@@ -28,6 +28,9 @@ def main():
         time.sleep(0.8)
         _write(pathlib.Path(sys.argv[2]), b"child survived\n")
         return 0
+    if sys.argv[1:] == ["--version"]:
+        sys.stdout.write("1.1.10\n")
+        return 0
 
     request = json.loads(_prompt(sys.argv[1:]))
     mode = request["mode"]
