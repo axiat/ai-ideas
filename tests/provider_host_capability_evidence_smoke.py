@@ -172,7 +172,6 @@ class ProviderHostCapabilityEvidenceRed(unittest.TestCase):
                         {
                             "GROK_CLAUDE_SKILLS_ENABLED": "false",
                             "GROK_CLAUDE_RULES_ENABLED": "false",
-                            "GROK_CLAUDE_AGENTS_ENABLED": "false",
                             "GROK_CLAUDE_MCPS_ENABLED": "false",
                             "GROK_CLAUDE_HOOKS_ENABLED": "false",
                             "GROK_CLAUDE_SESSIONS_ENABLED": "false",

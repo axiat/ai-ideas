@@ -256,11 +256,11 @@ or reformatting is rejected.
 
 Claude Hunt and AwR roles use grammar `claude-portable-v1`. The portable
 command is bare non-interactive print with JSON output, an inline
-`--json-schema`, disposable `--add-dir` mirror, empty tool set, and unattended
+`--json-schema`, disposable `--add-dir` mirror, and unattended
 permission bypass:
 
 ```text
-claude --bare --dangerously-skip-permissions --tools ''
+claude --bare --dangerously-skip-permissions
   --output-format json --add-dir <mirror>
   [--model <model>] [--effort <low|medium|high|xhigh|max>]
   --json-schema <canonical-schema-without-terminal-LF>

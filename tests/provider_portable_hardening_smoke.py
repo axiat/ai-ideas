@@ -1202,7 +1202,6 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         names = (
             "GROK_CLAUDE_SKILLS_ENABLED",
             "GROK_CLAUDE_RULES_ENABLED",
-            "GROK_CLAUDE_AGENTS_ENABLED",
             "GROK_CLAUDE_MCPS_ENABLED",
             "GROK_CLAUDE_HOOKS_ENABLED",
             "GROK_CLAUDE_SESSIONS_ENABLED",
@@ -2354,12 +2353,11 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                         request["declared_input_sha256s"][name],
                     )
                 self.assertIn("host_output_contract", request)
-                # Empty-tools providers must not depend on reading role.md from disk.
+                # Providers must not depend on reading role.md from disk.
                 self.assertIn("do not require file tools", request["transport_instructions"]["role"])
                 argv = prepared["provider_command"]["argv"]
                 if provider == "claude":
-                    self.assertIn("--tools", argv)
-                    self.assertEqual(argv[argv.index("--tools") + 1], "")
+                    self.assertNotIn("--tools", argv)
 
     def test_contract_error_class_covers_transport_and_assembly_codes(self):
         contract_codes = (

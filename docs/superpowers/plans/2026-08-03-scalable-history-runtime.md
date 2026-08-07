@@ -305,7 +305,7 @@ codex:    codex [-m MODEL] [-c model_reasoning_effort=EFFORT]
           -c approval_policy=never exec -s workspace-write
           --skip-git-repo-check --ephemeral PROMPT
 kimi:     kimi --auto --output-format text [-m MODEL] -p PROMPT
-grok:     grok --always-approve --no-memory --no-subagents
+grok:     grok --always-approve --no-memory
           --output-format plain --cwd MIRROR [-m MODEL]
           [--reasoning-effort EFFORT] -p PROMPT
 opencode: opencode run --pure --auto --dir MIRROR [-m MODEL]

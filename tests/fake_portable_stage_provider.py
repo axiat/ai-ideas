@@ -643,7 +643,6 @@ def main():
         for name in (
             "GROK_CLAUDE_SKILLS_ENABLED",
             "GROK_CLAUDE_RULES_ENABLED",
-            "GROK_CLAUDE_AGENTS_ENABLED",
             "GROK_CLAUDE_MCPS_ENABLED",
             "GROK_CLAUDE_HOOKS_ENABLED",
             "GROK_CLAUDE_SESSIONS_ENABLED",

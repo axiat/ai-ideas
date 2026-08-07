@@ -9,7 +9,7 @@ Portable v2 treats Claude as a denylisted string rather than a provider. Claude 
 Grammar revision `claude-portable-v1` renders:
 
 ```text
-claude --bare --dangerously-skip-permissions --tools ''
+claude --bare --dangerously-skip-permissions
   --output-format json --add-dir <mirror>
   [--model <model>] [--effort <low|medium|high|xhigh|max>]
   --json-schema <canonical-schema-without-terminal-LF>

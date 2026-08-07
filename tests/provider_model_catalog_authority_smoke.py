@@ -140,12 +140,24 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
         self.assertEqual(safe.model_catalog_probe_revision, "fixture-model-catalog-v1")
         self.assertEqual(len(safe.model_catalog_sha256), 64)
 
+        agy_opus = self.resolve(
+            "agy",
+            "claude-opus-4-6-thinking",
+            models=("gemini-safe", "claude-opus-4-6-thinking"),
+        )
+        self.assertEqual(agy_opus.effective_model, "claude-opus-4-6-thinking")
+
+        opencode_claude = self.resolve(
+            "opencode",
+            "anthropic/claude",
+            models=("openai/gpt-safe", "anthropic/claude"),
+        )
+        self.assertEqual(opencode_claude.effective_model, "anthropic/claude")
+
         for provider, model, models in (
             ("opencode", "openai/not-listed", ("openai/gpt-safe",)),
             ("opencode", "gpt-safe", ("gpt-safe",)),
             ("agy", "bogus-model", ("gemini-safe",)),
-            ("opencode", "anthropic/claude", ("anthropic/claude",)),
-            ("agy", "claude-sonnet", ("claude-sonnet",)),
         ):
             with self.subTest(provider=provider, model=model), self.assertRaises(
                 provider_adapters.ProviderResolutionError
@@ -164,7 +176,6 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
         for default, models in (
             ("openrouter/auto", ("openrouter/auto",)),
             ("openai/not-listed", ("openai/gpt-safe",)),
-            ("anthropic/claude", ("anthropic/claude",)),
         ):
             with self.subTest(default=default), self.assertRaises(
                 provider_adapters.ProviderResolutionError
@@ -370,11 +381,15 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
             self.assertTrue(pathlib.Path(observed["cwd"]).name.startswith("provider-model-catalog-"))
             self.assertIsNone(observed["launch"])
 
-    def test_agy_catalog_probe_allows_a_thirty_second_observation(self):
+    def test_agy_catalog_probe_allows_current_models_output(self):
         def delayed_catalog_probe(*_args, timeout_seconds, **_kwargs):
             if timeout_seconds < 30:
                 return None
-            return 0, b"gemini-safe\n", b""
+            return (
+                0,
+                b"gemini-safe\tGemini Safe (High)\nclaude-safe\tClaude Safe\n",
+                b"Fetching available models...\n",
+            )
 
         with mock.patch.object(
             provider_adapters,
@@ -391,18 +406,26 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
             env=mock.ANY,
             timeout_seconds=30,
         )
-        self.assertEqual(
-            evidence,
-            {
-                "schema_version": "provider-model-catalog-v1",
-                "provider": "agy",
-                "models": ["gemini-safe"],
-                "probe_revision": "agy-models-v1",
-                "catalog_sha256": (
-                    "5bd869404013cd885e890dc5041c9c0f0ab7f65f358319c68f1937157d460903"
-                ),
-            },
+        self.assertEqual(evidence["models"], ["claude-safe", "gemini-safe"])
+        self.assertEqual(evidence["probe_revision"], "agy-models-v1")
+
+    def test_agy_catalog_probe_rejects_malformed_tabular_output(self):
+        outputs = (
+            b"\tMissing ID\n",
+            b"gemini-safe\t\n",
+            b"gemini-safe\tDisplay\tExtra\n",
+            b"gemini-safe\t Display\n",
+            b"gemini-safe\tOne\ngemini-safe\tTwo\n",
         )
+        for stdout in outputs:
+            with self.subTest(stdout=stdout), mock.patch.object(
+                provider_adapters,
+                "_run_bounded_default_probe",
+                return_value=(0, stdout, b"Fetching available models...\n"),
+            ):
+                self.assertIsNone(
+                    provider_adapters._host_model_catalog_probe("agy", "/fake/agy")
+                )
 
 
 class AgyStructuredOutputVersionSmoke(unittest.TestCase):

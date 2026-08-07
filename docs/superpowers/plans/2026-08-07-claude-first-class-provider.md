@@ -109,7 +109,7 @@ python3 tests/verify_product_contract.py
 Assert Claude render produces, in order of concern rather than exact index fragility:
 
 ```python
-["--bare", "--dangerously-skip-permissions", "--tools", "",
+["--bare", "--dangerously-skip-permissions",
  "--output-format", "json", "--add-dir", str(mirror),
  "--json-schema", schema_text, "-p", prompt]
 ```
@@ -129,7 +129,7 @@ elif provider == "claude":
     if type(response_schema_argument) is not str:
         raise ProviderResolutionError("Claude requires an inline response schema")
     argv += [
-        "--bare", "--dangerously-skip-permissions", "--tools", "",
+        "--bare", "--dangerously-skip-permissions",
         "--output-format", "json", "--add-dir", mirror,
     ]
     if model is not None:

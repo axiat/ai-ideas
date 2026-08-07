@@ -8,7 +8,6 @@ import pathlib
 import tempfile
 import time
 import unittest
-import urllib.parse
 from unittest import mock
 
 
@@ -26,7 +25,6 @@ FORBIDDEN_PROVIDER = "cl" + "aude"
 GROK_COMPATIBILITY_DISABLED = {
     "GROK_CLAUDE_SKILLS_ENABLED": "false",
     "GROK_CLAUDE_RULES_ENABLED": "false",
-    "GROK_CLAUDE_AGENTS_ENABLED": "false",
     "GROK_CLAUDE_MCPS_ENABLED": "false",
     "GROK_CLAUDE_HOOKS_ENABLED": "false",
     "GROK_CLAUDE_SESSIONS_ENABLED": "false",
@@ -302,7 +300,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             ],
             "grok": [
                 str(FAKE), "--always-approve", "--no-memory",
-                "--no-subagents", "--output-format", "json", "--cwd",
+                "--output-format", "json", "--cwd",
                 "/mirror", "-m", "MODEL", "--reasoning-effort", "high",
                 "-p", "PROMPT",
             ],
@@ -321,7 +319,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             ],
             "claude": [
                 str(FAKE), "--bare", "--dangerously-skip-permissions",
-                "--tools", "", "--output-format", "json", "--add-dir",
+                "--output-format", "json", "--add-dir",
                 "/mirror", "--model", "MODEL", "--effort", "high",
                 "--json-schema",
                 '{"additionalProperties":false,"properties":{"answer":'
@@ -440,7 +438,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
         )
         self.assertFalse(argument.endswith("\n"))
         self.assertIn("--bare", argv)
-        self.assertEqual(argv[argv.index("--tools") + 1], "")
+        self.assertNotIn("--tools", argv)
 
     def test_kimi_reasoning_and_unknown_provider_fail_before_launch(self):
         calls = []
@@ -451,36 +449,6 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             self._resolve("hunt", "kimi", reasoning="high", probe_fn=no_launch_probe)
         with self.assertRaises(self._error()):
             self._resolve("awr", "unknown", probe_fn=no_launch_probe)
-        self.assertEqual(calls, [])
-
-    def test_indirect_claude_models_fail_before_executable_lookup(self):
-        calls = []
-
-        def lookup(executable):
-            calls.append(executable)
-            return str(FAKE)
-
-        forbidden = (
-            ("opencode", "anthropic/claude-sonnet-4"),
-            ("opencode", "OPENROUTER/SONNET"),
-            ("opencode", "anthropic%252Fclaude-opus"),
-            ("agy", "ＣＬＡＵＤＥ-test"),
-            ("agy", r"models\Anthropic\Haiku"),
-        )
-        encoded_alias = "".join(f"%{ord(character):02x}" for character in "claude")
-        for _ in range(5):
-            encoded_alias = urllib.parse.quote(encoded_alias, safe="")
-        forbidden += (("opencode", "openrouter/" + encoded_alias),)
-        for provider, model in forbidden:
-            with self.subTest(provider=provider, model=model):
-                with self.assertRaises(self._error()):
-                    provider_adapters._resolve_command_intent_for_test(
-                        self._registry(),
-                        "awr",
-                        provider,
-                        model=model,
-                        executable_lookup=lookup,
-                    )
         self.assertEqual(calls, [])
 
     def test_unsupported_reasoning_fails_before_executable_lookup(self):

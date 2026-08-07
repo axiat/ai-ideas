@@ -30,7 +30,6 @@ printf '%s\n' \
   'printf "%s\n" "$@" > "$FAKE_GROK_ARGS"' \
   'printf "%s\n" "GROK_CLAUDE_SKILLS_ENABLED=$GROK_CLAUDE_SKILLS_ENABLED" > "$FAKE_GROK_ENV"' \
   'printf "%s\n" "GROK_CLAUDE_RULES_ENABLED=$GROK_CLAUDE_RULES_ENABLED" >> "$FAKE_GROK_ENV"' \
-  'printf "%s\n" "GROK_CLAUDE_AGENTS_ENABLED=$GROK_CLAUDE_AGENTS_ENABLED" >> "$FAKE_GROK_ENV"' \
   'printf "%s\n" "GROK_CLAUDE_MCPS_ENABLED=$GROK_CLAUDE_MCPS_ENABLED" >> "$FAKE_GROK_ENV"' \
   'printf "%s\n" "GROK_CLAUDE_HOOKS_ENABLED=$GROK_CLAUDE_HOOKS_ENABLED" >> "$FAKE_GROK_ENV"' \
   'printf "%s\n" "GROK_CLAUDE_SESSIONS_ENABLED=$GROK_CLAUDE_SESSIONS_ENABLED" >> "$FAKE_GROK_ENV"' \
@@ -64,7 +63,6 @@ assert_compatibility_sources_disabled() {
   printf '%s\n' \
     'GROK_CLAUDE_SKILLS_ENABLED=false' \
     'GROK_CLAUDE_RULES_ENABLED=false' \
-    'GROK_CLAUDE_AGENTS_ENABLED=false' \
     'GROK_CLAUDE_MCPS_ENABLED=false' \
     'GROK_CLAUDE_HOOKS_ENABLED=false' \
     'GROK_CLAUDE_SESSIONS_ENABLED=false' \
@@ -75,7 +73,6 @@ assert_compatibility_sources_disabled() {
 run_wrapper() {
   GROK_CLAUDE_SKILLS_ENABLED=true \
   GROK_CLAUDE_RULES_ENABLED=true \
-  GROK_CLAUDE_AGENTS_ENABLED=true \
   GROK_CLAUDE_MCPS_ENABLED=true \
   GROK_CLAUDE_HOOKS_ENABLED=true \
   GROK_CLAUDE_SESSIONS_ENABLED=true \

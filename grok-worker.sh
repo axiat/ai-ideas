@@ -78,7 +78,6 @@ command -v "$bin" >/dev/null 2>&1 || { echo "grok-worker: Grok executable not fo
 export GROK_DISABLE_AUTOUPDATER=1
 export GROK_CLAUDE_SKILLS_ENABLED=false
 export GROK_CLAUDE_RULES_ENABLED=false
-export GROK_CLAUDE_AGENTS_ENABLED=false
 export GROK_CLAUDE_MCPS_ENABLED=false
 export GROK_CLAUDE_HOOKS_ENABLED=false
 export GROK_CLAUDE_SESSIONS_ENABLED=false
@@ -123,7 +122,6 @@ done
 
 args=(
   --always-approve
-  --no-subagents
   --max-turns "$max_turns"
 )
 [ -z "$model" ] || args+=(-m "$model")

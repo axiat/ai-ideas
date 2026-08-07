@@ -112,13 +112,6 @@ _PROVIDER_REGISTRY_V1_SHA256 = (
 _DYNAMIC_MODEL_ROUTE_MARKERS = frozenset(
     {"auto", "default", "current", "configured"}
 )
-_FORBIDDEN_MODEL_ROUTE_TOKENS = (
-    "anthropic",
-    "claude",
-    "haiku",
-    "opus",
-    "sonnet",
-)
 _HOST_PROBE_ENVIRONMENT_KEYS = (
     "HOME",
     "LANG",
@@ -131,7 +124,6 @@ _GROK_COMPATIBILITY_ENVIRONMENT = types.MappingProxyType(
     {
         "GROK_CLAUDE_SKILLS_ENABLED": "false",
         "GROK_CLAUDE_RULES_ENABLED": "false",
-        "GROK_CLAUDE_AGENTS_ENABLED": "false",
         "GROK_CLAUDE_MCPS_ENABLED": "false",
         "GROK_CLAUDE_HOOKS_ENABLED": "false",
         "GROK_CLAUDE_SESSIONS_ENABLED": "false",
@@ -474,11 +466,6 @@ def _normalized_model_route(value):
     raise ProviderResolutionError("provider model route encoding is too deep")
 
 
-def _model_route_is_forbidden(value):
-    normalized = _normalized_model_route(value)
-    return any(token in normalized for token in _FORBIDDEN_MODEL_ROUTE_TOKENS)
-
-
 def _model_route_has_dynamic_marker(value):
     normalized = _normalized_model_route(value)
     words = {item for item in re.split(r"[^a-z0-9]+", normalized) if item}
@@ -487,8 +474,6 @@ def _model_route_has_dynamic_marker(value):
 
 def _validate_model_route_policy(provider, model):
     model = _require_text(model, "model")
-    if _model_route_is_forbidden(model):
-        raise ProviderResolutionError("forbidden provider model route")
     if _model_route_has_dynamic_marker(model):
         raise ProviderResolutionError("dynamic provider model route is forbidden")
     normalized = _normalized_model_route(model)
@@ -699,7 +684,12 @@ def _host_model_catalog_probe(provider, executable_path):
     if observation is None:
         return None
     returncode, stdout, stderr = observation
-    if returncode != 0 or stderr or not stdout or not stdout.endswith(b"\n"):
+    if (
+        returncode != 0
+        or (provider != "agy" and stderr)
+        or not stdout
+        or not stdout.endswith(b"\n")
+    ):
         return None
     if b"\r" in stdout:
         return None
@@ -710,16 +700,23 @@ def _host_model_catalog_probe(provider, executable_path):
     lines = decoded[:-1].split("\n")
     if not lines or len(lines) > _HOST_CATALOG_MODEL_LIMIT:
         return None
+    models = []
     try:
         for line in lines:
-            _require_text(line, "catalog model")
-            if line.strip() != line:
+            model, separator, display_name = line.partition("\t")
+            if provider != "agy" and separator:
                 raise ProviderResolutionError("provider model catalog is invalid")
+            if separator and (not display_name or "\t" in display_name):
+                raise ProviderResolutionError("provider model catalog is invalid")
+            _require_text(model, "catalog model")
+            if model.strip() != model or (separator and display_name.strip() != display_name):
+                raise ProviderResolutionError("provider model catalog is invalid")
+            models.append(model)
     except ProviderResolutionError:
         return None
-    if len(lines) != len(set(lines)):
+    if len(models) != len(set(models)):
         return None
-    models = sorted(lines)
+    models.sort()
     evidence = {
         "schema_version": "provider-model-catalog-v1",
         "provider": provider,
@@ -1876,7 +1873,7 @@ def _render_command_fields(
         argv += ["-p", prompt]
     elif provider == "grok":
         argv += [
-            "--always-approve", "--no-memory", "--no-subagents",
+            "--always-approve", "--no-memory",
             "--output-format", "json", "--cwd", mirror,
         ]
         if model is not None:
@@ -1914,7 +1911,7 @@ def _render_command_fields(
                 "Claude requires an inline response schema"
             )
         argv += [
-            "--bare", "--dangerously-skip-permissions", "--tools", "",
+            "--bare", "--dangerously-skip-permissions",
             "--output-format", "json", "--add-dir", mirror,
         ]
         if model is not None:
