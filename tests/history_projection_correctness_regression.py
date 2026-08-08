@@ -109,8 +109,86 @@ class HistoryProjectionCorrectnessRegression(unittest.TestCase):
         self.assertTrue(triggered)
         return result, appended[0][0]
 
+    def test_invalid_policy_reads_do_not_initialize_or_mutate(self):
+        conn = self._initialize([])
+        try:
+            invalid = dict(self.policy)
+            invalid["rrf_k"] += 1
+            before_tables = conn.execute(
+                "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+            ).fetchall()
+            before_changes = conn.total_changes
+            for read in (
+                lambda: projection.validate_published_generation(conn, invalid),
+                lambda: projection.search(conn, "query", invalid),
+                lambda: projection.build_generation_brief(conn, invalid),
+            ):
+                with self.assertRaises(ValueError):
+                    read()
+            self.assertFalse(
+                projection.validate_published_generation(conn, self.policy)[
+                    "valid"
+                ]
+            )
+            self.assertEqual(
+                projection.search(conn, "query", self.policy)["candidate_ids"],
+                [],
+            )
+            self.assertEqual(
+                projection.l1_rankings_as_of(conn, "query", 10, 0),
+                {"exact": [], "fts": [], "hash_dense": []},
+            )
+            with self.assertRaises(projection.ProjectionError):
+                projection.build_generation_brief(conn, self.policy)
+            after_tables = conn.execute(
+                "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+            ).fetchall()
+            self.assertEqual(
+                [tuple(item) for item in before_tables],
+                [tuple(item) for item in after_tables],
+            )
+            self.assertEqual(conn.total_changes, before_changes)
+            self.assertFalse(projection._projection_initialized(conn))
+        finally:
+            conn.close()
+
+    def test_read_apis_are_observational(self):
+        conn = self._initialize([row("observational read")])
+        try:
+            projection.rebuild(conn, self.policy)
+            before_changes = conn.total_changes
+            before_generation = [
+                tuple(item)
+                for item in conn.execute(
+                    "SELECT * FROM search_index_generations ORDER BY generation"
+                )
+            ]
+            projection.validate_published_generation(conn, self.policy)
+            projection.search(conn, "observational read", self.policy)
+            projection.l1_rankings_as_of(
+                conn, "observational read", 10, 1000
+            )
+            projection.build_generation_brief(conn, self.policy)
+            projection.searchable_candidate_ids(conn)
+            projection.exact_lookup(conn, "observational read", 10)
+            projection.current_index_generation(conn)
+            after_generation = [
+                tuple(item)
+                for item in conn.execute(
+                    "SELECT * FROM search_index_generations ORDER BY generation"
+                )
+            ]
+            self.assertEqual(conn.total_changes, before_changes)
+            self.assertEqual(after_generation, before_generation)
+        finally:
+            conn.close()
+
     def test_empty_history_publishes_generation_zero_concurrently(self):
         conn = self._initialize([])
+        conn.execute(
+            "UPDATE schema_meta SET value = '7' "
+            "WHERE key = 'history_index_generation'"
+        )
         conn.close()
         barrier = threading.Barrier(3)
         errors = []
@@ -139,6 +217,7 @@ class HistoryProjectionCorrectnessRegression(unittest.TestCase):
                 "SELECT generation FROM search_index_generations"
             ).fetchall()
             self.assertEqual([item[0] for item in generations], [0])
+            self.assertEqual(projection.current_index_generation(conn), 0)
             self.assertTrue(
                 projection.validate_published_generation(conn, self.policy)[
                     "valid"
@@ -161,6 +240,55 @@ class HistoryProjectionCorrectnessRegression(unittest.TestCase):
                     "valid"
                 ]
             )
+        finally:
+            conn.close()
+
+    def test_recovery_requeue_survives_rebuild_failure(self):
+        conn = self._initialize([row("durable recovery intent")])
+        try:
+            projection.rebuild(conn, self.policy)
+            conn.execute("DELETE FROM search_vectors")
+            self.assertFalse(
+                projection.validate_published_generation(conn, self.policy)[
+                    "valid"
+                ]
+            )
+            with mock.patch.object(
+                projection,
+                "_write_candidate",
+                side_effect=RuntimeError("injected rebuild failure"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "injected rebuild failure"
+                ):
+                    projection.recover(conn, self.policy)
+            pending = conn.execute(
+                "SELECT content_version, state FROM search_projection_outbox "
+                "WHERE state = 'pending'"
+            ).fetchall()
+            self.assertEqual(
+                [tuple(item) for item in pending],
+                [("recovery-v2", "pending")],
+            )
+            projection.recover(conn, self.policy)
+            self.assertTrue(
+                projection.validate_published_generation(conn, self.policy)[
+                    "valid"
+                ]
+            )
+        finally:
+            conn.close()
+
+    def test_public_mutators_reject_nested_transactions(self):
+        conn = self._initialize([row("nested transaction")])
+        try:
+            conn.execute("BEGIN")
+            with self.assertRaises(projection.ProjectionError):
+                projection.rebuild(conn, self.policy)
+            with self.assertRaises(projection.ProjectionError):
+                projection.recover(conn, self.policy)
+            self.assertTrue(conn.in_transaction)
+            conn.execute("ROLLBACK")
         finally:
             conn.close()
 

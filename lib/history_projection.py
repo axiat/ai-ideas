@@ -115,6 +115,22 @@ _POLICY_KEYS = set(_POLICY_FIXED) | {
 }
 
 
+def _validate_policy(policy):
+    if not isinstance(policy, dict) or set(policy) != _POLICY_KEYS:
+        raise ValueError("retrieval policy keys do not match v1")
+    if any(policy.get(key) != value for key, value in _POLICY_FIXED.items()):
+        raise ValueError("retrieval policy fixed values do not match v1")
+    if policy.get("mode") not in {"shadow", "enforcement"}:
+        raise ValueError("retrieval policy mode is invalid")
+    if policy.get("mandatory_channels") != _POLICY_CHANNELS:
+        raise ValueError("retrieval policy channels do not match v1")
+    if policy.get("projection") != _POLICY_PROJECTION:
+        raise ValueError("retrieval policy projection versions do not match v1")
+    if policy.get("tested_adapter_allowances") != {"history-stage-v1": 256}:
+        raise ValueError("retrieval policy adapter allowance is not verified")
+    return policy
+
+
 def load_policy(path):
     try:
         before = os.lstat(path)
@@ -174,22 +190,10 @@ def load_policy(path):
         policy = json.loads(b"".join(chunks).decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
         raise ValueError("retrieval policy is invalid JSON") from exc
-    if set(policy) != _POLICY_KEYS:
-        raise ValueError("retrieval policy keys do not match v1")
-    if any(policy.get(key) != value for key, value in _POLICY_FIXED.items()):
-        raise ValueError("retrieval policy fixed values do not match v1")
-    if policy.get("mode") not in {"shadow", "enforcement"}:
-        raise ValueError("retrieval policy mode is invalid")
-    if policy.get("mandatory_channels") != _POLICY_CHANNELS:
-        raise ValueError("retrieval policy channels do not match v1")
-    if policy.get("projection") != _POLICY_PROJECTION:
-        raise ValueError("retrieval policy projection versions do not match v1")
-    if policy.get("tested_adapter_allowances") != {"history-stage-v1": 256}:
-        raise ValueError("retrieval policy adapter allowance is not verified")
-    return policy
+    return _validate_policy(policy)
 
 
-def _init(conn, policy=None):
+def _init(conn):
     started = not conn.in_transaction
     if started:
         conn.execute("BEGIN IMMEDIATE")
@@ -254,33 +258,36 @@ def _init(conn, policy=None):
             "INSERT OR IGNORE INTO schema_meta(key, value) "
             "VALUES('history_search_content_revision', '0')"
         )
-        if (
-            policy is not None
-            and conn.execute(
-                "SELECT 1 FROM search_index_generations LIMIT 1"
-            ).fetchone()
-            is None
-            and conn.execute("SELECT 1 FROM candidates LIMIT 1").fetchone()
-            is None
-        ):
-            conn.execute("DELETE FROM search_vectors")
-            conn.execute("DELETE FROM search_index_entries")
-            conn.execute("DELETE FROM search_fts")
-            canonical_revision = int(
-                conn.execute(
-                    "SELECT value FROM schema_meta "
-                    "WHERE key = 'history_search_content_revision'"
-                ).fetchone()[0]
-            )
-            _publish_generation(
-                conn, policy, 0, 0, canonical_revision
-            )
         if started:
             conn.execute("COMMIT")
     except Exception:
         if started and conn.in_transaction:
             conn.execute("ROLLBACK")
         raise
+
+
+def _projection_initialized(conn):
+    required = {
+        "search_index_entries",
+        "search_vectors",
+        "search_index_generations",
+        "search_fts",
+    }
+    present = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE name IN (?, ?, ?, ?)",
+            tuple(sorted(required)),
+        )
+    }
+    return present == required
+
+
+def _require_mutator_connection(conn):
+    if conn.in_transaction:
+        raise ProjectionError(
+            "projection mutator requires an autocommit connection"
+        )
 
 
 def _tokens(text):
@@ -387,6 +394,7 @@ def _queue(conn, candidate_id, content_version):
 
 
 def update_candidate_facets(conn, candidate_id, updates):
+    _require_mutator_connection(conn)
     if not isinstance(updates, dict) or not updates:
         raise ValueError("facet updates are required")
     unknown = set(updates) - set(FACETS)
@@ -426,6 +434,7 @@ def update_candidate_facets(conn, candidate_id, updates):
 
 def update_candidate_from_round_artifact(conn, candidate_id, artifact_text):
     """Persist generated Summary and falsification fields as candidate facets."""
+    _require_mutator_connection(conn)
     candidate = history_store.get_candidate(conn, candidate_id)
     if candidate is None:
         raise ValueError("candidate is missing")
@@ -689,6 +698,34 @@ def _publish_generation(
     return manifest_sha256
 
 
+def _publish_empty_generation(conn, policy):
+    if conn.execute("SELECT 1 FROM candidates LIMIT 1").fetchone() is not None:
+        return False
+    validation = _validate_published_generation_snapshot(conn, policy)
+    if validation["valid"] and validation["generation"] == 0:
+        conn.execute(
+            "UPDATE schema_meta SET value = '0' "
+            "WHERE key = 'history_index_generation'"
+        )
+        return False
+    conn.execute("DELETE FROM search_vectors")
+    conn.execute("DELETE FROM search_index_entries")
+    conn.execute("DELETE FROM search_fts")
+    conn.execute("DELETE FROM search_index_generations")
+    canonical_revision = int(
+        conn.execute(
+            "SELECT value FROM schema_meta "
+            "WHERE key = 'history_search_content_revision'"
+        ).fetchone()[0]
+    )
+    _publish_generation(conn, policy, 0, 0, canonical_revision)
+    conn.execute(
+        "UPDATE schema_meta SET value = '0' "
+        "WHERE key = 'history_index_generation'"
+    )
+    return True
+
+
 def _latest_generation(conn):
     return conn.execute(
         "SELECT * FROM search_index_generations ORDER BY generation DESC LIMIT 1"
@@ -737,7 +774,9 @@ def _validate_published_generation_snapshot(conn, policy):
 
 
 def validate_published_generation(conn, policy):
-    _init(conn, policy)
+    _validate_policy(policy)
+    if not _projection_initialized(conn):
+        return {"valid": False, "code": "no_published_generation"}
     started = not conn.in_transaction
     if started:
         conn.execute("BEGIN")
@@ -831,9 +870,12 @@ def _rebuild_snapshot(conn, policy):
 
 
 def rebuild(conn, policy):
-    _init(conn, policy)
+    _validate_policy(policy)
+    _require_mutator_connection(conn)
+    _init(conn)
     conn.execute("BEGIN IMMEDIATE")
     try:
+        _publish_empty_generation(conn, policy)
         result = _rebuild_snapshot(conn, policy)
         conn.execute("COMMIT")
     except Exception:
@@ -844,7 +886,9 @@ def rebuild(conn, policy):
 
 
 def recover(conn, policy):
-    _init(conn, policy)
+    _validate_policy(policy)
+    _require_mutator_connection(conn)
+    _init(conn)
     conn.execute("BEGIN IMMEDIATE")
     try:
         validation = _validate_published_generation_snapshot(conn, policy)
@@ -853,40 +897,26 @@ def recover(conn, policy):
             "WHERE state = 'pending'"
         ).fetchone()[0]
         if not validation["valid"]:
-            if conn.execute("SELECT 1 FROM candidates LIMIT 1").fetchone() is None:
-                conn.execute("DELETE FROM search_vectors")
-                conn.execute("DELETE FROM search_index_entries")
-                conn.execute("DELETE FROM search_fts")
-                conn.execute("DELETE FROM search_index_generations")
-                canonical_revision = int(
-                    conn.execute(
-                        "SELECT value FROM schema_meta "
-                        "WHERE key = 'history_search_content_revision'"
-                    ).fetchone()[0]
-                )
-                _publish_generation(
-                    conn, policy, 0, 0, canonical_revision
-                )
-                conn.execute(
-                    "UPDATE schema_meta SET value = '0' "
-                    "WHERE key = 'history_index_generation'"
-                )
-            else:
+            if not _publish_empty_generation(conn, policy):
                 _requeue_all(conn, "recovery-v2")
-        result = _rebuild_snapshot(conn, policy)
-        if not _validate_published_generation_snapshot(conn, policy)["valid"]:
-            raise ProjectionError("published projection recovery failed closed")
         conn.execute("COMMIT")
     except Exception:
         if conn.in_transaction:
             conn.execute("ROLLBACK")
         raise
+
+    # Recovery intent commits before projection work so a failed rebuild leaves
+    # every required candidate pending for a later retry.
+    result = rebuild(conn, policy)
+    if not validate_published_generation(conn, policy)["valid"]:
+        raise ProjectionError("published projection recovery failed closed")
     result["recovered"] = not validation["valid"]
     result["pending_before_recovery"] = pending
     return result
 
 
 def drop_rebuildable_projections(conn):
+    _require_mutator_connection(conn)
     _init(conn)
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -904,6 +934,7 @@ def drop_rebuildable_projections(conn):
 
 
 def remove_candidate_from_search(conn, candidate_id):
+    _require_mutator_connection(conn)
     _init(conn)
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -923,7 +954,8 @@ def remove_candidate_from_search(conn, candidate_id):
 
 
 def searchable_candidate_ids(conn):
-    _init(conn)
+    if not _projection_initialized(conn):
+        return []
     return [row[0] for row in conn.execute(
         "SELECT candidate_id FROM search_index_entries WHERE active = 1 ORDER BY candidate_id"
     )]
@@ -961,15 +993,17 @@ def _exact_lookup_snapshot(conn, query, depth):
 
 def exact_lookup(conn, query, depth):
     """Return canonical exact-story matches from the active projection."""
-    _init(conn)
+    if not _projection_initialized(conn):
+        return []
     return _exact_lookup_snapshot(conn, query, depth)
 
 
 def current_index_generation(conn):
-    _init(conn)
-    return int(conn.execute(
-        "SELECT value FROM schema_meta WHERE key = 'history_index_generation'"
-    ).fetchone()[0])
+    row = conn.execute(
+        "SELECT value FROM schema_meta "
+        "WHERE key = 'history_index_generation'"
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 def _cosine(left, right):
@@ -1039,7 +1073,23 @@ def _search_snapshot(conn, query, policy):
 
 
 def search(conn, query, policy):
-    _init(conn, policy)
+    _validate_policy(policy)
+    if not _projection_initialized(conn):
+        dense_facets = {facet: [] for facet in FACETS}
+        fts_facets = (
+            {facet: [] for facet in FACETS}
+            if _tokens(history_store.canonical_story_v1(query))
+            else {}
+        )
+        channels = {
+            "exact": [],
+            "fts": [],
+            "fts_by_facet": fts_facets,
+            "dense": [],
+            "dense_by_facet": dense_facets,
+            "lineage": [],
+        }
+        return {"candidate_ids": [], "channels": channels}
     started = not conn.in_transaction
     if started:
         conn.execute("BEGIN")
@@ -1158,7 +1208,12 @@ def _l1_rankings_as_of_snapshot(conn, query, depth, source_watermark):
 
 def l1_rankings_as_of(conn, query, depth, source_watermark):
     """Read v1 flat indexes through one projection snapshot."""
-    _init(conn)
+    if type(depth) is not int or depth < 1:
+        raise ValueError("L1 depth must be a positive integer")
+    if type(source_watermark) is not int or source_watermark < 0:
+        raise ValueError("source watermark must be a non-negative integer")
+    if not _projection_initialized(conn):
+        return {"exact": [], "fts": [], "hash_dense": []}
     started = not conn.in_transaction
     if started:
         conn.execute("BEGIN")
@@ -1269,7 +1324,11 @@ def build_generation_brief(
     research_context=None,
     divergence_lens="",
 ):
-    _init(conn, policy)
+    _validate_policy(policy)
+    if not _projection_initialized(conn):
+        raise ProjectionError(
+            "generation brief requires one validated current projection"
+        )
     started = not conn.in_transaction
     if started:
         conn.execute("BEGIN")
