@@ -1256,18 +1256,33 @@ def _write_immutable(path, data):
 class _UnionFind:
     def __init__(self, values):
         self.parent = {value: value for value in values}
+        self.size = {value: 1 for value in values}
 
     def find(self, value):
-        parent = self.parent[value]
-        if parent != value:
-            self.parent[value] = self.find(parent)
-        return self.parent[value]
+        root = value
+        while self.parent[root] != root:
+            root = self.parent[root]
+        while value != root:
+            parent = self.parent[value]
+            self.parent[value] = root
+            value = parent
+        return root
 
     def union(self, left, right):
         left_root = self.find(left)
         right_root = self.find(right)
-        if left_root != right_root:
-            self.parent[max(left_root, right_root)] = min(left_root, right_root)
+        if left_root == right_root:
+            return
+        if (
+            self.size[left_root] < self.size[right_root]
+            or (
+                self.size[left_root] == self.size[right_root]
+                and right_root < left_root
+            )
+        ):
+            left_root, right_root = right_root, left_root
+        self.parent[right_root] = left_root
+        self.size[left_root] += self.size[right_root]
 
 
 def _mapping_data(sealed_object):

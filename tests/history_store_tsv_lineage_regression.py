@@ -278,7 +278,7 @@ class HistoryStoreTsvLineageRegression(unittest.TestCase):
             2,
         )
 
-    def test_large_alias_and_component_sets_stay_linear_enough(self):
+    def test_large_alias_component_and_reverse_chain_sets_stay_bounded(self):
         alias_count = 5000
         alias_rows = [
             {"row_number": index, "canonical_story": "shared alias"}
@@ -311,12 +311,39 @@ class HistoryStoreTsvLineageRegression(unittest.TestCase):
         roots, edges = history_store._build_components(
             rows, {"mappings": mappings}
         )
+
+        chain_count = 5000
+        chain_rows = [
+            {"row_number": index, "canonical_story": f"chain {index}"}
+            for index in range(1, chain_count + 1)
+        ]
+        chain_mappings = [
+            {
+                "parent_row": parent,
+                "child_row": parent + 1,
+                "evidence_path": "evidence.json",
+            }
+            for parent in range(chain_count - 1, 0, -1)
+        ]
+        chain_mappings.append(
+            {
+                "parent_row": chain_count // 2,
+                "child_row": chain_count // 2 + 1,
+                "relation_type": "recheck_of",
+                "evidence_path": "parallel-evidence.json",
+            }
+        )
+        chain_roots, chain_edges = history_store._build_components(
+            chain_rows, {"mappings": chain_mappings}
+        )
         elapsed = time.monotonic() - started
 
         self.assertEqual(set(alias_roots.values()), {1})
         self.assertEqual(alias_edges, [])
         self.assertEqual(len(roots), component_count * 2)
         self.assertEqual(len(edges), component_count)
+        self.assertEqual(set(chain_roots.values()), {1})
+        self.assertEqual(len(chain_edges), chain_count)
         self.assertLess(elapsed, 2.0)
 
 
