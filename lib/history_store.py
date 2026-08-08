@@ -586,15 +586,35 @@ def init_audit_schema_v2(conn):
     history_audit_store.init_schema(conn)
 
 
+def _quote_identifier(value):
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _legacy_table_name(table, attempt):
+    base = table + "_legacy_unverified"
+    if attempt == 0:
+        return base
+    digest = _sha(table.encode("utf-8"))[:8]
+    if attempt == 1:
+        return base + "_" + digest
+    return base + "_" + digest + "_" + str(attempt)
+
+
 def _rename_unverified_table(conn, table):
-    target = table + "_legacy_unverified"
-    existing = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (target,),
-    ).fetchone()
-    if existing is not None:
-        target += "_" + _sha(table.encode("utf-8"))[:8]
-    conn.execute("ALTER TABLE %s RENAME TO %s" % (table, target))
+    attempt = 0
+    while True:
+        target = _legacy_table_name(table, attempt)
+        existing = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = ?",
+            (target,),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                "ALTER TABLE %s RENAME TO %s"
+                % (_quote_identifier(table), _quote_identifier(target))
+            )
+            return target
+        attempt += 1
 
 
 def _migrate_unverified_history_audit(conn):
@@ -660,13 +680,58 @@ def _migrate_unverified_history_receipts(conn):
     }
     if not required.issubset(columns):
         conn.execute("DROP TRIGGER IF EXISTS history_receipt_pack_guard")
+        conn.execute("DROP TRIGGER IF EXISTS history_receipt_update_guard")
+        conn.execute("DROP TRIGGER IF EXISTS history_receipt_delete_guard")
         _rename_unverified_table(conn, "history_receipts")
 
 
+def _execute_sql_script(conn, source):
+    pending = ""
+    for line in source.splitlines(keepends=True):
+        pending += line
+        if sqlite3.complete_statement(pending):
+            statement = pending.strip()
+            pending = ""
+            if statement:
+                conn.execute(statement)
+    if pending.strip():
+        raise sqlite3.OperationalError("incomplete schema statement")
+
+
+@contextlib.contextmanager
+def _schema_upgrade_transaction(conn):
+    if conn.in_transaction:
+        savepoint = "history_store_schema_" + secrets.token_hex(8)
+        conn.execute("SAVEPOINT " + savepoint)
+        try:
+            yield
+            conn.execute("RELEASE SAVEPOINT " + savepoint)
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK TO SAVEPOINT " + savepoint)
+                conn.execute("RELEASE SAVEPOINT " + savepoint)
+            raise
+        return
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 def init_schema(conn):
+    with _schema_upgrade_transaction(conn):
+        _init_schema(conn)
+
+
+def _init_schema(conn):
     _migrate_unverified_history_audit(conn)
     _migrate_unverified_history_receipts(conn)
-    conn.executescript(SCHEMA)
+    _execute_sql_script(conn, SCHEMA)
     conn.execute(
         "DROP TRIGGER IF EXISTS history_pack_publication_update_guard"
     )
@@ -721,7 +786,8 @@ def init_schema(conn):
                 row["publication_id"],
             ),
         )
-    conn.executescript(
+    _execute_sql_script(
+        conn,
         """
         CREATE TRIGGER IF NOT EXISTS history_pack_publication_update_guard
         BEFORE UPDATE ON history_pack_publications
