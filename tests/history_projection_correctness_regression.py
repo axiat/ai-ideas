@@ -292,6 +292,129 @@ class HistoryProjectionCorrectnessRegression(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_legacy_schema_version_reads_fail_closed(self):
+        conn = self._initialize([row("legacy schema version")])
+        try:
+            projection.rebuild(conn, self.policy)
+            conn.execute(
+                "UPDATE schema_meta SET value = 'history-projection-legacy' "
+                "WHERE key = 'history_projection_schema_version'"
+            )
+            for read in (
+                lambda: projection.validate_published_generation(
+                    conn, self.policy
+                ),
+                lambda: projection.search(conn, "legacy", self.policy),
+                lambda: projection.build_generation_brief(conn, self.policy),
+            ):
+                with self.assertRaisesRegex(
+                    projection.ProjectionError, "migration required"
+                ):
+                    read()
+            conn.execute(
+                "UPDATE schema_meta SET value = ? "
+                "WHERE key = 'history_projection_schema_version'",
+                (projection.PROJECTION_SCHEMA_VERSION,),
+            )
+            conn.execute(
+                "UPDATE search_index_generations "
+                "SET projection_schema_version = 'history-projection-legacy'"
+            )
+            with self.assertRaisesRegex(
+                projection.ProjectionError, "migration required"
+            ):
+                projection.search(conn, "legacy", self.policy)
+        finally:
+            conn.close()
+
+    def test_legacy_required_columns_read_fails_closed(self):
+        conn = self._initialize([row("legacy vector columns")])
+        try:
+            projection.rebuild(conn, self.policy)
+            conn.execute("DROP TABLE search_vectors")
+            conn.execute(
+                "CREATE TABLE search_vectors("
+                "candidate_id TEXT NOT NULL, facet TEXT NOT NULL)"
+            )
+            with self.assertRaisesRegex(
+                projection.ProjectionError, "migration required"
+            ):
+                projection.search(conn, "legacy", self.policy)
+        finally:
+            conn.close()
+
+    def test_legacy_fts_shape_read_fails_closed(self):
+        conn = self._initialize([row("legacy fts shape")])
+        try:
+            projection.rebuild(conn, self.policy)
+            conn.execute("DROP TABLE search_fts")
+            conn.execute(
+                "CREATE VIRTUAL TABLE search_fts USING "
+                "fts5(candidate_id UNINDEXED, content)"
+            )
+            with self.assertRaisesRegex(
+                projection.ProjectionError, "migration required"
+            ):
+                projection.search(conn, "legacy", self.policy)
+        finally:
+            conn.close()
+
+    def test_readiness_probe_and_projection_read_share_snapshot(self):
+        conn = self._initialize([row("readiness snapshot")])
+        try:
+            projection.rebuild(conn, self.policy)
+            candidate_id = conn.execute(
+                "SELECT candidate_id FROM candidates"
+            ).fetchone()[0]
+            reader_thread = threading.current_thread()
+            start = threading.Event()
+            done = threading.Event()
+            errors = []
+
+            def writer():
+                start.wait(5)
+                connection = history_store.connect(self.db)
+                try:
+                    projection.drop_rebuildable_projections(connection)
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    connection.close()
+                    done.set()
+
+            worker = threading.Thread(target=writer)
+            worker.start()
+            original_readiness = projection._projection_readiness
+            triggered = False
+
+            def readiness(connection):
+                nonlocal triggered
+                result = original_readiness(connection)
+                if threading.current_thread() is reader_thread and not triggered:
+                    triggered = True
+                    start.set()
+                    if not done.wait(5):
+                        raise AssertionError("concurrent drop did not finish")
+                return result
+
+            try:
+                with mock.patch.object(
+                    projection,
+                    "_projection_readiness",
+                    side_effect=readiness,
+                ):
+                    result = projection.search(
+                        conn, "readiness snapshot", self.policy
+                    )
+            finally:
+                start.set()
+                worker.join(5)
+            self.assertFalse(errors)
+            self.assertTrue(triggered)
+            self.assertIn(candidate_id, result["candidate_ids"])
+        finally:
+            conn.close()
+
     def test_search_uses_one_projection_snapshot(self):
         conn = self._initialize([row("snapshot marker")])
         try:
