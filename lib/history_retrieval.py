@@ -194,7 +194,10 @@ def _normalize_query(query):
     ):
         raise ValueError("query candidate content hash is invalid")
     facets = query.get("facets", {})
-    if not isinstance(facets, dict) or set(facets) - set(history_projection.FACETS):
+    if (
+        not isinstance(facets, dict)
+        or set(facets) - set(history_projection.SEARCH_FACETS)
+    ):
         raise ValueError("query facets are not closed")
     normalized_facets = {}
     for facet, text in sorted(facets.items()):
@@ -226,7 +229,11 @@ def _query_facets(query, intent):
         category = _query_value(query, "category")
         verdict = _query_value(query, "verdict")
         code = history_projection.failure_code(verdict, category, reason)
-        return {"failure_pattern": " ".join((code, category, reason, verdict)).strip()}
+        derived = " ".join((code, category, reason, verdict)).strip()
+        text = supplied.get("failure_pattern", derived)
+        if not isinstance(text, str):
+            raise ValueError("query contains an unsupported facet")
+        return {"failure_pattern": text} if text else {}
     defaults = {
         "problem_estimand": story,
         "claimed_delta": story,
@@ -238,9 +245,13 @@ def _query_facets(query, intent):
         ),
     }
     for facet, text in supplied.items():
-        if facet not in history_projection.FACETS or not isinstance(text, str):
+        if (
+            facet not in history_projection.SEARCH_FACETS
+            or not isinstance(text, str)
+        ):
             raise ValueError("query contains an unsupported facet")
-        defaults[facet] = text
+        if facet in defaults:
+            defaults[facet] = text
     relevant = {
         "duplicate_search": {"problem_estimand", "claimed_delta"},
         "evolution_search": {"problem_estimand", "claimed_delta", "mechanism"},
@@ -353,6 +364,31 @@ def _rank_facet(values, depth):
     return ranked
 
 
+def _semantic_query_facets(query_facets):
+    return [
+        (facet, query_facets[facet])
+        for facet in history_projection.SEARCH_FACETS
+        if facet in query_facets
+    ]
+
+
+def _fair_channel_slice(groups, depth):
+    results = []
+    offset = 0
+    while len(results) < depth:
+        added = False
+        for group in groups:
+            if offset < len(group):
+                results.append(group[offset])
+                added = True
+                if len(results) == depth:
+                    break
+        if not added:
+            break
+        offset += 1
+    return results
+
+
 def _exact_channel(conn, query, intent, depth):
     rows = []
     if intent == "evolution_search":
@@ -435,8 +471,8 @@ def _exact_channel(conn, query, intent, depth):
 
 def _fts_channel(conn, query, intent, depth):
     query_facets = _query_facets(query, intent)
-    values = []
-    for facet, text in sorted(query_facets.items()):
+    groups = []
+    for facet, text in _semantic_query_facets(query_facets):
         facet_values = []
         terms = history_projection._tokens(text)
         if not terms:
@@ -462,14 +498,14 @@ def _fts_channel(conn, query, intent, depth):
                     _score=score,
                 )
             )
-        values.extend(_rank_facet(facet_values, depth))
-    return values
+        groups.append(_rank_facet(facet_values, depth))
+    return _fair_channel_slice(groups, depth)
 
 
 def _dense_channel(conn, query, intent, depth):
     query_facets = _query_facets(query, intent)
-    values = []
-    for facet, text in sorted(query_facets.items()):
+    groups = []
+    for facet, text in _semantic_query_facets(query_facets):
         facet_values = []
         query_vector, norm = history_projection.embed(text)
         if not norm:
@@ -502,23 +538,25 @@ def _dense_channel(conn, query, intent, depth):
                     _score=score,
                 )
             )
-        values.extend(_rank_facet(facet_values, depth))
-    return values
+        groups.append(_rank_facet(facet_values, depth))
+    return _fair_channel_slice(groups, depth)
 
 
 def _lineage_channel(conn, seed_ids, depth):
     seed_ids = list(dict.fromkeys(seed_ids))
     if not seed_ids:
         return []
-    placeholders = ",".join("?" for _ in seed_ids)
-    lineages = [
-        row[0]
-        for row in conn.execute(
-            "SELECT DISTINCT lineage_id FROM candidates "
-            "WHERE candidate_id IN (%s) ORDER BY lineage_id" % placeholders,
-            tuple(seed_ids),
-        )
-    ]
+    seed_rows = []
+    lineages = []
+    seen_lineages = set()
+    for candidate_id in seed_ids:
+        row = _candidate_row(conn, candidate_id)
+        if row is None:
+            continue
+        seed_rows.append(row)
+        if row["lineage_id"] not in seen_lineages:
+            seen_lineages.add(row["lineage_id"])
+            lineages.append(row["lineage_id"])
     results = []
     for lineage_id in lineages:
         current = conn.execute(
@@ -533,9 +571,8 @@ def _lineage_channel(conn, seed_ids, depth):
         highest = next(
             (
                 row
-                for candidate_id in seed_ids
-                for row in [_candidate_row(conn, candidate_id)]
-                if row is not None and row["lineage_id"] == lineage_id
+                for row in seed_rows
+                if row["lineage_id"] == lineage_id
             ),
             None,
         )
@@ -670,31 +707,44 @@ def _expansion_channel(conn, request, depth):
         or any(not isinstance(item, str) for item in identifiers)
     ):
         raise ValueError("expansion request exceeds its bound")
-    placeholders = ",".join("?" for _ in identifiers)
-    column = (
-        "c.lineage_id"
-        if selector == "lineage_ids"
-        else "c.candidate_id"
-    )
-    rows = conn.execute(
-        (
+    if selector == "lineage_ids":
+        groups = []
+        for lineage_id in identifiers:
+            groups.append(
+                conn.execute(
+                    """
+                    SELECT c.*
+                    FROM candidates c
+                    JOIN search_index_entries e
+                      ON e.candidate_id = c.candidate_id
+                    WHERE c.lineage_id = ? AND e.active = 1
+                    ORDER BY c.source_sequence DESC, c.candidate_id
+                    LIMIT ?
+                    """,
+                    (lineage_id, depth),
+                ).fetchall()
+            )
+        rows = _fair_channel_slice(groups, depth)
+        facet = "lineage"
+    else:
+        rows_by_id = {}
+        placeholders = ",".join("?" for _ in identifiers)
+        for row in conn.execute(
             """
-        SELECT c.*
-        FROM candidates c
-        JOIN search_index_entries e ON e.candidate_id = c.candidate_id
-        WHERE %s IN (%s) AND e.active = 1
-        ORDER BY c.source_sequence DESC, c.candidate_id
-        LIMIT ?
-        """
-            % (column, placeholders)
-        ),
-        (*identifiers, depth),
-    ).fetchall()
-    facet = (
-        "lineage"
-        if selector == "lineage_ids"
-        else "record"
-    )
+            SELECT c.*
+            FROM candidates c
+            JOIN search_index_entries e ON e.candidate_id = c.candidate_id
+            WHERE c.candidate_id IN (%s) AND e.active = 1
+            """ % placeholders,
+            tuple(identifiers),
+        ):
+            rows_by_id[row["candidate_id"]] = row
+        rows = [
+            rows_by_id[candidate_id]
+            for candidate_id in identifiers
+            if candidate_id in rows_by_id
+        ][:depth]
+        facet = "record"
     return [
         _evidence(
             row,
@@ -2028,6 +2078,20 @@ def _publish_pack(
         raise RetrievalError("pack publication identity collision")
 
 
+def _validate_query_for_intent(query, intent):
+    if intent != "failure_pattern_search":
+        return
+    required = ("verdict", "reason", "category")
+    if any(
+        not isinstance(query.get(field), str)
+        or not query[field].strip()
+        for field in required
+    ):
+        raise RetrievalError(
+            "failure-pattern query requires verdict, reason, and category"
+        )
+
+
 def build_pack(
     conn,
     query,
@@ -2044,6 +2108,7 @@ def build_pack(
         comparator_role_bytes, comparator_role_identity
     )
     normalized_query = _normalize_query(query)
+    _validate_query_for_intent(normalized_query, intent)
     declared_parent = normalized_query.get(
         "declared_parent_candidate_id"
     )
