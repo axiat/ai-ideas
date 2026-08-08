@@ -356,7 +356,9 @@ echo $$ > "$sidelock/pid"
 trap 'rm -rf "$sidelock"; [ "$(cat "$gate_lock/pid" 2>/dev/null)" = "$$" ] && rm -rf "$gate_lock"' EXIT
 rm -rf "$statedir"/run.* 2>/dev/null || true   # Mirrors left by an interrupted invocation.
 
-# Built-in agy shares its launch stamp and lock with agy-worker.sh.
+# Built-in agy shares its launch stamp and lock with agy-worker.sh. An explicit
+# SIDE_CMD=./agy-worker.sh wrapper is gated here too, because its AGY_REPO moves
+# the wrapper's own stamp into the per-mirror sandbox and would skip the gap.
 gate() {
   [ "$gap" -gt 0 ] || return 0
   local holder lock_m now last wait_s
@@ -483,7 +485,7 @@ run_agent() {
   fi
   throttle
   read -r first _ <<<"$cmd"
-  case "$first" in ''|agy|*/agy) gate ;; esac
+  case "$first" in ''|agy|*/agy|*agy-worker.sh) gate ;; esac
   sandbox=$(mktemp -d "$statedir/run.XXXXXX") || return 1
   rel=${target#"$repo"/}
   target_in_sandbox="$sandbox/$rel"
@@ -504,8 +506,8 @@ run_agent() {
 
 ${prompt_in_sandbox}" < /dev/null >> "$logf" 2>&1 )
   else
-    # GROK_REPO keeps the explicit Grok adapter inside the mirror; other backends ignore it.
-    ( cd "$sandbox" && GROK_REPO="$sandbox" $cmd "${pre}
+    # Wrapper root overrides pin every backend's working root into the mirror; other backends ignore them.
+    ( cd "$sandbox" && GROK_REPO="$sandbox" CLAUDE_REPO="$sandbox" AGY_REPO="$sandbox" $cmd "${pre}
 
 ${prompt_in_sandbox}" < /dev/null >> "$logf" 2>&1 )
   fi

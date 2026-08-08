@@ -191,11 +191,29 @@ _SHA_FIELDS = {
 
 
 class RuntimeContractError(RuntimeError):
-    pass
+    def __init__(self, *args, error_class=None):
+        super().__init__(*args)
+        # None means the failure carried no portable-stage classification;
+        # the portable stage's contract/execution tag otherwise passes through.
+        self.error_class = error_class
+
+    def __reduce__(self):
+        # error_class is keyword-only and not in args, so default pickling
+        # would drop it on reconstruction. Preserve it explicitly.
+        return (
+            _rebuild_runtime_contract_error,
+            (type(self), self.args, self.error_class),
+        )
 
 
 class CalibrationError(RuntimeContractError):
     pass
+
+
+def _rebuild_runtime_contract_error(error_type, args, error_class):
+    # Pickle helper for RuntimeContractError.__reduce__; keeps the concrete
+    # subclass and its portable-stage classification across reconstruction.
+    return error_type(*args, error_class=error_class)
 
 
 def _runtime_authority_capability():
@@ -3830,6 +3848,10 @@ def _portable_stage_module():
     return portable_stage
 
 
+def _portable_stage_contract_error(exc):
+    return RuntimeContractError(str(exc), error_class=exc.error_class)
+
+
 def _public_portable_stage(prepared, reference_root):
     portable_module = _portable_stage_module()
     try:
@@ -3837,7 +3859,7 @@ def _public_portable_stage(prepared, reference_root):
             prepared, reference_root
         )
     except portable_module.PortableStageError as exc:
-        raise RuntimeContractError(str(exc)) from exc
+        raise _portable_stage_contract_error(exc) from exc
 
 
 def _verified_public_portable_stage(descriptor, reference_root):
@@ -3847,7 +3869,7 @@ def _verified_public_portable_stage(descriptor, reference_root):
             descriptor, reference_root
         )
     except portable_module.PortableStageError as exc:
-        raise RuntimeContractError(str(exc)) from exc
+        raise _portable_stage_contract_error(exc) from exc
 
 
 def _provider_adapters_module():
@@ -3963,7 +3985,7 @@ def _run_portable_stage(
         portable_module.run_stage(prepared)
         portable_module.verify_completion(prepared)
     except portable_module.PortableStageError as exc:
-        raise RuntimeContractError(str(exc)) from exc
+        raise _portable_stage_contract_error(exc) from exc
     return prepared
 
 
@@ -4567,7 +4589,7 @@ def verify_stage_completion(prepared):
         try:
             return portable_module.verify_completion(prepared)
         except portable_module.PortableStageError as exc:
-            raise RuntimeContractError(str(exc)) from exc
+            raise _portable_stage_contract_error(exc) from exc
     manifest_raw = _validate_prepared_stage(prepared)
     try:
         preflight_raw = _read_bound_regular(

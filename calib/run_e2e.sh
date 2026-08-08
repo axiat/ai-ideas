@@ -64,7 +64,8 @@ cat > "$mirror/.claude/settings.json" <<'JSON'
 JSON
 pre=$(mirror_pre "$mirror" "tmp/round/priorwork.md")
 logf="$repo/$OUT/research.log"   # The backend changes CWD, so the log path must be absolute.
-( cd "$mirror" && GROK_REPO="$mirror" $RESOLVED_CMD "${pre}
+# Wrapper root overrides pin every backend's working root into the mirror.
+( cd "$mirror" && GROK_REPO="$mirror" CLAUDE_REPO="$mirror" AGY_REPO="$mirror" $RESOLVED_CMD "${pre}
 
 Read roles/research.md and follow it." < /dev/null > "$logf" 2>&1 )
 rc=$?
