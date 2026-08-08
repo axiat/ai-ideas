@@ -1,5 +1,6 @@
 """Disposable manifest-only agent mirrors for history audit v2."""
 
+import errno
 import hashlib
 import json
 import math
@@ -104,35 +105,108 @@ def _regular_single_link(path, code):
     return info
 
 
-def _open_read_stable(path, maximum, code, *, require_owner_only=False):
-    before = _regular_single_link(path, code)
-    if require_owner_only and before.st_mode & 0o077:
-        raise PortableAgentError(code)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(str(path), flags)
-    except OSError as exc:
-        raise PortableAgentError(code) from exc
-    try:
-        opened = os.fstat(descriptor)
+def _trusted_root_alias(path, code):
+    """Expand only immutable, root-owned aliases directly below ``/``.
+
+    Darwin exposes normal temporary paths through root-owned ``/var`` and
+    ``/tmp`` symlinks.  They cannot be replaced by the invoking user, so they
+    are safe bootstrap aliases; all remaining components are still opened
+    with O_NOFOLLOW.
+    """
+    path = pathlib.Path(os.path.abspath(os.fspath(path)))
+    for _ in range(8):
+        if len(path.parts) < 2:
+            return path
+        alias = pathlib.Path(os.path.sep) / path.parts[1]
+        try:
+            alias_info = alias.lstat()
+            root_info = pathlib.Path(os.path.sep).lstat()
+        except FileNotFoundError:
+            return path
+        except OSError as exc:
+            raise PortableAgentError(code) from exc
+        if not stat.S_ISLNK(alias_info.st_mode):
+            return path
         if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+            alias_info.st_uid != 0
+            or root_info.st_uid != 0
+            or root_info.st_mode & 0o022
         ):
             raise PortableAgentError(code)
-        raw = os.read(descriptor, maximum + 1)
-        if len(raw) > maximum or os.read(descriptor, 1):
-            raise PortableAgentError("oversize")
+        try:
+            target = os.readlink(alias)
+        except OSError as exc:
+            raise PortableAgentError(code) from exc
+        if not os.path.isabs(target):
+            target = os.path.join(os.path.sep, target)
+        path = pathlib.Path(
+            os.path.normpath(os.path.join(target, *path.parts[2:]))
+        )
+        if not path.is_absolute():
+            raise PortableAgentError(code)
+    raise PortableAgentError(code)
+
+
+def _open_read_stable(path, maximum, code, *, require_owner_only=False):
+    path = _trusted_root_alias(path, code)
+    directory_descriptor = _open_absolute_directory_no_follow(path.parent, code)
+    try:
+        try:
+            before = os.stat(
+                path.name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError(code) from exc
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise PortableAgentError(code)
+        if require_owner_only and before.st_mode & 0o077:
+            raise PortableAgentError(code)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(
+                path.name, flags, dir_fd=directory_descriptor
+            )
+        except OSError as exc:
+            raise PortableAgentError(code) from exc
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or (opened.st_dev, opened.st_ino)
+                != (before.st_dev, before.st_ino)
+            ):
+                raise PortableAgentError(code)
+            raw = os.read(descriptor, maximum + 1)
+            if len(raw) > maximum or os.read(descriptor, 1):
+                raise PortableAgentError("oversize")
+        finally:
+            os.close(descriptor)
+        try:
+            after = os.stat(
+                path.name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError(code) from exc
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise PortableAgentError("unstable_output")
+        return raw
     finally:
-        os.close(descriptor)
-    after = _regular_single_link(path, code)
-    if (
-        (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-    ):
-        raise PortableAgentError("unstable_output")
-    return raw
+        os.close(directory_descriptor)
 
 
 def _open_directory_at(parent_descriptor, component, code):
@@ -150,7 +224,7 @@ def _open_directory_at(parent_descriptor, component, code):
 
 
 def _open_absolute_directory_no_follow(path, code):
-    path = pathlib.Path(path)
+    path = _trusted_root_alias(path, code)
     if not path.is_absolute():
         raise PortableAgentError(code)
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
@@ -164,6 +238,72 @@ def _open_absolute_directory_no_follow(path, code):
     except Exception:
         os.close(descriptor)
         raise
+
+
+def _open_or_create_absolute_directory_no_follow(path, code):
+    path = _trusted_root_alias(path, code)
+    if (
+        not path.is_absolute()
+        or not hasattr(os, "O_NOFOLLOW")
+        or os.open not in os.supports_dir_fd
+        or os.mkdir not in os.supports_dir_fd
+    ):
+        raise PortableAgentError("no_follow_traversal_unavailable")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(os.path.sep, flags)
+    try:
+        for component in path.parts[1:]:
+            try:
+                child = _open_directory_at(descriptor, component, code)
+            except PortableAgentError as exc:
+                cause = exc.__cause__
+                if not isinstance(cause, OSError) or cause.errno != errno.ENOENT:
+                    raise
+                try:
+                    os.mkdir(component, 0o700, dir_fd=descriptor)
+                except OSError as mkdir_exc:
+                    if mkdir_exc.errno != errno.EEXIST:
+                        raise PortableAgentError(code) from mkdir_exc
+                child = _open_directory_at(descriptor, component, code)
+            os.close(descriptor)
+            descriptor = child
+        os.fchmod(descriptor, 0o700)
+        return path, descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _stat_absolute_no_follow(path, code):
+    path = _trusted_root_alias(path, code)
+    if path == pathlib.Path(os.path.sep):
+        try:
+            return path.lstat()
+        except OSError as exc:
+            raise PortableAgentError(code) from exc
+    parent_descriptor = _open_absolute_directory_no_follow(path.parent, code)
+    try:
+        try:
+            return os.stat(
+                path.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError(code) from exc
+    finally:
+        os.close(parent_descriptor)
+
+
+def _assert_directory_binding(path, descriptor, code):
+    observed = _stat_absolute_no_follow(path, code)
+    opened = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(observed.st_mode)
+        or (observed.st_dev, observed.st_ino)
+        != (opened.st_dev, opened.st_ino)
+    ):
+        raise PortableAgentError(code)
 
 
 def _read_declared_source(resolved_root, root_info, source_relative, maximum):
@@ -263,12 +403,256 @@ def _write_owner_only(path, raw, owner_root):
 
 
 def _fsync_directory(path):
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(str(path), flags)
+    descriptor = _open_absolute_directory_no_follow(
+        path, "unsafe_state_path"
+    )
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _open_or_create_directory_at(parent_descriptor, name, code):
+    try:
+        descriptor = _open_directory_at(parent_descriptor, name, code)
+    except PortableAgentError as exc:
+        cause = exc.__cause__
+        if not isinstance(cause, OSError) or cause.errno != errno.ENOENT:
+            raise
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_descriptor)
+        except OSError as mkdir_exc:
+            if mkdir_exc.errno != errno.EEXIST:
+                raise PortableAgentError(code) from mkdir_exc
+        descriptor = _open_directory_at(parent_descriptor, name, code)
+    try:
+        os.fchmod(descriptor, 0o700)
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _import_temp_name_is_valid(name, final_name):
+    prefix = "." + final_name + "."
+    suffix = ".tmp"
+    if not name.startswith(prefix) or not name.endswith(suffix):
+        return False
+    token = name[len(prefix) : -len(suffix)]
+    return len(token) == 32 and all(
+        character in "0123456789abcdef" for character in token
+    )
+
+
+def _verify_import_winner(
+    imports_descriptor,
+    final_name,
+    expected_raw,
+    maximum,
+):
+    try:
+        before = os.stat(
+            final_name,
+            dir_fd=imports_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as exc:
+        raise PortableAgentError("unsafe_import") from exc
+    if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o077:
+        raise PortableAgentError("unsafe_import")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(
+            final_name, flags, dir_fd=imports_descriptor
+        )
+    except OSError as exc:
+        raise PortableAgentError("unsafe_import") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_mode & 0o077
+            or (opened.st_dev, opened.st_ino)
+            != (before.st_dev, before.st_ino)
+        ):
+            raise PortableAgentError("unsafe_import")
+        raw = os.read(descriptor, maximum + 1)
+        if len(raw) > maximum or os.read(descriptor, 1):
+            raise PortableAgentError("oversize")
+        after_read = os.fstat(descriptor)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+        ) != (
+            after_read.st_dev,
+            after_read.st_ino,
+            after_read.st_size,
+            after_read.st_mtime_ns,
+        ):
+            raise PortableAgentError("unsafe_import")
+
+        removed_alias = False
+        if after_read.st_nlink != 1:
+            try:
+                with os.scandir(imports_descriptor) as entries:
+                    names = [entry.name for entry in entries]
+            except OSError as exc:
+                raise PortableAgentError("unsafe_import") from exc
+            for name in names:
+                if not _import_temp_name_is_valid(name, final_name):
+                    continue
+                try:
+                    info = os.stat(
+                        name,
+                        dir_fd=imports_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise PortableAgentError("unsafe_import") from exc
+                if (info.st_dev, info.st_ino) == (
+                    after_read.st_dev,
+                    after_read.st_ino,
+                ):
+                    try:
+                        os.unlink(name, dir_fd=imports_descriptor)
+                    except FileNotFoundError:
+                        pass
+                    except OSError as exc:
+                        raise PortableAgentError("unsafe_import") from exc
+                    removed_alias = True
+            after_read = os.fstat(descriptor)
+        if after_read.st_nlink != 1:
+            raise PortableAgentError("unsafe_import")
+        try:
+            final = os.stat(
+                final_name,
+                dir_fd=imports_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise PortableAgentError("unsafe_import") from exc
+        if (
+            final.st_dev,
+            final.st_ino,
+            final.st_mode,
+            final.st_nlink,
+            final.st_size,
+            final.st_mtime_ns,
+        ) != (
+            after_read.st_dev,
+            after_read.st_ino,
+            after_read.st_mode,
+            after_read.st_nlink,
+            after_read.st_size,
+            after_read.st_mtime_ns,
+        ):
+            raise PortableAgentError("unsafe_import")
+        if removed_alias:
+            os.fsync(imports_descriptor)
+    finally:
+        os.close(descriptor)
+    if raw != expected_raw:
+        raise PortableAgentError("import_conflict")
+
+
+def _publish_import(
+    root_descriptor,
+    output_sha,
+    raw,
+    maximum,
+):
+    imports_descriptor = _open_or_create_directory_at(
+        root_descriptor, "imports", "unsafe_state_path"
+    )
+    final_name = output_sha + ".json"
+    try:
+        os.stat(
+            final_name,
+            dir_fd=imports_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        os.close(imports_descriptor)
+        raise PortableAgentError("unsafe_import") from exc
+    else:
+        try:
+            _verify_import_winner(
+                imports_descriptor,
+                final_name,
+                raw,
+                maximum,
+            )
+        finally:
+            os.close(imports_descriptor)
+        return final_name
+    temp_name = "." + final_name + "." + secrets.token_hex(16) + ".tmp"
+    temp_exists = False
+    installed = False
+    try:
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(
+            temp_name,
+            flags,
+            0o600,
+            dir_fd=imports_descriptor,
+        )
+        temp_exists = True
+        try:
+            position = 0
+            while position < len(raw):
+                written = os.write(descriptor, raw[position:])
+                if written <= 0:
+                    raise OSError(errno.ENOSPC, "short import write")
+                position += written
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(
+                temp_name,
+                final_name,
+                src_dir_fd=imports_descriptor,
+                dst_dir_fd=imports_descriptor,
+                follow_symlinks=False,
+            )
+            installed = True
+        except FileExistsError:
+            pass
+        try:
+            os.unlink(temp_name, dir_fd=imports_descriptor)
+        except FileNotFoundError:
+            if not installed:
+                raise
+        temp_exists = False
+        if installed:
+            os.fsync(imports_descriptor)
+        _verify_import_winner(
+            imports_descriptor,
+            final_name,
+            raw,
+            maximum,
+        )
+    finally:
+        try:
+            if temp_exists:
+                try:
+                    os.unlink(temp_name, dir_fd=imports_descriptor)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(imports_descriptor)
+    return final_name
 
 
 def _copy_inputs(inputs, mirror):
@@ -550,7 +934,7 @@ def _validate_expected_response_attestation(value):
 
 
 def _read_mirror_output(mirror, relative, maximum):
-    root = pathlib.Path(mirror).resolve(strict=True)
+    root = _trusted_root_alias(mirror, "unsafe_output")
     directory_descriptor = _open_absolute_directory_no_follow(
         root, "unsafe_output"
     )
@@ -1119,11 +1503,10 @@ def _validate_tmp_directory(directory_descriptor, budget):
 
 
 def _validate_tmp_scratch(mirror):
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
     try:
-        mirror_descriptor = os.open(str(mirror), flags)
+        mirror_descriptor = _open_absolute_directory_no_follow(
+            mirror, "unexpected_artifact"
+        )
     except OSError as exc:
         raise PortableAgentError("unexpected_artifact") from exc
     try:
@@ -1259,14 +1642,15 @@ def _walk_mirror_descriptors(
     skipped_root=None,
 ):
     skipped_root = dict(skipped_root or {})
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
     try:
-        root_before = pathlib.Path(mirror).lstat()
+        root_before = _stat_absolute_no_follow(
+            mirror, "unexpected_artifact"
+        )
         if not stat.S_ISDIR(root_before.st_mode):
             raise PortableAgentError("unexpected_artifact")
-        root_descriptor = os.open(str(mirror), flags)
+        root_descriptor = _open_absolute_directory_no_follow(
+            mirror, "unexpected_artifact"
+        )
     except OSError as exc:
         raise PortableAgentError("unexpected_artifact") from exc
     try:
@@ -1293,7 +1677,9 @@ def _walk_mirror_descriptors(
     finally:
         os.close(root_descriptor)
     try:
-        final = pathlib.Path(mirror).lstat()
+        final = _stat_absolute_no_follow(
+            mirror, "unexpected_artifact"
+        )
     except OSError as exc:
         raise PortableAgentError("unexpected_artifact") from exc
     if (
@@ -1418,11 +1804,10 @@ def run_portable_stdout_attempt(
     expected_attestation = _validate_expected_response_attestation(
         expected_response_attestation
     )
-    root = pathlib.Path(state_root)
-    if root.exists() and (root.is_symlink() or not root.is_dir()):
-        raise PortableAgentError("unsafe_state_root")
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(root, 0o700)
+    root_descriptor = None
+    root, root_descriptor = _open_or_create_absolute_directory_no_follow(
+        state_root, "unsafe_state_root"
+    )
     attempt = None
     process = None
     process_group_quiesced = False
@@ -1502,21 +1887,14 @@ def run_portable_stdout_attempt(
         output_sha = hashlib.sha256(model_bytes).hexdigest()
         _remove_attempt(attempt)
         attempt = None
-        imports = root / "imports"
-        _ensure_owner_tree(root, imports)
-        imported = imports / (output_sha + ".json")
-        if imported.exists():
-            existing = _open_read_stable(
-                imported,
-                max_stdout_bytes,
-                "unsafe_import",
-                require_owner_only=True,
-            )
-            if existing != model_bytes:
-                raise PortableAgentError("import_conflict")
-        else:
-            _write_owner_only(imported, model_bytes, root)
-            _fsync_directory(imports)
+        final_name = _publish_import(
+            root_descriptor,
+            output_sha,
+            model_bytes,
+            max_stdout_bytes,
+        )
+        imported = root / "imports" / final_name
+        _assert_directory_binding(root, root_descriptor, "unsafe_state_root")
         return {
             "provider": capability.provider,
             "execution_request_profile_hash": capability.profile_hash,
@@ -1529,10 +1907,14 @@ def run_portable_stdout_attempt(
     except OSError as exc:
         raise PortableAgentError("process_error") from exc
     finally:
-        if process is not None and not process_group_quiesced:
-            _kill_group(process)
-        if attempt is not None:
-            _remove_attempt(attempt)
+        try:
+            if process is not None and not process_group_quiesced:
+                _kill_group(process)
+            if attempt is not None:
+                _remove_attempt(attempt)
+        finally:
+            if root_descriptor is not None:
+                os.close(root_descriptor)
 
 
 def run_portable_attempt(
@@ -1552,11 +1934,10 @@ def run_portable_attempt(
     if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
         raise PortableAgentError("invalid_timeout")
     relative_output = _validate_contract(output_contract)
-    root = pathlib.Path(state_root)
-    if root.exists() and (root.is_symlink() or not root.is_dir()):
-        raise PortableAgentError("unsafe_state_root")
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(root, 0o700)
+    root_descriptor = None
+    root, root_descriptor = _open_or_create_absolute_directory_no_follow(
+        state_root, "unsafe_state_root"
+    )
     attempt = None
     process = None
     process_group_quiesced = False
@@ -1609,19 +1990,14 @@ def run_portable_attempt(
         value = _validate_schema(raw, output_contract)
         _remove_attempt(attempt)
         attempt = None
-        imports = root / "imports"
-        _ensure_owner_tree(root, imports)
-        imported = imports / (output_sha + ".json")
-        if imported.exists():
-            existing = _open_read_stable(
-                imported, output_contract["max_bytes"], "unsafe_import",
-                require_owner_only=True,
-            )
-            if existing != raw:
-                raise PortableAgentError("import_conflict")
-        else:
-            _write_owner_only(imported, raw, root)
-            _fsync_directory(imports)
+        final_name = _publish_import(
+            root_descriptor,
+            output_sha,
+            raw,
+            output_contract["max_bytes"],
+        )
+        imported = root / "imports" / final_name
+        _assert_directory_binding(root, root_descriptor, "unsafe_state_root")
         return {
             "provider": capability.provider,
             "capability_profile_hash": capability.profile_hash,
@@ -1633,7 +2009,11 @@ def run_portable_attempt(
     except OSError as exc:
         raise PortableAgentError("process_error") from exc
     finally:
-        if process is not None and not process_group_quiesced:
-            _kill_group(process)
-        if attempt is not None:
-            _remove_attempt(attempt)
+        try:
+            if process is not None and not process_group_quiesced:
+                _kill_group(process)
+            if attempt is not None:
+                _remove_attempt(attempt)
+        finally:
+            if root_descriptor is not None:
+                os.close(root_descriptor)
