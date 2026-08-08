@@ -17,6 +17,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import urllib.parse
 
 try:
     from lib import history_budget
@@ -314,14 +315,22 @@ def _regular_stat(
     return value
 
 
-def _capture_regular_path(path, maximum, *, reject_sparse=True):
+def _capture_regular_path(
+    path, maximum, *, single_link=True, reject_sparse=True
+):
     path = pathlib.Path(path)
     try:
         before = path.lstat()
     except OSError as exc:
         raise StageError("required file is unavailable") from exc
-    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-        raise StageError("required file is not a single-link regular file")
+    if not stat.S_ISREG(before.st_mode) or (
+        single_link and before.st_nlink != 1
+    ):
+        raise StageError(
+            "required file is not a single-link regular file"
+            if single_link
+            else "required file is not a regular file"
+        )
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -331,7 +340,10 @@ def _capture_regular_path(path, maximum, *, reject_sparse=True):
         raise StageError("required file cannot be opened safely") from exc
     try:
         opened = _regular_stat(
-            fd, maximum, reject_sparse=reject_sparse
+            fd,
+            maximum,
+            single_link=single_link,
+            reject_sparse=reject_sparse,
         )
         raw = _read_fd(fd, maximum)
         after = os.fstat(fd)
@@ -1003,6 +1015,74 @@ def _validate_outputs(manifest, stage):
         raise
 
 
+def _paths_overlap(left, right):
+    """Return whether two resolved paths contain one another."""
+    left = pathlib.Path(left).resolve(strict=False)
+    right = pathlib.Path(right).resolve(strict=False)
+    try:
+        left.relative_to(right)
+        return True
+    except ValueError:
+        pass
+    try:
+        right.relative_to(left)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_output_isolation(
+    output_root,
+    outputs,
+    preflight_destination,
+    completion_destination,
+    input_root,
+    captured_inputs,
+    manifest_path,
+    policy,
+    history_authority,
+):
+    """Reject writable host paths that intersect any stage authority."""
+    root_path = output_root["path"]
+    destination_paths = [
+        root_path / output["destination_guard"]["relative"]
+        for output in outputs
+    ]
+    destination_paths.extend(
+        (
+            root_path / preflight_destination["relative"],
+            root_path / completion_destination["relative"],
+        )
+    )
+    protected_roots = [("input", input_root["path"])]
+    protected_files = [
+        ("input", input_root["path"] / value["source"])
+        for value in captured_inputs.values()
+    ]
+    protected_files.extend(
+        (
+            ("manifest", manifest_path),
+            ("policy", policy["path"]),
+        )
+    )
+    if history_authority is not None:
+        database = history_authority["database_path"]
+        protected_files.extend(
+            ("history store", pathlib.Path(str(database) + suffix))
+            for suffix in ("", "-wal", "-shm", "-journal")
+        )
+    for label, protected in protected_roots:
+        if _paths_overlap(root_path, protected):
+            raise StageError(f"output paths overlap {label} authority")
+    for label, protected in protected_files:
+        if _paths_overlap(root_path, protected) or any(
+            _paths_overlap(destination, protected)
+            for destination in destination_paths
+        ):
+            raise StageError(f"output paths overlap {label} authority")
+
+
+
 def _parse_stage_inputs(stage, captured, policy):
     parsed = {}
     for name in (
@@ -1163,6 +1243,106 @@ def _parse_stage_inputs(stage, captured, policy):
     return parsed
 
 
+def _validate_history_snapshot(connection, stage, parsed_inputs, policy):
+    pack = None
+    if stage == "generate":
+        expected = history_projection._build_generation_brief_snapshot(
+            connection,
+            policy,
+            divergence_lens=parsed_inputs["generation_brief.json"][
+                "divergence_lens"
+            ],
+        )
+        if parsed_inputs["generation_brief.json"] != expected:
+            raise StageError(
+                "generation brief is not the current host projection"
+            )
+    elif stage == "history-compare":
+        pack = parsed_inputs["retrieval_pack.json"]
+        history_retrieval._validate_pack(
+            connection,
+            pack,
+            policy,
+            require_complete=True,
+        )
+    else:
+        history_runtime.verify_history_summary(
+            connection,
+            parsed_inputs["candidate.json"],
+            parsed_inputs["history_summary.json"],
+            policy,
+        )
+    return pack
+
+
+def _history_database_identity(database, root):
+    try:
+        current = database.lstat()
+        root_current = root["path"].lstat()
+    except OSError as exc:
+        raise StageError("history store drifted during validation") from exc
+    return (
+        (
+            current.st_dev,
+            current.st_ino,
+            current.st_size,
+            current.st_mtime_ns,
+        ),
+        (root_current.st_dev, root_current.st_ino),
+    )
+
+
+def _close_history_authority(authority):
+    if authority is None:
+        return
+    snapshot = authority.pop("_snapshot_connection", None)
+    observer = authority.pop("_observer_connection", None)
+    if snapshot is not None:
+        try:
+            snapshot.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        snapshot.close()
+    if observer is not None:
+        observer.close()
+
+
+def _revalidate_history_authority(authority, stage, parsed_inputs, policy):
+    """Recheck the exact WAL-visible snapshot retained from preflight."""
+    observer = authority["_observer_connection"]
+    snapshot = authority["_snapshot_connection"]
+    try:
+        if (
+            observer.execute("PRAGMA data_version").fetchone()[0]
+            != authority["snapshot_data_version"]
+        ):
+            raise StageError("history store drifted during validation")
+        identity, root_identity = _history_database_identity(
+            authority["database_path"], authority["root"]
+        )
+        if (
+            identity != authority["identity"]
+            or root_identity != authority["root"]["identity"]
+        ):
+            raise StageError("history store drifted during validation")
+        _validate_history_snapshot(snapshot, stage, parsed_inputs, policy)
+        if (
+            observer.execute("PRAGMA data_version").fetchone()[0]
+            != authority["snapshot_data_version"]
+        ):
+            raise StageError("history store drifted during validation")
+    except StageError:
+        raise
+    except (
+        OSError,
+        sqlite3.Error,
+        history_projection.ProjectionError,
+        history_retrieval.RetrievalError,
+        history_runtime.RuntimeContractError,
+    ) as exc:
+        raise StageError("history authority validation failed") from exc
+
+
 def _validate_history_authority(stage, reference, parsed_inputs, policy):
     summary = parsed_inputs.get("history_summary.json")
     needs_store = (
@@ -1201,48 +1381,38 @@ def _validate_history_authority(stage, reference, parsed_inputs, policy):
         or before.st_size > 4 * 1024 * 1024 * 1024
     ):
         raise StageError("history store is not a bounded regular file")
-    connection = None
+    snapshot = None
+    observer = None
     try:
-        connection = sqlite3.connect(
-            database.resolve(strict=True).as_uri() + "?mode=ro",
-            uri=True,
-            isolation_level=None,
+        database_uri = database.resolve(strict=True).as_uri() + "?mode=ro"
+        observer = sqlite3.connect(
+            database_uri, uri=True, isolation_level=None
         )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA query_only = ON")
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("BEGIN")
-        pack = None
-        if stage == "generate":
-            expected = (
-                history_projection._build_generation_brief_snapshot(
-                    connection,
-                    policy,
-                    divergence_lens=parsed_inputs[
-                        "generation_brief.json"
-                    ]["divergence_lens"],
-                )
-            )
-            if parsed_inputs["generation_brief.json"] != expected:
-                raise StageError(
-                    "generation brief is not the current host projection"
-                )
-        elif stage == "history-compare":
-            pack = parsed_inputs["retrieval_pack.json"]
-            history_retrieval._validate_pack(
-                connection,
-                pack,
-                policy,
-                require_complete=True,
-            )
-        else:
-            history_runtime.verify_history_summary(
-                connection,
-                parsed_inputs["candidate.json"],
-                summary,
-                policy,
-            )
-        connection.execute("ROLLBACK")
+        observer.execute("PRAGMA query_only = ON")
+        snapshot_data_version = observer.execute(
+            "PRAGMA data_version"
+        ).fetchone()[0]
+        snapshot = sqlite3.connect(
+            database_uri, uri=True, isolation_level=None
+        )
+        snapshot.row_factory = sqlite3.Row
+        snapshot.execute("PRAGMA query_only = ON")
+        snapshot.execute("PRAGMA foreign_keys = ON")
+        snapshot.execute("BEGIN")
+        pack = _validate_history_snapshot(
+            snapshot, stage, parsed_inputs, policy
+        )
+        if (
+            observer.execute("PRAGMA data_version").fetchone()[0]
+            != snapshot_data_version
+        ):
+            raise StageError("history store drifted during validation")
+    except StageError:
+        if snapshot is not None:
+            snapshot.close()
+        if observer is not None:
+            observer.close()
+        raise
     except (
         OSError,
         sqlite3.Error,
@@ -1250,33 +1420,26 @@ def _validate_history_authority(stage, reference, parsed_inputs, policy):
         history_retrieval.RetrievalError,
         history_runtime.RuntimeContractError,
     ) as exc:
+        if snapshot is not None:
+            snapshot.close()
+        if observer is not None:
+            observer.close()
         raise StageError("history authority validation failed") from exc
-    finally:
-        if connection is not None:
-            connection.close()
-    try:
-        after = database.lstat()
-        root_after = root["path"].lstat()
-    except OSError as exc:
-        raise StageError("history store drifted during validation") from exc
-    if identity != (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-    ) or root["identity"] != (
-        root_after.st_dev,
-        root_after.st_ino,
-    ):
+    current_identity, root_identity = _history_database_identity(database, root)
+    if identity != current_identity or root["identity"] != root_identity:
+        snapshot.close()
+        observer.close()
         raise StageError("history store drifted during validation")
     return {
         "reference": dict(reference),
         "root": root,
+        "database_path": database,
         "identity": identity,
+        "snapshot_data_version": snapshot_data_version,
+        "_snapshot_connection": snapshot,
+        "_observer_connection": observer,
         "pack_publication_id": (
-            None
-            if pack is None
-            else pack["pack_publication_id"]
+            None if pack is None else pack["pack_publication_id"]
         ),
         "pack_sha256": (
             None if pack is None else pack["pack_sha256"]
@@ -1564,25 +1727,27 @@ def _codex_loopback_template(identity):
     ]
 
 
-def _detect_codex_cli_version(executable_path):
-    """Read `codex --version`; return None when it cannot be read."""
-    path = pathlib.Path(executable_path)
-    try:
-        completed = subprocess.run(
-            [str(path), "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
+def _detect_codex_cli_version(executable):
+    """Read a version only from sealed executable bytes; never execute it."""
+    raw = executable.get("raw") if isinstance(executable, dict) else None
+    if not isinstance(raw, bytes) and isinstance(executable, dict):
+        path = executable.get("path")
+        if isinstance(path, str):
+            try:
+                raw = _capture_regular_path(path, 1024 * 1024)["raw"]
+            except StageError:
+                raw = None
+    if not isinstance(raw, bytes) or not raw.startswith(b"#!"):
         return None
-    text = (completed.stdout or completed.stderr or "").strip()
-    # Formats seen: "codex-cli 0.146.0", "0.146.0"
-    for token in text.replace(",", " ").split():
-        if token[0:1].isdigit() and token.count(".") >= 1:
-            return token
-    return None
+    # Script-based wrappers may carry an immutable version string. Native
+    # binaries use the audited static pin because probing them is execution.
+    match = re.search(
+        rb"\bcodex-cli[ \t]+([0-9]+\.[0-9]+(?:\.[0-9]+)*)\b",
+        raw,
+    )
+    if match is None:
+        return None
+    return match.group(1).decode("ascii")
 
 
 def _codex_cli_version_family(version):
@@ -1694,13 +1859,9 @@ def _validated_codex_capability(
         or not isinstance(registry.get("capabilities"), list)
     ):
         raise StageError("Codex capability registry is invalid")
-    captured_path = captured.get("path")
-    observed_version = (
-        _detect_codex_cli_version(captured_path) if captured_path else None
-    )
-    # Fail closed on version drift: when the binary reports a version, only
-    # that version may match. The static pin is the offline fallback for
-    # binaries that cannot report one (renamed / no --version output).
+    observed_version = _detect_codex_cli_version(captured)
+    # Native binaries use the audited static identity. Script wrappers may
+    # expose a sealed version string in bytes already captured above.
     effective_version = (
         observed_version if observed_version is not None else CODEX_CLI_VERSION
     )
@@ -1783,6 +1944,7 @@ def _capture_python_runtime():
     interpreter = _capture_regular_path(
         resolved,
         32 * 1024 * 1024,
+        single_link=False,
         reject_sparse=False,
     )
     executables = {"python3": interpreter}
@@ -1791,6 +1953,7 @@ def _capture_python_runtime():
         executables["python3-framework"] = _capture_regular_path(
             python_library,
             32 * 1024 * 1024,
+            single_link=False,
             reject_sparse=False,
         )
     return interpreter, executables
@@ -2546,6 +2709,7 @@ def _revalidate_sources(
         current_interpreter = _capture_regular_path(
             backend["interpreter"]["path"],
             16 * 1024 * 1024,
+            single_link=False,
             reject_sparse=False,
         )
         if (
@@ -2568,6 +2732,7 @@ def _revalidate_sources(
         current_executable = _capture_regular_path(
             executable["path"],
             32 * 1024 * 1024,
+            single_link=False,
             reject_sparse=False,
         )
         if (
@@ -2682,8 +2847,15 @@ def _run_contained(
                     break
             if failure is not None:
                 break
-        if failure is None:
-            process.wait(timeout=1)
+        if failure is None and process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                failure = StageError("contained backend timed out")
+            else:
+                try:
+                    process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    failure = StageError("contained backend timed out")
     finally:
         selector.close()
         _kill_contained_group(process)
@@ -2757,6 +2929,37 @@ def _validate_verdict(text, candidate_id):
     }
 
 
+def _evidence_urls(evidence):
+    """Return normalized, parseable http(s) URLs with hostnames."""
+    urls = set()
+    for match in re.finditer(r"https?://[^\s|<>]+", evidence, re.IGNORECASE):
+        candidate = match.group(0).rstrip(".,;:!?)]}'\"")
+        try:
+            parsed = urllib.parse.urlsplit(candidate)
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError:
+            continue
+        if parsed.scheme.lower() not in {"http", "https"} or not hostname:
+            continue
+        default_port = 80 if parsed.scheme.lower() == "http" else 443
+        authority = hostname.lower()
+        if port is not None and port != default_port:
+            authority += f":{port}"
+        urls.add(
+            urllib.parse.urlunsplit(
+                (
+                    parsed.scheme.lower(),
+                    authority,
+                    parsed.path or "/",
+                    parsed.query,
+                    parsed.fragment,
+                )
+            )
+        )
+    return urls
+
+
 def _build_generation_tsv_from_markdown(markdown, direction_contract=None):
     """Validate generate markdown and return host-projected ideas.tsv text.
 
@@ -2804,7 +3007,7 @@ def _build_generation_tsv_from_markdown(markdown, direction_contract=None):
             "Direction Evidence",
         )
     assumption_ids = set()
-    # id -> count of Crack Evidence rows that carry a real http(s) URL
+    # id -> distinct parseable http(s) Crack Evidence URLs
     assumption_url_cracks = {}
     rows = []
     for position, (start, identifier) in enumerate(headings):
@@ -2892,10 +3095,8 @@ def _build_generation_tsv_from_markdown(markdown, direction_contract=None):
         rows.append(f"{identifier}\t{story}\t{theme}")
         if values["Form"] == "remove-load-bearing-assumption":
             assumption_ids.add(identifier)
-            url_cracks = sum(
-                1
-                for evidence in crack_evidence
-                if re.search(r"https?://", evidence)
+            url_cracks = set().union(
+                *(_evidence_urls(evidence) for evidence in crack_evidence)
             )
             assumption_url_cracks[identifier] = url_cracks
             if (
@@ -2929,7 +3130,7 @@ def _build_generation_tsv_from_markdown(markdown, direction_contract=None):
     # Incomplete markers satisfy the attempt quota; placeholder cracks OK.
     if complete is not None:
         complete_id = complete.group(1)
-        if assumption_url_cracks.get(complete_id, 0) < 2:
+        if len(assumption_url_cracks.get(complete_id, set())) < 2:
             raise StageError(
                 f"assumption-removal crack evidence lacks URLs: "
                 f"{complete_id}"
@@ -3279,6 +3480,7 @@ def run_stage(
     """Run one stage and return the host-owned completion receipt."""
     mirror = None
     proxy = None
+    history_authority = None
     destination_guards = []
     if backend_entry_fd is not None:
         if type(backend_entry_fd) is not int or backend_entry_fd < 0:
@@ -3339,6 +3541,17 @@ def run_stage(
             manifest.get("history_store"),
             parsed_inputs,
             policy,
+        )
+        _validate_output_isolation(
+            output_root,
+            outputs,
+            preflight_destination,
+            completion_destination,
+            input_root,
+            captured_inputs,
+            manifest_path,
+            policy_capture,
+            history_authority,
         )
         backend = _resolve_backend(
             command_argv,
@@ -3592,9 +3805,9 @@ def run_stage(
             "containment executable",
         )
         if history_authority is not None:
-            _validate_history_authority(
+            _revalidate_history_authority(
+                history_authority,
                 stage,
-                history_authority["reference"],
                 parsed_inputs,
                 policy,
             )
@@ -3698,6 +3911,7 @@ def run_stage(
     except (OSError, TypeError, ValueError, KeyError) as exc:
         raise StageError("stage execution failed closed") from exc
     finally:
+        _close_history_authority(history_authority)
         if proxy is not None:
             proxy.__exit__(None, None, None)
         if mirror is not None:
