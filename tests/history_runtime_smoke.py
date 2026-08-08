@@ -210,6 +210,43 @@ class StartupContract(RuntimeFixture):
         finally:
             conn.close()
 
+    def test_portable_stage_error_class_survives_runtime_boundary(self):
+        from lib import portable_stage
+
+        for code, expected_class in (
+            ("final_output_missing", "contract"),
+            ("timeout", "execution"),
+        ):
+            with self.subTest(code=code):
+                with mock.patch.object(
+                    portable_stage,
+                    "public_descriptor",
+                    side_effect=portable_stage.PortableStageError(code),
+                ):
+                    with self.assertRaises(
+                        history_runtime.RuntimeContractError
+                    ) as caught:
+                        history_runtime._public_portable_stage({}, self.root)
+                self.assertEqual(caught.exception.error_class, expected_class)
+                self.assertIsNone(
+                    history_runtime.RuntimeContractError("plain").error_class
+                )
+
+    def test_error_class_survives_pickle_round_trip(self):
+        import pickle
+
+        original = history_runtime.RuntimeContractError(
+            "boom", error_class="contract"
+        )
+        restored = pickle.loads(pickle.dumps(original))
+        self.assertEqual(restored.error_class, "contract")
+        self.assertEqual(str(restored), "boom")
+        calibration = pickle.loads(
+            pickle.dumps(history_runtime.CalibrationError("cal"))
+        )
+        self.assertIsInstance(calibration, history_runtime.CalibrationError)
+        self.assertIsNone(calibration.error_class)
+
 
 class ArchiveContract(unittest.TestCase):
     def setUp(self):
