@@ -277,11 +277,11 @@ class HistoryStoreSmoke(unittest.TestCase):
                 statement.strip().upper() == "BEGIN IMMEDIATE"
                 for statement in statements
             ),
-            1,
+            2,
         )
         self.assertEqual(
             sum(statement.strip().upper() == "COMMIT" for statement in statements),
-            1,
+            2,
         )
         self.assertEqual(
             self._bootstrap_counts(),
