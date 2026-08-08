@@ -19,6 +19,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -343,32 +344,57 @@ def ingest(staging_path, ann_path, drop_log_path=None):
                     if rid not in staging:
                         drops.append({"reason": "out-of-set", "line": i, "id": rid})
                         continue
+                    note = a.get("note")
+                    theme = a.get("theme")
+                    if not isinstance(note, str) or not _squash(note) or \
+                       (theme is not None and not isinstance(theme, str)):
+                        drops.append({"reason": "malformed", "line": i, "id": rid})
+                        continue
                     if rid in seen:
                         drops.append({"reason": "dup", "line": i, "id": rid})
                         continue
                     seen.add(rid)
-                    note = a.get("note")
-                    if isinstance(note, str) and _squash(note):
-                        staging[rid]["agy_note"] = _squash(note)
-                    theme = a.get("theme")
-                    if isinstance(theme, str) and theme:
+                    staging[rid]["agy_note"] = _squash(note)
+                    if theme:
                         staging[rid]["theme"] = theme
 
     if drop_log_path:
-        with open(drop_log_path, "w", encoding="utf-8") as g:
-            for d in drops:
-                g.write(json.dumps(d, ensure_ascii=False) + "\n")
+        _atomic_write_jsonl(drops, drop_log_path)
     return [staging[rid] for rid in order], drops
 
 
-def _emit(recs, out):
-    fh = open(out, "w", encoding="utf-8") if out else sys.stdout
+def _atomic_write_jsonl(recs, out):
+    """Replace out only after a complete, durable sibling-temp write."""
+    target = os.path.abspath(out)
+    parent = os.path.dirname(target)
+    fd, tmp = tempfile.mkstemp(prefix=".%s." % os.path.basename(target),
+                               suffix=".tmp", dir=parent)
     try:
-        for r in recs:
-            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+        fd = None
+        with fh:
+            for r in recs:
+                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, target)
+        tmp = None
     finally:
-        if out:
-            fh.close()
+        if fd is not None:
+            os.close(fd)
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+
+
+def _emit(recs, out):
+    if out:
+        _atomic_write_jsonl(recs, out)
+        return
+    for r in recs:
+        sys.stdout.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
 def main(argv=None):

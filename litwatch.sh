@@ -28,6 +28,7 @@ if [ -z "$litwatch_cmd_was_set" ] && [ -n "${LITWATCH_AGY_CMD:-}" ]; then
 fi
 repo="$(cd "$(dirname "$0")" && pwd)"; cd "$repo" || { echo "litwatch: cannot enter repository root $repo" >&2; exit 1; }
 py="$repo/lib/litwatch.py"
+role="$repo/roles/litwatch.md"
 dir=${LITWATCH_DIR:-tmp/litwatch}
 max=${LITWATCH_MAX:-25}
 window=${LITWATCH_WINDOW:-60}
@@ -39,7 +40,8 @@ oai_days=${LITWATCH_OAI_DAYS:-4}
 oai_sets=${LITWATCH_OAI_SETS:-cs}
 oai_maxpages=${LITWATCH_OAI_MAXPAGES:-8}
 oai_cats=${LITWATCH_OAI_CATS:-cs.RO,cs.LG,cs.AI,cs.CV,cs.CL,stat.ML}
-mkdir -p "$dir"
+mkdir -p "$dir" || { echo "litwatch: cannot create output directory $dir" >&2; exit 1; }
+dir="$(cd "$dir" && pwd)" || { echo "litwatch: cannot resolve output directory $dir" >&2; exit 1; }
 log(){ printf '[litwatch %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
 # Search-query themes for s2 and arxiv.
@@ -119,7 +121,8 @@ fi
 if [ "${LITWATCH_NO_AGY:-0}" != "1" ] && [ -s "$staging" ]; then
   cp "$staging" "$agydir/staging.jsonl"
   log "Annotation backend: $annotation_cmd (AGY_OUT_HINT=$agydir)"
-  if AGY_OUT_HINT="$agydir" $annotation_cmd "Read roles/litwatch.md and follow it. Read ${agydir}/staging.jsonl and write only ${ann}."; then
+  annotation_prompt="Read $role and follow it. For this run, read only $agydir/staging.jsonl and write annotations only to $ann."
+  if AGY_OUT_HINT="$agydir" $annotation_cmd "$annotation_prompt"; then
     log "Annotation backend returned 0"
   else
     log "Annotation failed; deterministic ingest continues"
