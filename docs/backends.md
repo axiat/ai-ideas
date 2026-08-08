@@ -396,7 +396,7 @@ overrides before state mutation. Hunt v2 continues to allow
 `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` only for its four external stages.
 
 Operational AwR defaults remain `SIDE_POLL_SEC=9000`, `SIDE_MAX_BAD=3`,
-`SIDE_MAX_ROUNDS=3`, `SIDE_GAP_MIN_SEC=60`, `SIDE_GAP_MAX_SEC=600`, and
+`SIDE_MAX_ROUNDS=3`, `SIDE_GAP_MIN_SEC=60`, `SIDE_GAP_MAX_SEC=270`, and
 `SIDE_COOLDOWN_SEC=3600`.
 
 A failed final bounded Hunt round exits without `FAIL_SLEEP_MIN`; failed rounds
