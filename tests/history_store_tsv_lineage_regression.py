@@ -3,6 +3,7 @@ import json
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -193,6 +194,130 @@ class HistoryStoreTsvLineageRegression(unittest.TestCase):
             self.conn.execute("SELECT count(*) FROM lineage_edges").fetchone()[0],
             1,
         )
+    def test_duplicate_validation_is_order_independent(self):
+        valid = {"parent_row": 1, "child_row": 2}
+        invalid_cases = (
+            {"parent_row": 1, "child_row": 2, "authority": "similarity"},
+            {"parent_row": 1, "child_row": 2, "evidence_path": ""},
+        )
+        for case_index, invalid in enumerate(invalid_cases):
+            for order_index, entries in enumerate(
+                ((valid, invalid), (invalid, valid))
+            ):
+                with self.subTest(case=case_index, order=order_index):
+                    with self.assertRaises(history_store.ImportConflict):
+                        self._plan(
+                            ["parent", "child"],
+                            list(entries),
+                            f"bad-duplicate-{case_index}-{order_index}",
+                        )
+
+    def test_same_stored_edge_with_different_authority_or_evidence_conflicts(self):
+        other_evidence = self.root / "other-evidence.json"
+        other_evidence.write_text('{"verified":true}\n', encoding="utf-8")
+        conflicts = (
+            (
+                {"parent_row": 1, "child_row": 2},
+                {
+                    "parent_row": 1,
+                    "child_row": 2,
+                    "authority": "explicit",
+                },
+            ),
+            (
+                {"parent_row": 1, "child_row": 2},
+                {
+                    "parent_row": 1,
+                    "child_row": 2,
+                    "evidence_path": str(other_evidence),
+                },
+            ),
+        )
+        for case_index, entries in enumerate(conflicts):
+            for order_index, ordered in enumerate((entries, tuple(reversed(entries)))):
+                with self.subTest(case=case_index, order=order_index):
+                    with self.assertRaises(history_store.ImportConflict):
+                        self._plan(
+                            ["parent", "child"],
+                            list(ordered),
+                            f"conflicting-duplicate-{case_index}-{order_index}",
+                        )
+
+    def test_reversed_chain_edges_validate_and_commit_by_graph_order(self):
+        plan = self._plan(
+            ["chain a", "chain b", "chain c"],
+            [
+                {"parent_row": 1, "child_row": 2},
+                {"parent_row": 2, "child_row": 3},
+            ],
+            "reversed-chain",
+        )
+        expected_order = [
+            (edge["parent_candidate_id"], edge["child_candidate_id"])
+            for edge in plan["edges"]
+        ]
+        plan["edges"].reverse()
+        ordered = history_store._validate_import_plan_rows(plan)
+        self.assertEqual(
+            [
+                (edge["parent_candidate_id"], edge["child_candidate_id"])
+                for edge in ordered
+            ],
+            expected_order,
+        )
+        plan_bytes = history_store._json_bytes(history_store._plan_body(plan))
+        plan_sha256 = history_store._sha(plan_bytes)
+        plan_path = self.state_root / "import-plans" / f"{plan_sha256}.json"
+        plan_path.write_bytes(plan_bytes)
+        plan["plan_sha256"] = plan_sha256
+        plan["plan_path"] = str(plan_path.resolve())
+
+        history_store.commit_import_plan(self.conn, plan)
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM lineage_edges").fetchone()[0],
+            2,
+        )
+
+    def test_large_alias_and_component_sets_stay_linear_enough(self):
+        alias_count = 5000
+        alias_rows = [
+            {"row_number": index, "canonical_story": "shared alias"}
+            for index in range(1, alias_count + 1)
+        ]
+        started = time.monotonic()
+        alias_roots, alias_edges = history_store._build_components(
+            alias_rows, None
+        )
+
+        component_count = 2000
+        rows = []
+        mappings = []
+        for index in range(component_count):
+            parent = index * 2 + 1
+            child = parent + 1
+            rows.extend(
+                (
+                    {"row_number": parent, "canonical_story": f"parent {index}"},
+                    {"row_number": child, "canonical_story": f"child {index}"},
+                )
+            )
+            mappings.append(
+                {
+                    "parent_row": parent,
+                    "child_row": child,
+                    "evidence_path": "evidence.json",
+                }
+            )
+        roots, edges = history_store._build_components(
+            rows, {"mappings": mappings}
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(set(alias_roots.values()), {1})
+        self.assertEqual(alias_edges, [])
+        self.assertEqual(len(roots), component_count * 2)
+        self.assertEqual(len(edges), component_count)
+        self.assertLess(elapsed, 2.0)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 """Canonical historical-idea storage and fenced TSV projection."""
 
 import base64
+import collections
 import contextlib
 import datetime
 import fcntl
@@ -956,19 +957,24 @@ def _split_physical_lines(data):
         raise ImportConflict("ledger is empty")
     result = []
     start = 0
-    for index, byte in enumerate(data):
-        if byte == 13:
-            if index + 1 == len(data) or data[index + 1] != 10:
+    while True:
+        newline = data.find(b"\n", start)
+        if newline < 0:
+            if data.find(b"\r", start) >= 0:
                 raise ImportConflict("ledger contains a bare carriage return")
-        elif byte == 10:
-            if index > start and data[index - 1] == 13:
-                result.append((data[start : index - 1], b"\r\n"))
-            else:
-                result.append((data[start:index], b"\n"))
-            start = index + 1
-    if start < len(data):
-        result.append((data[start:], b""))
-    return result
+            if start < len(data):
+                result.append((data[start:], b""))
+            return result
+        carriage_return = data.find(b"\r", start, newline)
+        if newline > start and data[newline - 1] == 13:
+            if carriage_return != newline - 1:
+                raise ImportConflict("ledger contains a bare carriage return")
+            result.append((data[start : newline - 1], b"\r\n"))
+        else:
+            if carriage_return >= 0:
+                raise ImportConflict("ledger contains a bare carriage return")
+            result.append((data[start:newline], b"\n"))
+        start = newline + 1
 
 
 def _parse_row(raw, row_number, terminator=b"\n"):
@@ -1343,9 +1349,11 @@ def _build_components(rows, mapping):
         else:
             first_by_story[story] = row_number
     explicit_edges = []
-    seen_edges = set()
-    parents = {row_number: set() for row_number in row_numbers}
-    children = {row_number: set() for row_number in row_numbers}
+    exact_edges = set()
+    stored_edges = {}
+    parents = collections.defaultdict(set)
+    children = collections.defaultdict(set)
+    edge_nodes = set()
     root_declarations = []
     if mapping:
         for entry in mapping.get("mappings", mapping.get("edges", [])):
@@ -1353,28 +1361,51 @@ def _build_components(rows, mapping):
             child_number = int(entry.get("child_row", entry.get("child_ordinal", 0)))
             if parent_number not in by_row or child_number not in by_row:
                 raise ImportConflict("mapping references a missing data row")
+            relation_type = entry.get("relation_type", "evolved_from")
+            authority = entry.get("authority", "manual_mapping")
+            evidence_path = entry.get("evidence_path")
+            if relation_type not in ALLOWED_RELATIONS:
+                raise ImportConflict("mapping contains an unsupported relation")
+            if authority not in ALLOWED_EDGE_AUTHORITIES:
+                raise ImportConflict("mapping contains an unsupported authority")
+            if not isinstance(evidence_path, str) or not evidence_path:
+                raise ImportConflict("explicit mapping requires an evidence artifact")
             parent_story = by_row[parent_number]["canonical_story"]
             child_story = by_row[child_number]["canonical_story"]
             if parent_story == child_story:
                 raise ImportConflict("explicit mapping duplicates an exact alias edge")
-            parents[child_number].add(parent_number)
-            if len(parents[child_number]) > 1:
-                raise ImportConflict("mapping gives one candidate multiple explicit parents")
-            children[parent_number].add(child_number)
-            union.union(parent_number, child_number)
-            relation_type = entry.get("relation_type", "evolved_from")
-            edge_key = (parent_number, child_number, relation_type)
-            if edge_key not in seen_edges:
-                seen_edges.add(edge_key)
-                explicit_edges.append(
-                    {
-                        "parent_row": parent_number,
-                        "child_row": child_number,
-                        "relation_type": relation_type,
-                        "evidence_path": entry.get("evidence_path"),
-                        "authority": entry.get("authority", "manual_mapping"),
-                    }
-                )
+            edge = {
+                "parent_row": parent_number,
+                "child_row": child_number,
+                "relation_type": relation_type,
+                "evidence_path": evidence_path,
+                "authority": authority,
+            }
+            exact_key = (
+                parent_number,
+                child_number,
+                relation_type,
+                authority,
+                evidence_path,
+            )
+            stored_key = (parent_number, child_number, relation_type)
+            prior = stored_edges.get(stored_key)
+            if exact_key not in exact_edges:
+                if prior is not None:
+                    raise ImportConflict(
+                        "lineage edge has conflicting authority or evidence"
+                    )
+                exact_edges.add(exact_key)
+                stored_edges[stored_key] = exact_key
+                explicit_edges.append(edge)
+                parents[child_number].add(parent_number)
+                if len(parents[child_number]) > 1:
+                    raise ImportConflict(
+                        "mapping gives one candidate multiple explicit parents"
+                    )
+                children[parent_number].add(child_number)
+                edge_nodes.update((parent_number, child_number))
+                union.union(parent_number, child_number)
             root_number = entry.get("root_row")
             if root_number is not None:
                 root_number = int(root_number)
@@ -1386,20 +1417,26 @@ def _build_components(rows, mapping):
             if root_number not in by_row:
                 raise ImportConflict("mapping root references a missing data row")
             root_declarations.append((root_number, root_number))
-    remaining = {row_number: len(parents[row_number]) for row_number in row_numbers}
-    frontier = sorted(
-        row_number for row_number, degree in remaining.items() if degree == 0
+    remaining = {
+        row_number: len(parents.get(row_number, ()))
+        for row_number in edge_nodes
+    }
+    frontier = collections.deque(
+        sorted(
+            row_number
+            for row_number, degree in remaining.items()
+            if degree == 0
+        )
     )
     visited = []
     while frontier:
-        row_number = frontier.pop(0)
+        row_number = frontier.popleft()
         visited.append(row_number)
-        for child in sorted(children[row_number]):
+        for child in sorted(children.get(row_number, ())):
             remaining[child] -= 1
             if remaining[child] == 0:
                 frontier.append(child)
-                frontier.sort()
-    if len(visited) != len(row_numbers):
+    if len(visited) != len(edge_nodes):
         raise ImportConflict("mapping parent graph contains a cycle")
     topological_rank = {
         row_number: index for index, row_number in enumerate(visited)
@@ -1414,46 +1451,49 @@ def _build_components(rows, mapping):
         )
     )
     components = {}
+    component_by_row = {}
     for row_number in row_numbers:
-        components.setdefault(union.find(row_number), []).append(row_number)
+        component_id = union.find(row_number)
+        component_by_row[row_number] = component_id
+        components.setdefault(component_id, []).append(row_number)
+    roots_by_component = collections.defaultdict(set)
+    for anchor, root in root_declarations:
+        component_id = component_by_row[anchor]
+        if component_by_row[root] != component_id:
+            raise ImportConflict("explicit root is outside its component")
+        roots_by_component[component_id].add(root)
+    required_by_component = collections.defaultdict(set)
+    for edge in explicit_edges:
+        required_by_component[component_by_row[edge["parent_row"]]].add(
+            edge["parent_row"]
+        )
 
     def reaches_all_parents(root, required_parents):
         reachable = {root}
-        pending = [root]
+        pending = collections.deque((root,))
         while pending:
-            parent = pending.pop()
-            for child in children[parent]:
+            parent = pending.popleft()
+            for child in children.get(parent, ()):
                 if child not in reachable:
                     reachable.add(child)
                     pending.append(child)
         return required_parents <= reachable
 
     root_row_by_row = {}
-    for component in components.values():
-        component_set = set(component)
-        named = {
-            root
-            for anchor, root in root_declarations
-            if anchor in component_set
-        }
+    for component_id, component in components.items():
+        named = roots_by_component.get(component_id, set())
         if len(named) > 1:
             raise ImportConflict("component has conflicting explicit roots")
-        if named and not named <= component_set:
-            raise ImportConflict("explicit root is outside its component")
-        required_parents = {
-            edge["parent_row"]
-            for edge in explicit_edges
-            if edge["parent_row"] in component_set
-        }
+        required_parents = required_by_component.get(component_id, set())
         if named:
             root = next(iter(named))
-            if parents[root] or not reaches_all_parents(root, required_parents):
+            if parents.get(root) or not reaches_all_parents(root, required_parents):
                 raise ImportConflict("explicit root is not a parentless ancestor")
         elif required_parents:
             candidates = [
                 row_number
                 for row_number in component
-                if not parents[row_number]
+                if not parents.get(row_number)
                 and reaches_all_parents(row_number, required_parents)
             ]
             if len(candidates) != 1:
@@ -1896,6 +1936,7 @@ def _validate_import_plan_rows(plan):
     by_candidate = {}
     aliases = {}
     lineage_roots = {}
+    rows_by_lineage = collections.defaultdict(list)
     for expected_number, item in enumerate(rows, 1):
         if (
             not isinstance(item, dict)
@@ -1963,6 +2004,7 @@ def _validate_import_plan_rows(plan):
             raise ImportConflict("import plan canonical alias crosses lineages")
         roots = lineage_roots.setdefault(item["lineage_id"], set())
         roots.add(item["root_candidate_id"])
+        rows_by_lineage[item["lineage_id"]].append(item)
     for lineage_id, roots in lineage_roots.items():
         if len(roots) != 1:
             raise ImportConflict("import plan lineage root conflicts")
@@ -1977,12 +2019,12 @@ def _validate_import_plan_rows(plan):
             raise ImportConflict("import plan lineage root conflicts")
         if any(
             item["root_story"] != root["canonical_story"]
-            for item in rows
-            if item["lineage_id"] == lineage_id
+            for item in rows_by_lineage[lineage_id]
         ):
             raise ImportConflict("import plan lineage root story conflicts")
-    parents = {candidate_id: set() for candidate_id in by_candidate}
-    children = {candidate_id: set() for candidate_id in by_candidate}
+    parents = collections.defaultdict(set)
+    children = collections.defaultdict(set)
+    edge_nodes = set()
     seen_edges = set()
     for edge in edges:
         evidence = edge.get("evidence") if isinstance(edge, dict) else None
@@ -2027,37 +2069,55 @@ def _validate_import_plan_rows(plan):
         if len(parents[child]) > 1:
             raise ImportConflict("import plan candidate has multiple explicit parents")
         children[parent].add(child)
+        edge_nodes.update((parent, child))
     remaining = {
-        candidate_id: len(candidate_parents)
-        for candidate_id, candidate_parents in parents.items()
+        candidate_id: len(parents.get(candidate_id, ()))
+        for candidate_id in edge_nodes
     }
-    frontier = sorted(
-        candidate_id
-        for candidate_id, degree in remaining.items()
-        if degree == 0
+    frontier = collections.deque(
+        sorted(
+            candidate_id
+            for candidate_id, degree in remaining.items()
+            if degree == 0
+        )
     )
-    visited = set()
+    visited = []
     while frontier:
-        candidate_id = frontier.pop(0)
-        visited.add(candidate_id)
-        for child in sorted(children[candidate_id]):
+        candidate_id = frontier.popleft()
+        visited.append(candidate_id)
+        for child in sorted(children.get(candidate_id, ())):
             remaining[child] -= 1
             if remaining[child] == 0:
                 frontier.append(child)
-                frontier.sort()
-    if len(visited) != len(by_candidate):
+    if len(visited) != len(edge_nodes):
         raise ImportConflict("import plan lineage graph contains a cycle")
-    reachable = {
-        next(iter(roots)) for roots in lineage_roots.values()
+    topological_rank = {
+        candidate_id: index for index, candidate_id in enumerate(visited)
     }
-    for edge in edges:
-        parent = edge["parent_candidate_id"]
-        child = edge["child_candidate_id"]
-        if parent not in reachable:
-            raise ImportConflict(
-                "import plan lineage parent is unreachable from its candidate root"
-            )
-        reachable.add(child)
+    reachable = set()
+    pending = collections.deque(
+        next(iter(roots)) for roots in lineage_roots.values()
+    )
+    while pending:
+        candidate_id = pending.popleft()
+        if candidate_id in reachable:
+            continue
+        reachable.add(candidate_id)
+        pending.extend(children.get(candidate_id, ()))
+    if not edge_nodes <= reachable:
+        raise ImportConflict(
+            "import plan lineage parent is unreachable from its candidate root"
+        )
+    return sorted(
+        edges,
+        key=lambda edge: (
+            topological_rank[edge["parent_candidate_id"]],
+            topological_rank[edge["child_candidate_id"]],
+            edge["relation_type"],
+            edge["authority"],
+            edge["evidence"]["sha256"],
+        ),
+    )
 
 
 def _import_candidate_provenance(plan):
@@ -2384,7 +2444,7 @@ def _validate_sealed_import_manifest(plan, manifest_path, cas_root):
 
 
 def _verify_epoch_results(conn, plan, epoch, cas_root, repair):
-    _validate_import_plan_rows(plan)
+    ordered_edges = _validate_import_plan_rows(plan)
     expected_result = _render_import_plan(plan)
     expected_sha = _sha(expected_result)
     if (
@@ -2479,7 +2539,7 @@ def _verify_epoch_results(conn, plan, epoch, cas_root, repair):
             search = (item["row_number"],)
         if search is None or search[0] != item["row_number"]:
             raise ImportConflict("sealed search projection is missing or conflicting")
-    for index, edge in enumerate(plan["edges"], 1):
+    for index, edge in enumerate(ordered_edges, 1):
         evidence_record = edge.get("evidence")
         if (
             not isinstance(evidence_record, dict)
@@ -2578,7 +2638,7 @@ def _commit_import_plan_locked(conn, plan, *, _manage_transaction=True):
     calculated_sha = _sha(plan_bytes)
     if calculated_sha != plan.get("plan_sha256"):
         raise ImportConflict("import plan content does not match its sealed hash")
-    _validate_import_plan_rows(plan)
+    ordered_edges = _validate_import_plan_rows(plan)
     rendered_plan = _render_import_plan(plan)
     if (
         not _is_sha256_text(plan.get("ledger_sha256"))
@@ -2742,7 +2802,7 @@ def _commit_import_plan_locked(conn, plan, *, _manage_transaction=True):
             )
             _queue_search_projection(conn, item)
             inserted += 1
-        for index, edge in enumerate(plan["edges"], 1):
+        for index, edge in enumerate(ordered_edges, 1):
             evidence_id = _insert_artifact_from_evidence(
                 conn, edge["evidence"], index, cas_root
             )
