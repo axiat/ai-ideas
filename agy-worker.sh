@@ -9,13 +9,22 @@
 # Usage:
 #   FRONT_CMD='./agy-worker.sh' BACK_CMD='./claude-worker.sh' ./hunt.sh
 # Configuration:
+#   AGY_REPO           Absolute repository/mirror root; defaults to this script's
+#                      directory. hunt.sh sets it to the disposable mirror.
 #   AGY_MODEL          Full model ID printed by `agy models`; default
 #                      `gemini-3.6-flash-high`. Verify the selected-model line
 #                      in the CLI log.
 #   AGY_PRINT_TIMEOUT  Default 8m.
 #   AGY_LAUNCH_GAP_SEC Minimum seconds between launches; default 60, 0 disables.
 set -u
-repo="$(cd "$(dirname "$0")" && pwd)"
+self_dir="$(cd "$(dirname "$0")" && pwd)"
+repo=${AGY_REPO:-$self_dir}
+case "$repo" in
+  /*) ;;
+  *) echo "agy-worker: AGY_REPO must be absolute: $repo" >&2; exit 2 ;;
+esac
+[ -d "$repo" ] || { echo "agy-worker: repository root is not a directory: $repo" >&2; exit 2; }
+repo="$(cd "$repo" && pwd)"
 model=${AGY_MODEL:-gemini-3.6-flash-high}
 ptimeout=${AGY_PRINT_TIMEOUT:-8m}
 gap=${AGY_LAUNCH_GAP_SEC:-60}

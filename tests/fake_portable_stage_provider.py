@@ -37,6 +37,19 @@ EXPECTED_TRANSPORT_INSTRUCTIONS = {
     ),
 }
 
+CODEX_EXPECTED_TRANSPORT_INSTRUCTIONS = {
+    **EXPECTED_TRANSPORT_INSTRUCTIONS,
+    "stdout": (
+        "Return exactly one JSON object matching response_schema as the "
+        "structured final result. The Codex CLI writes that final result "
+        "through its host-configured output-last-message path; stdout is "
+        "diagnostic transport and is never an output fallback. The harness "
+        "parses and canonicalizes the final JSON. Do not put Markdown fences "
+        "or narration inside the structured value."
+    ),
+}
+
+
 GROK_EXPECTED_TRANSPORT_INSTRUCTIONS = {
     **EXPECTED_TRANSPORT_INSTRUCTIONS,
     "stdout": (
@@ -283,7 +296,11 @@ def _record(request):
                     else (
                         CLAUDE_EXPECTED_TRANSPORT_INSTRUCTIONS
                         if _claude_json_requested(sys.argv[1:])
-                        else EXPECTED_TRANSPORT_INSTRUCTIONS
+                        else (
+                            CODEX_EXPECTED_TRANSPORT_INSTRUCTIONS
+                            if "--output-schema" in sys.argv[1:]
+                            else EXPECTED_TRANSPORT_INSTRUCTIONS
+                        )
                     )
                 )
             )
@@ -659,6 +676,12 @@ def main():
             "input/" + name for name in request.get("declared_inputs", [])
         }
         declared.add(request.get("role_path", "role.md"))
+        if "--output-schema" in arguments:
+            declared.add(
+                pathlib.Path(
+                    _flag_value(arguments, "--output-schema")
+                ).resolve().relative_to(pathlib.Path.cwd().resolve()).as_posix()
+            )
         if observed != declared:
             return 31
         forbidden_names = {".git", ".claude", "ledger.tsv"}
@@ -1017,6 +1040,16 @@ def main():
         return 0
     if grok_json:
         raw = _grok_transport(raw, mode)
+    if "--output-last-message" in arguments:
+        if mode != "missing-final-output":
+            _write(
+                pathlib.Path(
+                    _flag_value(arguments, "--output-last-message")
+                ),
+                raw,
+            )
+        sys.stdout.buffer.write(b"codex transport diagnostics\n")
+        return 0
     sys.stdout.buffer.write(raw)
     return 0
 

@@ -686,6 +686,29 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                         )
                     )
 
+    def test_missing_codex_final_output_is_contract_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared, _, _ = self._prepare(root)
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "missing-final-output"},
+                clear=False,
+            ):
+                with self.assertRaises(self._error()) as caught:
+                    self._api(portable_stage, "run_stage")(
+                        prepared, timeout_seconds=2
+                    )
+            self.assertEqual(caught.exception.code, "final_output_missing")
+            self.assertEqual(caught.exception.error_class, "contract")
+            self.assertFalse(pathlib.Path(prepared["completion_path"]).exists())
+            self.assertTrue(
+                all(
+                    not pathlib.Path(path).exists()
+                    for path in prepared["output_paths"].values()
+                )
+            )
+
     def test_timeout_kills_provider_process_group_before_projection(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

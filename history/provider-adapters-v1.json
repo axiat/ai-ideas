@@ -1,10 +1,10 @@
 {
   "schema_version": "provider-adapters-v1",
-  "registry_revision": "2026-08-07",
+  "registry_revision": "2026-08-08",
   "providers": {
     "codex": {
       "executable": "codex",
-      "grammar_revision": "codex-portable-v1",
+      "grammar_revision": "codex-portable-v2",
       "reasoning_values": ["high", "xhigh"]
     },
     "kimi": {

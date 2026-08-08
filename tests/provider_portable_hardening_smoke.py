@@ -204,7 +204,7 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
             "immutable_capacity_identity": "fake-capacity-v1",
             "cli_revision": "fake-cli-v1",
             "serializer_revision": "portable-agent-command-v1",
-            "grammar_revision": "codex-portable-v1",
+            "grammar_revision": "codex-portable-v2",
         }
         self.assertEqual(
             first.evidence_sha256,
@@ -603,11 +603,12 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 "Do not create, modify, or delete any file in the mirror."
             ),
             "stdout": (
-                "Emit exactly one UTF-8 NFC canonical JSON object to stdout, "
-                "with lexicographically sorted object keys, compact "
-                "separators, and exactly one trailing LF. The object must "
-                "match response_schema. Do not emit Markdown fences, "
-                "narration, or any other bytes."
+                "Return exactly one JSON object matching response_schema as the "
+                "structured final result. The Codex CLI writes that final result "
+                "through its host-configured output-last-message path; stdout is "
+                "diagnostic transport and is never an output fallback. The harness "
+                "parses and canonicalizes the final JSON. Do not put Markdown fences "
+                "or narration inside the structured value."
             ),
             "request_attestation": (
                 "Copy request_binding.provider_request_binding_sha256 and "
@@ -2144,7 +2145,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                     )
                 )
 
-    def test_codex_noncanonical_raw_stdout_still_rejects_before_import(self):
+    def test_codex_noncanonical_final_json_is_canonicalized_before_import(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             prepared = self._prepare(root, provider="codex")
@@ -2153,15 +2154,22 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 {"FAKE_PORTABLE_STAGE_MODE": "noncanonical-raw"},
                 clear=False,
             ):
-                with self.assertRaises(portable_stage.PortableStageError) as caught:
-                    portable_stage.run_stage(prepared, timeout_seconds=2)
-            self.assertEqual(caught.exception.code, "noncanonical_output")
-            imports = root / "state/imports"
-            self.assertFalse(imports.exists() and any(imports.iterdir()))
-            self.assertFalse((root / "state/completion.json").exists())
+                completion = portable_stage.run_stage(
+                    prepared, timeout_seconds=2
+                )
+            imported = (
+                root / "state/imports"
+                / f"{completion['model_envelope_sha256']}.json"
+            )
+            raw = imported.read_bytes()
+            self.assertEqual(
+                raw,
+                self._canonical(json.loads(raw.decode("utf-8"))),
+            )
+            self.assertTrue((root / "state/completion.json").is_file())
             self.assertTrue(
                 all(
-                    not pathlib.Path(path).exists()
+                    pathlib.Path(path).is_file()
                     for path in prepared["output_paths"].values()
                 )
             )
@@ -2364,6 +2372,9 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             "invalid_generation_output",
             "malformed_output",
             "noncanonical_output",
+            "final_output_missing",
+            "final_output_unreadable",
+            "final_output_oversize",
             "schema_mismatch",
             "provider_request_attestation_mismatch",
             "invalid_contract_text",
