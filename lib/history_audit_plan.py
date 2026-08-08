@@ -4,6 +4,7 @@ import copy
 import datetime
 import hashlib
 import json
+import math
 import pathlib
 
 try:
@@ -58,6 +59,22 @@ def _load_host_policy(filename):
         raise AuditPlanError("invalid_host_policy", filename) from exc
 
 
+def _semantic_policy_canonical_bytes(policy):
+    """Encode policy decimals exactly as the semantic evaluator identifies them."""
+    def decimal_identity(value):
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise AuditPlanError("invalid_host_policy")
+            return format(value, ".17g")
+        if isinstance(value, list):
+            return [decimal_identity(item) for item in value]
+        if isinstance(value, dict):
+            return {key: decimal_identity(item) for key, item in value.items()}
+        return value
+
+    return history_contract_v2.canonical_bytes(decimal_identity(policy))
+
+
 def _host_runtime_authority():
     capacity_registry = _load_host_policy("capacity-profiles-v1.json")
     budget_policy = _load_host_policy("l2-budget-v1.json")
@@ -109,6 +126,10 @@ def _host_runtime_authority():
         settlement_policy_sha = _canonical_sha(
             "history-settlement-policy-v1", settlement_policy
         )
+        semantic_policy_bytes = _semantic_policy_canonical_bytes(semantic_policy)
+        semantic_policy_sha = history_contract_v2.framed_sha256(
+            "semantic-release-policy-v1", semantic_policy_bytes
+        )
     except history_contract_v2.ContractV2Error as exc:
         raise AuditPlanError("invalid_host_policy") from exc
     if (
@@ -143,6 +164,8 @@ def _host_runtime_authority():
         "semantic_policy_profile_id": semantic_policy[
             "semantic_policy_profile_id"
         ],
+        "semantic_policy_canonical_bytes": semantic_policy_bytes,
+        "semantic_policy_sha": semantic_policy_sha,
     }
 
 
@@ -187,6 +210,7 @@ def _host_authority_for_capacity(capacity_profile_id):
             "semantic_policy_profile_id": authority[
                 "semantic_policy_profile_id"
             ],
+            "semantic_policy_sha": authority["semantic_policy_sha"],
         },
     )
     return authority
@@ -467,6 +491,7 @@ def _issue_test_runtime_authority(
         "capacity_profile": capacity_profile,
         "budget_policy": budget_policy,
         "semantic_policy_profile_id": semantic_policy_profile_id,
+        "semantic_policy_sha": host["semantic_policy_sha"],
         "matched_router_rule_ids": list(matched_router_rule_ids),
     }
     fingerprint = _canonical_sha(
@@ -563,9 +588,12 @@ def runtime_snapshot_records(records):
 
 
 def runtime_snapshot_records_sha(records):
-    return _canonical_sha(
-        "history-l2-snapshot-records-v2", runtime_snapshot_records(records)
-    )
+    try:
+        return _canonical_sha(
+            "history-l2-snapshot-records-v2", runtime_snapshot_records(records)
+        )
+    except history_contract_v2.ContractV2Error as exc:
+        raise AuditPlanError("invalid_runtime_snapshot_records") from exc
 
 
 def runtime_shard_plan_sha(shards):
@@ -602,6 +630,97 @@ def runtime_shard_plan_sha(shards):
         raise AuditPlanError("invalid_runtime_shards")
     normalized.sort(key=lambda shard: shard["shard_id"])
     return _canonical_sha("history-shard-plan-v2", normalized)
+
+
+def _validate_runtime_serialized_requests(material, frozen_records=None):
+    """Rebuild executable requests from frozen identity material."""
+    strict = (
+        material.get("test_execution_binding") is not None
+        or (
+            material.get("authority_scope") == "production"
+            and material.get("capacity_profile", {}).get("status")
+            == "hard-complete"
+        )
+    )
+    if not strict:
+        if frozen_records is not None:
+            records = runtime_snapshot_records(frozen_records)
+            if (
+                runtime_snapshot_records_sha(records)
+                != material["snapshot"]["records_sha"]
+            ):
+                raise AuditPlanError("invalid_runtime_snapshot")
+        profile = material["capacity_profile"]
+        for shard in material["shards"]:
+            legacy_canonical = history_contract_v2.canonical_bytes(
+                {
+                    "candidate": material["candidate"],
+                    "items": shard["item_ids"],
+                    "output_schema": profile["schema"],
+                    "prompt": profile["prompt"],
+                }
+            )[:-1]
+            legacy_item_ids = json.dumps(
+                {"item_ids": shard["item_ids"]}, sort_keys=True
+            ).encode("utf-8")
+            actual = shard["serialized_request"].encode("utf-8")
+            if actual not in (legacy_canonical, legacy_item_ids):
+                raise AuditPlanError("invalid_runtime_shards")
+        return
+    try:
+        if frozen_records is None:
+            snapshots = []
+            for shard in material["shards"]:
+                parsed = history_contract_v2.parse_json_bytes(
+                    shard["serialized_request"].encode("utf-8")
+                )
+                if (
+                    not isinstance(parsed, dict)
+                    or set(parsed) != {
+                        "schema_version", "serializer_revision", "snapshot",
+                        "candidate", "prompt", "output_schema", "items",
+                    }
+                    or not isinstance(parsed["snapshot"], dict)
+                    or "records" not in parsed["snapshot"]
+                ):
+                    raise AuditPlanError("invalid_runtime_shards")
+                snapshots.append(parsed["snapshot"]["records"])
+            if not snapshots or any(
+                not _canonical_equal(records, snapshots[0])
+                for records in snapshots[1:]
+            ):
+                raise AuditPlanError("invalid_runtime_shards")
+            frozen_records = snapshots[0]
+        records = runtime_snapshot_records(frozen_records)
+        if runtime_snapshot_records_sha(records) != material["snapshot"]["records_sha"]:
+            raise AuditPlanError("invalid_runtime_snapshot")
+        record_by_id = {record["item_id"]: record for record in records}
+        request_snapshot = copy.deepcopy(material["snapshot"])
+        request_snapshot.pop("records_sha")
+        request_snapshot["records"] = copy.deepcopy(records)
+        profile = material["capacity_profile"]
+        for shard in material["shards"]:
+            try:
+                selected = [
+                    {
+                        "item_id": item_id,
+                        "wrapper": {
+                            "item_id": item_id,
+                            "record": copy.deepcopy(record_by_id[item_id]),
+                        },
+                    }
+                    for item_id in shard["item_ids"]
+                ]
+            except KeyError as exc:
+                raise AuditPlanError("invalid_runtime_shards") from exc
+            expected = history_contract_v2.canonical_bytes(
+                _request(request_snapshot, material["candidate"], profile, selected)
+            )
+            actual = shard["serialized_request"].encode("utf-8")
+            if actual not in (expected, expected[:-1]):
+                raise AuditPlanError("invalid_runtime_shards")
+    except history_contract_v2.ContractV2Error as exc:
+        raise AuditPlanError("invalid_runtime_shards") from exc
 
 
 def runtime_budget_policy_sha(policy):
@@ -944,10 +1063,9 @@ def build_runtime_plan_material(plan):
         authority_scope = authority["authority_scope"]
         candidate = copy.deepcopy(plan["candidate"])
         snapshot = copy.deepcopy(plan["snapshot"])
+        frozen_records = runtime_snapshot_records(plan["snapshot"]["records"])
         snapshot.pop("records")
-        snapshot["records_sha"] = runtime_snapshot_records_sha(
-            plan["snapshot"]["records"]
-        )
+        snapshot["records_sha"] = runtime_snapshot_records_sha(frozen_records)
         material = {
             "schema_version": RUNTIME_PLAN_SCHEMA,
             "run_id": plan["run_id"],
@@ -983,13 +1101,15 @@ def build_runtime_plan_material(plan):
             material["test_execution_binding"] = copy.deepcopy(
                 plan["test_execution_binding"]
             )
+    except history_contract_v2.ContractV2Error as exc:
+        raise AuditPlanError("invalid_runtime_snapshot") from exc
     except (KeyError, TypeError) as exc:
         raise AuditPlanError("invalid_runtime_plan") from exc
-    validate_runtime_plan_material(material)
+    validate_runtime_plan_material(material, _frozen_records=frozen_records)
     return material
 
 
-def validate_runtime_plan_material(material):
+def validate_runtime_plan_material(material, *, _frozen_records=None):
     fields = set(material) if isinstance(material, dict) else set()
     if not isinstance(material, dict) or fields not in (
         set(_RUNTIME_PLAN_FIELDS),
@@ -1020,37 +1140,40 @@ def validate_runtime_plan_material(material):
         raise AuditPlanError("invalid_runtime_snapshot")
     if snapshot["current_batch_id_namespace"] != "history-v2-staging-v1":
         raise AuditPlanError("invalid_runtime_snapshot")
-    if (
-        history_contract_v2.ordered_set_sha256(
-            "history-current-batch-ids-v2", snapshot["current_batch_ids"]
-        )
-        != snapshot["current_batch_ids_hash"]
-        or history_contract_v2.ordered_set_sha256(
-            "history-snapshot-assets-v2", snapshot["expected_asset_ids"]
-        )
-        != snapshot["expected_asset_ids_hash"]
-    ):
-        raise AuditPlanError("invalid_runtime_snapshot")
-    snapshot_material = {
-        "run_id": material["run_id"],
-        "batch_id": material["batch_id"],
-        "history_as_of_watermark": snapshot["history_as_of_watermark"],
-        "current_batch_id_namespace": snapshot["current_batch_id_namespace"],
-        "current_batch_ids_hash": snapshot["current_batch_ids_hash"],
-        "exclusion_policy_sha": snapshot["exclusion_policy_sha"],
-        "expected_asset_ids_hash": snapshot["expected_asset_ids_hash"],
-    }
-    expected_snapshot_hash = _canonical_sha(
-        "history-snapshot-v2", snapshot_material
-    )
-    expected_snapshot_id = _canonical_sha(
-        "history-snapshot-id-v2",
-        {
+    try:
+        if (
+            history_contract_v2.ordered_set_sha256(
+                "history-current-batch-ids-v2", snapshot["current_batch_ids"]
+            )
+            != snapshot["current_batch_ids_hash"]
+            or history_contract_v2.ordered_set_sha256(
+                "history-snapshot-assets-v2", snapshot["expected_asset_ids"]
+            )
+            != snapshot["expected_asset_ids_hash"]
+        ):
+            raise AuditPlanError("invalid_runtime_snapshot")
+        snapshot_material = {
             "run_id": material["run_id"],
             "batch_id": material["batch_id"],
-            "snapshot_hash": expected_snapshot_hash,
-        },
-    )
+            "history_as_of_watermark": snapshot["history_as_of_watermark"],
+            "current_batch_id_namespace": snapshot["current_batch_id_namespace"],
+            "current_batch_ids_hash": snapshot["current_batch_ids_hash"],
+            "exclusion_policy_sha": snapshot["exclusion_policy_sha"],
+            "expected_asset_ids_hash": snapshot["expected_asset_ids_hash"],
+        }
+        expected_snapshot_hash = _canonical_sha(
+            "history-snapshot-v2", snapshot_material
+        )
+        expected_snapshot_id = _canonical_sha(
+            "history-snapshot-id-v2",
+            {
+                "run_id": material["run_id"],
+                "batch_id": material["batch_id"],
+                "snapshot_hash": expected_snapshot_hash,
+            },
+        )
+    except history_contract_v2.ContractV2Error as exc:
+        raise AuditPlanError("invalid_runtime_snapshot") from exc
     if (
         snapshot["snapshot_hash"] != expected_snapshot_hash
         or snapshot["snapshot_id"] != expected_snapshot_id
@@ -1084,6 +1207,10 @@ def validate_runtime_plan_material(material):
     capacity = material["capacity_profile"]
     if (
         not isinstance(capacity, dict)
+        or (
+            type(capacity.get("utilization_ppm")) is int
+            and capacity["utilization_ppm"] > 1_000_000
+        )
         or any(
             type(capacity.get(field)) is not int or capacity[field] <= 0
             for field in (
@@ -1134,6 +1261,7 @@ def validate_runtime_plan_material(material):
             raise AuditPlanError("invalid_provider_capabilities")
     _validate_runtime_capacity_authority(material, authority)
     _validate_runtime_shard_resources(material, intent_policy)
+    _validate_runtime_serialized_requests(material, _frozen_records)
     return copy.deepcopy(material)
 
 
@@ -1315,6 +1443,11 @@ def reserve_attempt(
         for scope in ("round", "candidate")
     ):
         raise AuditPlanError("unknown_currency_budget")
+    if "currency_micros" not in reserved and any(
+        "currency_micros" in intent_policy[scope]
+        for scope in ("round", "candidate")
+    ):
+        raise AuditPlanError("unknown_currency_budget")
     candidate_totals = budget_totals(events, intent, candidate_id)
     round_totals = budget_totals(events, intent)
     requested = {"started_attempts": 1, **reserved}
@@ -1355,7 +1488,14 @@ def settle_attempt(reservation_id, actual_usage, usage_verified, events):
     if type(usage_verified) is not bool:
         raise AuditPlanError("invalid_settlement")
     if usage_verified:
-        if not isinstance(actual_usage, dict) or set(actual_usage).difference(_RESOURCE_FIELDS):
+        required_usage = {
+            "input_tokens", "output_tokens", "provider_usage_units"
+        }
+        if (
+            not isinstance(actual_usage, dict)
+            or not required_usage.issubset(actual_usage)
+            or set(actual_usage).difference(_RESOURCE_FIELDS)
+        ):
             raise AuditPlanError("invalid_settlement")
         actual = {
             field: _require_nonnegative(value, field)
@@ -1505,6 +1645,8 @@ def _validate_profile(profile, provider_pools, capabilities):
     ):
         if type(profile[name]) is not int or profile[name] <= 0:
             raise AuditPlanError("invalid_capacity_profile")
+    if profile["utilization_ppm"] > 1_000_000:
+        raise AuditPlanError("invalid_capacity_profile")
     if profile["context_tokens"] != 24576 or profile["max_output_tokens"] != 3072:
         raise AuditPlanError("invalid_capacity_profile")
     if profile["base_profile_id"] == "safe-24k-v1" and (
@@ -1993,7 +2135,11 @@ def build_test_only_runtime_plan(
 
 def attempt_manifest(plan, shard_index, ordinal, capability):
     """Bind actual provider provenance without changing logical task identity."""
-    if type(shard_index) is not int or type(ordinal) is not int:
+    if (
+        type(shard_index) is not int
+        or shard_index < 0
+        or type(ordinal) is not int
+    ):
         raise AuditPlanError("invalid_attempt")
     try:
         logical_key = plan["logical_task_keys"][shard_index]
