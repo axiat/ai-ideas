@@ -62,6 +62,22 @@ def _time_text(value):
     return value.astimezone(datetime.timezone.utc).isoformat()
 
 
+def _clock_now(clock):
+    if clock is None:
+        return _utc_now()
+    if not callable(clock):
+        raise ValueError("metadata publication clock must be callable")
+    value = clock()
+    if isinstance(value, str):
+        return _parse_time(value, "metadata publication clock result")
+    if not isinstance(value, datetime.datetime) or value.tzinfo is None:
+        raise ValueError(
+            "metadata publication clock must return a timezone-aware datetime "
+            "or ISO-8601 timestamp"
+        )
+    return value.astimezone(datetime.timezone.utc)
+
+
 def _sha(value, name):
     if (
         not isinstance(value, str)
@@ -433,13 +449,179 @@ def _claim_matches(row, claim):
     )
 
 
-def publish_annotations(conn, claim, annotations):
+def _prepare_annotations(outbox_id, normalized):
+    prepared = []
+    for ordinal, item in enumerate(normalized):
+        value_json = _canonical_text(item["value"])
+        value_sha = contract.framed_sha256(
+            "history-metadata-value-v1", value_json.encode("utf-8")
+        )
+        direction_json = (
+            None
+            if item["direction_identity"] is None
+            else _canonical_text(item["direction_identity"])
+        )
+        identity = {
+            "outbox_id": outbox_id,
+            "ordinal": ordinal,
+            "family": item["family"],
+            "value_sha256": value_sha,
+            "confidence_millionths": round(item["confidence"] * 1_000_000),
+            "direction_identity": item["direction_identity"],
+        }
+        prepared.append(
+            {
+                **item,
+                "annotation_id": _framed(
+                    "history-metadata-annotation-version-v1", identity
+                ),
+                "value_json": value_json,
+                "value_sha256": value_sha,
+                "direction_identity_json": direction_json,
+            }
+        )
+    return prepared
+
+
+def _publication_result(outbox_id, annotation_ids, claim_fence):
+    return {
+        "outbox_id": outbox_id,
+        "published_count": len(annotation_ids),
+        "annotation_ids": annotation_ids,
+        "settled_fence": claim_fence + 1,
+    }
+
+
+def _exact_publication_replay(conn, row, claim, prepared):
+    if not isinstance(claim, dict) or row["state"] != "done":
+        return None
+    work_fields = (
+        "outbox_id",
+        "profile_id",
+        "profile_sha256",
+        "candidate_id",
+        "source_content_sha",
+        "source_sequence",
+        "producer_kind",
+        "producer_id",
+        "producer_version",
+        "prompt_sha256",
+    )
+    claim_fence = claim.get("fence")
+    claim_token = claim.get("claim_token")
+    if (
+        type(claim_fence) is not int
+        or not isinstance(claim_token, str)
+        or not claim_token
+        or row["fence"] != claim_fence + 1
+        or any(claim.get(name) != row[name] for name in work_fields)
+    ):
+        return None
+    annotation_ids = [item["annotation_id"] for item in prepared]
+    annotation_ids_json = _canonical_text(annotation_ids)
+    settlement = conn.execute(
+        "SELECT * FROM audit_metadata_settlements_v2 WHERE outbox_id=?",
+        (row["outbox_id"],),
+    ).fetchone()
+    if (
+        settlement is None
+        or settlement["claim_fence"] != claim_fence
+        or settlement["claim_token"] != claim_token
+        or settlement["annotation_ids_json"] != annotation_ids_json
+        or settlement["annotation_count"] != len(annotation_ids)
+        or settlement["annotation_ids_sha256"]
+        != _framed("history-metadata-annotation-set-v1", annotation_ids)
+    ):
+        return None
+    stored = {
+        item["annotation_id"]: item
+        for item in conn.execute(
+            "SELECT * FROM audit_annotation_versions_v2 WHERE outbox_id=?",
+            (row["outbox_id"],),
+        )
+    }
+    claims = {
+        item["annotation_id"]: item
+        for item in conn.execute(
+            "SELECT * FROM audit_metadata_annotation_claims_v2 WHERE outbox_id=?",
+            (row["outbox_id"],),
+        )
+    }
+    if set(stored) != set(annotation_ids) or set(claims) != set(annotation_ids):
+        return None
+    for item in prepared:
+        annotation_id = item["annotation_id"]
+        stored_item = stored[annotation_id]
+        stored_claim = claims[annotation_id]
+        if (
+            stored_item["family"] != item["family"]
+            or stored_item["value_json"] != item["value_json"]
+            or stored_item["value_sha256"] != item["value_sha256"]
+            or stored_item["confidence"] != item["confidence"]
+            or stored_item["direction_identity_json"]
+            != item["direction_identity_json"]
+            or any(stored_item[name] != row[name] for name in work_fields[1:])
+            or stored_claim["claim_fence"] != claim_fence
+            or stored_claim["claim_token"] != claim_token
+        ):
+            return None
+    return _publication_result(row["outbox_id"], annotation_ids, claim_fence)
+
+
+def publish_annotations(conn, claim, annotations, *, clock=None):
     """Publish append-only versioned annotations and settle the outbox."""
     if not isinstance(annotations, list):
         raise ValueError("metadata annotations must be an array")
-    now = _utc_now()
+    if clock is not None and not callable(clock):
+        raise ValueError("metadata publication clock must be callable")
     with _transaction(conn, "metadata_publish_annotations"):
         outbox_id = claim.get("outbox_id") if isinstance(claim, dict) else None
+        row = conn.execute(
+            "SELECT * FROM audit_metadata_outbox_v2 WHERE outbox_id=?",
+            (outbox_id,),
+        ).fetchone()
+        if row is None:
+            raise history_audit_store.StaleFence(
+                "metadata publish claim is stale"
+            )
+        profile = conn.execute(
+            "SELECT * FROM audit_metadata_profiles_v2 WHERE profile_id=?",
+            (row["profile_id"],),
+        ).fetchone()
+        if profile is None:
+            raise history_audit_store.StaleFence(
+                "metadata publish profile is stale"
+            )
+        normalized = [
+            _normalize_annotation(item, profile["synopsis_max_chars"])
+            for item in annotations
+        ]
+        prepared = _prepare_annotations(row["outbox_id"], normalized)
+        replay = _exact_publication_replay(conn, row, claim, prepared)
+        if replay is not None:
+            return replay
+        if row["state"] == "done":
+            raise history_audit_store.StaleFence(
+                "metadata publication replay does not match settlement"
+            )
+        candidate = conn.execute(
+            "SELECT raw_sha256, source_sequence FROM candidates WHERE candidate_id=?",
+            (row["candidate_id"],),
+        ).fetchone()
+        if (
+            candidate is None
+            or candidate["raw_sha256"] != row["source_content_sha"]
+            or candidate["source_sequence"] != row["source_sequence"]
+        ):
+            raise history_audit_store.StaleFence(
+                "metadata source identity is stale"
+            )
+
+        # Read the clock only after BEGIN IMMEDIATE has acquired the writer lock.
+        # Re-read the fenced claim at the publication point so lock wait time is
+        # included in the lease decision.
+        now = _clock_now(clock)
+        created_at = _time_text(now)
         row = conn.execute(
             "SELECT * FROM audit_metadata_outbox_v2 WHERE outbox_id=?",
             (outbox_id,),
@@ -454,28 +636,7 @@ def publish_annotations(conn, claim, annotations):
             raise history_audit_store.StaleFence(
                 "metadata publish claim is stale"
             )
-        candidate = conn.execute(
-            "SELECT raw_sha256, source_sequence FROM candidates WHERE candidate_id=?",
-            (row["candidate_id"],),
-        ).fetchone()
-        if (
-            candidate is None
-            or candidate["raw_sha256"] != row["source_content_sha"]
-            or candidate["source_sequence"] != row["source_sequence"]
-        ):
-            raise history_audit_store.StaleFence(
-                "metadata source identity is stale"
-            )
-        profile = conn.execute(
-            "SELECT * FROM audit_metadata_profiles_v2 WHERE profile_id=?",
-            (row["profile_id"],),
-        ).fetchone()
-        normalized = [
-            _normalize_annotation(item, profile["synopsis_max_chars"])
-            for item in annotations
-        ]
-        created_at = _time_text(now)
-        annotation_ids = []
+        annotation_ids = [item["annotation_id"] for item in prepared]
         with history_audit_store.metadata_shadow_publish_guard(
             conn,
             outbox_id=row["outbox_id"],
@@ -483,29 +644,7 @@ def publish_annotations(conn, claim, annotations):
             claim_fence=row["fence"],
             now=created_at,
         ):
-            for ordinal, item in enumerate(normalized):
-                value_json = _canonical_text(item["value"])
-                value_sha = contract.framed_sha256(
-                    "history-metadata-value-v1", value_json.encode("utf-8")
-                )
-                direction_json = (
-                    None
-                    if item["direction_identity"] is None
-                    else _canonical_text(item["direction_identity"])
-                )
-                identity = {
-                    "outbox_id": row["outbox_id"],
-                    "ordinal": ordinal,
-                    "family": item["family"],
-                    "value_sha256": value_sha,
-                    "confidence_millionths": round(
-                        item["confidence"] * 1_000_000
-                    ),
-                    "direction_identity": item["direction_identity"],
-                }
-                annotation_id = _framed(
-                    "history-metadata-annotation-version-v1", identity
-                )
+            for item in prepared:
                 conn.execute(
                     """
                     INSERT INTO audit_metadata_annotation_claims_v2(
@@ -514,7 +653,7 @@ def publish_annotations(conn, claim, annotations):
                     ) VALUES(?, ?, ?, ?, ?)
                     """,
                     (
-                        annotation_id,
+                        item["annotation_id"],
                         row["outbox_id"],
                         row["fence"],
                         row["claim_token"],
@@ -533,7 +672,7 @@ def publish_annotations(conn, claim, annotations):
                              'current')
                     """,
                     (
-                        annotation_id,
+                        item["annotation_id"],
                         row["outbox_id"],
                         row["profile_id"],
                         row["profile_sha256"],
@@ -541,10 +680,10 @@ def publish_annotations(conn, claim, annotations):
                         row["source_content_sha"],
                         row["source_sequence"],
                         item["family"],
-                        value_json,
-                        value_sha,
+                        item["value_json"],
+                        item["value_sha256"],
                         item["confidence"],
-                        direction_json,
+                        item["direction_identity_json"],
                         row["producer_kind"],
                         row["producer_id"],
                         row["producer_version"],
@@ -552,7 +691,6 @@ def publish_annotations(conn, claim, annotations):
                         created_at,
                     ),
                 )
-                annotation_ids.append(annotation_id)
             history_audit_store.record_metadata_shadow_settlement(
                 conn,
                 outbox_id=row["outbox_id"],
@@ -569,12 +707,7 @@ def publish_annotations(conn, claim, annotations):
                 new_state="done",
                 new_fence=row["fence"] + 1,
             )
-        return {
-            "outbox_id": row["outbox_id"],
-            "published_count": len(annotation_ids),
-            "annotation_ids": annotation_ids,
-            "settled_fence": row["fence"] + 1,
-        }
+        return _publication_result(row["outbox_id"], annotation_ids, row["fence"])
 
 
 def _normalize_query_annotation(value):
