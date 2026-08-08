@@ -189,51 +189,98 @@ def load_policy(path):
     return policy
 
 
-def _init(conn):
-    conn.executescript(SCHEMA)
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(search_index_generations)")}
-    for name, definition in (
-        ("canonical_revision", "INTEGER NOT NULL DEFAULT 0"),
-        ("manifest_json", "TEXT NOT NULL DEFAULT ''"),
-        ("policy_sha256", "TEXT NOT NULL DEFAULT ''"),
-        ("projection_schema_version", "TEXT NOT NULL DEFAULT ''"),
-        ("fts_tokenizer", "TEXT NOT NULL DEFAULT ''"),
-        ("vector_model", "TEXT NOT NULL DEFAULT ''"),
-        ("vector_revision", "TEXT NOT NULL DEFAULT ''"),
-        ("preprocessing_version", "TEXT NOT NULL DEFAULT ''"),
-        ("dimensions", "INTEGER NOT NULL DEFAULT 0"),
-        ("metric", "TEXT NOT NULL DEFAULT ''"),
-    ):
-        if name not in columns:
-            conn.execute("ALTER TABLE search_index_generations ADD COLUMN %s %s" % (name, definition))
-    vector_columns = {
-        row[1] for row in conn.execute("PRAGMA table_info(search_vectors)")
-    }
-    if "content" not in vector_columns:
+def _init(conn, policy=None):
+    started = not conn.in_transaction
+    if started:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        for statement in SCHEMA.split(";"):
+            if statement.strip():
+                conn.execute(statement)
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(search_index_generations)"
+            )
+        }
+        for name, definition in (
+            ("canonical_revision", "INTEGER NOT NULL DEFAULT 0"),
+            ("manifest_json", "TEXT NOT NULL DEFAULT ''"),
+            ("policy_sha256", "TEXT NOT NULL DEFAULT ''"),
+            ("projection_schema_version", "TEXT NOT NULL DEFAULT ''"),
+            ("fts_tokenizer", "TEXT NOT NULL DEFAULT ''"),
+            ("vector_model", "TEXT NOT NULL DEFAULT ''"),
+            ("vector_revision", "TEXT NOT NULL DEFAULT ''"),
+            ("preprocessing_version", "TEXT NOT NULL DEFAULT ''"),
+            ("dimensions", "INTEGER NOT NULL DEFAULT 0"),
+            ("metric", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in columns:
+                conn.execute(
+                    "ALTER TABLE search_index_generations ADD COLUMN %s %s"
+                    % (name, definition)
+                )
+        vector_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(search_vectors)")
+        }
+        if "content" not in vector_columns:
+            conn.execute(
+                "ALTER TABLE search_vectors "
+                "ADD COLUMN content TEXT NOT NULL DEFAULT ''"
+            )
+        if "source_artifact_id" not in vector_columns:
+            conn.execute(
+                "ALTER TABLE search_vectors ADD COLUMN source_artifact_id TEXT"
+            )
+        fts_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(search_fts)")
+        }
+        if fts_columns and fts_columns != {"candidate_id", "facet", "content"}:
+            conn.execute("DROP TABLE search_fts")
         conn.execute(
-            "ALTER TABLE search_vectors "
-            "ADD COLUMN content TEXT NOT NULL DEFAULT ''"
+            "CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING "
+            "fts5(candidate_id UNINDEXED, facet UNINDEXED, content, "
+            "tokenize='unicode61')"
         )
-    if "source_artifact_id" not in vector_columns:
         conn.execute(
-            "ALTER TABLE search_vectors ADD COLUMN source_artifact_id TEXT"
+            "INSERT OR IGNORE INTO schema_meta(key, value) "
+            "VALUES('history_index_generation', '0')"
         )
-    fts_columns = {row[1] for row in conn.execute("PRAGMA table_info(search_fts)")}
-    if fts_columns and fts_columns != {"candidate_id", "facet", "content"}:
-        conn.execute("DROP TABLE search_fts")
-    conn.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(candidate_id UNINDEXED, facet UNINDEXED, content, tokenize='unicode61')"
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('history_index_generation', '0')"
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('history_index_generation_sequence', '0')"
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO schema_meta(key, value) "
-        "VALUES('history_search_content_revision', '0')"
-    )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta(key, value) "
+            "VALUES('history_index_generation_sequence', '0')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta(key, value) "
+            "VALUES('history_search_content_revision', '0')"
+        )
+        if (
+            policy is not None
+            and conn.execute(
+                "SELECT 1 FROM search_index_generations LIMIT 1"
+            ).fetchone()
+            is None
+            and conn.execute("SELECT 1 FROM candidates LIMIT 1").fetchone()
+            is None
+        ):
+            conn.execute("DELETE FROM search_vectors")
+            conn.execute("DELETE FROM search_index_entries")
+            conn.execute("DELETE FROM search_fts")
+            canonical_revision = int(
+                conn.execute(
+                    "SELECT value FROM schema_meta "
+                    "WHERE key = 'history_search_content_revision'"
+                ).fetchone()[0]
+            )
+            _publish_generation(
+                conn, policy, 0, 0, canonical_revision
+            )
+        if started:
+            conn.execute("COMMIT")
+    except Exception:
+        if started and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 
 def _tokens(text):
@@ -587,6 +634,61 @@ def _projection_manifest(
     }
 
 
+def _publish_generation(
+    conn, policy, generation, source_watermark, canonical_revision
+):
+    manifest = _projection_manifest(
+        conn, policy, source_watermark, canonical_revision
+    )
+    manifest_bytes = _canonical_bytes(manifest)
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    manifest_json = manifest_bytes.decode("utf-8").rstrip("\n")
+    policy_sha256 = _policy_sha256(policy)
+    conn.execute(
+        """INSERT INTO search_index_generations(
+           generation, source_watermark, canonical_revision,
+           manifest_sha256, manifest_json, policy_sha256,
+           projection_schema_version, fts_tokenizer, vector_model,
+           vector_revision, preprocessing_version, dimensions, metric,
+           created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+        (
+            generation,
+            source_watermark,
+            canonical_revision,
+            manifest_sha256,
+            manifest_json,
+            policy_sha256,
+            PROJECTION_SCHEMA_VERSION,
+            FTS_TOKENIZER,
+            VECTOR_MODEL,
+            VECTOR_REVISION,
+            PREPROCESSING_VERSION,
+            VECTOR_DIMENSIONS,
+            "cosine",
+        ),
+    )
+    # Canonical pack provenance starts at generation 1 by schema contract.
+    if generation >= 1:
+        conn.execute(
+            """
+            INSERT INTO history_generation_provenance(
+              generation, manifest_sha256, manifest_json, source_watermark,
+              policy_sha256, projection_schema_version, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                generation,
+                manifest_sha256,
+                manifest_json,
+                source_watermark,
+                policy_sha256,
+                PROJECTION_SCHEMA_VERSION,
+            ),
+        )
+    return manifest_sha256
+
+
 def _latest_generation(conn):
     return conn.execute(
         "SELECT * FROM search_index_generations ORDER BY generation DESC LIMIT 1"
@@ -635,8 +737,19 @@ def _validate_published_generation_snapshot(conn, policy):
 
 
 def validate_published_generation(conn, policy):
-    _init(conn)
-    return _validate_published_generation_snapshot(conn, policy)
+    _init(conn, policy)
+    started = not conn.in_transaction
+    if started:
+        conn.execute("BEGIN")
+    try:
+        result = _validate_published_generation_snapshot(conn, policy)
+        if started:
+            conn.execute("COMMIT")
+        return result
+    except Exception:
+        if started and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 
 def _requeue_all(conn, content_version):
@@ -646,108 +759,128 @@ def _requeue_all(conn, content_version):
         )
 
 
+def _rebuild_snapshot(conn, policy):
+    pending = conn.execute(
+        "SELECT record_id, projection_kind, content_version "
+        "FROM search_projection_outbox WHERE state = 'pending' "
+        "ORDER BY source_sequence, content_version"
+    ).fetchall()
+    embedded = 0
+    changed = set()
+    for item in pending:
+        embedded += _write_candidate(conn, item["record_id"])
+        changed.add(item["record_id"])
+        conn.execute(
+            "UPDATE search_projection_outbox SET state = 'done', "
+            "claim_token = NULL, lease_until = NULL WHERE record_id = ? "
+            "AND projection_kind = ? AND content_version = ?",
+            (
+                item["record_id"],
+                item["projection_kind"],
+                item["content_version"],
+            ),
+        )
+    current_generation = int(
+        conn.execute(
+            "SELECT value FROM schema_meta "
+            "WHERE key = 'history_index_generation'"
+        ).fetchone()[0]
+    )
+    generation_sequence = int(
+        conn.execute(
+            "SELECT value FROM schema_meta "
+            "WHERE key = 'history_index_generation_sequence'"
+        ).fetchone()[0]
+    )
+    generation = current_generation
+    if changed:
+        generation = generation_sequence + 1
+        watermark = conn.execute(
+            "SELECT COALESCE(MAX(source_sequence), 0) FROM candidates"
+        ).fetchone()[0]
+        canonical_revision = int(
+            conn.execute(
+                "SELECT value FROM schema_meta "
+                "WHERE key = 'history_search_content_revision'"
+            ).fetchone()[0]
+        )
+        _publish_generation(
+            conn, policy, generation, watermark, canonical_revision
+        )
+        placeholders = ",".join("?" * len(changed))
+        conn.execute(
+            "UPDATE search_index_entries SET indexed_generation = ? "
+            "WHERE candidate_id IN (%s)" % placeholders,
+            (generation, *sorted(changed)),
+        )
+        conn.execute(
+            "UPDATE schema_meta SET value = ? "
+            "WHERE key = 'history_index_generation'",
+            (str(generation),),
+        )
+        conn.execute(
+            "UPDATE schema_meta SET value = ? "
+            "WHERE key = 'history_index_generation_sequence'",
+            (str(generation),),
+        )
+    return {
+        "embedded_facets": embedded,
+        "index_generation": generation,
+        "processed_records": len(pending),
+    }
+
+
 def rebuild(conn, policy):
-    _init(conn)
+    _init(conn, policy)
     conn.execute("BEGIN IMMEDIATE")
     try:
-        pending = conn.execute(
-            "SELECT record_id, projection_kind, content_version FROM search_projection_outbox WHERE state = 'pending' ORDER BY source_sequence, content_version"
-        ).fetchall()
-        embedded = 0
-        changed = set()
-        for item in pending:
-            embedded += _write_candidate(conn, item["record_id"])
-            changed.add(item["record_id"])
-            conn.execute(
-                "UPDATE search_projection_outbox SET state = 'done', claim_token = NULL, lease_until = NULL WHERE record_id = ? AND projection_kind = ? AND content_version = ?",
-                (item["record_id"], item["projection_kind"], item["content_version"]),
-            )
-        current_generation = int(conn.execute(
-            "SELECT value FROM schema_meta WHERE key = 'history_index_generation'"
-        ).fetchone()[0])
-        generation_sequence = int(conn.execute(
-            "SELECT value FROM schema_meta WHERE key = 'history_index_generation_sequence'"
-        ).fetchone()[0])
-        generation = current_generation
-        if changed:
-            generation = generation_sequence + 1
-            watermark = conn.execute("SELECT COALESCE(MAX(source_sequence), 0) FROM candidates").fetchone()[0]
-            canonical_revision = int(
-                conn.execute(
-                    "SELECT value FROM schema_meta "
-                    "WHERE key = 'history_search_content_revision'"
-                ).fetchone()[0]
-            )
-            manifest = _projection_manifest(
-                conn, policy, watermark, canonical_revision
-            )
-            manifest_bytes = _canonical_bytes(manifest)
-            conn.execute(
-                """INSERT INTO search_index_generations(
-                   generation, source_watermark, canonical_revision,
-                   manifest_sha256, manifest_json, policy_sha256,
-                   projection_schema_version, fts_tokenizer, vector_model, vector_revision,
-                   preprocessing_version, dimensions, metric, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                (generation, watermark, canonical_revision,
-                 hashlib.sha256(manifest_bytes).hexdigest(),
-                 manifest_bytes.decode("utf-8").rstrip("\n"), _policy_sha256(policy),
-                 PROJECTION_SCHEMA_VERSION, FTS_TOKENIZER, VECTOR_MODEL, VECTOR_REVISION,
-                 PREPROCESSING_VERSION, VECTOR_DIMENSIONS, "cosine"),
-            )
-            conn.execute(
-                """
-                INSERT INTO history_generation_provenance(
-                  generation, manifest_sha256, manifest_json, source_watermark,
-                  policy_sha256, projection_schema_version, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, datetime('now'))
-                """,
-                (
-                    generation,
-                    hashlib.sha256(manifest_bytes).hexdigest(),
-                    manifest_bytes.decode("utf-8").rstrip("\n"),
-                    watermark,
-                    _policy_sha256(policy),
-                    PROJECTION_SCHEMA_VERSION,
-                ),
-            )
-            conn.execute(
-                "UPDATE search_index_entries SET indexed_generation = ? WHERE candidate_id IN (%s)" % ",".join("?" * len(changed)),
-                (generation, *sorted(changed)),
-            )
-            conn.execute(
-                "UPDATE schema_meta SET value = ? WHERE key = 'history_index_generation'", (str(generation),)
-            )
-            conn.execute(
-                "UPDATE schema_meta SET value = ? WHERE key = 'history_index_generation_sequence'",
-                (str(generation),),
-            )
+        result = _rebuild_snapshot(conn, policy)
         conn.execute("COMMIT")
     except Exception:
         if conn.in_transaction:
             conn.execute("ROLLBACK")
         raise
-    return {"embedded_facets": embedded, "index_generation": generation, "processed_records": len(pending)}
+    return result
 
 
 def recover(conn, policy):
-    _init(conn)
-    validation = _validate_published_generation_snapshot(conn, policy)
-    pending = conn.execute(
-        "SELECT count(*) FROM search_projection_outbox WHERE state = 'pending'"
-    ).fetchone()[0]
-    if not validation["valid"]:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            _requeue_all(conn, "recovery-v2")
-            conn.execute("COMMIT")
-        except Exception:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
-    result = rebuild(conn, policy)
-    if not validate_published_generation(conn, policy)["valid"]:
-        raise ProjectionError("published projection recovery failed closed")
+    _init(conn, policy)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        validation = _validate_published_generation_snapshot(conn, policy)
+        pending = conn.execute(
+            "SELECT count(*) FROM search_projection_outbox "
+            "WHERE state = 'pending'"
+        ).fetchone()[0]
+        if not validation["valid"]:
+            if conn.execute("SELECT 1 FROM candidates LIMIT 1").fetchone() is None:
+                conn.execute("DELETE FROM search_vectors")
+                conn.execute("DELETE FROM search_index_entries")
+                conn.execute("DELETE FROM search_fts")
+                conn.execute("DELETE FROM search_index_generations")
+                canonical_revision = int(
+                    conn.execute(
+                        "SELECT value FROM schema_meta "
+                        "WHERE key = 'history_search_content_revision'"
+                    ).fetchone()[0]
+                )
+                _publish_generation(
+                    conn, policy, 0, 0, canonical_revision
+                )
+                conn.execute(
+                    "UPDATE schema_meta SET value = '0' "
+                    "WHERE key = 'history_index_generation'"
+                )
+            else:
+                _requeue_all(conn, "recovery-v2")
+        result = _rebuild_snapshot(conn, policy)
+        if not _validate_published_generation_snapshot(conn, policy)["valid"]:
+            raise ProjectionError("published projection recovery failed closed")
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
     result["recovered"] = not validation["valid"]
     result["pending_before_recovery"] = pending
     return result
@@ -810,18 +943,26 @@ def candidate_ids_as_of(conn, source_watermark):
     ]
 
 
+def _exact_lookup_snapshot(conn, query, depth):
+    canonical = history_store.canonical_story_v1(query)
+    return [
+        row[0]
+        for row in conn.execute(
+            """SELECT c.candidate_id FROM story_aliases a
+               JOIN candidates c ON c.lineage_id = a.lineage_id
+               JOIN search_index_entries e ON e.candidate_id = c.candidate_id
+               WHERE a.canonical_version = ? AND a.canonical_story = ?
+                 AND e.active = 1
+               ORDER BY c.source_sequence DESC LIMIT ?""",
+            (history_store.CANONICAL_VERSION, canonical, int(depth)),
+        )
+    ]
+
+
 def exact_lookup(conn, query, depth):
     """Return canonical exact-story matches from the active projection."""
     _init(conn)
-    canonical = history_store.canonical_story_v1(query)
-    return [row[0] for row in conn.execute(
-        """SELECT c.candidate_id FROM story_aliases a
-           JOIN candidates c ON c.lineage_id = a.lineage_id
-           JOIN search_index_entries e ON e.candidate_id = c.candidate_id
-           WHERE a.canonical_version = ? AND a.canonical_story = ? AND e.active = 1
-           ORDER BY c.source_sequence DESC LIMIT ?""",
-        (history_store.CANONICAL_VERSION, canonical, int(depth)),
-    )]
+    return _exact_lookup_snapshot(conn, query, depth)
 
 
 def current_index_generation(conn):
@@ -835,12 +976,11 @@ def _cosine(left, right):
     return sum(a * b for a, b in zip(left, right))
 
 
-def search(conn, query, policy):
-    _init(conn)
+def _search_snapshot(conn, query, policy):
     query = history_store.canonical_story_v1(query)
     depth = int(policy["per_channel_depth"])
     channels = {}
-    exact = exact_lookup(conn, query, depth)
+    exact = _exact_lookup_snapshot(conn, query, depth)
     channels["exact"] = exact
     terms = _tokens(query)
     fts_by_facet = {}
@@ -898,9 +1038,24 @@ def search(conn, query, policy):
     return {"candidate_ids": ranked, "channels": channels}
 
 
-def l1_rankings_as_of(conn, query, depth, source_watermark):
+def search(conn, query, policy):
+    _init(conn, policy)
+    started = not conn.in_transaction
+    if started:
+        conn.execute("BEGIN")
+    try:
+        result = _search_snapshot(conn, query, policy)
+        if started:
+            conn.execute("COMMIT")
+        return result
+    except Exception:
+        if started and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+def _l1_rankings_as_of_snapshot(conn, query, depth, source_watermark):
     """Read v1 flat indexes through one frozen source-sequence predicate."""
-    _init(conn)
     if type(depth) is not int or depth < 1:
         raise ValueError("L1 depth must be a positive integer")
     if type(source_watermark) is not int or source_watermark < 0:
@@ -1001,6 +1156,25 @@ def l1_rankings_as_of(conn, query, depth, source_watermark):
     return {"exact": exact, "fts": fts, "hash_dense": hash_dense}
 
 
+def l1_rankings_as_of(conn, query, depth, source_watermark):
+    """Read v1 flat indexes through one projection snapshot."""
+    _init(conn)
+    started = not conn.in_transaction
+    if started:
+        conn.execute("BEGIN")
+    try:
+        result = _l1_rankings_as_of_snapshot(
+            conn, query, depth, source_watermark
+        )
+        if started:
+            conn.execute("COMMIT")
+        return result
+    except Exception:
+        if started and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 def failure_code(verdict, category, reason):
     text = (str(category) + " " + str(reason)).lower()
     rules = (
@@ -1095,10 +1269,21 @@ def build_generation_brief(
     research_context=None,
     divergence_lens="",
 ):
-    _init(conn)
-    return _build_generation_brief_snapshot(
-        conn,
-        policy,
-        research_context,
-        divergence_lens,
-    )
+    _init(conn, policy)
+    started = not conn.in_transaction
+    if started:
+        conn.execute("BEGIN")
+    try:
+        brief = _build_generation_brief_snapshot(
+            conn,
+            policy,
+            research_context,
+            divergence_lens,
+        )
+        if started:
+            conn.execute("COMMIT")
+        return brief
+    except Exception:
+        if started and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
