@@ -42,6 +42,10 @@
 set -u
 
 cd "$(dirname "$0")" || exit 2
+# shellcheck source=lib/mirror_pre.sh
+. lib/mirror_pre.sh
+
+ACTIVE_EXTERNAL_MIRROR=
 
 runtime_variable_is_set() {
   declare -p "$1" >/dev/null 2>&1
@@ -1030,8 +1034,8 @@ PY
 }
 
 copy_external_output() {
-  local stage=$1 mirror=$2
-  python3 - "$stage" "$mirror" "$RD" "$today" <<'PY'
+  local stage=$1 mirror=$2 diagnostic=${3:-}
+  python3 - "$stage" "$mirror" "$RD" "$today" "$diagnostic" <<'PY'
 import os
 import pathlib
 import stat
@@ -1041,6 +1045,7 @@ stage = sys.argv[1]
 mirror = pathlib.Path(sys.argv[2]).resolve()
 round_root = pathlib.Path(sys.argv[3]).resolve()
 today = sys.argv[4]
+diagnostic = sys.argv[5]
 
 outputs = {
     "select": ("tmp/round/select.tsv", round_root / "select.tsv", 65536, False),
@@ -1111,6 +1116,21 @@ def atomic_write(destination, raw):
         except FileNotFoundError:
             pass
 
+if diagnostic:
+    if stage != "research":
+        raise SystemExit("diagnostic copy is only valid for research")
+    name = pathlib.PurePath(diagnostic)
+    if name.name != diagnostic or not diagnostic.startswith("priorwork.try"):
+        raise SystemExit("invalid research diagnostic name")
+    raw = read_regular(
+        mirror / "tmp/round/priorwork.md",
+        1024 * 1024,
+        False,
+    )
+    if raw:
+        atomic_write(round_root / "logs" / diagnostic, raw)
+    raise SystemExit(0)
+
 if stage == "select":
     relative, destination, maximum, required = outputs[stage]
     raw = read_regular(mirror / relative, maximum, required)
@@ -1146,10 +1166,32 @@ else:
 PY
 }
 
+external_stage_prompt() {
+  local stage=$1 mirror=$2 role_prompt=$3 target
+  case "$stage" in
+    select) target="tmp/round/select.tsv (and tmp/round/direction.tsv only when the role requires it)" ;;
+    prescreen) target="tmp/round/prescreen.md" ;;
+    research) target="tmp/round/priorwork.md" ;;
+    report) target="exactly one new ideas/*.md file" ;;
+    *) return 2 ;;
+  esac
+  printf '%s %s %s' \
+    "$(mirror_pre "$mirror" "$target")" \
+    "$role_prompt" \
+    "Execute the full task immediately without asking for confirmation or waiting for a reply. If you delegate work to subagents, the parent agent must collect their results and create the complete declared artifact before this provider process exits. A chat response or subagent response is not the artifact."
+}
+
 run_external_stage() {
-  local command_string=$1 prompt=$2 stage=$3
+  local command_string=$1 prompt=$2 stage=$3 attempt_tag=${4:-}
   local -a argv=()
-  local item rc started ended mirror
+  local item rc started ended mirror input_manifest stage_log compatibility_log final_prompt
+  stage_log="$RD/logs/$stage.log"
+  input_manifest="$RD/logs/$stage.input-manifest.json"
+  if [ -n "$attempt_tag" ]; then
+    stage_log="$RD/logs/$stage.try${attempt_tag}.log"
+    input_manifest="$RD/logs/$stage.try${attempt_tag}.input-manifest.json"
+  fi
+  compatibility_log="$RD/logs/$stage.log"
   while IFS= read -r -d '' item; do
     argv+=("$item")
   done < <(external_command_argv "$command_string")
@@ -1160,55 +1202,72 @@ run_external_stage() {
   mirror=$(mktemp -d "${TMPDIR:-/tmp}/hunt-${stage}.XXXXXX") || return 2
   case "$mirror" in
     "${TMPDIR:-/tmp}"/hunt-"$stage".*) ;;
-    *) log "External mirror path is outside its bound"; return 2 ;;
+    *)
+      log "External mirror path is outside its bound"
+      rm -rf "$mirror"
+      return 2
+      ;;
   esac
+  ACTIVE_EXTERNAL_MIRROR=$mirror
   if ! prepare_external_mirror "$stage" "$mirror"; then
     rm -rf "$mirror"
+    ACTIVE_EXTERNAL_MIRROR=
     return 2
   fi
   mkdir -p "$RD/logs"
-  input_manifest="$RD/logs/$stage.input-manifest.json"
   if ! external_input_manifest seal "$mirror" "$input_manifest"; then
     rm -rf "$mirror"
+    ACTIVE_EXTERNAL_MIRROR=
     return 2
   fi
+  final_prompt=$(external_stage_prompt "$stage" "$mirror" "$prompt") || {
+    rm -rf "$mirror"
+    ACTIVE_EXTERNAL_MIRROR=
+    return 2
+  }
   started=$(date '+%F %T')
   log "Starting external stage [$stage] in a disposable mirror"
-  # GROK_REPO pins grok-worker.sh into the disposable mirror. Without it the
-  # worker cds to its real script directory and writes host tmp/round, so
-  # mirror-side copy of priorwork.md fails with "omitted its declared output".
+  # Wrapper root overrides keep every documented backend in the disposable mirror.
   if (
     cd "$mirror" \
-      && PWD="$mirror" OLDPWD="$mirror" GROK_REPO="$mirror" \
-        "${argv[@]}" "$prompt"
-  ) > "$RD/logs/$stage.log" 2>&1; then
+      && PWD="$mirror" OLDPWD="$mirror" \
+        GROK_REPO="$mirror" CLAUDE_REPO="$mirror" AGY_REPO="$mirror" \
+        "${argv[@]}" "$final_prompt"
+  ) > "$stage_log" 2>&1; then
     rc=0
   else
     rc=$?
   fi
-  cat "$RD/logs/$stage.log" >> "$LOG"
+  cat "$stage_log" >> "$LOG"
   if [ "$rc" -ne 0 ]; then
     log "External stage [$stage] agent exit rc=$rc"
   fi
   if [ "$rc" -eq 0 ]; then
     if ! external_input_manifest verify "$mirror" "$input_manifest" \
-      >> "$RD/logs/$stage.log" 2>&1; then
+      >> "$stage_log" 2>&1; then
       log "External stage [$stage] input-manifest verify failed"
-      tail -n 20 "$RD/logs/$stage.log" >> "$LOG" 2>/dev/null || true
+      tail -n 20 "$stage_log" >> "$LOG" 2>/dev/null || true
       rc=2
     elif ! copy_external_output "$stage" "$mirror" \
-      >> "$RD/logs/$stage.log" 2>&1; then
+      >> "$stage_log" 2>&1; then
       log "External stage [$stage] output copy failed"
-      tail -n 20 "$RD/logs/$stage.log" >> "$LOG" 2>/dev/null || true
-      # Preserve the rejected artifact for diagnosis when present.
-      if [ -f "$mirror/tmp/round/priorwork.md" ]; then
-        cp "$mirror/tmp/round/priorwork.md" \
-          "$RD/logs/priorwork.copy-fail.md" 2>/dev/null || true
-      fi
+      tail -n 20 "$stage_log" >> "$LOG" 2>/dev/null || true
       rc=2
     fi
   fi
-  rm -rf "$mirror"
+  if [ "$stage" = research ] && [ "$rc" -ne 0 ] && [ -n "$attempt_tag" ]; then
+    copy_external_output \
+      research "$mirror" "priorwork.try${attempt_tag}.diagnostic.md" \
+      >> "$stage_log" 2>&1 || true
+  fi
+  if ! rm -rf "$mirror"; then
+    log "External stage [$stage] mirror cleanup failed"
+    rc=2
+  fi
+  ACTIVE_EXTERNAL_MIRROR=
+  if [ -n "$attempt_tag" ]; then
+    cp "$stage_log" "$compatibility_log" 2>/dev/null || true
+  fi
   ended=$(date '+%F %T')
   printf '%s\t%s\t%s\t%s\n' "$stage" "$started" "$ended" "$rc" \
     >> "$RD/stages.tsv"
@@ -1476,7 +1535,12 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   mkdir "$LOCK" 2>/dev/null || { log "Cannot acquire hunt lock"; exit 2; }
 fi
 printf '%s\n' "$$" > "$LOCK/pid"
-trap 'rm -rf "$LOCK"' EXIT
+trap '
+  case "$ACTIVE_EXTERNAL_MIRROR" in
+    "${TMPDIR:-/tmp}"/hunt-*) rm -rf "$ACTIVE_EXTERNAL_MIRROR" ;;
+  esac
+  rm -rf "$LOCK"
+' EXIT
 
 mkdir -p "$RUNS_DIR" || { log "Cannot create archive directory"; exit 2; }
 [ ! -e "$HALT_MARK" ] || {
@@ -1838,23 +1902,24 @@ while :; do
         if ! run_external_stage \
           "$FRONT_CMD" \
           "Read roles/research.md and follow it" \
-          research; then
+          research "$research_try"; then
           log "Research stage agent/copy failed (try $research_try)"
           research_try=$((research_try + 1))
           continue
         fi
         if ! priorwork_ok; then
           log "Research stage priorwork_ok failed (try $research_try)"
-          # Keep a copy for diagnosis before the next wipe.
           cp "$RD/priorwork.md" \
-            "$RD/logs/priorwork.try${research_try}.md" 2>/dev/null || true
+            "$RD/logs/priorwork.try${research_try}.diagnostic.md" \
+            2>/dev/null || true
           research_try=$((research_try + 1))
           continue
         fi
         if ! cracks_ok; then
           log "Research stage cracks_ok failed (try $research_try)"
           cp "$RD/priorwork.md" \
-            "$RD/logs/priorwork.try${research_try}.md" 2>/dev/null || true
+            "$RD/logs/priorwork.try${research_try}.diagnostic.md" \
+            2>/dev/null || true
           research_try=$((research_try + 1))
           continue
         fi

@@ -767,6 +767,22 @@ def _grok_model_text_bytes(text):
     return raw[opening_start + len(opening) : closing_start - 1]
 
 
+def _parse_codex_final_message(path, maximum):
+    path = pathlib.Path(path)
+    if not path.exists() and not path.is_symlink():
+        raise PortableAgentError("final_output_missing")
+    try:
+        raw = _open_read_stable(path, maximum, "final_output_unreadable")
+    except PortableAgentError as exc:
+        if exc.code == "oversize":
+            raise PortableAgentError("final_output_oversize") from exc
+        if exc.code in {"unstable_output", "final_output_unreadable"}:
+            raise PortableAgentError("final_output_unreadable") from exc
+        raise
+    value = _parse_strict_model_json(raw)
+    return value, _canonical_json_bytes(value)
+
+
 def _parse_provider_stdout(provider, raw, response_schema):
     if provider == "agy":
         return _parse_agy_transport(raw, response_schema)
@@ -899,7 +915,12 @@ def _provider_environment(mirror, environment_delta):
             raise PortableAgentError("unsafe_environment")
         environment[name] = value
     temporary = pathlib.Path(mirror) / ".tmp"
-    temporary.mkdir(mode=0o700)
+    try:
+        temporary.mkdir(mode=0o700)
+    except FileExistsError:
+        info = temporary.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o077:
+            raise PortableAgentError("unsafe_environment")
     environment["TMPDIR"] = str(temporary)
     return environment
 
@@ -1413,11 +1434,22 @@ def run_portable_stdout_attempt(
         mirror = attempt / "mirror"
         mirror.mkdir(mode=0o700)
         copied = _copy_inputs(inputs, mirror)
+        schema_path = None
+        final_message_path = None
+        schema_bytes = None
+        if capability.provider == "codex":
+            resolved_mirror = mirror.resolve()
+            schema_path = resolved_mirror / ".tmp" / "response-schema.json"
+            final_message_path = resolved_mirror / ".tmp" / "model-final.json"
+            schema_bytes = _canonical_json_bytes(response_schema)
+            _write_owner_only(schema_path, schema_bytes, resolved_mirror)
         argv, environment_delta = provider_adapters.render_command(
             capability,
             mirror,
             prompt,
+            schema_path,
             response_schema=response_schema,
+            output_last_message_path=final_message_path,
         )
         environment = _provider_environment(mirror, environment_delta)
         _revalidate_provider_model_authority(capability)
@@ -1442,10 +1474,26 @@ def run_portable_stdout_attempt(
                 "nonzero_exit",
                 {"returncode": process.returncode, "stderr": stderr},
             )
+        if capability.provider == "codex":
+            _validate_stdout_mirror(mirror, copied)
+            observed_schema = _open_read_stable(
+                schema_path,
+                len(schema_bytes),
+                "unexpected_artifact",
+                require_owner_only=True,
+            )
+            if observed_schema != schema_bytes:
+                raise PortableAgentError("unexpected_artifact")
+            value, model_bytes = _parse_codex_final_message(
+                final_message_path, max_stdout_bytes
+            )
+            schema_path.unlink()
+            final_message_path.unlink()
+        else:
+            value, model_bytes = _parse_provider_stdout(
+                capability.provider, stdout, response_schema
+            )
         _validate_stdout_mirror(mirror, copied)
-        value, model_bytes = _parse_provider_stdout(
-            capability.provider, stdout, response_schema
-        )
         _validate_response_value(value, response_contract)
         if _canonical_json_bytes(value["request_attestation"]) != _canonical_json_bytes(
             expected_attestation

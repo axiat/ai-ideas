@@ -281,6 +281,39 @@ class ProviderAdaptersSmoke(unittest.TestCase):
             joined = "\0".join(argv)
             self.assertIn("\0".join(spelling), joined)
 
+    def test_codex_structured_output_uses_schema_and_final_paths(self):
+        response_schema = {
+            "additionalProperties": False,
+            "properties": {"answer": {"type": "string"}},
+            "type": "object",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            mirror = pathlib.Path(directory).resolve()
+            temporary = mirror / ".tmp"
+            temporary.mkdir()
+            schema = temporary / "response-schema.json"
+            final = temporary / "model-final.json"
+            schema.write_text("{}\n", encoding="utf-8")
+            intent = self._resolve("hunt", "codex", "MODEL", "high")
+            argv, environment = self._api(
+                provider_adapters, "render_command"
+            )(
+                intent,
+                mirror,
+                "PROMPT",
+                schema,
+                response_schema=response_schema,
+                output_last_message_path=final,
+            )
+            self.assertEqual(argv.count("--output-schema"), 1)
+            self.assertEqual(argv.count("--output-last-message"), 1)
+            self.assertEqual(argv[argv.index("--output-schema") + 1], str(schema))
+            self.assertEqual(
+                argv[argv.index("--output-last-message") + 1], str(final)
+            )
+            self.assertEqual(argv[-1], "PROMPT")
+            self.assertEqual(environment, {})
+
     def test_explicit_overrides_render_byte_exact_argv(self):
         response_schema = {
             "additionalProperties": False,

@@ -133,6 +133,9 @@ _CONTRACT_ERROR_CODES = frozenset(
         # Provider transport envelope shape (not backend outage)
         "malformed_output",
         "noncanonical_output",
+        "final_output_missing",
+        "final_output_unreadable",
+        "final_output_oversize",
         # Request assembly / binding
         "invalid_contract_text",
         "contract_text_hash_mismatch",
@@ -531,7 +534,16 @@ def _provider_request(
         "match response_schema. Do not emit Markdown fences, "
         "narration, or any other bytes."
     )
-    if provider == "grok":
+    if provider == "codex":
+        stdout_instruction = (
+            "Return exactly one JSON object matching response_schema as the "
+            "structured final result. The Codex CLI writes that final result "
+            "through its host-configured output-last-message path; stdout is "
+            "diagnostic transport and is never an output fallback. The harness "
+            "parses and canonicalizes the final JSON. Do not put Markdown fences "
+            "or narration inside the structured value."
+        )
+    elif provider == "grok":
         stdout_instruction = (
             "Make the FINAL ASSISTANT RESPONSE exactly one UTF-8 NFC "
             "canonical JSON object inside exactly one Markdown fence. "

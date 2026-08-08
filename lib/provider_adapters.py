@@ -30,7 +30,8 @@ _SURFACES = {
     "hunt": ("codex", "kimi", "grok", "claude"),
     "awr": _PROVIDERS,
 }
-_STRUCTURED_JSON_PROVIDERS = frozenset({"agy", "claude"})
+_INLINE_STRUCTURED_JSON_PROVIDERS = frozenset({"agy", "claude"})
+_STRUCTURED_JSON_PROVIDERS = frozenset({"codex", "agy", "claude"})
 _PROBE_FACT_FIELDS = frozenset(
     {
         "cli_revision",
@@ -72,6 +73,8 @@ _COMMAND_RECORD_FIELDS = frozenset(
 _COMMAND_RECORD_MIRROR = "/portable-mirror"
 _COMMAND_RECORD_PROMPT = "PROMPT"
 _COMMAND_RECORD_RESPONSE_SCHEMA = "RESPONSE_SCHEMA"
+_COMMAND_RECORD_OUTPUT_SCHEMA = "/portable-mirror/.tmp/response-schema.json"
+_COMMAND_RECORD_OUTPUT_LAST_MESSAGE = "/portable-mirror/.tmp/model-final.json"
 _PROFILE_DESCRIPTOR_FIELDS = frozenset(
     {
         "surface",
@@ -107,7 +110,7 @@ _AGY_VERSION_PATTERN = re.compile(
 _HOST_CATALOG_MODEL_LIMIT = 4096
 _MULTI_BACKEND_PROVIDERS = frozenset({"opencode", "agy"})
 _PROVIDER_REGISTRY_V1_SHA256 = (
-    "1b7722b9dca6f4cb2f38df155aba119348d47fe1ba5d28135496115ef339c150"
+    "f705a1b5da333daa3898059e58f98acaee9f9dd41d472c40bb634903925ea2df"
 )
 _DYNAMIC_MODEL_ROUTE_MARKERS = frozenset(
     {"auto", "default", "current", "configured"}
@@ -1240,7 +1243,15 @@ def _command_record_from_fields(
         _COMMAND_RECORD_PROMPT,
         (
             _COMMAND_RECORD_RESPONSE_SCHEMA
-            if provider in _STRUCTURED_JSON_PROVIDERS
+            if provider in _INLINE_STRUCTURED_JSON_PROVIDERS
+            else None
+        ),
+        (
+            _COMMAND_RECORD_OUTPUT_SCHEMA if provider == "codex" else None
+        ),
+        (
+            _COMMAND_RECORD_OUTPUT_LAST_MESSAGE
+            if provider == "codex"
             else None
         ),
     )
@@ -1852,18 +1863,36 @@ def _render_command_fields(
     mirror,
     prompt,
     response_schema_argument=None,
+    output_schema_path=None,
+    output_last_message_path=None,
 ):
     mirror = str(pathlib.Path(mirror))
     argv = [executable_path]
     if provider == "codex":
+        structured_output = (
+            output_schema_path is not None
+            or output_last_message_path is not None
+        )
+        if structured_output and (
+            output_schema_path is None or output_last_message_path is None
+        ):
+            raise ProviderResolutionError(
+                "Codex requires output-schema and output-last-message paths"
+            )
         if model is not None:
             argv += ["-m", model]
         if reasoning is not None:
             argv += ["-c", f"model_reasoning_effort={reasoning}"]
         argv += [
             "-c", "approval_policy=never", "exec", "-s", "workspace-write",
-            "--skip-git-repo-check", "--ephemeral", prompt,
+            "--skip-git-repo-check", "--ephemeral",
         ]
+        if structured_output:
+            argv += [
+                "--output-schema", str(output_schema_path),
+                "--output-last-message", str(output_last_message_path),
+            ]
+        argv += [prompt]
     elif provider == "kimi":
         if reasoning is not None:
             raise ProviderResolutionError("Kimi reasoning override is unsupported")
@@ -1934,6 +1963,7 @@ def render_command(
     schema_path=None,
     *,
     response_schema=None,
+    output_last_message_path=None,
 ):
     """Return closed argv and a minimal environment delta."""
     if not (
@@ -1943,10 +1973,52 @@ def render_command(
         raise ProviderResolutionError("capability is not resolver-issued")
     if type(prompt) is not str:
         raise ProviderResolutionError("prompt must be text")
-    if schema_path is not None:
-        raise ProviderResolutionError("provider grammar has no schema-path flag")
     response_schema_argument = None
-    if capability.provider in _STRUCTURED_JSON_PROVIDERS:
+    output_schema_path = None
+    if capability.provider == "codex" and response_schema is not None:
+        if type(response_schema) is not dict:
+            raise ProviderResolutionError(
+                "Codex requires a response-schema object"
+            )
+        if schema_path is None or output_last_message_path is None:
+            raise ProviderResolutionError(
+                "Codex requires output-schema and output-last-message paths"
+            )
+        mirror_path = pathlib.Path(mirror).resolve()
+        output_schema_path = pathlib.Path(schema_path)
+        final_path = pathlib.Path(output_last_message_path)
+        try:
+            output_schema_path.relative_to(mirror_path)
+            final_path.relative_to(mirror_path)
+        except ValueError as exc:
+            raise ProviderResolutionError(
+                "Codex structured-output path escapes mirror"
+            ) from exc
+        if output_schema_path == final_path:
+            raise ProviderResolutionError(
+                "Codex structured-output paths must differ"
+            )
+        try:
+            schema_info = output_schema_path.lstat()
+        except OSError as exc:
+            raise ProviderResolutionError(
+                "Codex output schema is unavailable"
+            ) from exc
+        if not stat.S_ISREG(schema_info.st_mode) or schema_info.st_nlink != 1:
+            raise ProviderResolutionError("Codex output schema is unsafe")
+        if final_path.exists() or final_path.is_symlink():
+            raise ProviderResolutionError(
+                "Codex output-last-message path already exists"
+            )
+        output_last_message_path = final_path
+    elif schema_path is not None or output_last_message_path is not None:
+        raise ProviderResolutionError(
+            "provider grammar has no schema-path flag"
+        )
+    if capability.provider == "codex" and response_schema is None:
+        output_schema_path = None
+        output_last_message_path = None
+    if capability.provider in _INLINE_STRUCTURED_JSON_PROVIDERS:
         if type(response_schema) is not dict:
             raise ProviderResolutionError(
                 f"{capability.provider.capitalize()} requires a response-schema object"
@@ -1994,6 +2066,8 @@ def render_command(
         mirror,
         prompt,
         response_schema_argument,
+        output_schema_path,
+        output_last_message_path,
     )
 
 

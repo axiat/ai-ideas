@@ -310,8 +310,12 @@ V2 rejects `SIDE_CMD`, `SIDE_RESEARCH_CMD`, `SIDE_PRIORWORK_CMD`, and
 Each v2 attempt runs directly on the host in a disposable bounded mirror. The
 mirror contains one role plus declared inputs; it omits the full ledger,
 SQLite database, Git metadata, unrelated round state, and `.claude`. The host
-sets a fixed request-byte ceiling, accepts one closed JSON envelope on stdout,
-validates it, and publishes outputs atomically.
+sets a fixed request-byte ceiling, accepts one closed JSON envelope through the
+provider-specific structured transport, validates it, and publishes outputs
+atomically. Production Codex uses `exec --output-schema` plus
+`--output-last-message`; the host parses that final-message file and
+canonicalizes the JSON before validation. Codex stdout is diagnostic only and
+is never an output fallback.
 
 The host injects a base-request binding over the stage, seat, prompt, role SHA,
 declared-input names and SHAs, and response schema, plus a separate prompt SHA.
@@ -344,8 +348,10 @@ instruction: the final assistant response itself must be one exact
 lowercase-`json` LF fence containing the canonical UTF-8/NFC response-schema
 object, whose single trailing LF immediately precedes the terminal close. No
 byte may sit outside that fence, and no triple-backtick sequence may occur in
-an earlier assistant response. Codex, Kimi, and OpenCode retain the raw
-canonical-stdout instruction with no fence or narration. Agy and Claude require
+an earlier assistant response. Kimi and OpenCode retain the raw
+canonical-stdout instruction with no fence or narration. Codex returns a JSON
+object through its host-configured final-message path; valid non-canonical JSON
+serialization is parsed and canonicalized by the host. Agy and Claude require
 structured `structured_output` as specified above. All instructions forbid
 model-authored mirror writes and require exact request attestation. After the
 provider command finishes, the host terminates its process group and waits for
@@ -400,7 +406,19 @@ Operational AwR defaults remain `SIDE_POLL_SEC=9000`, `SIDE_MAX_BAD=3`,
 `SIDE_COOLDOWN_SEC=3600`.
 
 A failed final bounded Hunt round exits without `FAIL_SLEEP_MIN`; failed rounds
-with another bounded attempt remaining retain the configured cooldown.
+with another bounded attempt remaining retain the configured cooldown. Contract
+failures, including a successful Codex process that omits or produces an unsafe
+final-message artifact, use `CONTRACT_FAIL_SLEEP_MIN` (default 1 minute);
+provider/runtime failures use `FAIL_SLEEP_MIN` (default 150 minutes).
+
+Hunt external stages receive a shared disposable-mirror preamble and must run to
+completion without requesting confirmation. The parent process must create the
+declared artifact before exit, including when retrieval is delegated to
+subagents. Hunt pins `GROK_REPO`, `CLAUDE_REPO`, and `AGY_REPO` to the mirror.
+Research retries keep `research.tryN.log`,
+`research.tryN.input-manifest.json`, and bounded
+`priorwork.tryN.diagnostic.md` evidence; rejected responses never become the
+canonical `priorwork.md`, and the mirror is still removed.
 
 ## Literature Monitor
 
