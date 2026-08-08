@@ -2,7 +2,9 @@
 """Durable content-addressed storage foundation for history audit v2."""
 
 import contextlib
+import ctypes
 import datetime
+import errno
 import hashlib
 import json
 import os
@@ -10,6 +12,7 @@ import pathlib
 import secrets
 import sqlite3
 import stat
+import sys
 import zlib
 
 try:
@@ -74,9 +77,29 @@ def _directory_flags():
     )
 
 
+def _safe_absolute_path(path):
+    """Normalize only macOS's fixed system aliases, never caller symlinks."""
+    absolute = pathlib.Path(os.path.abspath(os.fspath(path)))
+    if sys.platform != "darwin" or len(absolute.parts) < 2:
+        return absolute
+    alias = absolute.parts[1]
+    if alias not in {"tmp", "var"}:
+        return absolute
+    expected = pathlib.Path("/private") / alias
+    try:
+        target = pathlib.Path(os.readlink(pathlib.Path("/") / alias))
+    except (OSError, ValueError):
+        return absolute
+    if not target.is_absolute():
+        target = pathlib.Path("/") / target
+    if target != expected:
+        return absolute
+    return expected.joinpath(*absolute.parts[2:])
+
+
 def _open_directory_path(path, *, create):
     """Open every absolute path component without following a symlink."""
-    absolute = pathlib.Path(path).absolute()
+    absolute = _safe_absolute_path(path)
     descriptor = os.open(absolute.anchor, _directory_flags())
     try:
         for part in absolute.parts[1:]:
@@ -254,6 +277,63 @@ def _write_all(descriptor, raw):
         position += written
 
 
+def _native_rename_exclusive(parent_descriptor, temporary, name):
+    if sys.platform == "darwin":
+        function_name, flag = "renameatx_np", 0x00000004  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        function_name, flag = "renameat2", 0x00000001  # RENAME_NOREPLACE
+    else:
+        return None
+    function = getattr(ctypes.CDLL(None, use_errno=True), function_name, None)
+    if function is None:
+        return None
+    function.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    function.restype = ctypes.c_int
+    result = function(
+        parent_descriptor,
+        os.fsencode(temporary),
+        parent_descriptor,
+        os.fsencode(name),
+        flag,
+    )
+    if result == 0:
+        return True
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        return False
+    if error in {errno.ENOSYS, errno.EINVAL, errno.ENOTSUP}:
+        return None
+    raise OSError(error, os.strerror(error), name)
+
+
+def _publish_exclusive(parent_descriptor, temporary, name):
+    """Atomically publish without replacing a concurrently published inode."""
+    renamed = _native_rename_exclusive(parent_descriptor, temporary, name)
+    if renamed is not None:
+        return renamed
+
+    # link(2) is the portable no-replace primitive. Remove the temporary name
+    # immediately so the published payload returns to its required link count.
+    try:
+        os.link(
+            temporary,
+            name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileExistsError:
+        return False
+    os.unlink(temporary, dir_fd=parent_descriptor)
+    return True
+
+
 def _publish(root, object_id, compressed):
     with _object_location(root, object_id, create=True) as location:
         parent = location["parent_descriptor"]
@@ -276,22 +356,16 @@ def _publish(root, object_id, compressed):
         finally:
             os.close(descriptor)
         try:
-            try:
-                existing = _read_payload(parent, name)
-            except FileNotFoundError:
-                existing = None
-            if existing is not None:
-                if existing != compressed:
-                    raise CASIntegrityError(
-                        "concurrent CAS publish conflicts with object identity"
-                    )
-            else:
-                os.replace(
-                    temporary, name, src_dir_fd=parent, dst_dir_fd=parent
+            won = _publish_exclusive(parent, temporary, name)
+            _fsync_directory(parent)
+            winner = _read_payload(parent, name)
+            if winner != compressed:
+                message = (
+                    "published CAS bytes failed verification"
+                    if won
+                    else "concurrent CAS publish conflicts with object identity"
                 )
-                _fsync_directory(parent)
-                if _read_payload(parent, name) != compressed:
-                    raise CASIntegrityError("published CAS bytes failed verification")
+                raise CASIntegrityError(message)
         finally:
             try:
                 os.unlink(temporary, dir_fd=parent)
@@ -327,13 +401,42 @@ def _assert_descriptor_matches(row, expected):
         "codec",
         "raw_length",
         "compressed_length",
-        "retention_profile",
         "relative_path",
-        "expires_at",
         "integrity_state",
     ):
         if row[field] != expected[field]:
             raise CASIntegrityError(f"CAS descriptor mismatch: {field}")
+
+
+_RETENTION_UNTIL_PREFIX = "cas-retention-until:"
+_RETENTION_PERMANENT_PIN = "cas-retention-permanent"
+
+
+def _retention_extension_pin(conn, row, expires_at):
+    """Conservatively extend immutable descriptor retention through durable pins."""
+    current_expiry = row["expires_at"]
+    if current_expiry is None:
+        return None
+    pins = conn.execute(
+        "SELECT pin_reason FROM audit_cas_pins WHERE object_id=?",
+        (row["object_id"],),
+    ).fetchall()
+    if any(pin["pin_reason"] == _RETENTION_PERMANENT_PIN for pin in pins):
+        return None
+    effective = _timestamp(current_expiry, "stored expires_at")
+    for pin in pins:
+        reason = pin["pin_reason"]
+        if reason.startswith(_RETENTION_UNTIL_PREFIX):
+            effective = max(
+                effective,
+                _timestamp(reason[len(_RETENTION_UNTIL_PREFIX):], "retention pin"),
+            )
+    if expires_at is None:
+        return _RETENTION_PERMANENT_PIN
+    requested = _timestamp(expires_at, "expires_at")
+    if requested <= effective:
+        return None
+    return _RETENTION_UNTIL_PREFIX + requested.isoformat()
 
 
 def put_object(
@@ -381,6 +484,13 @@ def put_object(
                 "SELECT * FROM audit_cas_objects WHERE object_id=?", (object_id,)
             ).fetchone()
         _assert_descriptor_matches(row, expected)
+        retention_pin = _retention_extension_pin(conn, row, expires_at)
+        if retention_pin is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO audit_cas_pins("
+                "object_id, pin_reason, pinned_at) VALUES(?, ?, ?)",
+                (object_id, retention_pin, _utc_now()),
+            )
         if pin_reason is not None:
             conn.execute(
                 "INSERT OR IGNORE INTO audit_cas_pins("
@@ -495,6 +605,32 @@ def _delete_payload(target):
         return False
 
 
+def _gc_eligible_descriptor(conn, object_id, cutoff):
+    row = conn.execute(
+        "SELECT * FROM audit_cas_objects WHERE object_id=?", (object_id,)
+    ).fetchone()
+    if row is None:
+        raise CASIntegrityError("CAS descriptor disappeared during collection")
+    descriptor = dict(row)
+    expires_at = descriptor["expires_at"]
+    if expires_at is None or _timestamp(expires_at, "expires_at") > cutoff:
+        return None
+    if descriptor["relative_path"] != _relative_path(object_id).as_posix():
+        raise CASIntegrityError("CAS descriptor path is invalid")
+    pins = conn.execute(
+        "SELECT pin_reason FROM audit_cas_pins WHERE object_id=?", (object_id,)
+    ).fetchall()
+    for pin in pins:
+        reason = pin["pin_reason"]
+        if reason.startswith(_RETENTION_UNTIL_PREFIX):
+            if _timestamp(
+                reason[len(_RETENTION_UNTIL_PREFIX):], "retention pin"
+            ) <= cutoff:
+                continue
+        return None
+    return descriptor
+
+
 def collect_garbage(conn, root, now, grace_seconds):
     """Tombstone then delete eligible unpinned objects idempotently."""
     if not isinstance(conn, sqlite3.Connection) or conn.in_transaction:
@@ -505,24 +641,14 @@ def collect_garbage(conn, root, now, grace_seconds):
     cutoff = current - datetime.timedelta(seconds=grace_seconds)
     removed = []
     rows = conn.execute(
-        """
-        SELECT object.*
-        FROM audit_cas_objects object
-        WHERE object.expires_at IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM audit_cas_pins pin WHERE pin.object_id=object.object_id
-          )
-        ORDER BY object.object_id
-        """
+        "SELECT object_id FROM audit_cas_objects "
+        "WHERE expires_at IS NOT NULL ORDER BY object_id"
     ).fetchall()
     for row in rows:
-        descriptor = dict(row)
-        if _timestamp(descriptor["expires_at"], "expires_at") > cutoff:
+        object_id = row["object_id"]
+        descriptor = _gc_eligible_descriptor(conn, object_id, cutoff)
+        if descriptor is None:
             continue
-        object_id = descriptor["object_id"]
-        relative = _relative_path(object_id)
-        if descriptor["relative_path"] != relative.as_posix():
-            raise CASIntegrityError("CAS descriptor path is invalid")
         tombstone = conn.execute(
             "SELECT * FROM audit_cas_tombstones WHERE object_id=?", (object_id,)
         ).fetchone()
@@ -530,15 +656,29 @@ def collect_garbage(conn, root, now, grace_seconds):
             verified = verify_object(conn, root, object_id)
             if verified["integrity_state"] != "verified":
                 raise CASIntegrityError("CAS object is unexpectedly tombstoned")
-            material = _tombstone_material(
-                descriptor, "retention_expired", now, now
-            )
-            tombstone_sha = _sha256(history_contract_v2.canonical_bytes(material))
-            try:
-                conn.execute("BEGIN IMMEDIATE")
+
+        # Persist deletion authority first. The write transaction repeats every
+        # eligibility check so a pin or retention extension that won the race
+        # prevents both tombstoning and deletion.
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            descriptor = _gc_eligible_descriptor(conn, object_id, cutoff)
+            if descriptor is None:
+                conn.execute("COMMIT")
+                continue
+            stored = conn.execute(
+                "SELECT * FROM audit_cas_tombstones WHERE object_id=?", (object_id,)
+            ).fetchone()
+            if stored is None:
+                material = _tombstone_material(
+                    descriptor, "retention_expired", now, now
+                )
+                tombstone_sha = _sha256(
+                    history_contract_v2.canonical_bytes(material)
+                )
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO audit_cas_tombstones(
+                    INSERT INTO audit_cas_tombstones(
                       object_id, tombstone_sha256, reason, marked_at, delete_after
                     ) VALUES(?, ?, ?, ?, ?)
                     """,
@@ -548,15 +688,35 @@ def collect_garbage(conn, root, now, grace_seconds):
                     "SELECT * FROM audit_cas_tombstones WHERE object_id=?",
                     (object_id,),
                 ).fetchone()
-                _validate_tombstone(dict(stored), descriptor)
+            _validate_tombstone(dict(stored), descriptor)
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+        # Keep the write lock from the final authority read through unlink and
+        # directory fsync. A concurrent pin must either commit before this read
+        # (and preserve the payload) or wait until deletion is fully durable.
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            descriptor = _gc_eligible_descriptor(conn, object_id, cutoff)
+            if descriptor is None:
                 conn.execute("COMMIT")
-            except Exception:
-                if conn.in_transaction:
-                    conn.execute("ROLLBACK")
-                raise
-        else:
-            _validate_tombstone(dict(tombstone), descriptor)
-        if _delete_payload((root, object_id)):
+                continue
+            stored = conn.execute(
+                "SELECT * FROM audit_cas_tombstones WHERE object_id=?", (object_id,)
+            ).fetchone()
+            if stored is None:
+                raise CASIntegrityError("CAS deletion authority is missing")
+            _validate_tombstone(dict(stored), descriptor)
+            deleted = _delete_payload((root, object_id))
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        if deleted:
             removed.append(object_id)
     return removed
 
