@@ -300,6 +300,65 @@ class PortableNoFollowRootRegression(unittest.TestCase):
                     require_owner_only=True,
                 )
             self.assertEqual(caught.exception.code, "unsafe_import")
+    def test_response_contract_accepts_required_nonempty_content(self):
+        schema = {
+            "additionalProperties": False,
+            "properties": {
+                "schema_version": {
+                    "minimum": 1,
+                    "maximum": 1,
+                    "type": "integer",
+                },
+                "stage": {"enum": ["generate"], "type": "string"},
+                "request_attestation": {
+                    "additionalProperties": False,
+                    "properties": {
+                        "schema_version": {
+                            "enum": ["portable-stage-response-attestation-v1"],
+                            "type": "string",
+                        },
+                        "provider_request_binding_sha256": {"type": "string"},
+                        "serialized_prompt_sha256": {"type": "string"},
+                    },
+                    "required": [
+                        "schema_version",
+                        "provider_request_binding_sha256",
+                        "serialized_prompt_sha256",
+                    ],
+                    "type": "object",
+                },
+                "artifacts": {
+                    "items": {
+                        "additionalProperties": False,
+                        "properties": {
+                            "artifact_kind": {
+                                "enum": ["generation-tsv"],
+                                "type": "string",
+                            },
+                            "content": {
+                                "maxLength": 65536,
+                                "minLength": 1,
+                                "type": "string",
+                            },
+                        },
+                        "required": ["artifact_kind", "content"],
+                        "type": "object",
+                    },
+                    "minItems": 1,
+                    "maxItems": 1,
+                    "type": "array",
+                },
+            },
+            "required": [
+                "schema_version",
+                "stage",
+                "request_attestation",
+                "artifacts",
+            ],
+            "type": "object",
+        }
+        contract = portable_agent._validate_response_schema_contract(schema)
+        self.assertEqual(contract["content_max_length"], 65536)
 
 
 if __name__ == "__main__":

@@ -842,10 +842,20 @@ def _validate_response_schema_contract(schema):
         or any(type(value) is not str or not value for value in kind["enum"])
         or len(set(kind["enum"])) != len(kind["enum"])
         or type(content) is not dict
-        or set(content) != {"maxLength", "type"}
+        or set(content) not in (
+            {"maxLength", "type"},
+            {"maxLength", "minLength", "type"},
+        )
         or content.get("type") != "string"
         or type(content.get("maxLength")) is not int
         or content["maxLength"] <= 0
+        or (
+            "minLength" in content
+            and (
+                type(content["minLength"]) is not int
+                or content["minLength"] != 1
+            )
+        )
     ):
         raise PortableAgentError("invalid_response_schema")
     return {
