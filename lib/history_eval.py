@@ -12,6 +12,7 @@ import pathlib
 import random
 import stat
 import statistics
+import struct
 import tempfile
 
 
@@ -19,7 +20,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "history/retrieval-policy-v1.json"
 SYNTHETIC_SCOPE = "synthetic_contract_only"
 PRODUCTION_SCOPE = "production"
-OUTPUT_SCHEMA_VERSION = "history-eval-output-v1"
+LEGACY_OUTPUT_SCHEMA_VERSION = "history-eval-output-v1"
+OUTPUT_SCHEMA_VERSION = "history-eval-output-v2"
+LEGACY_CAPABILITY_SCHEMA_VERSION = 1
+CAPABILITY_SCHEMA_VERSION = 2
 MAX_JSON_BYTES = 8 * 1024 * 1024
 MAX_JSONL_BYTES = 16 * 1024 * 1024
 MAX_POLICY_BYTES = 256 * 1024
@@ -110,6 +114,8 @@ OUTPUT_FIELDS = {
     "heldout_run_nonce",
     "heldout_started_at",
 }
+OUTPUT_V2_FIELDS = OUTPUT_FIELDS | {"channel_depths"}
+CHANNEL_DEPTH_FIELDS = {"exact", "fts", "dense", "lineage"}
 COMMITMENT_FIELDS = {
     "schema_version",
     "scope",
@@ -137,7 +143,7 @@ RECEIPT_FIELDS = {
     "witness_time",
     "signature",
 }
-CAPABILITY_FIELDS = {
+LEGACY_CAPABILITY_FIELDS = {
     "schema_version",
     "scope",
     "trust_root_id",
@@ -156,6 +162,10 @@ CAPABILITY_FIELDS = {
     "evaluation_evidence",
     "canonical_seal_sha256",
     "signature",
+}
+CAPABILITY_FIELDS = LEGACY_CAPABILITY_FIELDS | {
+    "criteria_sha256",
+    "heldout_completed_at",
 }
 
 
@@ -873,12 +883,23 @@ def _validate_output_row(
     corpus,
     qrels,
     packs,
+    scope,
 ):
-    _require_closed(row, OUTPUT_FIELDS, f"{arm} output")
+    schema_version = row.get("schema_version") if isinstance(row, dict) else None
+    if schema_version == OUTPUT_SCHEMA_VERSION:
+        _require_closed(row, OUTPUT_V2_FIELDS, f"{arm} output")
+    elif (
+        schema_version == LEGACY_OUTPUT_SCHEMA_VERSION
+        and scope == SYNTHETIC_SCOPE
+    ):
+        _require_closed(row, OUTPUT_FIELDS, f"{arm} output")
+    else:
+        raise BenchmarkError(
+            f"{arm} output schema version is invalid for {scope}"
+        )
     query = queries.get(row.get("query_id"))
     if (
-        row["schema_version"] != OUTPUT_SCHEMA_VERSION
-        or row["arm"] != arm
+        row["arm"] != arm
         or query is None
         or row["corpus_watermark"] != query["corpus_watermark"]
         or type(row["abstained"]) is not bool
@@ -890,6 +911,7 @@ def _validate_output_row(
         or not isinstance(row["status"], str)
         or isinstance(row["latency_ms"], bool)
         or not isinstance(row["latency_ms"], (int, float))
+        or not math.isfinite(float(row["latency_ms"]))
         or row["latency_ms"] < 0
         or type(row["input_tokens"]) is not int
         or row["input_tokens"] < 0
@@ -911,6 +933,23 @@ def _validate_output_row(
     _parse_utc(
         row["heldout_started_at"], "held-out output start time"
     )
+    if schema_version == OUTPUT_SCHEMA_VERSION:
+        channel_depths = row["channel_depths"]
+        if (
+            not isinstance(channel_depths, dict)
+            or set(channel_depths) != CHANNEL_DEPTH_FIELDS
+            or any(
+                type(depth) is not int or depth < 0
+                for depth in channel_depths.values()
+            )
+            or (
+                arm in {"closed-book", "comparator-only"}
+                and any(channel_depths.values())
+            )
+        ):
+            raise BenchmarkError(
+                f"{arm} channel depth evidence is invalid"
+            )
     ranked = row["ranked_record_ids"]
     scores = row["ranked_scores"]
     if (
@@ -1082,8 +1121,11 @@ def _validate_output_row(
     return pair_predictions
 
 
-def _validate_outputs(values, queries, corpus, qrels, packs):
+def _validate_outputs(
+    values, queries, corpus, qrels, packs, scope
+):
     outputs = {}
+    schema_versions = set()
     starts = set()
     nonces = set()
     commitment_hashes = set()
@@ -1105,8 +1147,9 @@ def _validate_outputs(values, queries, corpus, qrels, packs):
         indexed = {}
         for row in rows:
             pair_predictions = _validate_output_row(
-                row, arm, queries, corpus, qrels, packs
+                row, arm, queries, corpus, qrels, packs, scope
             )
+            schema_versions.add(row["schema_version"])
             indexed[row["query_id"]] = {
                 "row": row,
                 "pair_predictions": pair_predictions,
@@ -1132,8 +1175,13 @@ def _validate_outputs(values, queries, corpus, qrels, packs):
         raise BenchmarkError(
             "held-out outputs do not share one sealed run"
         )
+    if len(schema_versions) != 1:
+        raise BenchmarkError(
+            "held-out outputs mix incompatible schema versions"
+        )
     return {
         "arms": outputs,
+        "schema_version": next(iter(schema_versions)),
         "heldout_started_at": next(iter(starts)),
         "heldout_run_nonce": next(iter(nonces)),
         "policy_commitment_sha256": next(
@@ -2550,11 +2598,20 @@ def _gate_evidence(context, metrics, confidence_intervals):
     }
     output = context["outputs"]["end-to-end"]
     corpus = context["corpus"]
-    observed_depths = {
-        "per_channel_depth": max(
+    if context["output_schema_version"] == OUTPUT_SCHEMA_VERSION:
+        per_channel_depth = max(
+            max(value["row"]["channel_depths"].values())
+            for value in output.values()
+        )
+    else:
+        # v1 is retained only for synthetic compatibility and has no
+        # execution-level channel evidence. It cannot authorize production.
+        per_channel_depth = max(
             len(value["row"]["ranked_record_ids"])
             for value in output.values()
-        ),
+        )
+    observed_depths = {
+        "per_channel_depth": per_channel_depth,
         "comparator_cutoff": max(
             value["row"]["comparator_pairs"]
             for value in output.values()
@@ -2777,8 +2834,9 @@ def _prepare_benchmark(
     packs = _validate_packs(
         values["oracle-packs.jsonl"], queries, corpus, qrels
     )
+    scope = values["policy-commitment.json"].get("scope")
     outputs = _validate_outputs(
-        values, queries, corpus, qrels, packs
+        values, queries, corpus, qrels, packs, scope
     )
     commitment = values["policy-commitment.json"]
     commitment_meta = _validate_commitment(
@@ -2853,6 +2911,7 @@ def _prepare_benchmark(
         "adjudications": adjudications,
         "packs": packs,
         "outputs": outputs["arms"],
+        "output_schema_version": outputs["schema_version"],
         "scope": scope,
         "heldout_started_at": outputs["heldout_started_at"],
         "agreement_rate": _rounded(agreement_rate),
@@ -2969,11 +3028,60 @@ def evaluate_benchmark(
     }
 
 
+def _framed_sha256(domain, raw):
+    domain_bytes = domain.encode("utf-8")
+    digest = hashlib.sha256()
+    for part in (domain_bytes, raw):
+        digest.update(struct.pack(">Q", len(part)))
+        digest.update(part)
+    return digest.hexdigest()
+
+
+def _criteria_sha(commitment):
+    material = {
+        name: commitment[name]
+        for name in (
+            "selected_thresholds",
+            "error_budgets",
+            "selected_depths",
+            "latency_target_ms_p95",
+            "token_budget",
+        )
+    }
+    return _framed_sha256(
+        "history-calibration-criteria-v1",
+        canonical_bytes(material),
+    )
+
+
 def _capability_seal_material(capability):
     value = dict(capability)
     value.pop("canonical_seal_sha256", None)
     value.pop("signature", None)
     return value
+
+
+def _capability_seal_sha(capability):
+    version = capability.get("schema_version")
+    domain_version = (
+        "v2" if version == CAPABILITY_SCHEMA_VERSION else "v1"
+    )
+    return sha256(
+        ("history-calibration-capability-%s\0" % domain_version).encode(
+            "ascii"
+        )
+        + canonical_bytes(_capability_seal_material(capability))
+    )
+
+
+def _capability_signature_domain(version):
+    domain_version = (
+        "v2" if version == CAPABILITY_SCHEMA_VERSION else "v1"
+    )
+    return (
+        "history-calibration-capability-signature-%s\0"
+        % domain_version
+    ).encode("ascii")
 
 
 def build_synthetic_capability_for_test(
@@ -3004,8 +3112,13 @@ def build_synthetic_capability_for_test(
         context["queries"],
         context["qrels"],
     )
+    capability_version = (
+        CAPABILITY_SCHEMA_VERSION
+        if context["output_schema_version"] == OUTPUT_SCHEMA_VERSION
+        else LEGACY_CAPABILITY_SCHEMA_VERSION
+    )
     capability = {
-        "schema_version": 1,
+        "schema_version": capability_version,
         "scope": SYNTHETIC_SCOPE,
         "trust_root_id": trust_root["trust_root_id"],
         "policy_commitment_sha256": context["receipt_meta"][
@@ -3044,12 +3157,20 @@ def build_synthetic_capability_for_test(
             context, metrics, confidence_intervals
         ),
     }
-    capability["canonical_seal_sha256"] = sha256(
-        b"history-calibration-capability-v1\0"
-        + canonical_bytes(_capability_seal_material(capability))
+    if capability_version == CAPABILITY_SCHEMA_VERSION:
+        capability["criteria_sha256"] = _criteria_sha(
+            context["commitment"]
+        )
+        # Synthetic fixtures have no production witness for completion.
+        # Equality is the deterministic, least-authoritative test interval.
+        capability["heldout_completed_at"] = context[
+            "heldout_started_at"
+        ]
+    capability["canonical_seal_sha256"] = _capability_seal_sha(
+        capability
     )
     capability["signature"] = _test_signature(
-        b"history-calibration-capability-signature-v1\0",
+        _capability_signature_domain(capability_version),
         capability,
         trust_root,
     )
@@ -3084,7 +3205,21 @@ def _optional_number(value, label):
     _validate_number(value, label)
 
 
+def _require_finite_numbers(value, label):
+    if isinstance(value, float) and not math.isfinite(value):
+        raise BenchmarkError(f"{label} contains a non-finite number")
+    if isinstance(value, dict):
+        for item in value.values():
+            _require_finite_numbers(item, label)
+    elif isinstance(value, list):
+        for item in value:
+            _require_finite_numbers(item, label)
+
+
 def _validate_evaluation_evidence(evidence, counts):
+    _require_finite_numbers(
+        evidence, "calibration evaluation evidence"
+    )
     _require_closed(
         evidence,
         {
@@ -3313,11 +3448,37 @@ def validate_capability_artifact(
     if required_scope not in {SYNTHETIC_SCOPE, PRODUCTION_SCOPE}:
         raise BenchmarkError("calibration scope is invalid")
     value = _load_value(capability, "calibration capability")
+    if not isinstance(value, dict):
+        raise BenchmarkError("calibration capability schema is invalid")
+    capability_version = value.get("schema_version")
+    if capability_version == CAPABILITY_SCHEMA_VERSION:
+        fields = CAPABILITY_FIELDS
+    elif (
+        capability_version == LEGACY_CAPABILITY_SCHEMA_VERSION
+        and required_scope == SYNTHETIC_SCOPE
+    ):
+        fields = LEGACY_CAPABILITY_FIELDS
+    elif capability_version == LEGACY_CAPABILITY_SCHEMA_VERSION:
+        if (
+            value.get("scope") == SYNTHETIC_SCOPE
+            and required_scope == PRODUCTION_SCOPE
+        ):
+            raise BenchmarkError(
+                "synthetic_contract_only capability cannot enable "
+                "production"
+            )
+        raise BenchmarkError(
+            "legacy capability failed the production version requirement"
+        )
+    else:
+        raise BenchmarkError(
+            "calibration capability version is invalid for scope"
+        )
     _require_closed(
-        value, CAPABILITY_FIELDS, "calibration capability"
+        value, fields, "calibration capability"
     )
     if (
-        value["schema_version"] != 1
+        value["schema_version"] != capability_version
         or value["scope"] not in {
             SYNTHETIC_SCOPE,
             PRODUCTION_SCOPE,
@@ -3349,10 +3510,23 @@ def validate_capability_artifact(
         raise BenchmarkError(
             "calibration capability binding is invalid"
         )
-    _parse_utc(
+    heldout_started = _parse_utc(
         value["heldout_started_at"],
         "calibration capability held-out start",
     )
+    if capability_version == CAPABILITY_SCHEMA_VERSION:
+        _require_sha(
+            value["criteria_sha256"],
+            "calibration capability criteria SHA",
+        )
+        heldout_completed = _parse_utc(
+            value["heldout_completed_at"],
+            "calibration capability held-out completion",
+        )
+        if heldout_completed < heldout_started:
+            raise BenchmarkError(
+                "calibration capability completion precedes start"
+            )
     for field in (
         "policy_commitment_sha256",
         "preheldout_receipt_sha256",
@@ -3407,10 +3581,7 @@ def validate_capability_artifact(
         raise BenchmarkError(
             "production calibration evidence is advisory or failed"
         )
-    expected_seal = sha256(
-        b"history-calibration-capability-v1\0"
-        + canonical_bytes(_capability_seal_material(value))
-    )
+    expected_seal = _capability_seal_sha(value)
     if value["canonical_seal_sha256"] != expected_seal:
         raise BenchmarkError(
             "calibration capability canonical seal is invalid"
@@ -3511,16 +3682,27 @@ def validate_calibration_capability(
         context["heldout_started_at"],
         witness_verifier=witness_verifier,
     )
+    if not isinstance(capability, dict):
+        raise BenchmarkError("calibration capability schema is invalid")
+    capability_fields = (
+        CAPABILITY_FIELDS
+        if capability.get("schema_version") == CAPABILITY_SCHEMA_VERSION
+        else LEGACY_CAPABILITY_FIELDS
+    )
     _require_closed(
         capability,
-        CAPABILITY_FIELDS,
+        capability_fields,
         "calibration capability",
     )
     artifact_evidence = validate_capability_artifact(
         capability, required_scope=required_scope
     )
     if (
-        capability["schema_version"] != 1
+        capability["schema_version"]
+        not in {
+            LEGACY_CAPABILITY_SCHEMA_VERSION,
+            CAPABILITY_SCHEMA_VERSION,
+        }
         or capability["scope"] != required_scope
         or capability["trust_root_id"]
         != receipt["trust_root_id"]
@@ -3549,6 +3731,16 @@ def validate_calibration_capability(
         raise BenchmarkError(
             "calibration capability binding is invalid"
         )
+    if capability["schema_version"] == CAPABILITY_SCHEMA_VERSION:
+        if (
+            context["output_schema_version"] != OUTPUT_SCHEMA_VERSION
+            or capability["criteria_sha256"]
+            != _criteria_sha(commitment)
+        ):
+            raise BenchmarkError(
+                "calibration capability criteria or execution evidence "
+                "binding is invalid"
+            )
     derived_counts = _derive_relation_heldout_counts(
         context["queries"], context["qrels"]
     )
@@ -3592,7 +3784,9 @@ def validate_calibration_capability(
         unsigned = dict(capability)
         signature = unsigned.pop("signature")
         expected_signature = _test_signature(
-            b"history-calibration-capability-signature-v1\0",
+            _capability_signature_domain(
+                capability["schema_version"]
+            ),
             unsigned,
             trust_root_value,
         )

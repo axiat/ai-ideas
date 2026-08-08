@@ -177,23 +177,24 @@ def _validate_policy(policy):
     for field in ("minimum_positive_lineages", "minimum_negative_lineages"):
         if type(shadow[field]) is not int or shadow[field] < 0:
             raise ValueError("shadow threshold is invalid")
+    critical_slices = shadow["critical_slices"]
     if (
-        shadow["minimum_positive_lineages"] < 30
-        or shadow["minimum_negative_lineages"] < 20
-        or not _CRITICAL_SLICES.issubset(shadow["critical_slices"])
-        or any(shadow["critical_slices"][name] < 5 for name in _CRITICAL_SLICES)
-    ):
-        raise ValueError("shadow policy lowers a contractual minimum")
-    if (
-        not isinstance(shadow["critical_slices"], dict)
-        or not shadow["critical_slices"]
+        not isinstance(critical_slices, dict)
+        or not critical_slices
         or any(
             not isinstance(name, str) or not name
             or type(minimum) is not int or minimum < 0
-            for name, minimum in shadow["critical_slices"].items()
+            for name, minimum in critical_slices.items()
         )
     ):
         raise ValueError("critical slice thresholds are invalid")
+    if (
+        shadow["minimum_positive_lineages"] < 30
+        or shadow["minimum_negative_lineages"] < 20
+        or not _CRITICAL_SLICES.issubset(critical_slices)
+        or any(critical_slices[name] < 5 for name in _CRITICAL_SLICES)
+    ):
+        raise ValueError("shadow policy lowers a contractual minimum")
     production = policy["production"]
     if not isinstance(production, dict) or set(production) != {
         "minimum_positive_lineages", "aggregate", "required_slices"
@@ -201,12 +202,19 @@ def _validate_policy(policy):
         raise ValueError("production policy fields are invalid")
     if type(production["minimum_positive_lineages"]) is not int or production["minimum_positive_lineages"] < 0:
         raise ValueError("production positive threshold is invalid")
+    required_slices = production["required_slices"]
+    aggregate = production["aggregate"]
+    if (
+        not isinstance(required_slices, dict)
+        or not isinstance(aggregate, dict)
+    ):
+        raise ValueError("production policy containers are invalid")
     if (
         production["minimum_positive_lineages"] < 300
-        or not _CRITICAL_SLICES.issubset(production["required_slices"])
+        or not _CRITICAL_SLICES.issubset(required_slices)
     ):
         raise ValueError("production policy lowers a contractual minimum")
-    for metric_policy in [production["aggregate"]] + list(production["required_slices"].values()):
+    for metric_policy in [aggregate] + list(required_slices.values()):
         if not isinstance(metric_policy, dict) or set(metric_policy) != {
             "minimum_observations", "minimum_recall_lower_bound",
             "maximum_false_negative_upper_bound",
@@ -216,7 +224,13 @@ def _validate_policy(policy):
             raise ValueError("production observation threshold is invalid")
         for name in ("minimum_recall_lower_bound", "maximum_false_negative_upper_bound"):
             value = metric_policy[name]
-            if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0 or value > 1:
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                or value < 0
+                or value > 1
+            ):
                 raise ValueError("production metric bound is invalid")
     return copy.deepcopy(policy)
 
@@ -234,10 +248,17 @@ def validate_qrels(rows, partitions, *, scope):
         values = partitions[partition]
         if (
             not isinstance(values, list)
-            or len(values) != len(set(values))
-            or any(not isinstance(value, str) or not value for value in values)
+            or any(
+                type(value) is not str or not value
+                for value in values
+            )
         ):
             raise ValueError("qrel partition lineages are invalid")
+        seen_values = set()
+        for value in values:
+            if value in seen_values:
+                raise ValueError("qrel partition lineages are invalid")
+            seen_values.add(value)
         for lineage_id in values:
             if lineage_id in partition_lineages:
                 raise ValueError("query lineage leaks across partitions")
@@ -256,7 +277,7 @@ def validate_qrels(rows, partitions, *, scope):
             "qrel_id", "query_id", "query_lineage_id", "historical_id",
             "historical_lineage_id", "temporal_group", "historical_text",
         ):
-            if not isinstance(row[field], str) or not row[field]:
+            if type(row[field]) is not str or not row[field]:
                 raise ValueError("qrel identity or text is invalid")
         if row["qrel_id"] in qrel_ids:
             raise ValueError("qrel judgment is duplicated")
@@ -272,13 +293,29 @@ def validate_qrels(rows, partitions, *, scope):
             or row["as_of_sequence"] < row["historical_sequence"]
         ):
             raise ValueError("qrel exposes future history")
-        if row["semantic_relation"] not in SEMANTIC_RELATIONS:
+        if (
+            type(row["semantic_relation"]) is not str
+            or row["semantic_relation"] not in SEMANTIC_RELATIONS
+        ):
             raise ValueError("qrel semantic relation is invalid")
-        if row["lineage_relation"] not in _LINEAGE_RELATIONS:
+        if (
+            type(row["lineage_relation"]) is not str
+            or row["lineage_relation"] not in _LINEAGE_RELATIONS
+        ):
             raise ValueError("qrel lineage relation is invalid")
-        if row["adjudication_state"] not in {"adjudicated", "pending"}:
+        if (
+            type(row["adjudication_state"]) is not str
+            or row["adjudication_state"] not in {"adjudicated", "pending"}
+        ):
             raise ValueError("qrel adjudication state is invalid")
-        if row["negative_kind"] not in {None, "hard_negative", "true_no_match"}:
+        if (
+            row["negative_kind"] is not None
+            and (
+                type(row["negative_kind"]) is not str
+                or row["negative_kind"]
+                not in {"hard_negative", "true_no_match"}
+            )
+        ):
             raise ValueError("qrel negative kind is invalid")
         if row["semantic_relation"] == "blocking_duplicate" and row["negative_kind"] is not None:
             raise ValueError("positive qrel cannot be a negative")
@@ -286,17 +323,33 @@ def validate_qrels(rows, partitions, *, scope):
             raise ValueError("negative qrel must use the shared distinct relation")
         anchors = row["evidence_anchors"]
         if (
-            not isinstance(anchors, list) or not anchors
-            or len(anchors) != len(set(anchors))
-            or any(not isinstance(anchor, str) or not anchor or anchor not in row["historical_text"] for anchor in anchors)
+            not isinstance(anchors, list)
+            or not anchors
+            or any(
+                type(anchor) is not str
+                or not anchor
+                or anchor not in row["historical_text"]
+                for anchor in anchors
+            )
         ):
             raise ValueError("qrel evidence anchors are not extractive")
+        seen_anchors = set()
+        for anchor in anchors:
+            if anchor in seen_anchors:
+                raise ValueError("qrel evidence anchors are not extractive")
+            seen_anchors.add(anchor)
         slices = row["risk_slices"]
         if (
-            not isinstance(slices, list) or slices != sorted(slices)
-            or len(slices) != len(set(slices))
-            or any(not isinstance(value, str) or not value for value in slices)
+            not isinstance(slices, list)
+            or any(type(value) is not str or not value for value in slices)
         ):
+            raise ValueError("qrel risk slices are invalid")
+        seen_slices = set()
+        for value in slices:
+            if value in seen_slices:
+                raise ValueError("qrel risk slices are invalid")
+            seen_slices.add(value)
+        if slices != sorted(slices):
             raise ValueError("qrel risk slices are invalid")
         partition = row["partition"]
         if partition not in _PARTITIONS or partition_lineages.get(row["query_lineage_id"]) != partition:
@@ -358,10 +411,22 @@ def _validate_outputs(dataset, outputs):
             "query_id", "historical_id", "semantic_relation"
         }:
             raise ValueError("evaluation output schema is closed")
+        if (
+            type(row["query_id"]) is not str
+            or not row["query_id"]
+            or type(row["historical_id"]) is not str
+            or not row["historical_id"]
+        ):
+            raise ValueError("evaluation output identity is invalid")
         pair = (row["query_id"], row["historical_id"])
-        if pair in observed or row["semantic_relation"] not in SEMANTIC_RELATIONS:
+        semantic_relation = row["semantic_relation"]
+        if (
+            pair in observed
+            or type(semantic_relation) is not str
+            or semantic_relation not in SEMANTIC_RELATIONS
+        ):
             raise ValueError("evaluation output is duplicated or invalid")
-        observed[pair] = row["semantic_relation"]
+        observed[pair] = semantic_relation
     if set(observed) != expected:
         raise ValueError("evaluation outputs require exact query coverage")
     return observed
@@ -587,10 +652,25 @@ def evaluate_production_qualification(qrels, outputs, policy, evidence):
     normalized_policy = _validate_policy(policy)
     policy_sha = _policy_hash(normalized_policy)
     normalized_evidence = _validate_evidence(evidence, policy_sha)
+    expires_at = _timestamp(
+        normalized_evidence["expires_at"], "expires_at"
+    )
+    if expires_at <= datetime.datetime.now(datetime.timezone.utc):
+        raise ValueError("production evidence is expired")
     output_by_query = _validate_outputs(dataset, outputs)
     metrics, vetoes = _production_metrics(
         dataset, output_by_query, normalized_policy
     )
+    identities = semantic_evaluation_identities(
+        dataset, outputs, normalized_policy
+    )
+    if (
+        normalized_evidence["evaluation_hash"]
+        != identities["evaluation_hash"]
+        or normalized_evidence["metric_report_hash"]
+        != identities["metric_report_hash"]
+    ):
+        raise ValueError("production evaluation identity is invalid")
     if dataset["scope"] not in {"real", "production", "real_qrels"}:
         vetoes.append("non_production_scope")
     if not normalized_evidence["provider_capacity_complete"]:
