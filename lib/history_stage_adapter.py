@@ -73,15 +73,18 @@ _MODEL_OUTPUT_MAX_BYTES = 128 * 1024
 
 
 def _canonical_bytes(value):
-    return (
-        json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
-        + "\n"
-    ).encode("utf-8")
+    try:
+        return (
+            json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError("contract JSON canonicalization failed") from exc
 
 
 def model_artifacts(stage):
@@ -110,9 +113,12 @@ def stage_response_schema(stage):
                             "type": "string",
                         },
                         "content": {
+                            # JSON Schema counts code points, while the parser
+                            # enforces the authoritative UTF-8 byte ceiling.
                             "maxLength": max(
                                 item[2] for item in artifacts
                             ),
+                            "minLength": 1,
                             "type": "string",
                         },
                     },
@@ -147,14 +153,15 @@ def parse_model_output(stage, raw):
         raise ValueError("model output byte bound is invalid")
     try:
         value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise ValueError("model output is not UTF-8 JSON") from exc
     expected = _MODEL_ARTIFACTS.get(stage)
     if (
         expected is None
         or not isinstance(value, dict)
         or set(value) != {"schema_version", "stage", "artifacts"}
-        or value.get("schema_version") != 1
+        or type(value.get("schema_version")) is not int
+        or value["schema_version"] != 1
         or value.get("stage") != stage
         or not isinstance(value.get("artifacts"), list)
         or len(value["artifacts"]) != len(expected)
@@ -329,7 +336,7 @@ def main(argv=None):
         return 75
     try:
         command = json.loads(command_json)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return 64
     if (
         not isinstance(command, list)

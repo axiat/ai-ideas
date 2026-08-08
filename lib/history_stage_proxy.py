@@ -13,6 +13,7 @@ import time
 
 
 CLIENT_REQUEST_MAX_BYTES = 1024 * 1024
+CLIENT_BODY_READ_TIMEOUT_SECONDS = 1
 # xhigh reasoning streams include large encrypted_content blobs; 256KiB
 # is routinely exceeded on generate.
 SSE_MAX_BYTES = 4 * 1024 * 1024
@@ -69,12 +70,15 @@ _RESPONSE_FIELDS = {
 
 
 def _canonical_bytes(value):
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ProxyError("JSON canonicalization failed") from exc
 
 
 def _sha256(raw):
@@ -149,7 +153,7 @@ def canonical_request(
 def _load_json(raw, label):
     try:
         return json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise ProxyError(f"{label} is invalid") from exc
 
 
@@ -433,12 +437,10 @@ def _response_shell(
 
 
 def _validate_usage(usage, max_output_tokens):
-    """Accept modern Responses usage, including xhigh reasoning overhead.
+    """Validate Responses accounting against the declared output budget.
 
-    ChatGPT Codex no longer honors wire ``max_output_tokens``, and reasoning
-    models routinely report ``output_tokens`` (text + reasoning) far above the
-    local text budget. Enforce shape and a soft ceiling, not a hard equality
-    with the local budget pin.
+    Responses ``output_tokens`` includes both reasoning and visible text, so
+    the declared local ceiling applies directly to that aggregate.
     """
     required = {
         "input_tokens",
@@ -468,18 +470,10 @@ def _validate_usage(usage, max_output_tokens):
         raise ProxyError("response usage is invalid")
     if reasoning > usage["output_tokens"]:
         raise ProxyError("response usage is invalid")
-    # Soft ceiling: local budget is a text target; reasoning models report
-    # output_tokens = text + reasoning and often exceed max_output_tokens
-    # because the wire field is no longer accepted by ChatGPT Codex.
-    soft_ceiling = max(
-        max_output_tokens * 16,
-        max_output_tokens + 32768,
-        65536,
-    )
-    if usage["output_tokens"] > soft_ceiling:
+    if usage["output_tokens"] > max_output_tokens:
         raise ProxyError(
             "response usage is invalid: "
-            f"output_tokens={usage['output_tokens']} > {soft_ceiling}"
+            f"output_tokens={usage['output_tokens']} > {max_output_tokens}"
         )
     # Prefer exact sum; accept totals that still dominate both sides when the
     # provider adds auxiliary accounting fields.
@@ -912,8 +906,7 @@ class CanonicalExchange:
                 raise ProxyError("response ID changed during streaming")
             response_id = current_id
 
-        # Prefer the final completed assistant message item.
-        message = None
+        completed_messages = []
         for name, value in events:
             if name != "response.output_item.done":
                 continue
@@ -924,9 +917,12 @@ class CanonicalExchange:
                 and item.get("status") == "completed"
                 and item.get("role") == "assistant"
             ):
-                message = item
-        if message is None:
+                completed_messages.append(item)
+        if not completed_messages:
             raise ProxyError("assistant message has no output text")
+        if len(completed_messages) != 1:
+            raise ProxyError("multiple assistant message outputs are ambiguous")
+        message = completed_messages[0]
 
         output_raw = _validate_message(message)
         if not output_raw:
@@ -1073,6 +1069,36 @@ class _LoopbackServer(socketserver.TCPServer):
             pass
 
 
+def _read_client_body(connection, rfile, length):
+    deadline = time.monotonic() + CLIENT_BODY_READ_TIMEOUT_SECONDS
+    previous_timeout = connection.gettimeout()
+    chunks = []
+    remaining = length
+    read = getattr(rfile, "read1", rfile.read)
+    try:
+        while remaining:
+            timeout = deadline - time.monotonic()
+            if timeout <= 0:
+                raise ProxyError("canonicalizer request body deadline exceeded")
+            connection.settimeout(timeout)
+            try:
+                chunk = read(min(65536, remaining))
+            except (OSError, ValueError) as exc:
+                raise ProxyError(
+                    "canonicalizer request body deadline exceeded"
+                ) from exc
+            if not chunk:
+                raise ProxyError("canonicalizer request is truncated")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        try:
+            connection.settimeout(previous_timeout)
+        except OSError:
+            pass
+    return b"".join(chunks)
+
+
 class _ProxyHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -1092,9 +1118,7 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
             length = int(length_text)
             if not 1 <= length <= CLIENT_REQUEST_MAX_BYTES:
                 raise ProxyError("canonicalizer content length is invalid")
-            raw = self.rfile.read(length)
-            if len(raw) != length:
-                raise ProxyError("canonicalizer request is truncated")
+            raw = _read_client_body(self.connection, self.rfile, length)
             response_raw = self.server.exchange.exchange(raw)
         except ProxyError as exc:
             payload = _canonical_bytes(
