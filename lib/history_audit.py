@@ -5,6 +5,7 @@ import datetime
 import hashlib
 import json
 import re
+from collections import Counter
 
 try:
     from lib import history_audit_store
@@ -423,6 +424,19 @@ def stage_raw_batch(conn, *, snapshot, raw_candidates, direction_receipt):
                 direction["artifact_sha"], _utc_now(),
             ),
         )
+        direction_rows = conn.execute(
+            "SELECT * FROM audit_direction_contracts WHERE run_id=? AND batch_id=?",
+            (frozen["run_id"], frozen["batch_id"]),
+        ).fetchall()
+        direction_fields = (
+            "direction_id", "contract_sha", "validator_version", "artifact_sha"
+        )
+        if (
+            len(direction_rows) != 1
+            or tuple(direction_rows[0][name] for name in direction_fields)
+            != tuple(direction[name] for name in direction_fields)
+        ):
+            raise ValueError("direction contract identity conflicts with durable state")
         for item in staged:
             history_audit_store.insert_authorized_batch_staging(
                 conn,
@@ -509,7 +523,11 @@ def _validate_staged_batch_snapshot(conn, staged_batch):
         raise ValueError("staged batch snapshot ownership is invalid")
     replay = _snapshot_from_row(conn, snapshot)
     candidates = staged_batch.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
+    if (
+        not isinstance(candidates, list)
+        or not candidates
+        or any(not isinstance(item, dict) for item in candidates)
+    ):
         raise ValueError("staged batch candidates are invalid")
     staging_ids = _require_staging_ids(
         [item.get("staging_candidate_id") for item in candidates]
@@ -1487,7 +1505,15 @@ def _merge_l2_exceptional_cards(cards):
             or set(source) != {
                 "lineage_id", "semantic_relation", "item_ids", "evidence"
             }
+            or not isinstance(source["lineage_id"], str)
+            or not source["lineage_id"]
             or source["semantic_relation"] not in _L2_EXCEPTIONAL_RELATIONS
+            or not isinstance(source["item_ids"], list)
+            or any(
+                not isinstance(item_id, str) or not item_id
+                for item_id in source["item_ids"]
+            )
+            or not isinstance(source["evidence"], list)
         ):
             raise ValueError("derived exceptional card is invalid")
         card = by_lineage.setdefault(
@@ -1635,7 +1661,9 @@ def summarize_l2_coverage(
         invalid_schema = invalid_schema or terminal_outcome == "schema"
         invalid_anchor = invalid_anchor or terminal_outcome == "invalid_anchor"
         truncated = truncated or terminal_outcome == "truncated"
-    duplicate_ids = sorted({item_id for item_id in observed if observed.count(item_id) > 1})
+    duplicate_ids = sorted(
+        item_id for item_id, count in Counter(observed).items() if count > 1
+    )
     missing_ids = sorted(set(expected_ids).difference(observed_set))
     extra_ids = sorted(observed_set.difference(expected_ids))
     exceptional = _collapse_l2_exceptional_cards(rows)
