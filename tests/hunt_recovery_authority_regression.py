@@ -81,15 +81,18 @@ class HuntRecoveryAuthorityRegression(unittest.TestCase):
             root = pathlib.Path(raw)
             runs = root / "runs"
             (runs / "ordinary").mkdir(parents=True)
+            (root / "history").mkdir()
+            (root / "history/run-id").write_text("ordinary\n", encoding="ascii")
             result = run_shell(
-                f"RUNS_DIR={str(runs)!r}\nLOG=/dev/null\n"
+                f"RUNS_DIR={str(runs)!r}\nLOG=/dev/null\nRD=.\n"
                 "log() { :; }\n"
                 "verify_pending_recovery_archive() {\n"
                 "  printf 'ordinary\\t2\\t2026-08-09\\tdecision\\tno-strong-accept\\n'\n"
                 "}\n"
                 + finder
                 + "if find_pending_archive_report_view; then exit 9; "
-                "else rc=$?; [ \"$rc\" -eq 1 ]; fi\n",
+                "else rc=$?; [ \"$rc\" -eq 1 ] "
+                "&& [ \"$RECOVERY_CURRENT_DECISION_COMPLETE\" -eq 1 ]; fi\n",
                 root,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -106,7 +109,7 @@ class HuntRecoveryAuthorityRegression(unittest.TestCase):
             report_view.mkdir(parents=True)
             (report_view / "accepted.tsv").write_text("I1\tstory\n", encoding="utf-8")
             result = run_shell(
-                f"RUNS_DIR={str(runs)!r}\nLOG=/dev/null\n"
+                f"RUNS_DIR={str(runs)!r}\nLOG=/dev/null\nRD=.\n"
                 "log() { :; }\n"
                 "verify_pending_recovery_archive() {\n"
                 "  printf 'old-run\\t7\\t2026-08-08\\tdecision\\tstrong-accept\\n'\n"
@@ -225,6 +228,7 @@ class HuntRecoveryAuthorityRegression(unittest.TestCase):
         self.assertNotIn("report-count-before", recovery)
         self.assertIn("today=$RECOVERY_DATE", recovery)
         self.assertIn('seal_decision_outcome "$sa_count"', HUNT)
+        self.assertIn('[ "$RECOVERY_CURRENT_DECISION_COMPLETE" -eq 0 ]', HUNT)
         self.assertIn('"report-binding.json"', HUNT)
         self.assertIn("os.link(temporary, destination", HUNT)
 

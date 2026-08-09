@@ -284,6 +284,7 @@ RECOVERY_DATE=
 RECOVERY_REASON=
 RECOVERY_OUTCOME=
 RECOVERY_REPORT_PATH=
+RECOVERY_CURRENT_DECISION_COMPLETE=0
 HALT_MARK=tmp/HALTED-ARCHIVE-FAIL
 HISTORY_DB=.ai-ideas/history.sqlite3
 HISTORY_STATE_ROOT=.ai-ideas
@@ -1887,6 +1888,7 @@ PY
 find_pending_archive_report_view() {
   local archive view candidate metadata outcome rc saw_report_view
   local candidate_run_id candidate_round candidate_date candidate_reason
+  local current_round_run_id
   RECOVERY_ARCHIVE_DIR=
   RECOVERY_RUN_ID=
   RECOVERY_ROUND=
@@ -1894,7 +1896,9 @@ find_pending_archive_report_view() {
   RECOVERY_REASON=
   RECOVERY_OUTCOME=
   RECOVERY_REPORT_PATH=
+  RECOVERY_CURRENT_DECISION_COMPLETE=0
   CURRENT_REPORT_VIEW=
+  current_round_run_id=$(cat "$RD/history/run-id" 2>/dev/null || true)
   for archive in "$RUNS_DIR"/*; do
     [ -e "$archive" ] || continue
     if metadata=$(verify_pending_recovery_archive "$archive" 2>> "$LOG"); then
@@ -1909,6 +1913,9 @@ find_pending_archive_report_view() {
       candidate_run_id candidate_round candidate_date candidate_reason outcome \
       <<< "$metadata"
     if [ "$outcome" = no-strong-accept ]; then
+      if [ "$candidate_run_id" = "$current_round_run_id" ]; then
+        RECOVERY_CURRENT_DECISION_COMPLETE=1
+      fi
       continue
     fi
     candidate=
@@ -1924,6 +1931,9 @@ find_pending_archive_report_view() {
          && [ "$saw_report_view" -eq 1 ]; then
         # Pre-marker decision archives with only empty accepted.tsv files are
         # completed no-Strong-Accept decisions, not pending publication.
+        if [ "$candidate_run_id" = "$current_round_run_id" ]; then
+          RECOVERY_CURRENT_DECISION_COMPLETE=1
+        fi
         continue
       fi
       log "Pending Strong Accept archive lacks its report view: $archive"
@@ -2165,7 +2175,9 @@ if [ "$recovered_report" -eq 1 ]; then
   CURRENT_REPORT_VIEW=
 fi
 
-if [ "$recovered_report" -eq 0 ] && [ "$RESUME_FRONT" = 1 ] \
+if [ "$recovered_report" -eq 0 ] \
+   && [ "$RECOVERY_CURRENT_DECISION_COMPLETE" -eq 0 ] \
+   && [ "$RESUME_FRONT" = 1 ] \
    && [ -s "$RD/history/resume-state.json" ]; then
   if history_receipts_ok "$RD/history/resume-state.json" \
     > "$startup_root/resume-validation.json"; then
