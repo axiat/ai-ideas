@@ -2059,10 +2059,19 @@ def _candidate_blocks(markdown):
 
 
 def _declared_parent(block):
+    declaration_lines = re.findall(
+        r"(?mi)^[ \t]*(?:Evolved[ \t]+from|Recheck(?:[ \t]+of)?)"
+        r"[^\r\n]*$",
+        block,
+    )
     matches = re.findall(
         r"(?mi)^(?:Evolved from|Recheck(?: of)?):[ \t]*(\S+)[ \t]*$",
         block,
     )
+    if len(declaration_lines) != len(matches):
+        raise RuntimeContractError(
+            "candidate evolution declaration is malformed"
+        )
     if len(matches) > 1:
         raise RuntimeContractError(
             "candidate declares more than one parent"
@@ -2470,7 +2479,7 @@ def _source_descriptor(path, label, maximum=1024 * 1024):
 
 
 def _validate_round_observation(
-    batch, round_observation_path
+    batch, candidates, round_observation_path
 ):
     observation_path = pathlib.Path(
         os.path.abspath(os.fspath(round_observation_path))
@@ -2548,6 +2557,11 @@ def _validate_round_observation(
             )
         built = _load_canonical_json(
             expected_path, "candidate build observation"
+        )
+        _validated_build_observation(
+            candidates[candidate_id],
+            observation_root / candidate_id,
+            built,
         )
         if (
             built.get("observation_sha256")
@@ -2659,7 +2673,7 @@ def _selection_material(
     verify_frozen_batch(batch)
     _, candidates = _load_batch_candidates(batch_path)
     round_observation = _validate_round_observation(
-        batch, round_observation_path
+        batch, candidates, round_observation_path
     )
     sources = {}
     raw_sources = {}
@@ -6158,18 +6172,47 @@ def _compare_frozen_targets_for_test(
         )
 
 
+def _recomputed_observation_items(candidate, observation, label):
+    fields = {
+        "schema_version",
+        "candidate_id",
+        "candidate_content_sha256",
+        "observations",
+        "observation_sha256",
+    }
+    if not isinstance(observation, dict) or set(observation) != fields:
+        raise RuntimeContractError(f"{label} is invalid")
+    items = observation["observations"]
+    material = dict(observation)
+    observation_sha = material.pop("observation_sha256")
+    if (
+        type(observation["schema_version"]) is not int
+        or observation["schema_version"] != 1
+        or observation["candidate_id"] != candidate["candidate_id"]
+        or observation["candidate_content_sha256"]
+        != candidate["content_sha256"]
+        or not isinstance(items, list)
+        or any(not isinstance(item, dict) for item in items)
+        or [item.get("intent") for item in items]
+        != required_intents(candidate)
+        or not _valid_sha256(observation_sha)
+        or observation_sha
+        != sha256(
+            b"history-runtime-observation-v1\0"
+            + canonical_bytes(material)
+        )
+    ):
+        raise RuntimeContractError(f"{label} is invalid")
+    return items
+
+
 def _receipt_bindings(
     candidate, root, observation, *, require_permanent
 ):
     expected = required_intents(candidate)
-    items = observation.get("observations")
-    if (
-        not isinstance(items, list)
-        or [item.get("intent") for item in items] != expected
-    ):
-        raise RuntimeContractError(
-            "compared observation coverage is invalid"
-        )
+    items = _recomputed_observation_items(
+        candidate, observation, "compared observation"
+    )
     bindings = []
     for item in items:
         if item.get("status") not in history_retrieval.PERMANENT_STATUSES:
@@ -9053,11 +9096,38 @@ def materialize_report_views(
     accepted_ids = []
     for result in aggregation["targets"]:
         target = plan_targets[result["candidate_id"]]
+        candidate = candidates[result["candidate_id"]]
+        outcome = target["planned_outcome"]
+        if outcome == "history_abstain":
+            if result["row_index"] is not None:
+                raise RuntimeContractError(
+                    "history abstention unexpectedly has a ledger row"
+                )
+            statuses = target["history_statuses"]
+            if (
+                not isinstance(statuses, list)
+                or not statuses
+                or any(not isinstance(status, str) for status in statuses)
+            ):
+                raise RuntimeContractError(
+                    "history abstention lacks sealed statuses"
+                )
+            rejected.append(
+                result["candidate_id"]
+                + "\t"
+                + candidate["story"]
+                + "\tHistory abstention: "
+                + ",".join(statuses)
+                + "\n"
+            )
+            continue
         if (
-            target["planned_outcome"] != "review"
+            outcome not in {"review", "prescreen_kill"}
             or result["row_index"] is None
         ):
-            continue
+            raise RuntimeContractError(
+                "report view target lacks its sealed outcome"
+            )
         fields = aggregation["ledger_rows"][
             result["row_index"]
         ].split("\t")
