@@ -7703,6 +7703,49 @@ END;
 """
 
 
+_L2_TERMINAL_EVIDENCE_SQL = """
+CREATE TABLE audit_l2_split_quarantine_v3(
+  parent_task_hash TEXT PRIMARY KEY REFERENCES audit_logical_tasks(task_hash),
+  reason TEXT NOT NULL,
+  quarantined_at TEXT NOT NULL
+);
+""" + _immutable_guards("audit_l2_split_quarantine_v3") + """
+CREATE VIEW audit_l2_valid_split_families_v3 AS
+SELECT family.*
+FROM audit_l2_valid_split_families_v2 family
+JOIN audit_l2_terminal_transition_authority_v2 authority
+  ON authority.parent_task_hash=family.parent_task_hash
+ AND authority.transition_kind='split'
+WHERE EXISTS (
+  SELECT 1
+  FROM audit_task_attempts attempt
+  JOIN audit_attempt_completions_v2 completion
+    ON completion.attempt_id=attempt.attempt_id
+  JOIN audit_cas_objects output
+    ON output.object_id=completion.output_cas_object_id
+  WHERE attempt.task_hash=family.parent_task_hash
+    AND completion.outcome IN ('overflow','item_set','truncated')
+    AND output.integrity_state='verified'
+    AND json_extract(attempt.provenance_json,'$.claim_fence')
+        =authority.claim_fence
+    AND json_extract(attempt.provenance_json,'$.claim_token')
+        =authority.claim_token
+);
+INSERT INTO audit_l2_split_quarantine_v3(
+  parent_task_hash,reason,quarantined_at
+)
+SELECT family.parent_task_hash,'split_failure_evidence_missing',authority.created_at
+FROM audit_l2_valid_split_families_v2 family
+JOIN audit_l2_terminal_transition_authority_v2 authority
+  ON authority.parent_task_hash=family.parent_task_hash
+ AND authority.transition_kind='split'
+WHERE NOT EXISTS (
+  SELECT 1 FROM audit_l2_valid_split_families_v3 valid
+  WHERE valid.parent_task_hash=family.parent_task_hash
+);
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("migration-ledger-guard", 1, _MIGRATION_LEDGER_GUARD_SQL),
@@ -7830,6 +7873,9 @@ MIGRATIONS = (
     ),
     Migration(
         "pair-result-authority", 1, _PAIR_RESULT_AUTHORITY_SQL,
+    ),
+    Migration(
+        "l2-terminal-failure-evidence", 1, _L2_TERMINAL_EVIDENCE_SQL,
     ),
 )
 
@@ -19943,7 +19989,7 @@ def _validated_split_children(conn, parent_task_hash):
     family = conn.execute(
         """
         SELECT child0_task_hash, child1_task_hash
-        FROM audit_l2_valid_split_families_v2
+        FROM audit_l2_valid_split_families_v3
         WHERE parent_task_hash=?
         """,
         (parent_task_hash,),
@@ -19989,23 +20035,38 @@ def _l2_claim_is_live(parent, expected_fence, claim_token, now):
     )
 
 
-def _l2_current_claim_has_overflow(conn, parent):
+def _l2_current_claim_has_failure(conn, parent, outcomes):
+    if not outcomes:
+        return False
+    placeholders = ",".join("?" for _ in outcomes)
     return conn.execute(
-        """
+        f"""
         SELECT 1
         FROM audit_task_attempts attempt
         JOIN audit_attempt_completions_v2 completion
           ON completion.attempt_id=attempt.attempt_id
         JOIN audit_cas_objects output
           ON output.object_id=completion.output_cas_object_id
-        WHERE attempt.task_hash=? AND completion.outcome='overflow'
+        WHERE attempt.task_hash=?
+          AND completion.outcome IN ({placeholders})
           AND output.integrity_state='verified'
           AND json_extract(attempt.provenance_json, '$.claim_fence')=?
           AND json_extract(attempt.provenance_json, '$.claim_token')=?
         LIMIT 1
         """,
-        (parent["task_hash"], parent["fence"], parent["claim_token"]),
+        (parent["task_hash"], *sorted(outcomes),
+         parent["fence"], parent["claim_token"]),
     ).fetchone() is not None
+
+
+def _l2_current_claim_has_overflow(conn, parent):
+    return _l2_current_claim_has_failure(conn, parent, {"overflow"})
+
+
+def _l2_current_claim_has_split_failure(conn, parent):
+    return _l2_current_claim_has_failure(
+        conn, parent, {"overflow", "item_set", "truncated"}
+    )
 
 
 def transition_l2_split_task(
@@ -20028,6 +20089,10 @@ def transition_l2_split_task(
     item_ids = _closed_json(parent["assigned_item_ids_json"])
     if len(item_ids) < 2:
         raise AuditMigrationError("split parent is not divisible")
+    if not _l2_current_claim_has_split_failure(conn, parent):
+        raise AuditMigrationError(
+            "multi-item split lacks current-claim failure evidence"
+        )
     midpoint = len(item_ids) // 2
     groups = (item_ids[:midpoint], item_ids[midpoint:])
     if not all(groups):
@@ -20195,7 +20260,7 @@ def transition_l2_split_task(
                 authority,
             )
             if conn.execute(
-                "SELECT 1 FROM audit_l2_valid_split_families_v2 "
+                "SELECT 1 FROM audit_l2_valid_split_families_v3 "
                 "WHERE parent_task_hash=?", (parent_task_hash,),
             ).fetchone() is None:
                 raise AuditMigrationError("split transition failed durable validation")
@@ -20219,11 +20284,21 @@ def transition_l2_exhaust_task(
     now = _l2_transition_timestamp(now)
     parent = _l2_transition_parent(conn, task_hash)
     if parent["state"] == "exhausted":
-        if conn.execute(
-            "SELECT 1 FROM audit_l2_valid_exhaustions_v2 WHERE task_hash=?",
+        durable = conn.execute(
+            """
+            SELECT terminal.reason
+            FROM audit_l2_valid_exhaustions_v2 exhausted
+            JOIN audit_task_terminal_facts_v2 terminal
+              ON terminal.task_hash=exhausted.task_hash
+             AND terminal.terminal_state='exhausted'
+            WHERE exhausted.task_hash=?
+            """,
             (task_hash,),
-        ).fetchone() is None:
+        ).fetchone()
+        if durable is None:
             raise AuditMigrationError("exhausted task has malformed authority")
+        if durable["reason"] != reason:
+            raise AuditMigrationError("exhaustion replay reason conflicts")
         return {"state": "exhausted", "children": []}
     if parent["state"] in {"settled", "superseded"}:
         raise StaleFence("logical task is already terminal")
@@ -20252,6 +20327,20 @@ def transition_l2_exhaust_task(
     )
     try:
         conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT state,fence,claim_token,lease_until "
+            "FROM audit_logical_tasks WHERE task_hash=?",
+            (task_hash,),
+        ).fetchone()
+        if (
+            current is None
+            or tuple(current) != (
+                "claimed", parent["fence"], parent["claim_token"],
+                parent["lease_until"],
+            )
+            or _metadata_lease_live(current["lease_until"], now) != 1
+        ):
+            raise StaleFence("exhaustion claim expired before transition")
         with _l2_terminal_transition_guard(
             conn, children=(), transition=transition, terminal=terminal,
             edges=(), authority=authority,
@@ -20357,6 +20446,19 @@ def validate_l2_terminal_graph(conn, plan_sha=None):
         """,
         parameters,
     ).fetchone()
+    invalid_split_evidence = conn.execute(
+        f"""
+        SELECT 1
+        FROM audit_logical_tasks task
+        JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
+        LEFT JOIN audit_l2_valid_split_families_v3 split
+          ON split.parent_task_hash=task.task_hash
+        WHERE task.state='superseded' AND split.parent_task_hash IS NULL
+          {plan_clause}
+        LIMIT 1
+        """,
+        parameters,
+    ).fetchone()
     invalid_settlement = conn.execute(
         f"""
         SELECT 1
@@ -20392,7 +20494,8 @@ def validate_l2_terminal_graph(conn, plan_sha=None):
     return all(
         value is None for value in (
             invalid_binding, invalid_terminal, invalid_fact,
-            invalid_edge, invalid_settlement, invalid_authority,
+            invalid_edge, invalid_split_evidence, invalid_settlement,
+            invalid_authority,
         )
     )
 
