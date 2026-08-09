@@ -606,6 +606,7 @@ run_retryable_failure_cooldown_case() {
     return
   fi
   failures=$(rg -c 'Round failed at generate' "$log" || true)
+  failures=${failures:-0}
   if [ "$failures" -ne 2 ]; then
     fail "$name Hunt failure count changed: $failures"
     sed -n '1,180p' "$log" >&2

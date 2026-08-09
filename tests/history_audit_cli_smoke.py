@@ -217,7 +217,10 @@ class ProviderCommandCliSmoke(unittest.TestCase):
                     "<EXECUTABLE>", "-m", "gpt-5.6-sol", "-c",
                     "model_reasoning_effort=xhigh", "-c", "approval_policy=never",
                     "exec", "-s", "workspace-write", "--skip-git-repo-check",
-                    "--ephemeral", "<PROMPT>",
+                    "--ephemeral", "--output-schema",
+                    "/portable-mirror/.tmp/response-schema.json",
+                    "--output-last-message",
+                    "/portable-mirror/.tmp/model-final.json", "<PROMPT>",
                 ],
             ),
             (

@@ -92,7 +92,14 @@ record_failure() {
 }
 
 REPO="$SANDBOX_ROOT/repo"
+PATCH_FILE="$SANDBOX_ROOT/current.diff"
+HEAD_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
 git clone -q --no-hardlinks "$ROOT" "$REPO"
+git -C "$REPO" checkout -q --detach "$HEAD_COMMIT"
+git -C "$ROOT" diff --binary HEAD -- > "$PATCH_FILE"
+if [ -s "$PATCH_FILE" ]; then
+  git -C "$REPO" apply --binary "$PATCH_FILE"
+fi
 rm -rf "$REPO/calib"
 cp -R "$ROOT/calib" "$REPO/calib"
 cp "$ROOT/tests/calibration_abi_smoke.sh" "$REPO/tests/"

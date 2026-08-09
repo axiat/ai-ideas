@@ -165,6 +165,25 @@ def evidence(*, basis="l2_exhaustive", dependency_overrides=None):
     return value
 
 
+def evaluation_evidence(
+    rows, result_rows=None, *, scope="real", basis="l2_exhaustive",
+    dependency_overrides=None,
+):
+    result_rows = outputs(rows) if result_rows is None else result_rows
+    value = evidence(
+        basis=basis, dependency_overrides=dependency_overrides
+    )
+    if subject is not None:
+        identities = subject.semantic_evaluation_identities(
+            subject.validate_qrels(rows, partitions(rows), scope=scope),
+            result_rows,
+            policy(),
+        )
+        value["evaluation_hash"] = identities["evaluation_hash"]
+        value["metric_report_hash"] = identities["metric_report_hash"]
+    return value
+
+
 def production_fault_cases(*, recovered=True):
     baseline = {
         "state_sha256": "d" * 64,
@@ -643,7 +662,8 @@ class QrelsAndReleaseTests(unittest.TestCase):
         rows = qrels(300, 20, scope="diagnostic_synthetic", slice_count=30)
         result = self.api("evaluate_production_qualification")(
             self.validated(rows, "diagnostic_synthetic"),
-            outputs(rows), policy(), evidence()
+            outputs(rows), policy(),
+            evaluation_evidence(rows, scope="diagnostic_synthetic"),
         )
         self.assertFalse(result["production_qualified"])
         self.assertIn("non_production_scope", result["vetoes"])
@@ -667,7 +687,8 @@ class QrelsAndReleaseTests(unittest.TestCase):
         )
         under = qrels(299, 20, slice_count=30)
         result = self.api("evaluate_production_qualification")(
-            self.validated(under), outputs(under), policy(), evidence()
+            self.validated(under), outputs(under), policy(),
+            evaluation_evidence(under),
         )
         self.assertFalse(result["production_qualified"])
         self.assertIn("insufficient_positive_lineages", result["vetoes"])
@@ -697,7 +718,8 @@ class QrelsAndReleaseTests(unittest.TestCase):
             for index in range(300, 320)
         )
         result = self.api("evaluate_production_qualification")(
-            self.validated(rows), outputs(rows), policy(), evidence()
+            self.validated(rows), outputs(rows), policy(),
+            evaluation_evidence(rows),
         )
         self.assertFalse(result["production_qualified"])
         self.assertEqual(
@@ -734,9 +756,10 @@ class QrelsAndReleaseTests(unittest.TestCase):
         train_lineages = {
             row["query_lineage_id"] for row in train_rows
         }
+        held_out_outputs = outputs(rows, misses=train_lineages)
         result = self.api("evaluate_production_qualification")(
-            self.validated(rows), outputs(rows, misses=train_lineages),
-            policy(), evidence(),
+            self.validated(rows), held_out_outputs,
+            policy(), evaluation_evidence(rows, held_out_outputs),
         )
         self.assertTrue(result["production_qualified"])
         self.assertEqual(
@@ -763,7 +786,8 @@ class QrelsAndReleaseTests(unittest.TestCase):
     def test_missing_bad_slice_abstains_and_vetoes(self):
         rows = qrels(300, 20, slice_count=29)
         result = self.api("evaluate_production_qualification")(
-            self.validated(rows), outputs(rows), policy(), evidence()
+            self.validated(rows), outputs(rows), policy(),
+            evaluation_evidence(rows),
         )
         self.assertFalse(result["production_qualified"])
         self.assertEqual(result["metrics"]["slices"]["low_overlap"]["state"], "abstain")
@@ -872,24 +896,12 @@ class QrelsAndReleaseTests(unittest.TestCase):
                 rows = qrels(300, 20, slice_count=30)
                 changed_outputs = outputs(rows)
                 changed_outputs[-1]["semantic_relation"] = "related_only"
-                qualification = self.api(
-                    "evaluate_production_qualification"
-                )(
-                    self.validated(rows), changed_outputs, policy(),
-                    evidence_value,
-                )
-                self.assertTrue(qualification["production_qualified"])
-                history_audit_store.publish_semantic_dependency_heads(
-                    conn, qualification["dependency_hashes"],
-                    now="2026-08-02T23:59:59+00:00",
-                )
                 with self.assertRaisesRegex(
-                    ValueError, "evaluation identity"
+                    ValueError, "production evaluation identity is invalid"
                 ):
-                    history_audit_store.persist_semantic_qualification(
-                        conn, self.validated(rows), changed_outputs, policy(),
+                    self.api("evaluate_production_qualification")(
+                        self.validated(rows), changed_outputs, policy(),
                         evidence_value,
-                        now="2026-08-03T00:00:00+00:00",
                     )
                 self.assertEqual(
                     conn.execute(
@@ -922,24 +934,12 @@ class QrelsAndReleaseTests(unittest.TestCase):
                     "caller-self-rehashed-metrics-v1",
                     contract.canonical_bytes({"passed": True}),
                 )
-                qualification = self.api(
-                    "evaluate_production_qualification"
-                )(
-                    self.validated(rows), result_rows, policy(),
-                    evidence_value,
-                )
-                self.assertTrue(qualification["production_qualified"])
-                history_audit_store.publish_semantic_dependency_heads(
-                    conn, qualification["dependency_hashes"],
-                    now="2026-08-02T23:59:59+00:00",
-                )
                 with self.assertRaisesRegex(
-                    ValueError, "evaluation identity"
+                    ValueError, "production evaluation identity is invalid"
                 ):
-                    history_audit_store.persist_semantic_qualification(
-                        conn, self.validated(rows), result_rows, policy(),
+                    self.api("evaluate_production_qualification")(
+                        self.validated(rows), result_rows, policy(),
                         evidence_value,
-                        now="2026-08-03T00:00:00+00:00",
                     )
                 self.assertEqual(
                     conn.execute(
@@ -1314,20 +1314,12 @@ class QrelsAndReleaseTests(unittest.TestCase):
                     "snapshot_hash"
                 ]
                 expired_evidence["expires_at"] = "2026-08-02T23:59:59+00:00"
-                qualification = self.api("evaluate_production_qualification")(
-                    self.validated(rows), outputs(rows), policy(), expired_evidence
-                )
-                self.assertTrue(qualification["production_qualified"])
-                history_audit_store.publish_semantic_dependency_heads(
-                    conn, qualification["dependency_hashes"],
-                    now="2026-08-02T23:59:58+00:00",
-                )
                 with self.assertRaisesRegex(
-                    ValueError, "production qualification is expired"
+                    ValueError, "production evidence is expired"
                 ):
-                    history_audit_store.persist_semantic_qualification(
-                        conn, self.validated(rows), outputs(rows), policy(),
-                        expired_evidence, now="2026-08-03T00:00:00+00:00",
+                    self.api("evaluate_production_qualification")(
+                        self.validated(rows), outputs(rows), policy(),
+                        expired_evidence,
                     )
             self.assertEqual(
                 conn.execute(
@@ -1354,26 +1346,12 @@ class QrelsAndReleaseTests(unittest.TestCase):
                     "2026-08-03T00:00:02+00:00"
                 )
                 rows = qrels(300, 20, slice_count=30)
-                qualification = self.api(
-                    "evaluate_production_qualification"
-                )(
-                    self.validated(rows), outputs(rows), policy(),
-                    evidence_value,
-                )
-                history_audit_store.publish_semantic_dependency_heads(
-                    conn, qualification["dependency_hashes"],
-                    now="2026-08-03T00:00:00+00:00",
-                )
-                with mock.patch.object(
-                    history_audit_store, "_utc_now",
-                    return_value="2026-08-03T00:00:03+00:00",
-                ), self.assertRaisesRegex(
-                    ValueError, "production qualification is expired"
+                with self.assertRaisesRegex(
+                    ValueError, "production evidence is expired"
                 ):
-                    history_audit_store.persist_semantic_qualification(
-                        conn, self.validated(rows), outputs(rows), policy(),
+                    self.api("evaluate_production_qualification")(
+                        self.validated(rows), outputs(rows), policy(),
                         evidence_value,
-                        now="2026-08-03T00:00:01+00:00",
                     )
             self.assertEqual(
                 conn.execute(
@@ -1460,8 +1438,11 @@ class QrelsAndReleaseTests(unittest.TestCase):
                 300, 20, scope="diagnostic_synthetic", slice_count=30
             )
             validated = self.validated(rows, "diagnostic_synthetic")
+            evidence_value = evaluation_evidence(
+                rows, scope="diagnostic_synthetic"
+            )
             qualification = self.api("evaluate_production_qualification")(
-                validated, outputs(rows), policy(), evidence()
+                validated, outputs(rows), policy(), evidence_value
             )
             self.assertFalse(qualification["production_qualified"])
             history_audit_store.publish_semantic_dependency_heads(
@@ -1469,7 +1450,7 @@ class QrelsAndReleaseTests(unittest.TestCase):
                 now="2026-08-02T23:59:59+00:00",
             )
             stored = history_audit_store.persist_semantic_qualification(
-                conn, validated, outputs(rows), policy(), evidence(),
+                conn, validated, outputs(rows), policy(), evidence_value,
                 now="2026-08-03T00:00:00+00:00",
             )
             self.assertFalse(stored["production_qualified"])
@@ -2178,7 +2159,7 @@ class StorageReleaseAuthorizationTests(unittest.TestCase):
 
     def test_caller_time_cannot_backdate_release_authorization(self):
         _, evidence_value, receipt = self.install_l2_execution(
-            qualification_expires_at="2026-08-03T00:00:02+00:00"
+            qualification_expires_at="2030-01-01T00:00:00+00:00"
         )
         qualification = self.qualification(evidence_value)
         history_audit_store.publish_semantic_dependency_heads(
@@ -2195,7 +2176,7 @@ class StorageReleaseAuthorizationTests(unittest.TestCase):
             )
         with mock.patch.object(
             history_audit_store, "_utc_now",
-            return_value="2026-08-03T00:00:03+00:00",
+            return_value="2030-01-01T00:00:01+00:00",
         ), self.assertRaises(history_cas.CASError):
             history_cas.write_minimum_receipt(
                 self.conn, receipt,
@@ -2218,7 +2199,7 @@ class StorageReleaseAuthorizationTests(unittest.TestCase):
 
     def test_caller_time_cannot_backdate_current_release_verification(self):
         _, evidence_value, receipt = self.install_l2_execution(
-            qualification_expires_at="2026-08-03T00:00:02+00:00"
+            qualification_expires_at="2030-01-01T00:00:00+00:00"
         )
         qualification = self.qualification(evidence_value)
         history_audit_store.publish_semantic_dependency_heads(
@@ -2244,7 +2225,7 @@ class StorageReleaseAuthorizationTests(unittest.TestCase):
             )
         with mock.patch.object(
             history_audit_store, "_utc_now",
-            return_value="2026-08-03T00:00:03+00:00",
+            return_value="2030-01-01T00:00:01+00:00",
         ), self.assertRaises(history_cas.CASIntegrityError):
             history_cas.verify_minimum_receipt(
                 self.conn, self.root / "cas", receipt_id,

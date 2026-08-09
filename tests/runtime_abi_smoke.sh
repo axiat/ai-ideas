@@ -144,17 +144,21 @@ run_awr_agy_case() {
     '#!/usr/bin/env bash' \
     'set -eu' \
     ': "${AGY_STUB_LOG:?}" "${FAKE_AGENT_BIN:?}"' \
-    'prompt=' \
-    'while [ "$#" -gt 0 ]; do' \
-    '  printf "%s\\n" "$1" >> "$AGY_STUB_LOG"' \
-    '  if [ "$1" = "-p" ]; then' \
-    '    shift' \
-    '    [ "$#" -gt 0 ]' \
-    '    prompt=$1' \
-    '  fi' \
-    '  shift' \
-    'done' \
-    '[ -n "$prompt" ]' \
+    'expected_repo=$PWD' \
+    '[ "$#" -eq 8 ]' \
+    '[ "$1" = "--model" ]' \
+    '[ "$2" = "gemini-3.6-flash-high" ]' \
+    '[ "$3" = "--add-dir" ]' \
+    '[ "$4" = "$expected_repo" ]' \
+    '[ "$5" = "--print-timeout" ]' \
+    '[ "$6" = "10m" ]' \
+    '[ "$7" = "-p" ]' \
+    'prompt=$8' \
+    'printf "%s\\n" "$@" >> "$AGY_STUB_LOG"' \
+    'case "$prompt" in' \
+    '  "Repository root (absolute path): $expected_repo."*) ;;' \
+    '  *) exit 1 ;;' \
+    'esac' \
     'exec "$FAKE_AGENT_BIN" "$prompt"' > "$stub"
   chmod 755 "$stub"
 
@@ -254,6 +258,67 @@ run_awr_legacy_partial_case() {
   printf 'ok: AwR upgrades partial legacy state without reusing invalid caches\n'
 }
 
+run_nondefault_mode_case() {
+  local helper="$SANDBOX_ROOT/priorwork-helper.sh"
+  rm -rf "$REPO/tmp/round"
+  mkdir -p "$REPO/tmp/round"
+  case "$MODE" in
+    overlap-commentary)
+      printf 'I1\t1\tFixture story\tWorld Models - Architecture\n' \
+        > "$REPO/tmp/round/ideas.tsv"
+      (
+        cd "$REPO"
+        FAKE_AGENT_MODE="$MODE" \
+          tests/fake_agent.sh 'Read roles/research.md and follow it'
+      )
+      grep -qxF 'Overlap: unknown; high appears only in commentary' \
+        "$REPO/tmp/round/priorwork.md"
+      awk '
+        /^priorwork_ok\(\) \{/ { copy=1 }
+        /^cracks_ok\(\) \{/ { exit }
+        copy { print }
+      ' "$REPO/hunt.sh" > "$helper"
+      if (
+        cd "$REPO"
+        RD=tmp/round
+        PRIOR_MIN_LINKS=5
+        PRIOR_MIN_API=1
+        STRUCTURED_API_RE='^- Query: https?://'
+        log() { :; }
+        . "$helper"
+        priorwork_ok
+      ); then
+        printf 'overlap-commentary fixture passed the current prior-work helper\n' >&2
+        return 1
+      fi
+      ;;
+    missing-occupant)
+      (
+        cd "$REPO"
+        FAKE_AGENT_MODE="$MODE" \
+          tests/fake_agent.sh 'Read roles/prescreen.md and follow it'
+      )
+      python3 - "$REPO" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root))
+from lib import history_runtime
+
+text = (root / "tmp/round/prescreen.md").read_text(encoding="utf-8")
+if "Decision: kill" not in text or "Occupant:" in text:
+    raise SystemExit("missing-occupant fixture did not execute")
+result = history_runtime._prescreen_result(text, "I1")
+if result != {"decision": "keep", "evidence": None}:
+    raise SystemExit("missing-occupant fixture bypassed the current prescreen helper")
+PY
+      ;;
+    *) return 0 ;;
+  esac
+  printf 'ok: runtime ABI %s case\n' "$MODE"
+}
+
 run_compact_review_contract_case() {
   python3 - "$REPO" <<'PY'
 import pathlib
@@ -348,5 +413,7 @@ if [ "$MODE" = default ]; then
   run_awr_agy_case
   run_awr_legacy_terminal_case
   run_awr_legacy_partial_case
+else
+  run_nondefault_mode_case
 fi
 printf 'ok: runtime ABI smoke (%s)\n' "$MODE"

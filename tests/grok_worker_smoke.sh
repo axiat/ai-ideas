@@ -49,6 +49,21 @@ assert_pair() {
   ' "$file"
 }
 
+assert_singleton() {
+  value=$1
+  file=$2
+  [ "$(grep -cxF -- "$value" "$file")" -eq 1 ]
+}
+
+assert_final_prompt() {
+  value=$1
+  file=$2
+  awk -v value="$value" '
+    { before_last=last; last=$0 }
+    END { exit ! (before_last == "-p" && last == value) }
+  ' "$file"
+}
+
 assert_absent() {
   value=$1
   file=$2
@@ -91,7 +106,10 @@ run_wrapper() {
 [ -e "$LAUNCH_LOG" ]
 assert_absent -m "$ARGS_LOG"
 assert_absent --reasoning-effort "$ARGS_LOG"
+assert_singleton --always-approve "$ARGS_LOG"
+assert_pair --sandbox workspace "$ARGS_LOG"
 assert_pair -p prompt-default "$ARGS_LOG"
+assert_final_prompt prompt-default "$ARGS_LOG"
 assert_compatibility_sources_disabled
 printf 'ok: Grok wrapper preserves omitted model and reasoning defaults\n'
 
@@ -100,7 +118,10 @@ GROK_MODEL=grok-4.5 GROK_REASONING_EFFORT=high run_wrapper prompt-explicit
 [ -e "$LAUNCH_LOG" ]
 assert_pair -m grok-4.5 "$ARGS_LOG"
 assert_pair --reasoning-effort high "$ARGS_LOG"
+assert_singleton --always-approve "$ARGS_LOG"
+assert_pair --sandbox workspace "$ARGS_LOG"
 assert_pair -p prompt-explicit "$ARGS_LOG"
+assert_final_prompt prompt-explicit "$ARGS_LOG"
 assert_compatibility_sources_disabled
 printf 'ok: Grok wrapper passes explicit model and reasoning\n'
 
