@@ -772,9 +772,28 @@ def _read_rooted_frozen_descriptor(
     maximum,
     fields,
 ):
-    root = pathlib.Path(os.path.abspath(os.fspath(root)))
+    lexical_root = pathlib.Path(os.path.abspath(os.fspath(root)))
+    root_descriptor = _open_safe_directory(lexical_root, create=False)
+    os.close(root_descriptor)
+    root = lexical_root.resolve(strict=True)
     relative = pathlib.PurePath(relative_path)
     expected = root.joinpath(*relative.parts)
+    lexical_expected = lexical_root.joinpath(*relative.parts)
+    descriptor_path = descriptor.get("path") if isinstance(descriptor, dict) else None
+    normalized_descriptor_path = descriptor_path
+    if isinstance(descriptor_path, str):
+        for alias in ("/var", "/tmp", "/etc"):
+            if descriptor_path == alias or descriptor_path.startswith(alias + os.sep):
+                try:
+                    alias_state = os.lstat(alias)
+                except OSError:
+                    break
+                if stat.S_ISLNK(alias_state.st_mode) and alias_state.st_uid == 0:
+                    normalized_descriptor_path = (
+                        os.path.realpath(alias)
+                        + descriptor_path[len(alias):]
+                    )
+                break
     if (
         not isinstance(descriptor, dict)
         or set(descriptor) != set(fields)
@@ -786,7 +805,8 @@ def _read_rooted_frozen_descriptor(
             component in {"", ".", ".."}
             for component in relative.parts
         )
-        or descriptor.get("path") != str(expected)
+        or normalized_descriptor_path
+        not in {str(expected), str(lexical_expected)}
         or not _valid_sha256(descriptor.get("sha256"))
         or (
             "byte_count" in fields
@@ -797,8 +817,6 @@ def _read_rooted_frozen_descriptor(
         )
     ):
         raise RuntimeContractError(f"{label} descriptor is invalid")
-    root_descriptor = _open_safe_directory(root, create=False)
-    os.close(root_descriptor)
     raw = _read_bound_regular(
         expected, label, maximum=maximum
     )

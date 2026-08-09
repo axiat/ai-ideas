@@ -1108,8 +1108,8 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
         )
         runtime_material = copy.deepcopy(tampered["runtime_plan"])
         runtime_material.pop("plan_sha")
-        runtime_sha = history_audit_plan.runtime_plan_sha_from_material(
-            runtime_material
+        runtime_sha = canonical_sha(
+            "history-audit-plan-v2", runtime_material
         )
         tampered["runtime_plan"]["plan_sha"] = runtime_sha
         tampered["runtime_plan_sha256"] = runtime_sha

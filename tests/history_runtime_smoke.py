@@ -2684,6 +2684,7 @@ class RoundCoordinatorContract(CapabilityContract):
             min_read=5,
             axiom_min_cracks=2,
             output_path=review_plan_path,
+            authority=self.shadow_test_authority(),
         )
         review_index_path = self.root / "portable-public-review-index.json"
         review = history_runtime.run_review_matrix(
@@ -2696,6 +2697,7 @@ class RoundCoordinatorContract(CapabilityContract):
             reviewer_request_profiles=profiles,
             stage_root=self.root / "portable-public-review-stages",
             output_path=review_index_path,
+            authority=self.shadow_test_authority(),
         )
         self.assertEqual(review["schema_version"], 2)
         self.assertEqual(len(review["entries"]), 1)
@@ -2709,6 +2711,7 @@ class RoundCoordinatorContract(CapabilityContract):
                 batch_path=state["batch"],
                 review_plan_path=review_plan_path,
                 review_index_path=review_index_path,
+                authority=self.shadow_test_authority(),
             )
         )
         aggregation = history_runtime.build_round_aggregation(
@@ -2718,6 +2721,7 @@ class RoundCoordinatorContract(CapabilityContract):
             review_plan_path=review_plan_path,
             review_index_path=review_index_path,
             output_path=self.root / "portable-public-aggregation.json",
+            authority=self.shadow_test_authority(),
         )
         self.assertEqual(len(aggregation["ledger_rows"]), 1)
 
@@ -2739,6 +2743,7 @@ class RoundCoordinatorContract(CapabilityContract):
                 batch_path=state["batch"],
                 review_plan_path=review_plan_path,
                 review_index_path=review_index_path,
+                authority=self.shadow_test_authority(),
             )
         review_index_path.write_bytes(original_review)
 
@@ -2821,6 +2826,8 @@ class RoundCoordinatorContract(CapabilityContract):
             )
         if review_contract_path is None:
             review_contract_path = self.review_contract_path
+        if authority is None:
+            authority = self.shadow_test_authority()
         plan_path = self.root / f"{stem}-review-plan.json"
         plan = history_runtime.seal_round_review_plan(
             db_path=self.database,
@@ -2859,6 +2866,8 @@ class RoundCoordinatorContract(CapabilityContract):
         reviewer_count=2,
         authority=None,
     ):
+        if authority is None:
+            authority = self.shadow_test_authority()
         sealed = self._seal_review_plan(
             state,
             stem=stem,
@@ -2866,15 +2875,8 @@ class RoundCoordinatorContract(CapabilityContract):
             authority=authority,
         )
         index_path = self.root / f"{stem}-review-index.json"
-        test_authority = (
-            authority
-            if authority is not None
-            and authority.get("scope")
-            == history_runtime.SYNTHETIC_SCOPE
-            else self.shadow_test_authority()
-        )
         index = history_runtime._run_review_matrix_for_test(
-            test_authority=test_authority,
+            test_authority=authority,
             test_state_root=self.root,
             db_path=self.database,
             policy_path=self.policy_path,
@@ -2950,7 +2952,10 @@ class RoundCoordinatorContract(CapabilityContract):
             ideas_md.write_text(
                 "## I1\n"
                 f"One-Sentence Story: {story}\n"
-                "Theme: Evaluation and Diagnostics\n",
+                "Theme: Evaluation and Diagnostics\n"
+                "Target Failure: synthetic attribution failure\n"
+                "Form: remove-load-bearing-assumption\n"
+                "Minimal Falsification Experiment: compare bounded arms\n",
                 encoding="utf-8",
             )
             brief_path = self.root / "enforcement-brief.json"
@@ -3850,6 +3855,7 @@ class RoundCoordinatorContract(CapabilityContract):
         command = canonical([str(FAKE_STAGE_AGENT)]).decode(
             "utf-8"
         ).strip()
+        authority = self.shadow_test_authority()
         plan_path = self.root / "review-plan.json"
         plan = history_runtime.seal_round_review_plan(
             db_path=self.database,
@@ -3870,6 +3876,7 @@ class RoundCoordinatorContract(CapabilityContract):
             min_read=5,
             axiom_min_cracks=2,
             output_path=plan_path,
+            authority=authority,
         )
         self.assertEqual(
             [item["seat_id"] for item in plan["reviewer_seats"]],
@@ -3881,7 +3888,7 @@ class RoundCoordinatorContract(CapabilityContract):
         )
         index_path = self.root / "review-index.json"
         index = history_runtime._run_review_matrix_for_test(
-            test_authority=self.shadow_test_authority(),
+            test_authority=authority,
             test_state_root=self.root,
             db_path=self.database,
             policy_path=self.policy_path,
@@ -3890,6 +3897,7 @@ class RoundCoordinatorContract(CapabilityContract):
             reviewer_commands={"1": command, "2": command},
             stage_root=self.root / "review-stages",
             output_path=index_path,
+            authority=authority,
             test_review_verdict="strong-accept",
         )
         self.assertEqual(len(index["entries"]), 2)
@@ -3900,6 +3908,7 @@ class RoundCoordinatorContract(CapabilityContract):
                 batch_path=state["batch"],
                 review_plan_path=plan_path,
                 review_index_path=index_path,
+                authority=authority,
             )
         )
         aggregation_path = self.root / "round-aggregation.json"
@@ -3910,6 +3919,7 @@ class RoundCoordinatorContract(CapabilityContract):
             review_plan_path=plan_path,
             review_index_path=index_path,
             output_path=aggregation_path,
+            authority=authority,
         )
         self.assertEqual(len(aggregation["ledger_rows"]), 1)
         self.assertEqual(
@@ -3929,6 +3939,7 @@ class RoundCoordinatorContract(CapabilityContract):
             aggregation_path=aggregation_path,
             output_root=report_root,
             round_number=3,
+            authority=authority,
         )
         self.assertEqual(
             report["research_view_sha256"],
@@ -4030,6 +4041,7 @@ class RoundCoordinatorContract(CapabilityContract):
             policy_path=self.policy_path,
             batch_path=state["batch"],
             review_plan_path=sealed["plan_path"],
+            authority=self.shadow_test_authority(),
         )
         frozen_contract = pathlib.Path(
             sealed["plan"]["review_contract"]["path"]
@@ -4040,13 +4052,14 @@ class RoundCoordinatorContract(CapabilityContract):
         )
         with self.assertRaisesRegex(
             history_runtime.RuntimeContractError,
-            "source changed",
+            "review_contract changed",
         ):
             history_runtime.verify_round_review_plan(
                 db_path=self.database,
                 policy_path=self.policy_path,
                 batch_path=state["batch"],
                 review_plan_path=sealed["plan_path"],
+                authority=self.shadow_test_authority(),
             )
 
     def test_selection_rejects_theme_outside_sealed_brief(self):
@@ -4180,6 +4193,7 @@ class RoundCoordinatorContract(CapabilityContract):
                         batch_path=state["batch"],
                         review_plan_path=chain["plan_path"],
                         review_index_path=chain["index_path"],
+                        authority=self.shadow_test_authority(),
                     )
                 path.write_bytes(original)
                 self.assertTrue(
@@ -4189,6 +4203,7 @@ class RoundCoordinatorContract(CapabilityContract):
                         batch_path=state["batch"],
                         review_plan_path=chain["plan_path"],
                         review_index_path=chain["index_path"],
+                        authority=self.shadow_test_authority(),
                     )
                 )
 
@@ -4282,6 +4297,7 @@ class RoundCoordinatorContract(CapabilityContract):
                 self.root
                 / "same-story-after-prior-aggregation.json"
             ),
+            authority=self.shadow_test_authority(),
         )
         self.assertEqual(
             aggregation["near_sa_observations"], []

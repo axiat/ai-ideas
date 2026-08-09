@@ -1935,6 +1935,9 @@ def _capture_python_runtime():
         pathlib.Path(
             "/Applications/Xcode.app/Contents/Developer/usr/bin/python3"
         ),
+        pathlib.Path(
+            "/Library/Developer/CommandLineTools/usr/bin/python3"
+        ),
         pathlib.Path("/usr/bin/python3"),
     )
     source = next((path for path in candidates if path.exists()), None)

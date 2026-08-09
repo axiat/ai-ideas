@@ -2527,6 +2527,23 @@ class HistoryStageSmoke(unittest.TestCase):
             (fixture.destinations / "preflight.json").exists()
         )
 
+    def test_python_runtime_prefers_direct_command_line_tools_binary(self):
+        if sys.platform != "darwin":
+            self.skipTest("Darwin Python runtime selection")
+        direct = pathlib.Path(
+            "/Library/Developer/CommandLineTools/usr/bin/python3"
+        )
+        if not direct.exists():
+            self.skipTest("Command Line Tools Python is unavailable")
+        interpreter, _ = history_stage._capture_python_runtime()
+        self.assertEqual(
+            pathlib.Path(interpreter["path"]), direct.resolve(strict=True)
+        )
+        self.assertNotEqual(
+            pathlib.Path(interpreter["path"]),
+            pathlib.Path("/usr/bin/python3").resolve(strict=True),
+        )
+
     def test_darwin_builder_allows_only_registered_external_runtime(self):
         mirror = pathlib.Path("/private/tmp/history-stage-test")
         profile_path = mirror / "runtime/stage.sb"
