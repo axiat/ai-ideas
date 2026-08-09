@@ -1740,7 +1740,7 @@ def _request(snapshot, candidate, profile, items):
 def _serialized_request(snapshot, candidate, profile, items):
     raw = history_contract_v2.canonical_bytes(
         _request(snapshot, candidate, profile, items)
-    )
+    )[:-1]
     return raw, len(raw)
 
 

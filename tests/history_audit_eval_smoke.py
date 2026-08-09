@@ -490,6 +490,25 @@ def future_production_plan(
             "authority_id": authority["authority_id"],
             "authority_scope": "production",
         })
+        record_items = {
+            item["item_id"]: item
+            for item in history_audit_plan._record_items(
+                plan["snapshot"]["records"]
+            )
+        }
+        for shard in plan["shards"]:
+            raw, count = history_audit_plan._serialized_request(
+                plan["snapshot"],
+                plan["candidate"],
+                profile,
+                [record_items[item_id] for item_id in shard["item_ids"]],
+            )
+            shard["serialized_request"] = raw.decode("utf-8")
+            shard["request_sha256"] = hashlib.sha256(raw).hexdigest()
+            shard["final_request_tokens"] = count
+        plan["shard_plan_sha"] = history_audit_plan.runtime_shard_plan_sha(
+            plan["shards"]
+        )
         plan["plan_sha"] = history_audit_plan.runtime_plan_sha(plan)
         plan["logical_task_keys"] = [
             contract.logical_task_key(
