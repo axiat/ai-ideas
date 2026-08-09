@@ -14,6 +14,7 @@ import os
 import pathlib
 import re
 import secrets
+import shutil
 import stat
 import tempfile
 import weakref
@@ -647,6 +648,169 @@ def _mkdir_single_use(path):
         os.fsync(directory)
     finally:
         os.close(directory)
+
+
+def _remove_immutable_tree(path):
+    destination = pathlib.Path(path)
+    try:
+        state = destination.lstat()
+    except FileNotFoundError:
+        return
+    if destination.is_symlink() or not stat.S_ISDIR(state.st_mode):
+        raise RuntimeContractError(
+            "immutable artifact root cleanup target is invalid"
+        )
+    shutil.rmtree(destination)
+    directory = _open_safe_directory(destination.parent, create=False)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _publish_immutable_tree(path, publications):
+    destination = pathlib.Path(
+        os.path.abspath(os.fspath(path))
+    )
+    if not isinstance(publications, dict):
+        raise RuntimeContractError(
+            "immutable artifact tree is invalid"
+        )
+    normalized = []
+    for relative, raw in publications.items():
+        if not isinstance(relative, (str, os.PathLike)):
+            raise RuntimeContractError(
+                "immutable artifact tree entry is invalid"
+            )
+        relative_path = pathlib.PurePath(relative)
+        if (
+            relative_path.is_absolute()
+            or not relative_path.parts
+            or any(
+                component in {"", ".", ".."}
+                for component in relative_path.parts
+            )
+            or not isinstance(raw, bytes)
+        ):
+            raise RuntimeContractError(
+                "immutable artifact tree entry is invalid"
+            )
+        normalized.append((relative_path, raw))
+    directory = _open_safe_directory(destination.parent, create=True)
+    name = _artifact_name(destination)
+    temporary_name = "." + name + "." + secrets.token_hex(12)
+    temporary = destination.parent / temporary_name
+    published = False
+    try:
+        try:
+            os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise RuntimeContractError(
+                "immutable artifact root already exists"
+            )
+        os.mkdir(temporary_name, mode=0o700, dir_fd=directory)
+        for relative, raw in normalized:
+            _publish_immutable(temporary / relative, raw)
+        try:
+            os.rename(
+                temporary_name,
+                name,
+                src_dir_fd=directory,
+                dst_dir_fd=directory,
+            )
+        except FileExistsError as exc:
+            raise RuntimeContractError(
+                "immutable artifact root already exists"
+            ) from exc
+        os.fsync(directory)
+        published = True
+    finally:
+        os.close(directory)
+        if not published:
+            _remove_immutable_tree(temporary)
+
+
+def _verified_history_database(path, *, allow_missing=False):
+    database = pathlib.Path(
+        os.path.abspath(os.fspath(path))
+    )
+    try:
+        state = database.lstat()
+    except FileNotFoundError:
+        if allow_missing:
+            return database
+        raise RuntimeContractError(
+            "history database is unavailable"
+        )
+    except OSError as exc:
+        raise RuntimeContractError(
+            "history database is unavailable"
+        ) from exc
+    if database.is_symlink() or not stat.S_ISREG(state.st_mode):
+        raise RuntimeContractError(
+            "history database filename is invalid"
+        )
+    return database
+
+
+def _connect_history_store(path, *, allow_missing=False):
+    return history_store.connect(
+        _verified_history_database(
+            path, allow_missing=allow_missing
+        )
+    )
+
+
+def _read_rooted_frozen_descriptor(
+    root,
+    descriptor,
+    relative_path,
+    label,
+    *,
+    maximum,
+    fields,
+):
+    root = pathlib.Path(os.path.abspath(os.fspath(root)))
+    relative = pathlib.PurePath(relative_path)
+    expected = root.joinpath(*relative.parts)
+    if (
+        not isinstance(descriptor, dict)
+        or set(descriptor) != set(fields)
+        or "path" not in fields
+        or "sha256" not in fields
+        or relative.is_absolute()
+        or not relative.parts
+        or any(
+            component in {"", ".", ".."}
+            for component in relative.parts
+        )
+        or descriptor.get("path") != str(expected)
+        or not _valid_sha256(descriptor.get("sha256"))
+        or (
+            "byte_count" in fields
+            and (
+                type(descriptor.get("byte_count")) is not int
+                or descriptor["byte_count"] < 0
+            )
+        )
+    ):
+        raise RuntimeContractError(f"{label} descriptor is invalid")
+    root_descriptor = _open_safe_directory(root, create=False)
+    os.close(root_descriptor)
+    raw = _read_bound_regular(
+        expected, label, maximum=maximum
+    )
+    if (
+        sha256(raw) != descriptor["sha256"]
+        or (
+            "byte_count" in fields
+            and len(raw) != descriptor["byte_count"]
+        )
+    ):
+        raise RuntimeContractError(f"{label} changed")
+    return raw
 
 
 def _load_closed_json(value, label):
@@ -1489,7 +1653,9 @@ def startup_runtime(
     calibration_capability_path=None,
     production_trust_root_path=None,
 ):
-    database = pathlib.Path(db_path)
+    database = _verified_history_database(
+        db_path, allow_missing=True
+    )
     ledger = pathlib.Path(ledger_path)
     ledger_good = pathlib.Path(ledger_good_path)
     state = pathlib.Path(state_root)
@@ -1525,7 +1691,9 @@ def startup_runtime(
             directory_path, create=True
         )
         os.close(directory)
-    conn = history_store.connect(database)
+    conn = _connect_history_store(
+        database, allow_missing=True
+    )
     try:
         history_store.init_schema(conn)
         marker_row = conn.execute(
@@ -1941,24 +2109,19 @@ def verify_frozen_batch(manifest):
             "frozen batch artifact root is invalid"
         )
     descriptor_fields = {"path", "sha256"}
-    for source in ("ideas_tsv", "ideas_markdown"):
-        descriptor = manifest[source]
-        if (
-            not isinstance(descriptor, dict)
-            or set(descriptor) != descriptor_fields
-            or not _valid_sha256(descriptor.get("sha256"))
-            or not pathlib.Path(descriptor.get("path", "")).is_absolute()
-        ):
-            raise RuntimeContractError(
-                "frozen generated source descriptor is invalid"
-            )
-        raw = _read_bound_regular(
-            descriptor["path"], f"frozen {source}"
+    for source, relative_path in (
+        ("ideas_tsv", "sources/ideas.tsv"),
+        ("ideas_markdown", "sources/ideas.md"),
+    ):
+        raw = _read_rooted_frozen_descriptor(
+            root,
+            manifest[source],
+            relative_path,
+            f"frozen {source}",
+            maximum=65536,
+            fields=descriptor_fields,
         )
-        if (
-            len(raw) > 65536
-            or sha256(raw) != descriptor["sha256"]
-        ):
+        if len(raw) > 65536:
             raise RuntimeContractError(
                 "frozen generated source changed"
             )
@@ -2014,14 +2177,14 @@ def verify_frozen_batch(manifest):
                 "frozen candidate descriptor is invalid"
             )
         seen.add(candidate_id)
-        raw = _read_bound_regular(
-            expected_path, "frozen candidate"
+        raw = _read_rooted_frozen_descriptor(
+            root,
+            descriptor,
+            f"{candidate_id}.json",
+            "frozen candidate",
+            maximum=16384,
+            fields=publication_fields,
         )
-        if (
-            len(raw) > 16384
-            or sha256(raw) != descriptor["sha256"]
-        ):
-            raise RuntimeContractError("frozen candidate changed")
         try:
             candidate = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
@@ -2878,7 +3041,7 @@ def materialize_research_views(
             "conflicting_evidence",
         }
     )
-    conn = history_store.connect(db_path)
+    conn = _connect_history_store(db_path)
     history_store.init_schema(conn)
     try:
         current = _current_generation_binding(conn, policy)
@@ -4341,17 +4504,18 @@ def _build_stage_manifest(
         raise RuntimeContractError(
             "shadow review cannot mount history evidence"
         )
-    manifest_destination = pathlib.Path(manifest_path)
+    manifest_destination = pathlib.Path(
+        os.path.abspath(os.fspath(manifest_path))
+    )
     host_root = manifest_destination.parent
     input_root = host_root / (
-        "inputs-" + re.sub(r"[^A-Za-z0-9_.-]", "_", seat_id)
+        manifest_destination.name + "-inputs"
     )
     output = pathlib.Path(output_root)
     host_descriptor = _open_safe_directory(
         host_root, create=True
     )
     os.close(host_descriptor)
-    _mkdir_single_use(input_root)
     output_descriptor = _open_safe_directory(
         output, create=True
     )
@@ -4367,13 +4531,14 @@ def _build_stage_manifest(
         ROOT / role_relative, 1024 * 1024, "stage role"
     )
     mounted = {}
+    input_publications = {}
     descriptors = []
     for name, source in sorted(input_paths.items()):
         raw = _read_regular(
             source, _INPUT_CAPS[name], f"stage input {name}"
         )
         mounted[name] = raw
-        _publish_immutable(input_root / name, raw)
+        input_publications[name] = raw
         descriptors.append(
             {
                 "source": name,
@@ -4442,7 +4607,6 @@ def _build_stage_manifest(
         }
     else:
         registered_environment = {}
-    database = pathlib.Path(db_path)
     needs_history = (
         stage in {"generate", "history-compare"}
         or (
@@ -4450,10 +4614,12 @@ def _build_stage_manifest(
             and "history_summary.json" in mounted
         )
     )
-    if needs_history and (
-        database.name != "history.sqlite3"
-        or not database.is_file()
-    ):
+    database = (
+        _verified_history_database(db_path)
+        if needs_history
+        else pathlib.Path(db_path)
+    )
+    if needs_history and database.name != "history.sqlite3":
         raise RuntimeContractError(
             "contained stage history authority is invalid"
         )
@@ -4496,7 +4662,12 @@ def _build_stage_manifest(
         ),
     }
     manifest_raw = canonical_bytes(manifest)
-    _publish_immutable(manifest_destination, manifest_raw)
+    _publish_immutable_tree(input_root, input_publications)
+    try:
+        _publish_immutable(manifest_destination, manifest_raw)
+    except Exception:
+        _remove_immutable_tree(input_root)
+        raise
     prepared = {
         "schema_version": 1,
         "stage": stage,
@@ -5290,7 +5461,7 @@ def observe_frozen_batch(
         os.path.abspath(os.fspath(artifact_root))
     )
     _mkdir_single_use(root)
-    conn = history_store.connect(db_path)
+    conn = _connect_history_store(db_path)
     history_store.init_schema(conn)
     try:
         results = []
@@ -5581,7 +5752,7 @@ def _compare_frozen_targets(
     root = pathlib.Path(
         os.path.abspath(os.fspath(artifact_root))
     )
-    conn = history_store.connect(db_path)
+    conn = _connect_history_store(db_path)
     history_store.init_schema(conn)
     try:
         results = []
@@ -5841,7 +6012,7 @@ def publish_candidate_summary(
     _validated_runtime_authority(
         policy, authority, state_paths=(output_path,)
     )
-    conn = history_store.connect(db_path)
+    conn = _connect_history_store(db_path)
     history_store.init_schema(conn)
     try:
         bindings = _summary_bindings(
@@ -5904,7 +6075,7 @@ def publish_round_summaries(
         raise RuntimeContractError(
             "summary selection is outside the frozen round"
         )
-    conn = history_store.connect(db_path)
+    conn = _connect_history_store(db_path)
     history_store.init_schema(conn)
     prepared = []
     abstentions = []
@@ -6710,21 +6881,18 @@ def seal_round_review_plan(
             "round prior work is not UTF-8"
         ) from exc
     prior_blocks = _candidate_blocks(prior_markdown)
-    input_root = (
-        pathlib.Path(output_path).parent
-        / (pathlib.Path(output_path).stem + "-inputs")
+    output = pathlib.Path(
+        os.path.abspath(os.fspath(output_path))
     )
-    _mkdir_single_use(input_root)
+    input_root = output.parent / (output.name + "-inputs")
     review_contract_path = (
         input_root / "review-contract.md"
     )
     prior_source_path = input_root / "prior-work-source.md"
-    _publish_immutable(
-        review_contract_path, review_contract_raw
-    )
-    _publish_immutable(
-        prior_source_path, prior_source_raw
-    )
+    input_publications = {
+        "review-contract.md": review_contract_raw,
+        "prior-work-source.md": prior_source_raw,
+    }
     review_contract = {
         "path": str(review_contract_path.resolve()),
         "sha256": sha256(review_contract_raw),
@@ -6740,7 +6908,7 @@ def seal_round_review_plan(
         for item in batch["candidates"]
     }
     targets = []
-    conn = history_store.connect(db_path)
+    conn = _connect_history_store(db_path)
     history_store.init_schema(conn)
     try:
         for selected, indexed in zip(
@@ -6806,7 +6974,9 @@ def seal_round_review_plan(
                     input_root / candidate_id / "prior-work.md"
                 )
                 prior_raw = block.encode("utf-8")
-                _publish_immutable(prior_path, prior_raw)
+                input_publications[
+                    f"{candidate_id}/prior-work.md"
+                ] = prior_raw
                 prior = {
                     "path": str(prior_path.resolve()),
                     "sha256": sha256(prior_raw),
@@ -6895,7 +7065,12 @@ def seal_round_review_plan(
             PORTABLE_EXECUTION_BOUNDARY
         )
     result["review_plan_sha256"] = _review_plan_hash(result)
-    _publish_immutable(output_path, canonical_bytes(result))
+    _publish_immutable_tree(input_root, input_publications)
+    try:
+        _publish_immutable(output, canonical_bytes(result))
+    except Exception:
+        _remove_immutable_tree(input_root)
+        raise
     return result
 
 
@@ -7004,33 +7179,29 @@ def verify_round_review_plan(
         raise RuntimeContractError(
             "round review plan root binding changed"
         )
+    review_plan = pathlib.Path(
+        os.path.abspath(os.fspath(review_plan_path))
+    )
+    review_input_root = review_plan.parent / (
+        review_plan.name + "-inputs"
+    )
     source_raw = {}
-    for name, maximum in (
-        ("review_contract", 16384),
-        ("prior_work_source", 1024 * 1024),
+    for name, relative_path, maximum in (
+        ("review_contract", "review-contract.md", 16384),
+        (
+            "prior_work_source",
+            "prior-work-source.md",
+            1024 * 1024,
+        ),
     ):
-        descriptor = plan[name]
-        if (
-            not isinstance(descriptor, dict)
-            or set(descriptor)
-            != {"path", "sha256", "byte_count"}
-        ):
-            raise RuntimeContractError(
-                "round review plan source is invalid"
-            )
-        raw = _read_bound_regular(
-            descriptor["path"],
+        source_raw[name] = _read_rooted_frozen_descriptor(
+            review_input_root,
+            plan[name],
+            relative_path,
             f"round review plan {name}",
             maximum=maximum,
+            fields={"path", "sha256", "byte_count"},
         )
-        if (
-            sha256(raw) != descriptor["sha256"]
-            or len(raw) != descriptor["byte_count"]
-        ):
-            raise RuntimeContractError(
-                "round review plan source changed"
-            )
-        source_raw[name] = raw
     try:
         prior_markdown = source_raw["prior_work_source"].decode(
             "utf-8"
@@ -7107,7 +7278,7 @@ def verify_round_review_plan(
     }
     owns_connection = _connection is None
     conn = (
-        history_store.connect(db_path)
+        _connect_history_store(db_path)
         if owns_connection
         else _connection
     )
@@ -7185,35 +7356,20 @@ def verify_round_review_plan(
             if expected_outcome == "review":
                 prior = target["prior_work"]
                 block = prior_blocks.get(target["candidate_id"])
-                expected_prior_path = (
-                    pathlib.Path(plan["prior_work_source"]["path"])
-                    .parent
-                    / target["candidate_id"]
-                    / "prior-work.md"
-                )
                 expected_prior_raw = (
                     None if block is None else block.encode("utf-8")
                 )
-                if (
-                    not isinstance(prior, dict)
-                    or set(prior)
-                    != {"path", "sha256", "byte_count"}
-                    or expected_prior_raw is None
-                    or not isinstance(prior.get("path"), str)
-                    or pathlib.Path(prior["path"]).resolve()
-                    != expected_prior_path.resolve()
-                    or prior.get("sha256")
-                    != sha256(expected_prior_raw)
-                    or prior.get("byte_count")
-                    != len(expected_prior_raw)
-                ):
+                if expected_prior_raw is None:
                     raise RuntimeContractError(
                         "review-plan prior work binding changed"
                     )
-                prior_raw = _read_bound_regular(
-                    expected_prior_path,
+                prior_raw = _read_rooted_frozen_descriptor(
+                    review_input_root,
+                    prior,
+                    f"{target['candidate_id']}/prior-work.md",
                     "review-plan prior work",
                     maximum=16384,
+                    fields={"path", "sha256", "byte_count"},
                 )
                 if prior_raw != expected_prior_raw:
                     raise RuntimeContractError(
@@ -7233,16 +7389,23 @@ def verify_round_review_plan(
                     )
             elif permanent:
                 summary_descriptor = target["gate_summary"]
-                summary = _load_canonical_json(
-                    summary_descriptor["path"],
+                summary_raw = _read_rooted_frozen_descriptor(
+                    plan["artifact_root"],
+                    summary_descriptor,
+                    f"{target['candidate_id']}/history-summary.json",
                     "review-plan gate summary",
+                    maximum=16384,
+                    fields={"path", "sha256", "byte_count"},
                 )
-                if (
-                    sha256(canonical_bytes(summary))
-                    != summary_descriptor["sha256"]
-                ):
+                try:
+                    summary = json.loads(summary_raw.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError) as exc:
                     raise RuntimeContractError(
-                        "review-plan gate summary changed"
+                        "review-plan gate summary is invalid"
+                    ) from exc
+                if summary_raw != canonical_bytes(summary):
+                    raise RuntimeContractError(
+                        "review-plan gate summary is invalid"
                     )
                 verify_history_summary(
                     conn, candidate, summary, policy
@@ -8094,7 +8257,7 @@ def _aggregation_material(
     ]
     owns_connection = _connection is None
     conn = (
-        history_store.connect(db_path)
+        _connect_history_store(db_path)
         if owns_connection
         else _connection
     )
@@ -8924,7 +9087,7 @@ def commit_round(
         ("hunt-round-v2:" if portable_round else "hunt-round-v1:")
         + selection["selection_sha256"]
     )
-    conn = history_store.connect(db_path)
+    conn = _connect_history_store(db_path)
     history_store.init_schema(conn)
     try:
         try:
@@ -9457,7 +9620,7 @@ def _resume_material(
     prior_descriptor, _ = _source_descriptor(
         prior_work_path, "resume prior work", maximum=1024 * 1024
     )
-    conn = history_store.connect(db_path)
+    conn = _connect_history_store(db_path)
     history_store.init_schema(conn)
     try:
         current = _current_generation_binding(conn, policy)
@@ -9707,25 +9870,30 @@ def seal_resume_state(*, output_path, authority=None, **values):
         "resume prior-work source",
         maximum=1024 * 1024,
     )
-    output = pathlib.Path(output_path)
-    input_root = (
-        output.parent / (output.stem + "-inputs")
+    output = pathlib.Path(
+        os.path.abspath(os.fspath(output_path))
     )
-    _mkdir_single_use(input_root)
+    input_root = output.parent / (output.name + "-inputs")
     frozen_prior = input_root / "prior-work.md"
-    _publish_immutable(frozen_prior, prior_raw)
-    material_values = dict(values)
-    material_values["prior_work_path"] = frozen_prior
-    result = _resume_material(
-        authority=authority, **material_values
+    _publish_immutable_tree(
+        input_root, {"prior-work.md": prior_raw}
     )
-    resume_domain = b"history-runtime-resume-v1\0"
-    if result["schema_version"] == 2:
-        resume_domain = b"history-runtime-resume-v2\0"
-    result["resume_sha256"] = sha256(
-        resume_domain + canonical_bytes(result)
-    )
-    _publish_immutable(output_path, canonical_bytes(result))
+    try:
+        material_values = dict(values)
+        material_values["prior_work_path"] = frozen_prior
+        result = _resume_material(
+            authority=authority, **material_values
+        )
+        resume_domain = b"history-runtime-resume-v1\0"
+        if result["schema_version"] == 2:
+            resume_domain = b"history-runtime-resume-v2\0"
+        result["resume_sha256"] = sha256(
+            resume_domain + canonical_bytes(result)
+        )
+        _publish_immutable(output, canonical_bytes(result))
+    except Exception:
+        _remove_immutable_tree(input_root)
+        raise
     return result
 
 
