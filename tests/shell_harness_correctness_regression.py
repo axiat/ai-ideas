@@ -196,6 +196,8 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
                 target = repo / relative
                 target.write_bytes((ROOT / relative).read_bytes())
             for relative in (
+                "history/retrieval-policy-v1.json",
+                "lib/mirror_pre.sh",
                 "lib/resolve_cmd.sh",
                 "roles/awr.md",
                 "roles/awr-priorwork.md",
@@ -222,6 +224,7 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
             bindir = root / "bin"
             bindir.mkdir()
             launch_log = root / "launches.tsv"
+            awr_log = root / "awr.log"
             release = root / "release"
             fake_agy = bindir / "agy"
             fake_agy.write_text(
@@ -230,7 +233,7 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
                 "prompt = sys.argv[-1]\n"
                 "label = 'external' if 'external-probe' in prompt else 'wrapper'\n"
                 "with open(os.environ['LAUNCH_LOG'], 'a') as stream:\n"
-                "    stream.write(f'{label}\\t{time.time_ns()}\\n')\n"
+                "    stream.write(f'{label}\\t{time.monotonic_ns()}\\n')\n"
                 "    stream.flush()\n"
                 "    os.fsync(stream.fileno())\n"
                 "if label == 'external':\n"
@@ -261,6 +264,17 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
             )
             external = None
             awr = None
+            awr_stream = None
+
+            def launches():
+                if not launch_log.exists():
+                    return []
+                return launch_log.read_text(encoding="utf-8").splitlines()
+
+            def awr_diagnostics():
+                output = awr_log.read_text(encoding="utf-8") if awr_log.exists() else ""
+                return f"returncode={awr.poll() if awr is not None else None}\n{output}"
+
             try:
                 external = subprocess.Popen(
                     [str(repo / "agy-worker.sh"), "external-probe"],
@@ -270,12 +284,12 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
                     stderr=subprocess.DEVNULL,
                 )
                 deadline = time.monotonic() + 5
-                while (
-                    (not launch_log.exists() or not launch_log.read_text(encoding="utf-8").strip())
-                    and time.monotonic() < deadline
-                ):
+                while not launches() and time.monotonic() < deadline and external.poll() is None:
                     time.sleep(0.02)
-                self.assertTrue(launch_log.exists(), "external worker never reached launch barrier")
+                self.assertTrue(
+                    launches(),
+                    f"external worker never reached launch barrier; returncode={external.poll()}",
+                )
 
                 awr_env = env | {
                     "HISTORY_RUNTIME_ABI": "v1",
@@ -291,31 +305,32 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
                     "SIDE_GAP_MAX_SEC": "0",
                     "SIDE_COOLDOWN_SEC": "0",
                 }
+                awr_stream = awr_log.open("w", encoding="utf-8")
                 awr = subprocess.Popen(
                     ["bash", "./awr-side.sh"],
                     cwd=repo,
                     env=awr_env,
-                    stdout=subprocess.PIPE,
+                    stdout=awr_stream,
                     stderr=subprocess.STDOUT,
                     text=True,
                 )
                 deadline = time.monotonic() + 6
-                while (
-                    len(launch_log.read_text(encoding="utf-8").splitlines()) < 2
-                    and time.monotonic() < deadline
-                ):
+                while len(launches()) < 2 and time.monotonic() < deadline and awr.poll() is None:
                     time.sleep(0.02)
-                launches = launch_log.read_text(encoding="utf-8").splitlines()
-                self.assertGreaterEqual(len(launches), 2, "AwR wrapper never reached launch barrier")
-                first_label, first_ns = launches[0].split("\t")
-                second_label, second_ns = launches[1].split("\t")
+                launch_records = launches()
+                self.assertGreaterEqual(
+                    len(launch_records),
+                    2,
+                    f"AwR wrapper never reached launch barrier; {awr_diagnostics()}",
+                )
+                first_label, first_ns = launch_records[0].split("\t")
+                second_label, second_ns = launch_records[1].split("\t")
                 self.assertEqual((first_label, second_label), ("external", "wrapper"))
                 self.assertGreaterEqual((int(second_ns) - int(first_ns)) / 1e9, 0.75)
 
                 release.touch()
                 self.assertEqual(external.wait(timeout=5), 0)
-                awr_output, _ = awr.communicate(timeout=15)
-                self.assertEqual(awr.returncode, 0, awr_output)
+                self.assertEqual(awr.wait(timeout=15), 0, awr_diagnostics())
                 self.assertTrue((shared_root / "tmp/agy.last-launch").is_file())
                 self.assertFalse((repo / "tmp/agy.last-launch").exists())
             finally:
@@ -328,6 +343,8 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
                         except subprocess.TimeoutExpired:
                             process.kill()
                             process.wait(timeout=3)
+                if awr_stream is not None:
+                    awr_stream.close()
 
     def test_harnesses_forward_agy_output_hints(self):
         self.assertIn('AGY_OUT_HINT="$(dirname "$rel")/" $cmd', AWR)
