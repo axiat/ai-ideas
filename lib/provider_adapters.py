@@ -147,6 +147,7 @@ class ProviderResolutionError(ValueError):
 _VALIDATED_REGISTRIES = weakref.WeakKeyDictionary()
 _ISSUED_CAPABILITIES = weakref.WeakKeyDictionary()
 _ISSUED_COMMAND_INTENTS = weakref.WeakKeyDictionary()
+_ISSUED_TEST_OUTPUT_CAPS = weakref.WeakSet()
 
 
 class ValidatedProviderRegistry(collections.abc.Mapping):
@@ -285,12 +286,16 @@ def _require_max_output_tokens(value, *, optional=False):
     return value
 
 
-def _output_token_cap(registry, provider, max_output_tokens):
+def _output_token_cap(
+    registry, provider, max_output_tokens, *, allow_test=False
+):
     rule = registry["providers"][provider]["output_token_limit"]
     if max_output_tokens is None:
         return "unsupported", None
     _require_max_output_tokens(max_output_tokens)
     if rule["binding"] != "environment":
+        if allow_test:
+            return "test-provider-native-exact", "reasoning-and-visible-output"
         raise ProviderResolutionError(
             f"{provider} has no provider-native exact output-token cap"
         )
@@ -364,19 +369,23 @@ def _issued_snapshot(value, expected_type, *, executable_identity=None):
     )
 
 
-def _issue_capability(value, *, executable_identity=None):
+def _issue_capability(value, *, executable_identity=None, test_output_cap=False):
     _ISSUED_CAPABILITIES[value] = _issued_snapshot(
         value,
         ProviderCapability,
         executable_identity=executable_identity,
     )
+    if test_output_cap:
+        _ISSUED_TEST_OUTPUT_CAPS.add(value)
     return value
 
 
-def _issue_command_intent(value):
+def _issue_command_intent(value, *, test_output_cap=False):
     _ISSUED_COMMAND_INTENTS[value] = _issued_snapshot(
         value, ProviderCommandIntent
     )
+    if test_output_cap:
+        _ISSUED_TEST_OUTPUT_CAPS.add(value)
     return value
 
 
@@ -404,9 +413,16 @@ def require_native_output_token_cap(intent, expected=None):
     )
     if (
         maximum is None
-        or intent.output_token_cap_binding != "provider-native-exact"
         or intent.output_token_cap_semantics
         != "reasoning-and-visible-output"
+        or (
+            intent.output_token_cap_binding != "provider-native-exact"
+            and not (
+                intent.output_token_cap_binding
+                == "test-provider-native-exact"
+                and intent in _ISSUED_TEST_OUTPUT_CAPS
+            )
+        )
     ):
         raise ProviderResolutionError(
             f"{intent.provider} has no bound provider-native exact output-token cap"
@@ -1127,6 +1143,7 @@ def _resolve_command_intent(
     default_identity_probe=None,
     model_catalog_probe=None,
     version_probe=None,
+    allow_test_output_cap=False,
 ):
     executable, executable_path, model, reasoning = _resolve_grammar(
         registry,
@@ -1142,7 +1159,10 @@ def _resolve_command_intent(
         max_output_tokens, optional=True
     )
     output_token_cap_binding, output_token_cap_semantics = _output_token_cap(
-        registry, provider, max_output_tokens
+        registry,
+        provider,
+        max_output_tokens,
+        allow_test=allow_test_output_cap,
     )
     effective_model = None
     default_probe_revision = None
@@ -1213,7 +1233,7 @@ def _resolve_command_intent(
         execution_request_profile_hash=profile_hash,
         hard_complete_eligible=False,
         authority="shadow-only",
-    ))
+    ), test_output_cap=allow_test_output_cap)
 
 
 def resolve_command_intent(
@@ -1266,6 +1286,7 @@ def _resolve_command_intent_for_test(
         default_identity_probe=default_identity_probe,
         model_catalog_probe=model_catalog_probe,
         version_probe=version_probe,
+        allow_test_output_cap=max_output_tokens is not None,
     )
 
 
@@ -1426,7 +1447,13 @@ def validate_command_intent_record(registry, record):
         record.get("max_output_tokens"), optional=True
     )
     output_token_cap_binding, output_token_cap_semantics = _output_token_cap(
-        registry, provider, max_output_tokens
+        registry,
+        provider,
+        max_output_tokens,
+        allow_test=(
+            record.get("output_token_cap_binding")
+            == "test-provider-native-exact"
+        ),
     )
     if (
         record.get("output_token_cap_binding") != output_token_cap_binding
@@ -1599,6 +1626,7 @@ def _resolve_provider(
     version_probe,
     issuance_scope,
     allow_hard_complete,
+    allow_test_output_cap=False,
     observation_sha256=None,
 ):
     executable, executable_path, model, reasoning = _resolve_grammar(
@@ -1613,7 +1641,10 @@ def _resolve_provider(
         max_output_tokens, optional=True
     )
     output_token_cap_binding, output_token_cap_semantics = _output_token_cap(
-        registry, provider, max_output_tokens
+        registry,
+        provider,
+        max_output_tokens,
+        allow_test=allow_test_output_cap,
     )
     if not callable(version_probe):
         raise ProviderResolutionError("provider capability probe is unavailable")
@@ -1707,7 +1738,8 @@ def _resolve_provider(
         profile_hash=profile_hash,
         hard_complete_eligible=hard_complete,
         authority="hard-complete" if hard_complete else "shadow-only",
-    ), executable_identity=executable_identity)
+    ), executable_identity=executable_identity,
+        test_output_cap=allow_test_output_cap)
 
 
 def resolve_provider(
@@ -1759,6 +1791,7 @@ def _resolve_provider_for_test(
         version_probe=version_probe,
         issuance_scope="test-only-shadow",
         allow_hard_complete=False,
+        allow_test_output_cap=max_output_tokens is not None,
     )
 
 
@@ -2034,17 +2067,30 @@ def _render_command_fields(
     max_output_tokens = _require_max_output_tokens(
         max_output_tokens, optional=True
     )
+    environment = {}
     if max_output_tokens is None:
         if (
             output_token_cap_binding != "unsupported"
             or output_token_cap_semantics is not None
         ):
             raise ProviderResolutionError("output-token command binding is invalid")
-    elif (
-        provider != "claude"
-        or output_token_cap_binding != "provider-native-exact"
-        or output_token_cap_semantics != "reasoning-and-visible-output"
-    ):
+    elif output_token_cap_semantics != "reasoning-and-visible-output":
+        raise ProviderResolutionError(
+            "provider-native exact output-token cap is unsupported"
+        )
+    elif output_token_cap_binding == "provider-native-exact":
+        if provider != "claude":
+            raise ProviderResolutionError(
+                "provider-native exact output-token cap is unsupported"
+            )
+        environment["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(
+            max_output_tokens
+        )
+    elif output_token_cap_binding == "test-provider-native-exact":
+        environment["FAKE_PROVIDER_MAX_OUTPUT_TOKENS"] = str(
+            max_output_tokens
+        )
+    else:
         raise ProviderResolutionError(
             "provider-native exact output-token cap is unsupported"
         )
@@ -2091,7 +2137,7 @@ def _render_command_fields(
         if reasoning is not None:
             argv += ["--reasoning-effort", reasoning]
         argv += ["-p", prompt]
-        return argv, dict(_GROK_COMPATIBILITY_ENVIRONMENT)
+        environment.update(_GROK_COMPATIBILITY_ENVIRONMENT)
     elif provider == "opencode":
         argv += ["run", "--pure", "--auto", "--dir", mirror]
         if model is not None:
@@ -2131,13 +2177,9 @@ def _render_command_fields(
         if response_schema_argument is not None:
             argv += ["--json-schema", response_schema_argument]
         argv += ["-p", prompt]
-        if max_output_tokens is not None:
-            return argv, {
-                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max_output_tokens)
-            }
     else:
         raise ProviderResolutionError("capability provider is not renderable")
-    return argv, {}
+    return argv, environment
 
 
 def render_command(
@@ -2157,6 +2199,12 @@ def render_command(
         raise ProviderResolutionError("capability is not resolver-issued")
     if type(prompt) is not str:
         raise ProviderResolutionError("prompt must be text")
+    if (
+        getattr(capability, "output_token_cap_binding", None)
+        == "test-provider-native-exact"
+        and capability not in _ISSUED_TEST_OUTPUT_CAPS
+    ):
+        raise ProviderResolutionError("test output-token cap is not launchable")
     response_schema_argument = None
     output_schema_path = None
     if capability.provider == "codex" and response_schema is not None:

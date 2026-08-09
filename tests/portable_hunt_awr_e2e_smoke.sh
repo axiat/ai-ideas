@@ -136,13 +136,13 @@ records = [
     if line.strip()
 ]
 stages = [(item["stage"], item["provider"]) for item in records]
-if stages.count(("generate", "kimi")) != 1:
+if stages.count(("generate", "claude")) != 1:
     raise SystemExit(f"generate provider mismatch: {stages}")
 if not any(stage == "history-compare" for stage, _ in stages):
     raise SystemExit(f"history comparator was not portable: {stages}")
-if any(provider != "kimi" for stage, provider in stages if stage == "history-compare"):
+if any(provider != "claude" for stage, provider in stages if stage == "history-compare"):
     raise SystemExit(f"history comparator provider leaked: {stages}")
-if stages.count(("review", "grok")) != 1:
+if stages.count(("review", "claude")) != 1:
     raise SystemExit(f"review seat provider mismatch: {stages}")
 if any(stage not in {"generate", "history-compare", "review"} for stage, _ in stages):
     raise SystemExit(f"external stage entered portable path: {stages}")
@@ -253,13 +253,16 @@ profile_fields = {
     "default_probe_revision",
     "model_catalog_probe_revision",
     "model_catalog_sha256",
+    "max_output_tokens",
+    "output_token_cap_binding",
+    "output_token_cap_semantics",
     "execution_request_profile_hash",
 }
 if (
     not isinstance(profiles, list)
     or len(profiles) != 2
     or any(not isinstance(item, dict) or set(item) != profile_fields for item in profiles)
-    or [item["provider"] for item in profiles] != ["kimi", "grok"]
+    or [item["provider"] for item in profiles] != ["claude", "claude"]
     or any(item["surface"] != "hunt" for item in profiles)
 ):
     raise SystemExit(f"fresh Hunt did not bind base/review profiles: {profiles}")
@@ -320,6 +323,9 @@ public_stage_fields = {
     "provider_validation",
     "authority",
     "execution_request_profile_hash",
+    "max_output_tokens",
+    "output_token_cap_binding",
+    "output_token_cap_semantics",
     "serialized_prompt_sha256",
     "role_sha256",
     "input_sha256s",
@@ -458,8 +464,9 @@ run_hunt_v2() {
       FAKE_PORTABLE_STAGE_MODE=mirror-audit \
       HISTORY_RUNTIME_ABI=v2 \
       RESEARCH_DIRECTION_FILE=directions/dynamic-spatial-memory-vla-v1.json \
-      HUNT_PROVIDER=kimi \
-      HUNT_REVIEW_PROVIDER_1=grok \
+      HUNT_PROVIDER=claude \
+      HUNT_REVIEW_PROVIDER_1=claude \
+      HUNT_REVIEW_MODEL_1=sonnet \
       "AGENT_CMD=$repo/tests/fake_agent.sh" \
       HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
       REVIEWERS=1 \
@@ -519,7 +526,7 @@ run_terminal_failure_skips_cooldown() {
       "FAKE_SLEEP_LOG=$sleep_log" \
       FAKE_PORTABLE_STAGE_MODE=malformed \
       HISTORY_RUNTIME_ABI=v2 \
-      HUNT_PROVIDER=codex \
+      HUNT_PROVIDER=claude \
       "AGENT_CMD=$repo/tests/fake_agent.sh" \
       HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
       RESUME_FRONT=0 \
@@ -587,7 +594,7 @@ run_retryable_failure_cooldown_case() {
       "FAKE_SLEEP_LOG=$sleep_log" \
       FAKE_PORTABLE_STAGE_MODE=malformed \
       HISTORY_RUNTIME_ABI=v2 \
-      HUNT_PROVIDER=codex \
+      HUNT_PROVIDER=claude \
       "AGENT_CMD=$repo/tests/fake_agent.sh" \
       HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
       RESUME_FRONT=0 \
@@ -653,9 +660,9 @@ records = [
 observed = [(item["stage"], item["provider"]) for item in records]
 if profile == "mixed":
     expected = [
-        ("awr-research", "codex"),
-        ("awr-priorwork", "opencode"),
-        ("awr-judge", "agy"),
+        ("awr-research", "claude"),
+        ("awr-priorwork", "claude"),
+        ("awr-judge", "claude"),
     ]
 elif profile == "all-agy":
     expected = [
@@ -731,11 +738,10 @@ run_awr_v2() {
       "FAKE_PORTABLE_STAGE_LOG=$provider_log" \
       FAKE_PORTABLE_STAGE_MODE=mirror-audit \
       HISTORY_RUNTIME_ABI=v2 \
-      AWR_PROVIDER=codex \
-      AWR_RESEARCH_PROVIDER=codex \
-      AWR_PRIORWORK_PROVIDER=opencode \
-      AWR_JUDGE_PROVIDER=agy \
-      AWR_JUDGE_MODEL=gemini/fixture-model \
+      AWR_PROVIDER=claude \
+      AWR_RESEARCH_PROVIDER=claude \
+      AWR_PRIORWORK_PROVIDER=claude \
+      AWR_JUDGE_PROVIDER=claude \
       SIDE_POLL_SEC=0 \
       SIDE_MAX_ROUNDS=1 \
       SIDE_MAX_BAD=1 \
@@ -778,13 +784,12 @@ run_awr_v2_all_agy() {
       "EXPECTED_PROVIDER_CODEX_HOME=$home/codex-config" \
       "PATH=$repo/.test-bin:$PATH" \
       "FAKE_PORTABLE_STAGE_LOG=$provider_log" \
-      FAKE_PORTABLE_STAGE_MODE=agy-portable-audit \
+      FAKE_PORTABLE_STAGE_MODE=mirror-audit \
       HISTORY_RUNTIME_ABI=v2 \
-      AWR_PROVIDER=agy \
-      AWR_MODEL=gemini/fixture-model \
-      AWR_RESEARCH_PROVIDER=agy \
-      AWR_PRIORWORK_PROVIDER=agy \
-      AWR_JUDGE_PROVIDER=agy \
+      AWR_PROVIDER=claude \
+      AWR_RESEARCH_PROVIDER=claude \
+      AWR_PRIORWORK_PROVIDER=claude \
+      AWR_JUDGE_PROVIDER=claude \
       SIDE_POLL_SEC=0 \
       SIDE_MAX_ROUNDS=1 \
       SIDE_MAX_BAD=1 \
@@ -799,7 +804,7 @@ run_awr_v2_all_agy() {
     sed -n '1,180p' "$log" >&2
     return
   fi
-  if ! check_awr_result "$repo" "$provider_log" all-agy; then
+  if ! check_awr_result "$repo" "$provider_log" mixed; then
     fail 'all-agy AwR stdout override, validators, or receipts'
     return
   fi

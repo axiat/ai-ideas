@@ -660,7 +660,10 @@ def main():
             request.get("max_output_tokens") != 3072
             or request.get("output_token_cap_semantics")
             != "reasoning-and-visible-output"
-            or os.environ.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") != "3072"
+            or (
+                os.environ.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS")
+                or os.environ.get("FAKE_PROVIDER_MAX_OUTPUT_TOKENS")
+            ) != "3072"
         ):
             return 68
     output = pathlib.Path("output/result.json")

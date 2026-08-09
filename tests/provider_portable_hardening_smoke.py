@@ -423,6 +423,9 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
             "default_probe_revision": None,
             "model_catalog_probe_revision": None,
             "model_catalog_sha256": None,
+            "max_output_tokens": None,
+            "output_token_cap_binding": "unsupported",
+            "output_token_cap_semantics": None,
             "execution_request_profile_hash": (
                 intent.execution_request_profile_hash
             ),
@@ -455,6 +458,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 None if provider == "kimi" else "MODEL"
             ),
             reasoning=None if provider == "kimi" else "high",
+            max_output_tokens=3072,
             executable_lookup=lambda _: str(executable_path),
             model_catalog_probe=(
                 provider_adapters._host_model_catalog_probe
@@ -478,6 +482,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             "codex",
             model="MODEL",
             reasoning="high",
+            max_output_tokens=3072,
             executable_lookup=lambda _: str(FAKE_STAGE),
             version_probe=_probe,
         )
@@ -631,6 +636,8 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 "schema_version",
                 "stage",
                 "seat_id",
+                "max_output_tokens",
+                "output_token_cap_semantics",
                 "serialized_prompt",
                 "role_path",
                 "role_text",
@@ -1227,7 +1234,10 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             )
             self.assertEqual(
                 preflight["provider_command"]["environment"],
-                {name: "false" for name in names},
+                {
+                    **{name: "false" for name in names},
+                    "FAKE_PROVIDER_MAX_OUTPUT_TOKENS": "3072",
+                },
             )
 
     def test_stdout_hidden_file_in_unreadable_directory_rejects(self):
@@ -2222,6 +2232,9 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                     "provider_validation",
                     "authority",
                     "execution_request_profile_hash",
+                    "max_output_tokens",
+                    "output_token_cap_binding",
+                    "output_token_cap_semantics",
                     "serialized_prompt_sha256",
                     "role_sha256",
                     "input_sha256s",
@@ -2403,6 +2416,8 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 {"generation_brief.json": body_sha, "generation_policy.md": body_sha},
                 role_sha,
                 portable_stage._response_schema("generate"),
+                3072,
+                "reasoning-and-visible-output",
                 role_text=role,
                 declared_input_texts={"generation_brief.json": body},
             )
@@ -2419,6 +2434,7 @@ class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
             "codex",
             model="MODEL",
             reasoning="high",
+            max_output_tokens=3072,
             executable_lookup=lambda _: str(FAKE_FILE),
             version_probe=_probe,
         )
@@ -2446,6 +2462,7 @@ class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
             prompt=json.dumps(request),
             state_root=root,
             timeout_seconds=2,
+            max_output_tokens=3072,
         )
 
     def test_legacy_file_output_uses_scrubbed_environment(self):
@@ -2618,6 +2635,7 @@ class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
                     ),
                     state_root=state,
                     timeout_seconds=2,
+                    max_output_tokens=3072,
                 )
             self.assertEqual(caught.exception.code, "unexpected_artifact")
             self.assertFalse((state / "imports").exists())

@@ -41,6 +41,7 @@ class PortableDynamicOutputSmoke(unittest.TestCase):
             "codex",
             model="MODEL",
             reasoning="high",
+            max_output_tokens=3072,
             executable_lookup=lambda _: str(FAKE),
             version_probe=_probe,
         )
@@ -64,6 +65,7 @@ class PortableDynamicOutputSmoke(unittest.TestCase):
                     ),
                     state_root=pathlib.Path(directory) / "state",
                     timeout_seconds=2,
+                    max_output_tokens=3072,
                 )
             except portable_agent.PortableAgentError as exc:
                 self.fail(

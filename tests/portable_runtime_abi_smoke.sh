@@ -268,7 +268,7 @@ run_hunt_external_legacy_regression() {
     env \
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
-      HISTORY_RUNTIME_ABI=v2 \
+      HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=claude \
       AGENT_CMD=/usr/bin/false \
       MAX_FAILS=bad \
       bash ./hunt.sh
@@ -303,8 +303,8 @@ run_hunt_review_isolation() {
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
       HISTORY_RUNTIME_ABI=v2 REVIEWERS=1 \
-      HUNT_PROVIDER=codex HUNT_MODEL=gpt-5.6-sol HUNT_REASONING_EFFORT=xhigh \
-      HUNT_REVIEW_PROVIDER_1=kimi \
+      HUNT_PROVIDER=claude HUNT_MODEL=sonnet HUNT_REASONING_EFFORT=high \
+      HUNT_REVIEW_PROVIDER_1=claude \
       HUNT_REVIEW_MODEL_1= HUNT_REVIEW_REASONING_EFFORT_1= \
       MAX_FAILS=bad \
       bash ./hunt.sh
@@ -333,8 +333,8 @@ run_hunt_review_index_bound() {
     env \
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
-      HISTORY_RUNTIME_ABI=v2 REVIEWERS=1 \
-      HUNT_REVIEW_PROVIDER_2=codex \
+      HISTORY_RUNTIME_ABI=v2 REVIEWERS=1 HUNT_PROVIDER=claude \
+      HUNT_REVIEW_PROVIDER_2=claude \
       bash ./hunt.sh
   status=$?
   after=$(state_digest "$repo")
@@ -365,7 +365,7 @@ run_awr_valid_v2_no_fallback() {
     env \
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
-      HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode SIDE_POLL_SEC=bad \
+      HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=claude SIDE_POLL_SEC=bad \
       bash ./awr-side.sh
   status=$?
   after=$(state_digest "$repo")
@@ -396,8 +396,8 @@ run_awr_role_isolation() {
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
       HISTORY_RUNTIME_ABI=v2 \
-      AWR_PROVIDER=codex AWR_MODEL=gpt-5.6-sol AWR_REASONING_EFFORT=xhigh \
-      AWR_RESEARCH_PROVIDER=kimi \
+      AWR_PROVIDER=claude AWR_MODEL=sonnet AWR_REASONING_EFFORT=high \
+      AWR_RESEARCH_PROVIDER=claude \
       AWR_RESEARCH_MODEL= AWR_RESEARCH_REASONING_EFFORT= \
       SIDE_POLL_SEC=bad \
       bash ./awr-side.sh
@@ -446,8 +446,8 @@ run_awr_agy_catalog_dedup_case() {
     catalog_calls=$(wc -l < "$catalog" | tr -d '[:space:]')
   fi
   if [ "$status" -ne 2 ] \
-    || ! grep -q 'must be nonnegative integers' "$log"; then
-    record_failure "AwR agy catalog $name did not reach ordinary validation"
+    || ! grep -q 'no provider-native exact output-token cap' "$log"; then
+    record_failure "AwR agy catalog $name did not reject unsupported output cap"
   elif [ "$after" != "$before" ] || [ -e "$marker" ]; then
     record_failure "AwR agy catalog $name mutated protected state or launched a provider"
   elif [ "$catalog_calls" -ne "$expected_catalog_calls" ]; then
@@ -481,8 +481,8 @@ run_awr_rejection v2-unknown-provider \
   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=unknown
 run_awr_valid_v2_no_fallback
 run_awr_role_isolation
-run_awr_agy_catalog_dedup_case inherited 1
-run_awr_agy_catalog_dedup_case distinct-model 2 \
+run_awr_agy_catalog_dedup_case inherited 0
+run_awr_agy_catalog_dedup_case distinct-model 0 \
   AWR_RESEARCH_MODEL=gemini-3.6-flash-high
 
 if [ "$FAILURES" -ne 0 ]; then

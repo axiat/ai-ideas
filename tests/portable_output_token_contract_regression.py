@@ -186,12 +186,13 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
                     }
                     kwargs["version_probe"] = lambda *_: b"1.1.10\n"
                 with self.assertRaises(provider_adapters.ProviderResolutionError):
-                    provider_adapters._resolve_command_intent_for_test(
+                    provider_adapters._resolve_command_intent(
                         self.registry,
                         surface,
                         provider,
-                        model="vendor/fixture",
-                        max_output_tokens=3072,
+                        "vendor/fixture",
+                        None,
+                        3072,
                         executable_lookup=lambda _: str(FAKE),
                         **kwargs,
                     )

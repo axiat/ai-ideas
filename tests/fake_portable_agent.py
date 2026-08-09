@@ -33,6 +33,11 @@ def main():
         return 0
 
     request = json.loads(_prompt(sys.argv[1:]))
+    if (
+        os.environ.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS")
+        or os.environ.get("FAKE_PROVIDER_MAX_OUTPUT_TOKENS")
+    ) != "3072":
+        return 26
     mode = request["mode"]
     output = pathlib.Path("output/result.json")
     valid = b'{"request_id":"request-1","status":"ok"}\n'

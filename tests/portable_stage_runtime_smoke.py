@@ -86,6 +86,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
             provider,
             model="MODEL",
             reasoning="high",
+            max_output_tokens=3072,
             executable_lookup=lambda _: str(executable_path),
         )
 
@@ -232,6 +233,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                     "codex",
                     model="MODEL",
                     reasoning="high",
+                    max_output_tokens=3072,
                     executable_lookup=lambda _: str(FAKE),
                 ),
             )
@@ -261,6 +263,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 provider_adapters.load_registry(REGISTRY),
                 "awr",
                 "opencode",
+                max_output_tokens=3072,
                 executable_lookup=lambda _: str(FAKE),
                 default_identity_probe=lambda *_: {
                     "schema_version": "provider-default-identity-v1",

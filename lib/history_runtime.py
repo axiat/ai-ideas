@@ -4420,7 +4420,9 @@ def _provider_adapters_module():
     return provider_adapters
 
 
-def _validated_portable_request_profile(profile, *, surface="hunt"):
+def _validated_portable_request_profile(
+    profile, *, surface="hunt", max_output_tokens=None
+):
     provider_module = _provider_adapters_module()
     if (
         not provider_module.command_intent_is_issued(profile)
@@ -4429,10 +4431,26 @@ def _validated_portable_request_profile(profile, *, surface="hunt"):
         or profile.authority != "shadow-only"
         or profile.hard_complete_eligible is not False
         or not _valid_sha256(profile.execution_request_profile_hash)
+        or type(profile.max_output_tokens) is not int
+        or profile.max_output_tokens <= 0
+        or profile.output_token_cap_binding not in {
+            "provider-native-exact",
+            "test-provider-native-exact",
+        }
+        or profile.output_token_cap_semantics
+        != "reasoning-and-visible-output"
     ):
         raise RuntimeContractError(
             "portable provider request profile is invalid"
         )
+    try:
+        provider_module.require_native_output_token_cap(
+            profile, max_output_tokens
+        )
+    except provider_module.ProviderResolutionError as exc:
+        raise RuntimeContractError(
+            "portable provider output-token cap is invalid"
+        ) from exc
     return profile
 
 
@@ -4507,7 +4525,12 @@ def _run_portable_stage(
     invocation_root,
     policy,
 ):
-    profile = _validated_portable_request_profile(request_profile)
+    maximum = policy.get("max_output_tokens")
+    if type(maximum) is not int or maximum <= 0:
+        raise RuntimeContractError("portable output-token policy is invalid")
+    profile = _validated_portable_request_profile(
+        request_profile, max_output_tokens=maximum
+    )
     portable_module = _portable_stage_module()
     serialized_prompt = _portable_serialized_prompt(
         stage, input_paths, policy

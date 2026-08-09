@@ -243,6 +243,13 @@ class HistoryAuditCliLifecycleSmoke(unittest.TestCase):
                 "model_catalog_probe_revision"
             ],
             "model_catalog_sha256": profile["model_catalog_sha256"],
+            "max_output_tokens": profile["max_output_tokens"],
+            "output_token_cap_binding": profile[
+                "output_token_cap_binding"
+            ],
+            "output_token_cap_semantics": profile[
+                "output_token_cap_semantics"
+            ],
             "execution_request_profile_hash": profile[
                 "execution_request_profile_hash"
             ],

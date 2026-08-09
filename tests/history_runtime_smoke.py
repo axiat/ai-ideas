@@ -2257,8 +2257,35 @@ class RoundCoordinatorContract(CapabilityContract):
             "codex",
             model="MODEL",
             reasoning="high",
+            max_output_tokens=2048,
             executable_lookup=lambda _: str(FAKE_PORTABLE_PROVIDER),
         )
+
+    def test_portable_profile_requires_exact_policy_output_token_cap(self):
+        profile = self._portable_profile()
+        validated = history_runtime._validated_portable_request_profile(
+            profile, max_output_tokens=2048
+        )
+        self.assertIs(validated, profile)
+        with self.assertRaisesRegex(
+            history_runtime.RuntimeContractError,
+            "portable provider output-token cap is invalid",
+        ):
+            history_runtime._validated_portable_request_profile(
+                profile, max_output_tokens=2049
+            )
+        for field, value in (
+            ("max_output_tokens", None),
+            ("output_token_cap_binding", "unsupported"),
+            ("output_token_cap_semantics", None),
+        ):
+            with self.subTest(field=field):
+                forged = dataclasses.replace(profile, **{field: value})
+                with self.assertRaisesRegex(
+                    history_runtime.RuntimeContractError,
+                    "portable provider request profile is invalid",
+                ):
+                    history_runtime._validated_portable_request_profile(forged)
 
     def test_nonissued_portable_profiles_fail_before_state_or_launch(self):
         forged = dataclasses.replace(

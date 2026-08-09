@@ -71,6 +71,7 @@ awr_provider_diagnostic() {
     python3 -B "$repo/lib/history_audit_cli.py" provider-command
     --surface awr
     --provider "$provider"
+    --max-output-tokens "$PORTABLE_MAX_OUTPUT_TOKENS"
   )
   [ -z "$model" ] || command+=(--model "$model")
   [ -z "$reasoning" ] || command+=(--reasoning "$reasoning")
@@ -87,6 +88,7 @@ awr_write_provider_profile() {
     python3 -B "$repo/lib/history_audit_cli.py" provider-command
     --surface awr
     --provider "$provider"
+    --max-output-tokens "$PORTABLE_MAX_OUTPUT_TOKENS"
   )
   [ -z "$model_override" ] || command+=(--model "$model_override")
   [ -z "$reasoning" ] || command+=(--reasoning "$reasoning")
@@ -229,6 +231,14 @@ awr_runtime_preflight() {
   return 0
 }
 
+PORTABLE_MAX_OUTPUT_TOKENS=$(python3 -B -c '
+import json, sys
+with open(sys.argv[1], "rb") as stream:
+    value = json.load(stream)["max_output_tokens"]
+if type(value) is not int or value <= 0:
+    raise SystemExit(2)
+print(value)
+' "$repo/history/retrieval-policy-v1.json") || exit 2
 awr_runtime_preflight || exit 2
 
 model=${AGY_MODEL:-gemini-3.6-flash-high}
@@ -561,6 +571,7 @@ run_portable_agent() {
   command=(
     python3 -B "$repo/lib/portable_stage.py" run
     --provider-request-profile "$profile"
+    --max-output-tokens "$PORTABLE_MAX_OUTPUT_TOKENS"
     --stage "$stage"
     --seat "${key}-${stage}"
     --serialized-prompt "$prompt_path"

@@ -369,6 +369,7 @@ def _provider_command(arguments):
         arguments.provider,
         model=arguments.model,
         reasoning=arguments.reasoning,
+        max_output_tokens=arguments.max_output_tokens,
     )
     return _emit(provider_adapters.command_intent_record(intent))
 
@@ -511,6 +512,9 @@ def _profile_descriptor(intent):
         "default_probe_revision": intent.default_probe_revision,
         "model_catalog_probe_revision": intent.model_catalog_probe_revision,
         "model_catalog_sha256": intent.model_catalog_sha256,
+        "max_output_tokens": intent.max_output_tokens,
+        "output_token_cap_binding": intent.output_token_cap_binding,
+        "output_token_cap_semantics": intent.output_token_cap_semantics,
         "execution_request_profile_hash": (
             intent.execution_request_profile_hash
         ),
@@ -2390,6 +2394,7 @@ def _parser():
     provider.add_argument("--provider", required=True)
     provider.add_argument("--model")
     provider.add_argument("--reasoning")
+    provider.add_argument("--max-output-tokens", type=int)
     provider.set_defaults(handler=_provider_command)
 
     initialize = commands.add_parser("init", help="initialize audit-v2 storage")

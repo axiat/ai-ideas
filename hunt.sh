@@ -57,6 +57,7 @@ hunt_provider_diagnostic() {
     python3 -B lib/history_audit_cli.py provider-command
     --surface hunt
     --provider "$provider"
+    --max-output-tokens "$PORTABLE_MAX_OUTPUT_TOKENS"
   )
   [ -z "$model" ] || command+=(--model "$model")
   [ -z "$reasoning" ] || command+=(--reasoning "$reasoning")
@@ -73,6 +74,7 @@ hunt_write_provider_profile() {
     python3 -B lib/history_audit_cli.py provider-command
     --surface hunt
     --provider "$provider"
+    --max-output-tokens "$PORTABLE_MAX_OUTPUT_TOKENS"
   )
   [ -z "$model" ] || command+=(--model "$model")
   [ -z "$reasoning" ] || command+=(--reasoning "$reasoning")
@@ -244,6 +246,14 @@ hunt_runtime_preflight() {
   return 0
 }
 
+PORTABLE_MAX_OUTPUT_TOKENS=$(python3 -B -c '
+import json, sys
+with open(sys.argv[1], "rb") as stream:
+    value = json.load(stream)["max_output_tokens"]
+if type(value) is not int or value <= 0:
+    raise SystemExit(2)
+print(value)
+' history/retrieval-policy-v1.json) || exit 2
 hunt_runtime_preflight || exit 2
 git config core.hooksPath .githooks
 
@@ -811,6 +821,7 @@ run_portable_generate_stage() {
   chmod 600 "$prompt_path" || return 1
   python3 -B lib/portable_stage.py run \
     --provider-request-profile "$profile" \
+    --max-output-tokens "$PORTABLE_MAX_OUTPUT_TOKENS" \
     --stage generate \
     --seat generate \
     --serialized-prompt "$prompt_path" \

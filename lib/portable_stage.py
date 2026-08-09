@@ -1809,8 +1809,10 @@ def _validate_public_preflight(value):
         or value.get("authority") != "shadow-only"
         or type(value.get("max_output_tokens")) is not int
         or value["max_output_tokens"] <= 0
-        or value.get("output_token_cap_binding")
-        != "provider-native-exact"
+        or value.get("output_token_cap_binding") not in {
+            "provider-native-exact",
+            "test-provider-native-exact",
+        }
         or value.get("output_token_cap_semantics")
         != "reasoning-and-visible-output"
     ):
@@ -1977,8 +1979,10 @@ def _validate_public_completion(value):
         or value.get("authority") != "shadow-only"
         or type(value.get("max_output_tokens")) is not int
         or value["max_output_tokens"] <= 0
-        or value.get("output_token_cap_binding")
-        != "provider-native-exact"
+        or value.get("output_token_cap_binding") not in {
+            "provider-native-exact",
+            "test-provider-native-exact",
+        }
         or value.get("output_token_cap_semantics")
         != "reasoning-and-visible-output"
         or type(value.get("outputs")) is not dict
@@ -2154,8 +2158,10 @@ def verify_public_descriptor(descriptor, reference_root):
         or stage not in _OUTPUT_PROFILES
         or type(descriptor.get("max_output_tokens")) is not int
         or descriptor["max_output_tokens"] <= 0
-        or descriptor.get("output_token_cap_binding")
-        != "provider-native-exact"
+        or descriptor.get("output_token_cap_binding") not in {
+            "provider-native-exact",
+            "test-provider-native-exact",
+        }
         or descriptor.get("output_token_cap_semantics")
         != "reasoning-and-visible-output"
         or any(
