@@ -88,9 +88,107 @@ accepted_reviews_ok() {
   done < <(awk -F'\t' '$2=="strong-accept" || $2=="accept-w-rev"{print $1}' "$verdictf")
 }
 
+# Capture an untrusted reviewer artifact before any host utility parses it. O_NONBLOCK prevents a raced FIFO from
+# hanging the panel; O_NOFOLLOW, owner/link/type checks, a byte limit, and descriptor identity checks reject aliases,
+# special files, and content changed during capture. Exit 3 means absent; every other nonzero result is unsafe.
+capture_reviewer_output() {
+  local source=$1 destination=$2 label=$3 maximum=$4
+  python3 - "$source" "$destination" "$label" "$maximum" <<'PY'
+import errno
+import os
+import stat
+import sys
+
+source, destination, label, maximum_text = sys.argv[1:]
+maximum = int(maximum_text)
+
+
+def identity(value):
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def unsafe(detail):
+    print(f"[calib] unsafe reviewer output {label}: {detail}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+if not hasattr(os, "O_NOFOLLOW"):
+    unsafe("host lacks O_NOFOLLOW")
+try:
+    before = os.lstat(source)
+except FileNotFoundError:
+    raise SystemExit(3)
+except OSError:
+    unsafe("cannot inspect file")
+if (
+    not stat.S_ISREG(before.st_mode)
+    or before.st_nlink != 1
+    or before.st_uid != os.geteuid()
+    or before.st_size > maximum
+):
+    unsafe("expected an owned, bounded, single-link regular file")
+
+fd = None
+try:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(source, flags)
+    opened = os.fstat(fd)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or opened.st_uid != os.geteuid()
+        or opened.st_size > maximum
+        or identity(opened) != identity(before)
+    ):
+        unsafe("file changed before capture")
+    chunks = []
+    total = 0
+    while True:
+        chunk = os.read(fd, min(65536, maximum + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > maximum:
+            unsafe("file exceeds byte limit")
+    after = os.fstat(fd)
+finally:
+    if fd is not None:
+        os.close(fd)
+if identity(after) != identity(before) or total != before.st_size:
+    unsafe("file changed during capture")
+
+payload = b"".join(chunks)
+out_fd = None
+try:
+    out_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    out_fd = os.open(destination, out_flags, 0o600)
+    view = memoryview(payload)
+    while view:
+        written = os.write(out_fd, view)
+        if written <= 0:
+            unsafe("cannot publish captured bytes")
+        view = view[written:]
+except OSError as exc:
+    unsafe("cannot create trusted capture" if exc.errno != errno.EEXIST else "trusted capture already exists")
+finally:
+    if out_fd is not None:
+        os.close(out_fd)
+PY
+}
+
 # $1 is the seat number. Build one mirror, invoke the backend, copy approved artifacts, and discard the mirror.
 run_judge() {
-  local r=$1 mirror pre rc logf
+  local r=$1 mirror pre rc logf capture_failed capture_status
   logf="$repo/$OUT/rev/$r.log"   # The backend changes CWD, so the log path must be absolute.
   # The mirror path includes the encoded case name and intentionally excludes a calib path segment used by Grok write guards.
   mirror=$(mktemp -d "$repo/tmp/panel.$mname.$r.XXXXXX") || { echo "$r 1" >> "$OUT/rev_rc"; return 1; }
@@ -116,16 +214,30 @@ JSON
 Read roles/review.md and follow it. Use D = tmp/out/ for ideas.md and priorwork.md, with rubric.md and brainstorming_policy.md at the repository root. Write verdicts to tmp/out/verdict.tsv and complete accepted reviews to tmp/out/review.md. Calibration override: do not use WebSearch, WebFetch, or any network retrieval. Judge novelty only from tmp/out/priorwork.md. If an idea appears to match a published work, do not change the verdict from memory; append exactly one line to review.md in the form suspected published counterpart: <name>." \
       < /dev/null > "$logf" 2>&1 )
   rc=$?
-# Normalize verdict.tsv on copy-back: remove BOM/CR and trim every field. Validation and aggregation must read the same bytes.
-# LC_ALL=C makes substr byte-oriented when removing the UTF-8 BOM.
-  if [ -f "$mirror/tmp/out/verdict.tsv" ]; then
-    LC_ALL=C awk -F'\t' 'BEGIN{OFS="\t"}
-      NR==1 && substr($0,1,3) == "\357\273\277" { $0 = substr($0, 4) }
-      { sub(/\r$/, ""); for (j=1; j<=NF; j++) gsub(/^[ \t]+|[ \t]+$/, "", $j); print }' \
-      "$mirror/tmp/out/verdict.tsv" > "$OUT/rev/$r/verdict.tsv"
+  # Capture before parsing or copying. Both artifacts are capped at 1 MiB; review.md may be absent for all-reject ballots.
+  # Normalize only the trusted verdict snapshot so validation and aggregation consume the same stable bytes.
+  capture_failed=0
+  if capture_reviewer_output "$mirror/tmp/out/verdict.tsv" "$OUT/rev/$r/.verdict.raw" verdict.tsv 1048576; then
+    if ! LC_ALL=C awk -F'\t' 'BEGIN{OFS="\t"}
+        NR==1 && substr($0,1,3) == "\357\273\277" { $0 = substr($0, 4) }
+        { sub(/\r$/, ""); for (j=1; j<=NF; j++) gsub(/^[ \t]+|[ \t]+$/, "", $j); print }' \
+        "$OUT/rev/$r/.verdict.raw" > "$OUT/rev/$r/verdict.tsv.tmp" \
+        || ! mv "$OUT/rev/$r/verdict.tsv.tmp" "$OUT/rev/$r/verdict.tsv"; then
+      capture_failed=1
+    fi
+  else
+    capture_status=$?
+    [ "$capture_status" -eq 3 ] || capture_failed=1
   fi
-  [ -f "$mirror/tmp/out/review.md" ] && cp "$mirror/tmp/out/review.md" "$OUT/rev/$r/review.md"
+  if capture_reviewer_output "$mirror/tmp/out/review.md" "$OUT/rev/$r/review.md" review.md 1048576; then
+    :
+  else
+    capture_status=$?
+    [ "$capture_status" -eq 3 ] || capture_failed=1
+  fi
+  rm -f "$OUT/rev/$r/.verdict.raw" "$OUT/rev/$r/verdict.tsv.tmp"
   rm -rf "$mirror"
+  [ "$capture_failed" -eq 0 ] || rc=1
 # A successful backend must still satisfy the verdict ABI. Treating missing or malformed votes as reject would make broken
 # reviewers look correct on negative controls. Accepted votes additionally require their corresponding review block.
   if [ "$rc" -eq 0 ] && ! verdict_ok "$OUT/rev/$r/verdict.tsv"; then
