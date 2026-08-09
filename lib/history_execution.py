@@ -2021,6 +2021,26 @@ def cancel_attempt(
             raise ExecutionError("verified_usage_authority_mismatch")
     try:
         conn.execute("BEGIN IMMEDIATE")
+        terminal_authority = conn.execute(
+            """
+            SELECT task.state,
+                   cost.attempt_id AS cost_id,
+                   budget.attempt_id AS budget_id
+            FROM audit_task_attempts attempt
+            JOIN audit_logical_tasks task ON task.task_hash=attempt.task_hash
+            LEFT JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+            LEFT JOIN audit_runtime_budget_settlements_v2 budget USING(attempt_id)
+            WHERE attempt.attempt_id=?
+            """,
+            (attempt_id,),
+        ).fetchone()
+        if terminal_authority is None:
+            raise ExecutionError("unknown_attempt")
+        if terminal_authority["state"] == "settled" and (
+            terminal_authority["cost_id"] is None
+            or terminal_authority["budget_id"] is None
+        ):
+            raise ExecutionError("terminal_task")
         if usage is None:
             history_audit_store.record_attempt_terminal_cost_fact(
                 conn, attempt_id, cancellation=True, error_class=error_class,
@@ -2133,6 +2153,30 @@ def settle_task(conn, task_key, valid_attempts, *, cas_root, now=None):
     settled_at = current.isoformat()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        frozen_attempts = conn.execute(
+            """
+            SELECT attempt.attempt_id, completion.outcome,
+                   cost.attempt_id AS cost_id,
+                   budget.attempt_id AS budget_id
+            FROM audit_task_attempts attempt
+            LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+            LEFT JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+            LEFT JOIN audit_runtime_budget_settlements_v2 budget USING(attempt_id)
+            WHERE attempt.task_hash=? ORDER BY attempt.attempt_id
+            """,
+            (task_key,),
+        ).fetchall()
+        if not frozen_attempts or any(
+            row["cost_id"] is None or row["budget_id"] is None
+            for row in frozen_attempts
+        ):
+            raise ExecutionError("outstanding_task_attempt")
+        frozen_valid_ids = [
+            row["attempt_id"] for row in frozen_attempts
+            if row["outcome"] == "valid"
+        ]
+        if frozen_valid_ids != decision["valid_attempt_ids"]:
+            raise ExecutionError("valid_attempt_set_mismatch")
         history_audit_store.compare_and_set_logical_task(
             conn, task_key,
             expected_state="claimed", expected_fence=task["fence"],

@@ -60,6 +60,50 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
         )
         return plan
 
+    def _partial_valid_completion(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        history_execution.claim_task(
+            self.fixture.conn, task_key, "partial-worker", 60, 0,
+            now=self.fixture._now(),
+        )
+        task = history_execution.load_task(self.fixture.conn, task_key)
+        attempt = history_execution.record_attempt(
+            self.fixture.conn, task_key,
+            copy.deepcopy(plan["provider_capabilities"]["codex"]),
+            {"attempt_kind": "initial"},
+            cas_root=self.fixture.cas_root,
+            request_bytes=task["durable_request_text"].encode(),
+        )
+        normalized = history_execution.validate_map_output(
+            task, self.fixture._output(plan), plan["snapshot"]
+        )
+        raw = history_execution.history_contract_v2.canonical_bytes(
+            self.fixture._output(plan)
+        )
+        output = history_execution.history_cas.put_object(
+            self.fixture.conn, self.fixture.cas_root, raw,
+            "attempt-transient-7d",
+            expires_at=history_execution._attempt_expiry(task),
+        )
+        completed_at = self.fixture.conn.execute(
+            "SELECT created_at FROM audit_task_attempts WHERE attempt_id=?",
+            (attempt["attempt_id"],),
+        ).fetchone()[0]
+        self.fixture.conn.execute("BEGIN IMMEDIATE")
+        history_audit_store.insert_attempt_completion(
+            self.fixture.conn, attempt["attempt_id"], output["object_id"],
+            "valid", history_execution._canonical(normalized),
+            completed_at=completed_at,
+        )
+        self.fixture.conn.execute("COMMIT")
+        valid = {
+            "attempt_id": attempt["attempt_id"],
+            "output_cas_object_id": output["object_id"],
+            "normalized": normalized,
+        }
+        return plan, task, attempt, output, completed_at, valid
+
     def _settle_detail(self, plan, detail_task_hash):
         task = history_execution.load_task(self.fixture.conn, detail_task_hash)
         history_execution.claim_task(
@@ -677,6 +721,106 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
             (attempt_id,) * 3,
         ).fetchone()
         self.assertEqual(tuple(counts), (0, 0, 0))
+    def test_settlement_rejects_partially_terminal_attempt_then_replays_exactly(self):
+        plan, task, attempt, output, completed_at, valid = (
+            self._partial_valid_completion()
+        )
+        task_key = plan["logical_task_keys"][0]
+        with self.assertRaises(history_execution.ExecutionError) as caught:
+            history_execution.settle_task(
+                self.fixture.conn, task_key, [valid],
+                cas_root=self.fixture.cas_root, now=self.fixture._now(1),
+            )
+        self.assertEqual(caught.exception.code, "outstanding_task_attempt")
+        self.assertIsNone(self.fixture.conn.execute(
+            "SELECT 1 FROM audit_task_settlements_v2 WHERE task_hash=?",
+            (task_key,),
+        ).fetchone())
+
+        self.fixture.conn.execute("BEGIN IMMEDIATE")
+        history_execution._insert_completion(
+            self.fixture.conn, task, attempt["attempt_id"],
+            output["object_id"], "valid", valid["normalized"], None,
+            now=completed_at,
+        )
+        self.fixture.conn.execute("COMMIT")
+        first = history_execution.settle_task(
+            self.fixture.conn, task_key, [valid],
+            cas_root=self.fixture.cas_root, now=self.fixture._now(1),
+        )
+        replay = history_execution.settle_task(
+            self.fixture.conn, task_key, [valid],
+            cas_root=self.fixture.cas_root, now=self.fixture._now(1),
+        )
+        self.assertEqual(replay, first)
+
+    def test_settle_vs_completion_race_freezes_terminal_attempt_set(self):
+        connections = [
+            sqlite3.connect(
+                self.fixture.db_path, timeout=5, check_same_thread=False
+            )
+            for _ in range(2)
+        ]
+        for connection in connections:
+            connection.row_factory = sqlite3.Row
+            history_audit_store.init_schema(connection)
+        plan, task, attempt, output, completed_at, valid = (
+            self._partial_valid_completion()
+        )
+        task_key = plan["logical_task_keys"][0]
+        settlement_read = threading.Barrier(2)
+        release_settlement = threading.Event()
+        original_verify = history_execution.history_cas.verify_object
+        results = []
+        failures = []
+        blocked = [False]
+
+        def blocking_verify(connection, *args, **kwargs):
+            result = original_verify(connection, *args, **kwargs)
+            if connection is connections[0] and not blocked[0]:
+                blocked[0] = True
+                settlement_read.wait(timeout=5)
+                if not release_settlement.wait(5):
+                    raise AssertionError("settlement release timed out")
+            return result
+
+        def settle_worker():
+            try:
+                results.append(history_execution.settle_task(
+                    connections[0], task_key, [valid],
+                    cas_root=self.fixture.cas_root, now=self.fixture._now(1),
+                ))
+            except BaseException as exc:
+                failures.append(exc)
+
+        with mock.patch.object(
+            history_execution.history_cas, "verify_object",
+            side_effect=blocking_verify,
+        ):
+            worker = threading.Thread(target=settle_worker)
+            worker.start()
+            settlement_read.wait(timeout=5)
+            connections[1].execute("BEGIN IMMEDIATE")
+            current_task = history_execution.load_task(
+                connections[1], task_key
+            )
+            history_execution._insert_completion(
+                connections[1], current_task, attempt["attempt_id"],
+                output["object_id"], "valid", valid["normalized"], None,
+                now=completed_at,
+            )
+            connections[1].execute("COMMIT")
+            release_settlement.set()
+            worker.join(10)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(failures, [])
+        replay = history_execution.settle_task(
+            connections[0], task_key, [valid],
+            cas_root=self.fixture.cas_root, now=self.fixture._now(1),
+        )
+        self.assertEqual(replay, results[0])
+        for connection in connections:
+            connection.close()
 
 
 if __name__ == "__main__":
