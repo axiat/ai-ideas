@@ -6324,16 +6324,22 @@ def _comparison_index(path, selection):
         "statuses",
         stage_field,
     }
-    if (
-        not isinstance(items, list)
-        or [item.get("candidate_id") for item in items]
-        != expected_ids
-        or any(
-            not isinstance(item, dict)
-            or set(item) != target_fields
-            for item in items
+    if not isinstance(items, list):
+        raise RuntimeContractError(
+            "comparison index target coverage is invalid"
         )
-    ):
+    if any(
+        not isinstance(item, dict)
+        or set(item) != target_fields
+        or not isinstance(item.get("candidate_id"), str)
+        or not isinstance(item.get("observation_path"), str)
+        or not _valid_sha256(item.get("observation_sha256"))
+        or not isinstance(item.get("statuses"), list)
+        or not isinstance(item.get(stage_field), list)
+        for item in items
+    ) or [
+        item["candidate_id"] for item in items
+    ] != expected_ids:
         raise RuntimeContractError(
             "comparison index target coverage is invalid"
         )
@@ -6361,6 +6367,105 @@ def _comparison_stage_binding(index, target):
     if index["schema_version"] == 1:
         return CONTAINED_EXECUTOR, target["contained_stages"]
     return PORTABLE_EXECUTION_BOUNDARY, target["portable_stages"]
+
+
+def _validated_review_comparison(
+    *, candidate, candidate_root, index, indexed, conn, policy
+):
+    expected_path = (
+        pathlib.Path(candidate_root) / "comparison-observation.json"
+    )
+    if pathlib.Path(indexed["observation_path"]).resolve() != (
+        expected_path.resolve()
+    ):
+        raise RuntimeContractError(
+            "review-plan comparison path is invalid"
+        )
+    observation = _load_canonical_json(
+        expected_path, "review-plan comparison observation"
+    )
+    fields = {
+        "schema_version",
+        "candidate_id",
+        "candidate_content_sha256",
+        "observations",
+        "observation_sha256",
+    }
+    if not isinstance(observation, dict) or set(observation) != fields:
+        raise RuntimeContractError(
+            "review-plan comparison observation is invalid"
+        )
+    items = observation["observations"]
+    intents = required_intents(candidate)
+    if (
+        type(observation["schema_version"]) is not int
+        or observation["schema_version"] != 1
+        or observation["candidate_id"] != candidate["candidate_id"]
+        or observation["candidate_content_sha256"]
+        != candidate["content_sha256"]
+        or not isinstance(items, list)
+        or any(not isinstance(item, dict) for item in items)
+        or [item.get("intent") for item in items] != intents
+    ):
+        raise RuntimeContractError(
+            "review-plan comparison observation is invalid"
+        )
+    material = dict(observation)
+    observation_sha = material.pop("observation_sha256")
+    statuses = [item.get("status") for item in items]
+    if (
+        not _valid_sha256(observation_sha)
+        or observation_sha
+        != sha256(
+            b"history-runtime-observation-v1\0"
+            + canonical_bytes(material)
+        )
+        or observation_sha != indexed["observation_sha256"]
+        or statuses != indexed["statuses"]
+    ):
+        raise RuntimeContractError(
+            "review-plan comparison binding is invalid"
+        )
+    comparison_executor, stage_records = _comparison_stage_binding(
+        index, indexed
+    )
+    _validate_resume_comparator_stages(
+        candidate=candidate,
+        candidate_root=candidate_root,
+        observation=observation,
+        stage_records=stage_records,
+        conn=conn,
+        policy=policy,
+        allow_unbindable=True,
+        execution_boundary=comparison_executor,
+    )
+    return observation, statuses
+
+
+def _validate_review_candidate_artifact(
+    artifact, descriptor, candidate
+):
+    expected = {
+        "path": descriptor["path"],
+        "sha256": descriptor["sha256"],
+    }
+    if not isinstance(artifact, dict) or artifact != expected:
+        raise RuntimeContractError(
+            "review-plan candidate binding changed"
+        )
+    raw = _read_bound_regular(
+        descriptor["path"], "review-plan candidate", maximum=16384
+    )
+    if (
+        sha256(raw) != descriptor["sha256"]
+        or raw != canonical_bytes(candidate)
+        or candidate.get("content_sha256")
+        != descriptor["content_sha256"]
+        or candidate_content_sha256(candidate)
+        != descriptor["content_sha256"]
+    ):
+        raise RuntimeContractError("review-plan candidate changed")
+    return expected
 
 
 def _reviewer_command_descriptors(reviewer_commands):
@@ -6537,15 +6642,9 @@ def seal_round_review_plan(
             "review gate configuration is invalid"
         )
     policy = history_projection.load_policy(policy_path)
-    if policy["mode"] == "enforcement":
-        authority_value = _validated_runtime_authority(
-            policy, authority, state_paths=(output_path,)
-        )
-    else:
-        authority_value = {
-            "capability_sha256": None,
-            "trust_root_sha256": None,
-        }
+    authority_value = _validated_runtime_authority(
+        policy, authority, state_paths=(output_path,)
+    )
     batch, candidates = _load_batch_candidates(batch_path)
     selection = verify_round_selection(selection_path)
     root = pathlib.Path(artifact_root)
@@ -6652,31 +6751,17 @@ def seal_round_review_plan(
             candidate_descriptor = candidate_descriptors[
                 candidate_id
             ]
-            observation = _load_canonical_json(
-                indexed["observation_path"],
-                "review-plan comparison observation",
+            _, statuses = _validated_review_comparison(
+                candidate=candidate,
+                candidate_root=root / candidate_id,
+                index=index,
+                indexed=indexed,
+                conn=conn,
+                policy=policy,
             )
-            if (
-                indexed["candidate_id"] != candidate_id
-                or observation.get("candidate_id") != candidate_id
-                or observation.get("candidate_content_sha256")
-                != candidate["content_sha256"]
-                or observation.get("observation_sha256")
-                != indexed["observation_sha256"]
-                or [
-                    item.get("status")
-                    for item in observation.get(
-                        "observations", []
-                    )
-                ]
-                != indexed["statuses"]
-            ):
-                raise RuntimeContractError(
-                    "review-plan comparison binding is invalid"
-                )
             permanent = all(
                 status in history_retrieval.PERMANENT_STATUSES
-                for status in indexed["statuses"]
+                for status in statuses
             )
             if policy["mode"] == "enforcement" and not permanent:
                 outcome = "history_abstain"
@@ -6727,21 +6812,25 @@ def seal_round_review_plan(
                     "sha256": sha256(prior_raw),
                     "byte_count": len(prior_raw),
                 }
+            candidate_artifact = {
+                "path": candidate_descriptor["path"],
+                "sha256": candidate_descriptor["sha256"],
+            }
+            _validate_review_candidate_artifact(
+                candidate_artifact, candidate_descriptor, candidate
+            )
             targets.append(
                 {
                     "candidate_id": candidate_id,
                     "candidate_content_sha256":
                         candidate["content_sha256"],
-                    "candidate_artifact": {
-                        "path": candidate_descriptor["path"],
-                        "sha256": candidate_descriptor["sha256"],
-                    },
+                    "candidate_artifact": candidate_artifact,
                     "selection_disposition":
                         selected["disposition"],
                     "prescreen_evidence": selected.get("evidence"),
                     "comparison_observation_sha256":
                         indexed["observation_sha256"],
-                    "history_statuses": indexed["statuses"],
+                    "history_statuses": statuses,
                     "planned_outcome": outcome,
                     "prior_work": prior,
                     "gate_summary": gate_summary,
@@ -6872,15 +6961,9 @@ def verify_round_review_plan(
             "round review plan schema is invalid"
         )
     policy = history_projection.load_policy(policy_path)
-    if policy["mode"] == "enforcement":
-        authority_value = _validated_runtime_authority(
-            policy, authority, state_paths=(db_path,)
-        )
-    else:
-        authority_value = {
-            "capability_sha256": None,
-            "trust_root_sha256": None,
-        }
+    authority_value = _validated_runtime_authority(
+        policy, authority, state_paths=(db_path,)
+    )
     batch, candidates = _load_batch_candidates(batch_path)
     selection = verify_round_selection(plan["selection_path"])
     index = _comparison_index(
@@ -6921,6 +7004,7 @@ def verify_round_review_plan(
         raise RuntimeContractError(
             "round review plan root binding changed"
         )
+    source_raw = {}
     for name, maximum in (
         ("review_contract", 16384),
         ("prior_work_source", 1024 * 1024),
@@ -6946,6 +7030,16 @@ def verify_round_review_plan(
             raise RuntimeContractError(
                 "round review plan source changed"
             )
+        source_raw[name] = raw
+    try:
+        prior_markdown = source_raw["prior_work_source"].decode(
+            "utf-8"
+        )
+    except UnicodeDecodeError as exc:
+        raise RuntimeContractError(
+            "round prior work is not UTF-8"
+        ) from exc
+    prior_blocks = _candidate_blocks(prior_markdown)
     seats = plan["reviewer_seats"]
     if (
         not isinstance(seats, list)
@@ -6994,18 +7088,23 @@ def verify_round_review_plan(
             "round review plan gate is invalid"
         )
     targets = plan["targets"]
-    if (
-        not isinstance(targets, list)
-        or [item.get("candidate_id") for item in targets]
-        != [
-            item["candidate_id"]
-            for item in selection["targets"]
-        ]
-        or len(targets) != len(index["targets"])
+    if not isinstance(targets, list) or len(targets) != len(
+        index["targets"]
     ):
         raise RuntimeContractError(
             "round review plan target coverage is invalid"
         )
+    if any(not isinstance(item, dict) for item in targets) or [
+        item.get("candidate_id") for item in targets
+    ] != [
+        item["candidate_id"] for item in selection["targets"]
+    ]:
+        raise RuntimeContractError(
+            "round review plan target coverage is invalid"
+        )
+    candidate_descriptors = {
+        item["candidate_id"]: item for item in batch["candidates"]
+    }
     owns_connection = _connection is None
     conn = (
         history_store.connect(db_path)
@@ -7050,9 +7149,20 @@ def verify_round_review_plan(
                 raise RuntimeContractError(
                     "round review plan target changed"
                 )
+            _, statuses = _validated_review_comparison(
+                candidate=candidate,
+                candidate_root=(
+                    pathlib.Path(plan["artifact_root"])
+                    / target["candidate_id"]
+                ),
+                index=index,
+                indexed=indexed,
+                conn=conn,
+                policy=policy,
+            )
             permanent = all(
                 status in history_retrieval.PERMANENT_STATUSES
-                for status in indexed["statuses"]
+                for status in statuses
             )
             expected_outcome = (
                 "history_abstain"
@@ -7067,26 +7177,45 @@ def verify_round_review_plan(
                     "round review plan outcome changed"
                 )
             candidate_artifact = target["candidate_artifact"]
-            candidate_raw = _read_bound_regular(
-                candidate_artifact["path"],
-                "review-plan candidate",
-                maximum=16384,
+            _validate_review_candidate_artifact(
+                candidate_artifact,
+                candidate_descriptors[target["candidate_id"]],
+                candidate,
             )
-            if sha256(candidate_raw) != candidate_artifact["sha256"]:
-                raise RuntimeContractError(
-                    "review-plan candidate changed"
-                )
             if expected_outcome == "review":
                 prior = target["prior_work"]
+                block = prior_blocks.get(target["candidate_id"])
+                expected_prior_path = (
+                    pathlib.Path(plan["prior_work_source"]["path"])
+                    .parent
+                    / target["candidate_id"]
+                    / "prior-work.md"
+                )
+                expected_prior_raw = (
+                    None if block is None else block.encode("utf-8")
+                )
+                if (
+                    not isinstance(prior, dict)
+                    or set(prior)
+                    != {"path", "sha256", "byte_count"}
+                    or expected_prior_raw is None
+                    or not isinstance(prior.get("path"), str)
+                    or pathlib.Path(prior["path"]).resolve()
+                    != expected_prior_path.resolve()
+                    or prior.get("sha256")
+                    != sha256(expected_prior_raw)
+                    or prior.get("byte_count")
+                    != len(expected_prior_raw)
+                ):
+                    raise RuntimeContractError(
+                        "review-plan prior work binding changed"
+                    )
                 prior_raw = _read_bound_regular(
-                    prior["path"],
+                    expected_prior_path,
                     "review-plan prior work",
                     maximum=16384,
                 )
-                if (
-                    sha256(prior_raw) != prior["sha256"]
-                    or len(prior_raw) != prior["byte_count"]
-                ):
+                if prior_raw != expected_prior_raw:
                     raise RuntimeContractError(
                         "review-plan prior work changed"
                     )
