@@ -4258,10 +4258,12 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         )
         self._install(plan)
         parent = plan["logical_task_keys"][0]
+        transition_now = history_audit_store._utc_now()
         claim = self._api("claim_task")(
-            self.conn, parent, "worker-a", 60, expected_fence=0, now=self._now()
+            self.conn, parent, "worker-a", 60,
+            expected_fence=0, now=transition_now
         )
-        self._api("record_attempt")(
+        attempt = self._api("record_attempt")(
             self.conn,
             parent,
             copy.deepcopy(self.capabilities["codex"]),
@@ -4273,12 +4275,29 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             },
             cas_root=self.cas_root,
             request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            now=transition_now,
+            claim_fence=claim["fence"],
+            claim_token=claim["claim_token"],
+            claim_now=transition_now,
+        )
+        self._api("_failed_completion")(
+            self.conn,
+            self.cas_root,
+            self._api("load_task")(self.conn, parent),
+            attempt["attempt_id"],
+            "overflow",
+            "overflow",
+            None,
+            claim_fence=claim["fence"],
+            claim_token=claim["claim_token"],
+            authority_now=transition_now,
+            now=transition_now,
         )
         children = self._api("split_task")(
             self.conn, parent,
             expected_fence=claim["fence"],
             claim_token=claim["claim_token"],
-            now=self._now(),
+            now=transition_now,
         )["children"]
         child = children[0]["task_hash"]
         self.conn.close()
@@ -4399,22 +4418,41 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
         )
         self._install(plan)
         parent = plan["logical_task_keys"][0]
+        transition_now = history_audit_store._utc_now()
         claim = self._api("claim_task")(
-            self.conn, parent, "worker-a", 60, expected_fence=0, now=self._now()
+            self.conn, parent, "worker-a", 60,
+            expected_fence=0, now=transition_now
         )
-        self._api("record_attempt")(
+        attempt = self._api("record_attempt")(
             self.conn,
             parent,
             copy.deepcopy(self.capabilities["codex"]),
             {"attempt_kind": "initial"},
             cas_root=self.cas_root,
             request_bytes=plan["shards"][0]["serialized_request"].encode(),
+            now=transition_now,
+            claim_fence=claim["fence"],
+            claim_token=claim["claim_token"],
+            claim_now=transition_now,
+        )
+        self._api("_failed_completion")(
+            self.conn,
+            self.cas_root,
+            self._api("load_task")(self.conn, parent),
+            attempt["attempt_id"],
+            "overflow",
+            "overflow",
+            None,
+            claim_fence=claim["fence"],
+            claim_token=claim["claim_token"],
+            authority_now=transition_now,
+            now=transition_now,
         )
         child_key = self._api("split_task")(
             self.conn, parent,
             expected_fence=claim["fence"],
             claim_token=claim["claim_token"],
-            now=self._now(),
+            now=transition_now,
         )["children"][0]["task_hash"]
         child = self._api("load_task")(self.conn, child_key)
         forged_attempt = sha("direct-budget-forgery")
