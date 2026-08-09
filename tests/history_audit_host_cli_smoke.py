@@ -2,6 +2,7 @@
 """Offline product-entry tests for host-owned router authority."""
 
 import copy
+from contextlib import closing
 import hashlib
 import importlib.util
 import json
@@ -332,7 +333,7 @@ class HistoryAuditHostCliSmoke(unittest.TestCase):
             "audit_router_source_sets_v2",
             "audit_router_phase_facts_v2",
         )
-        with sqlite3.connect(self.runtime.db_path) as connection:
+        with closing(sqlite3.connect(self.runtime.db_path)) as connection:
             return {
                 table: connection.execute(
                     f"SELECT count(*) FROM {table}"
@@ -341,7 +342,7 @@ class HistoryAuditHostCliSmoke(unittest.TestCase):
             }
 
     def _assert_no_l1_or_final_writes(self):
-        with sqlite3.connect(self.runtime.db_path) as connection:
+        with closing(sqlite3.connect(self.runtime.db_path)) as connection:
             self.assertEqual(
                 connection.execute(
                     "SELECT count(*) FROM "
@@ -372,7 +373,7 @@ class HistoryAuditHostCliSmoke(unittest.TestCase):
             )
 
     def _final_phase_rows(self):
-        with sqlite3.connect(self.runtime.db_path) as connection:
+        with closing(sqlite3.connect(self.runtime.db_path)) as connection:
             source = connection.execute(
                 "SELECT count(*) FROM audit_router_domain_sources_v2 "
                 "WHERE source_kind='l1_observation'"
