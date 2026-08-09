@@ -56,6 +56,9 @@ class HistoryAuditStoreTerminalEvidenceRegression(unittest.TestCase):
             cas_root=self.fixture.cas_root,
             request_bytes=plan["shards"][0]["serialized_request"].encode("utf-8"),
             now=self.transition_now,
+            claim_fence=task["fence"],
+            claim_token=task["claim_token"],
+            claim_now=self.transition_now,
         )
         history_execution._failed_completion(
             self.fixture.conn,
@@ -65,6 +68,9 @@ class HistoryAuditStoreTerminalEvidenceRegression(unittest.TestCase):
             outcome,
             outcome,
             None,
+            claim_fence=task["fence"],
+            claim_token=task["claim_token"],
+            authority_now=self.transition_now,
             now=self.transition_now,
         )
 
