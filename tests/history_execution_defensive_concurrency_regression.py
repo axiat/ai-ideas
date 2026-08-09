@@ -250,6 +250,149 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
             [tuple(row) for row in attempts],
             [(0, "initial", "cancelled"), (1, "retry", "valid")],
         )
+    def test_live_provider_attempt_cannot_be_cancelled_by_concurrent_runner(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        connections = [
+            sqlite3.connect(
+                self.fixture.db_path, timeout=5, check_same_thread=False
+            )
+            for _ in range(2)
+        ]
+        for connection in connections:
+            connection.row_factory = sqlite3.Row
+            history_audit_store.init_schema(connection)
+        provider_started = threading.Barrier(2)
+        release_provider = threading.Event()
+        first_result = []
+        first_errors = []
+
+        def blocked_provider(*_):
+            provider_started.wait(timeout=5)
+            if not release_provider.wait(5):
+                raise AssertionError("provider release timed out")
+            return {"kind": "success", "output": self.fixture._output(plan)}
+
+        def first_runner():
+            try:
+                first_result.append(history_execution.run_map_task(
+                    connections[0], self.fixture.cas_root, plan, task_key,
+                    blocked_provider, now=self.fixture._now(),
+                ))
+            except BaseException as exc:
+                first_errors.append(exc)
+
+        worker = threading.Thread(target=first_runner)
+        worker.start()
+        provider_started.wait(timeout=5)
+        second_calls = []
+        try:
+            with self.assertRaises(history_audit_store.StaleFence):
+                history_execution.run_map_task(
+                    connections[1], self.fixture.cas_root, plan, task_key,
+                    lambda *_: second_calls.append(True),
+                    now=self.fixture._now(),
+                )
+            active = connections[1].execute(
+                """
+                SELECT completion.attempt_id, cost.attempt_id
+                FROM audit_task_attempts attempt
+                LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+                LEFT JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+                WHERE attempt.task_hash=? AND attempt.ordinal=0
+                """,
+                (task_key,),
+            ).fetchone()
+            self.assertEqual(tuple(active), (None, None))
+            self.assertEqual(second_calls, [])
+        finally:
+            release_provider.set()
+            worker.join(10)
+            for connection in connections:
+                connection.close()
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(first_errors, [])
+        self.assertEqual(first_result[0]["settlement_kind"], "equal")
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT count(*) FROM audit_task_attempts WHERE task_hash=?",
+                (task_key,),
+            ).fetchone()[0],
+            1,
+        )
+
+    def test_resume_replays_committed_overflow_split_without_provider_call(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        with mock.patch.object(
+            history_execution, "split_task",
+            side_effect=history_execution.ExecutionCrash(
+                "crash after overflow completion"
+            ),
+        ):
+            with self.assertRaises(history_execution.ExecutionCrash):
+                history_execution.run_map_task(
+                    self.fixture.conn, self.fixture.cas_root, plan, task_key,
+                    lambda *_: {"kind": "overflow", "raw": "overflow"},
+                    now=self.fixture._now(),
+                )
+
+        resumed_calls = []
+        result = history_execution.run_map_task(
+            self.fixture.conn, self.fixture.cas_root, plan, task_key,
+            lambda *_: resumed_calls.append(True), now=self.fixture._now(1),
+        )
+        self.assertEqual(result["state"], "superseded")
+        self.assertEqual(resumed_calls, [])
+        parent = history_execution.load_task(self.fixture.conn, task_key)
+        self.assertEqual(parent["state"], "superseded")
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT count(*) FROM audit_task_edges_v2 "
+                "WHERE parent_task_hash=?",
+                (task_key,),
+            ).fetchone()[0],
+            2,
+        )
+
+    def test_resume_replays_final_timeout_exhaustion_without_third_attempt(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        with mock.patch.object(
+            history_execution, "exhaust_task",
+            side_effect=history_execution.ExecutionCrash(
+                "crash after final timeout completion"
+            ),
+        ):
+            with self.assertRaises(history_execution.ExecutionCrash):
+                history_execution.run_map_task(
+                    self.fixture.conn, self.fixture.cas_root, plan, task_key,
+                    lambda *_: {"kind": "timeout", "raw": "timed out"},
+                    now=self.fixture._now(),
+                )
+
+        resumed_calls = []
+        result = history_execution.run_map_task(
+            self.fixture.conn, self.fixture.cas_root, plan, task_key,
+            lambda *_: resumed_calls.append(True), now=self.fixture._now(1),
+        )
+        self.assertEqual(result["state"], "exhausted")
+        self.assertEqual(resumed_calls, [])
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT reason FROM audit_task_terminal_facts_v2 "
+                "WHERE task_hash=?",
+                (task_key,),
+            ).fetchone()[0],
+            "provider_exhausted",
+        )
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT count(*) FROM audit_task_attempts WHERE task_hash=?",
+                (task_key,),
+            ).fetchone()[0],
+            2,
+        )
 
 
 if __name__ == "__main__":

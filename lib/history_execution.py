@@ -1355,7 +1355,7 @@ def _has_route_dispatch_authority(conn, plan_sha):
 
 def record_attempt(
     conn, task_key, capability, usage_reservation, *, cas_root, request_bytes,
-    ordinal=None, now=None,
+    ordinal=None, now=None, claim_fence=None, claim_token=None,
 ):
     """Append a started attempt after its request CAS descriptor is durable."""
     task = load_task(conn, task_key)
@@ -1363,6 +1363,14 @@ def record_attempt(
         raise ExecutionError("missing_route_dispatch_authority")
     if task["state"] != "claimed":
         raise ExecutionError("task_not_claimed")
+    if claim_fence is not None or claim_token is not None:
+        if (
+            task["fence"] != claim_fence
+            or task["claim_token"] != claim_token
+        ):
+            raise history_audit_store.StaleFence(
+                "attempt launch claim is stale"
+            )
     if not isinstance(capability, dict) or not isinstance(capability.get("provider"), str):
         raise ExecutionError("capability_authority_mismatch")
     provider = capability["provider"]
@@ -1452,7 +1460,17 @@ def record_attempt(
         raise ExecutionError("attempt_request_hash_mismatch")
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _assert_budget_available(conn, task, reserved)
+        current_task = load_task(conn, task_key)
+        if claim_fence is not None or claim_token is not None:
+            if (
+                current_task["state"] != "claimed"
+                or current_task["fence"] != claim_fence
+                or current_task["claim_token"] != claim_token
+            ):
+                raise history_audit_store.StaleFence(
+                    "attempt launch claim is stale"
+                )
+        _assert_budget_available(conn, current_task, reserved)
         created_at = _now(now).isoformat()
         conn.execute(
             """
@@ -2227,7 +2245,26 @@ def run_task(
     if not callable(provider):
         raise ExecutionError("provider_must_be_in_memory_callable")
     task = load_task(conn, task_key)
-    claim_task(conn, task_key, "runtime-worker", lease_seconds, task["fence"], now=now)
+    if (
+        task["state"] == "claimed"
+        and task["lease_until"] is not None
+        and _now(task["lease_until"]) > _now(now)
+    ):
+        latest = conn.execute(
+            """
+            SELECT COALESCE(completion.outcome, cost.outcome) AS outcome
+            FROM audit_task_attempts attempt
+            LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+            LEFT JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+            WHERE attempt.task_hash=? ORDER BY attempt.ordinal DESC LIMIT 1
+            """,
+            (task_key,),
+        ).fetchone()
+        if latest is None or latest["outcome"] is None:
+            raise history_audit_store.StaleFence("logical task lease is live")
+    claim = claim_task(
+        conn, task_key, "runtime-worker", lease_seconds, task["fence"], now=now
+    )
     task = load_task(conn, task_key)
     terminal_transition = {
         "expected_fence": task["fence"],
@@ -2280,6 +2317,32 @@ def run_task(
     if attempts:
         prior_failure = attempts[-1]["outcome"]
         prior_provider = _json(attempts[-1]["provenance_json"])["provider"]
+        if prior_failure == "overflow":
+            if task["stage"] == "map":
+                return finish_terminal(
+                    split_task(conn, task_key, **terminal_transition)
+                )
+            return finish_terminal(
+                exhaust_task(
+                    conn, task_key, "overflow", **terminal_transition
+                )
+            )
+        if task["stage"] == "map" and prior_failure in {
+            "item_set", "truncated",
+        }:
+            return finish_terminal(
+                split_task(conn, task_key, **terminal_transition)
+            )
+        if prior_failure == "provider_error" or (
+            start_ordinal >= MAX_ATTEMPTS
+            and prior_failure in {"timeout", "429", "5xx"}
+        ):
+            return finish_terminal(
+                exhaust_task(
+                    conn, task_key, "provider_exhausted",
+                    **terminal_transition,
+                )
+            )
         if prior_failure in {"timeout", "429", "5xx"}:
             provider_index = min(start_ordinal, len(pool) - 1)
         else:
@@ -2300,6 +2363,7 @@ def run_task(
                     task["durable_plan"]["provider_capabilities"][provider_name]
                 ),
                 reservation, cas_root=cas_root, request_bytes=request_bytes,
+                claim_fence=claim["fence"], claim_token=claim["claim_token"],
             )
         except ExecutionError as exc:
             if exc.code != "attempt_budget_exceeded":
