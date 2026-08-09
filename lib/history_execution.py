@@ -52,12 +52,18 @@ class ExecutionCrash(RuntimeError):
 
 
 def _now(value=None):
-    value = value or datetime.datetime.now(datetime.timezone.utc).isoformat()
-    try:
-        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (AttributeError, ValueError) as exc:
-        raise ExecutionError("invalid_timestamp") from exc
-    if parsed.tzinfo is None:
+    if value is None:
+        return datetime.datetime.now(datetime.timezone.utc)
+    if isinstance(value, datetime.datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ExecutionError("invalid_timestamp") from exc
+    else:
+        raise ExecutionError("invalid_timestamp")
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ExecutionError("invalid_timestamp")
     return parsed.astimezone(datetime.timezone.utc)
 
@@ -1997,8 +2003,10 @@ def settle_task(conn, task_key, valid_attempts, *, cas_root, now=None):
         return {**decision, "settlement_sha256": settlement_sha}
     if task["state"] != "claimed":
         raise ExecutionError("task_not_claimed")
-    if _now(task["lease_until"]) <= _now(now):
+    current = _now(now)
+    if _now(task["lease_until"]) <= current:
         raise history_audit_store.StaleFence("logical task settlement lease expired")
+    settled_at = current.isoformat()
     try:
         conn.execute("BEGIN IMMEDIATE")
         history_audit_store.compare_and_set_logical_task(
@@ -2020,7 +2028,7 @@ def settle_task(conn, task_key, valid_attempts, *, cas_root, now=None):
                 _canonical(decision["normalized_result"]) if decision["normalized_result"] is not None else None,
                 _canonical(decision["valid_attempt_ids"]),
                 _canonical(decision["valid_output_cas_ids"]),
-                datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                settled_at,
             ),
         )
         history_audit_store.compare_and_set_logical_task(
