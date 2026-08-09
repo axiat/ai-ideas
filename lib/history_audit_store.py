@@ -7746,6 +7746,134 @@ WHERE NOT EXISTS (
 """
 
 
+_L2_FAILURE_CLAIM_TRANSFER_SQL = """
+CREATE TABLE audit_l2_failure_claim_transfers_v3(
+  task_hash TEXT NOT NULL REFERENCES audit_logical_tasks(task_hash),
+  attempt_id TEXT NOT NULL REFERENCES audit_task_attempts(attempt_id),
+  outcome TEXT NOT NULL CHECK(outcome IN ('overflow','item_set','truncated')),
+  source_claim_fence INTEGER NOT NULL CHECK(source_claim_fence>=0),
+  source_claim_token TEXT NOT NULL CHECK(length(source_claim_token)>0),
+  target_claim_fence INTEGER NOT NULL CHECK(target_claim_fence>source_claim_fence),
+  target_claim_token TEXT NOT NULL CHECK(length(target_claim_token)>0),
+  target_lease_until TEXT NOT NULL,
+  authorization_sha256 TEXT PRIMARY KEY CHECK(length(authorization_sha256)=64),
+  created_at TEXT NOT NULL,
+  UNIQUE(task_hash,target_claim_fence)
+);
+""" + _immutable_guards("audit_l2_failure_claim_transfers_v3") + """
+CREATE TRIGGER audit_l2_failure_claim_transfers_v3_guard
+BEFORE INSERT ON audit_l2_failure_claim_transfers_v3
+BEGIN
+  SELECT CASE WHEN audit_l2_failure_claim_transfer_insert_allowed(
+    NEW.task_hash,NEW.attempt_id,NEW.outcome,
+    NEW.source_claim_fence,NEW.source_claim_token,
+    NEW.target_claim_fence,NEW.target_claim_token,NEW.target_lease_until,
+    NEW.authorization_sha256,NEW.created_at
+  )<>1 THEN RAISE(ABORT,'failure claim transfer requires store authority') END;
+  SELECT CASE WHEN NEW.authorization_sha256<>
+    audit_l2_failure_claim_transfer_sha(
+      NEW.task_hash,NEW.attempt_id,NEW.outcome,
+      NEW.source_claim_fence,NEW.source_claim_token,
+      NEW.target_claim_fence,NEW.target_claim_token,NEW.target_lease_until,
+      NEW.created_at
+    ) THEN RAISE(ABORT,'failure claim transfer identity mismatch') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_logical_tasks task
+    WHERE task.task_hash=NEW.task_hash
+      AND task.state='claimed'
+      AND task.fence=NEW.target_claim_fence
+      AND task.claim_token=NEW.target_claim_token
+      AND task.lease_until=NEW.target_lease_until
+      AND audit_metadata_lease_live(task.lease_until,NEW.created_at)=1
+  ) THEN RAISE(ABORT,'failure claim transfer lacks live target claim') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM audit_task_attempts attempt
+    JOIN audit_attempt_completions_v2 completion
+      ON completion.attempt_id=attempt.attempt_id
+    JOIN audit_cas_objects output
+      ON output.object_id=completion.output_cas_object_id
+    WHERE attempt.task_hash=NEW.task_hash
+      AND attempt.attempt_id=NEW.attempt_id
+      AND completion.outcome=NEW.outcome
+      AND output.integrity_state='verified'
+      AND json_extract(attempt.provenance_json,'$.claim_fence')=
+          NEW.source_claim_fence
+      AND json_extract(attempt.provenance_json,'$.claim_token')=
+          NEW.source_claim_token
+      AND NOT EXISTS (
+        SELECT 1 FROM audit_task_attempts later
+        WHERE later.task_hash=attempt.task_hash
+          AND later.ordinal>attempt.ordinal
+      )
+  ) THEN RAISE(ABORT,'failure claim transfer lacks exact terminal evidence') END;
+END;
+
+CREATE VIEW audit_l2_valid_failure_claim_transfers_v3 AS
+SELECT transfer.*
+FROM audit_l2_failure_claim_transfers_v3 transfer
+JOIN audit_task_attempts attempt
+  ON attempt.attempt_id=transfer.attempt_id
+ AND attempt.task_hash=transfer.task_hash
+JOIN audit_attempt_completions_v2 completion
+  ON completion.attempt_id=attempt.attempt_id
+ AND completion.outcome=transfer.outcome
+JOIN audit_cas_objects output
+  ON output.object_id=completion.output_cas_object_id
+ AND output.integrity_state='verified'
+WHERE json_extract(attempt.provenance_json,'$.claim_fence')=
+        transfer.source_claim_fence
+  AND json_extract(attempt.provenance_json,'$.claim_token')=
+        transfer.source_claim_token
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_task_attempts later
+    WHERE later.task_hash=attempt.task_hash AND later.ordinal>attempt.ordinal
+  )
+  AND transfer.authorization_sha256=audit_l2_failure_claim_transfer_sha(
+    transfer.task_hash,transfer.attempt_id,transfer.outcome,
+    transfer.source_claim_fence,transfer.source_claim_token,
+    transfer.target_claim_fence,transfer.target_claim_token,
+    transfer.target_lease_until,transfer.created_at
+  );
+
+DROP VIEW audit_l2_valid_split_families_v3;
+CREATE VIEW audit_l2_valid_split_families_v3 AS
+SELECT family.*
+FROM audit_l2_valid_split_families_v2 family
+JOIN audit_l2_terminal_transition_authority_v2 authority
+  ON authority.parent_task_hash=family.parent_task_hash
+ AND authority.transition_kind='split'
+WHERE EXISTS (
+  SELECT 1
+  FROM audit_task_attempts attempt
+  JOIN audit_attempt_completions_v2 completion
+    ON completion.attempt_id=attempt.attempt_id
+  JOIN audit_cas_objects output
+    ON output.object_id=completion.output_cas_object_id
+  WHERE attempt.task_hash=family.parent_task_hash
+    AND completion.outcome IN ('overflow','item_set','truncated')
+    AND output.integrity_state='verified'
+    AND (
+      (
+        json_extract(attempt.provenance_json,'$.claim_fence')=
+          authority.claim_fence
+        AND json_extract(attempt.provenance_json,'$.claim_token')=
+          authority.claim_token
+      )
+      OR EXISTS (
+        SELECT 1 FROM audit_l2_valid_failure_claim_transfers_v3 transfer
+        WHERE transfer.task_hash=family.parent_task_hash
+          AND transfer.attempt_id=attempt.attempt_id
+          AND transfer.outcome=completion.outcome
+          AND transfer.target_claim_fence=authority.claim_fence
+          AND transfer.target_claim_token=authority.claim_token
+          AND transfer.target_lease_until=authority.lease_until
+      )
+    )
+);
+"""
+
+
 _AUTHORITY_INPUT_HARDENING_SQL = """
 CREATE TABLE audit_attempt_completion_quarantine_v4(
   attempt_id TEXT PRIMARY KEY REFERENCES audit_attempt_completions_v2(attempt_id),
@@ -8064,6 +8192,9 @@ MIGRATIONS = (
     ),
     Migration(
         "authority-input-hardening", 1, _AUTHORITY_INPUT_HARDENING_SQL,
+    ),
+    Migration(
+        "l2-failure-claim-transfer", 1, _L2_FAILURE_CLAIM_TRANSFER_SQL,
     ),
 )
 
@@ -9513,6 +9644,33 @@ def _l2_transition_authorization_sha(
         return ""
 
 
+def _l2_failure_claim_transfer_sha(
+    task_hash, attempt_id, outcome, source_claim_fence, source_claim_token,
+    target_claim_fence, target_claim_token, target_lease_until, created_at,
+):
+    try:
+        return _l2_fact_sha(
+            "history-l2-failure-claim-transfer-v1",
+            {
+                "task_hash": task_hash,
+                "attempt_id": attempt_id,
+                "outcome": outcome,
+                "source_claim": {
+                    "fence": source_claim_fence,
+                    "token": source_claim_token,
+                },
+                "target_claim": {
+                    "fence": target_claim_fence,
+                    "token": target_claim_token,
+                    "lease_until": target_lease_until,
+                },
+                "created_at": created_at,
+            },
+        )
+    except (TypeError, ValueError, history_contract_v2.ContractV2Error):
+        return ""
+
+
 def _l2_split_family_valid(plan_json, records_json, facts_json):
     """Validate one whole two-child split family without reading caller state."""
     try:
@@ -9679,7 +9837,25 @@ def _clear_l2_terminal_transition_guard(guard):
         expected_terminal=None,
         expected_edges=frozenset(),
         expected_authority=None,
+        expected_failure_claim_transfer=None,
     )
+
+
+@contextlib.contextmanager
+def _l2_failure_claim_transfer_guard(conn, transfer):
+    guard = _L2_TERMINAL_TRANSITION_GUARDS.get(id(conn))
+    if (
+        guard is None
+        or guard["active"]
+        or guard["expected_failure_claim_transfer"] is not None
+        or not conn.in_transaction
+    ):
+        raise AuditMigrationError("failure claim transfer guard is unavailable")
+    guard["expected_failure_claim_transfer"] = transfer
+    try:
+        yield
+    finally:
+        guard["expected_failure_claim_transfer"] = None
 
 
 @contextlib.contextmanager
@@ -10607,6 +10783,16 @@ def _initialize_schema(conn, *, verify):
     conn.create_function(
         "audit_l2_transition_authorization_sha", 7,
         _l2_transition_authorization_sha,
+    )
+    conn.create_function(
+        "audit_l2_failure_claim_transfer_sha", 9,
+        _l2_failure_claim_transfer_sha,
+    )
+    conn.create_function(
+        "audit_l2_failure_claim_transfer_insert_allowed", 10,
+        lambda *values: 1 if (
+            split_guard["expected_failure_claim_transfer"] == tuple(values)
+        ) else 0,
     )
     conn.create_function(
         "audit_l2_split_task_insert_allowed", 5,
@@ -20318,12 +20504,28 @@ def _l2_current_claim_has_failure(conn, parent, outcomes):
         WHERE attempt.task_hash=?
           AND completion.outcome IN ({placeholders})
           AND output.integrity_state='verified'
-          AND json_extract(attempt.provenance_json, '$.claim_fence')=?
-          AND json_extract(attempt.provenance_json, '$.claim_token')=?
+          AND (
+            (
+              json_extract(attempt.provenance_json, '$.claim_fence')=?
+              AND json_extract(attempt.provenance_json, '$.claim_token')=?
+            )
+            OR EXISTS (
+              SELECT 1 FROM audit_l2_valid_failure_claim_transfers_v3 transfer
+              WHERE transfer.task_hash=attempt.task_hash
+                AND transfer.attempt_id=attempt.attempt_id
+                AND transfer.outcome=completion.outcome
+                AND transfer.target_claim_fence=?
+                AND transfer.target_claim_token=?
+                AND transfer.target_lease_until=?
+            )
+          )
         LIMIT 1
         """,
-        (parent["task_hash"], *sorted(outcomes),
-         parent["fence"], parent["claim_token"]),
+        (
+            parent["task_hash"], *sorted(outcomes),
+            parent["fence"], parent["claim_token"],
+            parent["fence"], parent["claim_token"], parent["lease_until"],
+        ),
     ).fetchone() is not None
 
 
@@ -20335,6 +20537,156 @@ def _l2_current_claim_has_split_failure(conn, parent):
     return _l2_current_claim_has_failure(
         conn, parent, {"overflow", "item_set", "truncated"}
     )
+
+
+def _l2_failure_transfer_source(conn, task_hash, attempt_id, outcome):
+    if outcome not in {"overflow", "item_set", "truncated"}:
+        return None
+    row = conn.execute(
+        """
+        SELECT attempt.provenance_json
+        FROM audit_task_attempts attempt
+        JOIN audit_attempt_completions_v2 completion
+          ON completion.attempt_id=attempt.attempt_id
+        JOIN audit_cas_objects output
+          ON output.object_id=completion.output_cas_object_id
+        WHERE attempt.task_hash=? AND attempt.attempt_id=?
+          AND completion.outcome=? AND output.integrity_state='verified'
+          AND NOT EXISTS (
+            SELECT 1 FROM audit_task_attempts later
+            WHERE later.task_hash=attempt.task_hash
+              AND later.ordinal>attempt.ordinal
+          )
+        """,
+        (task_hash, attempt_id, outcome),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        provenance = _closed_json(row["provenance_json"])
+    except (TypeError, ValueError):
+        return None
+    source_fence = provenance.get("claim_fence")
+    source_token = provenance.get("claim_token")
+    if (
+        type(source_fence) is not int
+        or source_fence < 0
+        or not isinstance(source_token, str)
+        or not source_token
+    ):
+        return None
+    return source_fence, source_token
+
+
+def claim_l2_failure_recovery(
+    conn, task_hash, attempt_id, outcome, worker_id, lease_seconds, *,
+    expected_fence, now,
+):
+    """Atomically transfer exact terminal failure evidence to a fresh claim."""
+    if conn.in_transaction:
+        raise AuditMigrationError("failure claim transfer requires an idle connection")
+    if not isinstance(worker_id, str) or not worker_id:
+        raise ValueError("failure claim transfer worker is invalid")
+    if type(lease_seconds) is not int or lease_seconds < 0:
+        raise ValueError("failure claim transfer lease is invalid")
+    if type(expected_fence) is not int or expected_fence < 0:
+        raise ValueError("failure claim transfer fence is invalid")
+    created_at = _l2_transition_timestamp(now)
+    current_time = datetime.datetime.fromisoformat(created_at)
+    target_lease_until = (
+        current_time + datetime.timedelta(seconds=lease_seconds)
+    ).isoformat()
+    parent = _l2_transition_parent(conn, task_hash)
+    if (
+        parent["state"] == "claimed"
+        and parent["fence"] == expected_fence + 1
+        and parent["claim_token"] == worker_id
+        and _metadata_lease_live(parent["lease_until"], created_at) == 1
+    ):
+        replay = conn.execute(
+            """
+            SELECT 1 FROM audit_l2_valid_failure_claim_transfers_v3
+            WHERE task_hash=? AND attempt_id=? AND outcome=?
+              AND target_claim_fence=? AND target_claim_token=?
+              AND target_lease_until=?
+            """,
+            (
+                task_hash, attempt_id, outcome, parent["fence"], worker_id,
+                parent["lease_until"],
+            ),
+        ).fetchone()
+        if replay is not None:
+            return {
+                "task_hash": task_hash,
+                "fence": parent["fence"],
+                "claim_token": worker_id,
+                "lease_until": parent["lease_until"],
+            }
+    if parent["state"] != "planned" or parent["fence"] != expected_fence:
+        raise StaleFence("failure recovery task state or fence is stale")
+    source = _l2_failure_transfer_source(conn, task_hash, attempt_id, outcome)
+    if source is None:
+        raise AuditMigrationError(
+            "failure claim transfer lacks exact terminal evidence"
+        )
+    source_fence, source_token = source
+    target_fence = expected_fence + 1
+    authorization_sha = _l2_failure_claim_transfer_sha(
+        task_hash, attempt_id, outcome, source_fence, source_token,
+        target_fence, worker_id, target_lease_until, created_at,
+    )
+    transfer = (
+        task_hash, attempt_id, outcome, source_fence, source_token,
+        target_fence, worker_id, target_lease_until, authorization_sha,
+        created_at,
+    )
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT state,fence,claim_token,lease_until "
+            "FROM audit_logical_tasks WHERE task_hash=?",
+            (task_hash,),
+        ).fetchone()
+        if current is None or tuple(current) != (
+            "planned", expected_fence, None, None,
+        ):
+            raise StaleFence("failure recovery claim changed before transfer")
+        if _l2_failure_transfer_source(
+            conn, task_hash, attempt_id, outcome
+        ) != source:
+            raise AuditMigrationError(
+                "failure claim transfer evidence changed before transfer"
+            )
+        with _l2_failure_claim_transfer_guard(conn, transfer):
+            compare_and_set_logical_task(
+                conn, task_hash,
+                expected_state="planned", expected_fence=expected_fence,
+                new_state="claimed", new_fence=target_fence,
+                claim_token=worker_id, lease_until=target_lease_until,
+            )
+            conn.execute(
+                "INSERT INTO audit_l2_failure_claim_transfers_v3 "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                transfer,
+            )
+            if conn.execute(
+                "SELECT 1 FROM audit_l2_valid_failure_claim_transfers_v3 "
+                "WHERE authorization_sha256=?", (authorization_sha,),
+            ).fetchone() is None:
+                raise AuditMigrationError(
+                    "failure claim transfer failed durable validation"
+                )
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    return {
+        "task_hash": task_hash,
+        "fence": target_fence,
+        "claim_token": worker_id,
+        "lease_until": target_lease_until,
+    }
 
 
 def transition_l2_split_task(

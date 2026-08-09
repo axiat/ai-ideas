@@ -465,7 +465,7 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
             2,
         )
 
-    def test_expired_overflow_claim_recovers_without_rebinding_failure(self):
+    def test_expired_overflow_claim_transfers_and_replays_after_recovery_crash(self):
         plan = self.fixture._install()
         task_key = plan["logical_task_keys"][0]
         with mock.patch.object(
@@ -494,25 +494,40 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
             ),
             [task_key],
         )
-        with self.assertRaises(history_execution.ExecutionError) as recovered:
-            history_execution.run_map_task(
-                self.fixture.conn, self.fixture.cas_root, plan, task_key,
-                lambda *_: self.fail("recovered failure called provider"),
-                now=self.fixture._now(62),
-            )
+        with mock.patch.object(
+            history_execution, "split_task",
+            side_effect=history_execution.ExecutionCrash(
+                "crash after recovery claim transfer"
+            ),
+        ):
+            with self.assertRaises(history_execution.ExecutionCrash):
+                history_execution.run_map_task(
+                    self.fixture.conn, self.fixture.cas_root, plan, task_key,
+                    lambda *_: self.fail("recovered failure called provider"),
+                    now=self.fixture._now(62), lease_seconds=60,
+                )
+        transferred = history_execution.load_task(self.fixture.conn, task_key)
+        self.assertEqual(transferred["state"], "claimed")
         self.assertEqual(
-            recovered.exception.code,
-            "split_failure_claim_authority_unavailable",
+            self.fixture.conn.execute(
+                "SELECT count(*) FROM audit_l2_failure_claim_transfers_v3 "
+                "WHERE task_hash=?", (task_key,),
+            ).fetchone()[0],
+            1,
         )
-        task = history_execution.load_task(self.fixture.conn, task_key)
-        self.assertEqual(task["state"], "planned")
+        resumed_calls = []
+        result = history_execution.run_map_task(
+            self.fixture.conn, self.fixture.cas_root, plan, task_key,
+            lambda *_: resumed_calls.append(True), now=self.fixture._now(63),
+        )
+        self.assertEqual(result["state"], "superseded")
+        self.assertEqual(resumed_calls, [])
         self.assertEqual(
             self.fixture.conn.execute(
                 "SELECT count(*) FROM audit_task_edges_v2 "
-                "WHERE parent_task_hash=?",
-                (task_key,),
+                "WHERE parent_task_hash=?", (task_key,),
             ).fetchone()[0],
-            0,
+            2,
         )
 
     def test_resume_replays_final_syntax_exhaustion_without_third_attempt(self):

@@ -2,6 +2,7 @@
 """Regression tests for split and exhaustion terminal authority."""
 
 import copy
+import datetime
 import pathlib
 import sys
 import unittest
@@ -73,6 +74,7 @@ class HistoryAuditStoreTerminalEvidenceRegression(unittest.TestCase):
             authority_now=self.transition_now,
             now=self.transition_now,
         )
+        return attempt
 
     def test_multi_item_split_requires_current_claim_failure(self):
         plan, task_hash, claim = self._install_and_claim(self.fixture.records)
@@ -94,6 +96,83 @@ class HistoryAuditStoreTerminalEvidenceRegression(unittest.TestCase):
         )
         self.assertEqual(result["state"], "superseded")
         self.assertEqual(len(result["children"]), 2)
+        self.assertIsNotNone(
+            self.fixture.conn.execute(
+                "SELECT 1 FROM audit_l2_valid_split_families_v3 "
+                "WHERE parent_task_hash=?", (task_hash,),
+            ).fetchone()
+        )
+
+    def _recover_expired_claim(self, plan, task_hash, claim):
+        recovery_now = datetime.datetime.fromisoformat(
+            claim["lease_until"]
+        ).isoformat()
+        self.assertEqual(
+            history_execution.recover_run(
+                self.fixture.conn, plan["plan_sha"],
+                cas_root=self.fixture.cas_root, now=recovery_now,
+            ),
+            [task_hash],
+        )
+        return (
+            datetime.datetime.fromisoformat(recovery_now)
+            + datetime.timedelta(seconds=1)
+        ).isoformat()
+
+    def test_recovery_transfer_rejects_mismatched_terminal_evidence(self):
+        plan, task_hash, claim = self._install_and_claim(self.fixture.records)
+        attempt = self._record_failure(plan, task_hash, "overflow")
+        transfer_now = self._recover_expired_claim(
+            plan, task_hash, claim
+        )
+        for attempt_id, outcome in (
+            (attempt["attempt_id"], "truncated"),
+            ("0" * 64, "overflow"),
+        ):
+            with self.subTest(attempt_id=attempt_id, outcome=outcome):
+                with self.assertRaisesRegex(
+                    history_audit_store.AuditMigrationError,
+                    "lacks exact terminal evidence",
+                ):
+                    history_audit_store.claim_l2_failure_recovery(
+                        self.fixture.conn, task_hash, attempt_id, outcome,
+                        "recovery-worker", 60,
+                        expected_fence=2, now=transfer_now,
+                    )
+        task = history_execution.load_task(self.fixture.conn, task_hash)
+        self.assertEqual((task["state"], task["fence"]), ("planned", 2))
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT count(*) FROM audit_l2_failure_claim_transfers_v3"
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_recovery_transfer_authorizes_only_new_claim(self):
+        plan, task_hash, old_claim = self._install_and_claim(
+            self.fixture.records
+        )
+        attempt = self._record_failure(plan, task_hash, "overflow")
+        transfer_now = self._recover_expired_claim(
+            plan, task_hash, old_claim
+        )
+        new_claim = history_audit_store.claim_l2_failure_recovery(
+            self.fixture.conn, task_hash, attempt["attempt_id"], "overflow",
+            "recovery-worker", 60,
+            expected_fence=2, now=transfer_now,
+        )
+        with self.assertRaises(history_audit_store.StaleFence):
+            history_audit_store.transition_l2_split_task(
+                self.fixture.conn, task_hash,
+                expected_fence=old_claim["fence"],
+                claim_token=old_claim["claim_token"], now=transfer_now,
+            )
+        result = history_audit_store.transition_l2_split_task(
+            self.fixture.conn, task_hash,
+            expected_fence=new_claim["fence"],
+            claim_token=new_claim["claim_token"], now=transfer_now,
+        )
+        self.assertEqual(result["state"], "superseded")
         self.assertIsNotNone(
             self.fixture.conn.execute(
                 "SELECT 1 FROM audit_l2_valid_split_families_v3 "

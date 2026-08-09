@@ -2403,7 +2403,7 @@ def run_task(
 
     latest = conn.execute(
         """
-        SELECT attempt.ordinal,
+        SELECT attempt.attempt_id, attempt.ordinal,
                COALESCE(completion.outcome, cost.outcome) AS outcome
         FROM audit_task_attempts attempt
         LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
@@ -2468,12 +2468,40 @@ def run_task(
                 )
             )
     elif split_failure:
-        code = (
-            "expired_split_failure_claim"
-            if task["state"] == "claimed"
-            else "split_failure_claim_authority_unavailable"
+        if task["state"] == "claimed":
+            raise ExecutionError("expired_split_failure_claim")
+        try:
+            claim = history_audit_store.claim_l2_failure_recovery(
+                conn, task_key, latest["attempt_id"], latest["outcome"],
+                "runtime-worker", lease_seconds,
+                expected_fence=task["fence"], now=runtime_now,
+            )
+        except history_audit_store.StaleFence:
+            current = load_task(conn, task_key)
+            if current["state"] not in {"superseded", "exhausted"}:
+                raise
+            claim = {
+                "fence": current["fence"],
+                "claim_token": current["claim_token"],
+            }
+        except history_audit_store.AuditMigrationError as exc:
+            raise ExecutionError(
+                "split_failure_claim_authority_unavailable"
+            ) from exc
+        terminal_transition = {
+            "expected_fence": claim["fence"],
+            "claim_token": claim["claim_token"],
+            "now": lifecycle_now,
+        }
+        if task["stage"] == "map":
+            return finish_terminal(
+                split_task(conn, task_key, **terminal_transition)
+            )
+        return finish_terminal(
+            exhaust_task(
+                conn, task_key, "overflow", **terminal_transition
+            )
         )
-        raise ExecutionError(code)
     claim = _claim_runtime_task(
         conn, task_key, "runtime-worker", lease_seconds, now=runtime_now
     )
