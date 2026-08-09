@@ -174,6 +174,47 @@ class HistoryStoreTsvLineageRegression(unittest.TestCase):
         with self.assertRaises(history_store.ImportConflict):
             history_store._validate_import_plan_rows(plan)
 
+    def test_plan_validation_rejects_detached_distinct_story_member(self):
+        plan = self._plan(
+            ["lineage root", "detached story"], [], "detached-member"
+        )
+        root = plan["rows"][0]
+        detached = plan["rows"][1]
+        detached.update(
+            {
+                "root_story": root["root_story"],
+                "lineage_id": root["lineage_id"],
+                "root_candidate_id": root["root_candidate_id"],
+            }
+        )
+
+        with self.assertRaises(history_store.ImportConflict):
+            history_store._validate_import_plan_rows(plan)
+
+    def test_plan_validation_rejects_explicit_exact_alias_edge(self):
+        plan = self._plan(
+            ["exact alias", "exact alias"], [], "explicit-alias"
+        )
+        evidence_sha = "a" * 64
+        plan["edges"].append(
+            {
+                "parent_candidate_id": plan["rows"][0]["candidate_id"],
+                "child_candidate_id": plan["rows"][1]["candidate_id"],
+                "relation_type": "evolved_from",
+                "authority": "explicit",
+                "evidence": {
+                    "artifact_id": history_store._sha(
+                        b"import-artifact-v1\0" + evidence_sha.encode("ascii")
+                    ),
+                    "byte_count": 0,
+                    "sha256": evidence_sha,
+                },
+            }
+        )
+
+        with self.assertRaises(history_store.ImportConflict):
+            history_store._validate_import_plan_rows(plan)
+
     def test_identical_lineage_edges_are_deduplicated_before_plan_seal(self):
         duplicate = {"parent_row": 1, "child_row": 2}
         plan = self._plan(
@@ -194,11 +235,13 @@ class HistoryStoreTsvLineageRegression(unittest.TestCase):
             self.conn.execute("SELECT count(*) FROM lineage_edges").fetchone()[0],
             1,
         )
+
     def test_duplicate_validation_is_order_independent(self):
         valid = {"parent_row": 1, "child_row": 2}
         invalid_cases = (
             {"parent_row": 1, "child_row": 2, "authority": "similarity"},
             {"parent_row": 1, "child_row": 2, "evidence_path": ""},
+            {"parent_row": 1, "child_row": 2, "root_row": {}},
         )
         for case_index, invalid in enumerate(invalid_cases):
             for order_index, entries in enumerate(

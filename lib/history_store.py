@@ -1352,6 +1352,13 @@ def _union_source_data(sealed_object, source_kind):
     return {"mappings": normalized, "roots": roots}
 
 
+def _mapping_row_number(value, description):
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ImportConflict(f"{description} is not a valid data row") from exc
+
+
 def _build_components(rows, mapping):
     by_row = {item["row_number"]: item for item in rows}
     row_numbers = sorted(by_row)
@@ -1372,8 +1379,14 @@ def _build_components(rows, mapping):
     root_declarations = []
     if mapping:
         for entry in mapping.get("mappings", mapping.get("edges", [])):
-            parent_number = int(entry.get("parent_row", entry.get("parent_ordinal", 0)))
-            child_number = int(entry.get("child_row", entry.get("child_ordinal", 0)))
+            parent_number = _mapping_row_number(
+                entry.get("parent_row", entry.get("parent_ordinal", 0)),
+                "mapping parent row",
+            )
+            child_number = _mapping_row_number(
+                entry.get("child_row", entry.get("child_ordinal", 0)),
+                "mapping child row",
+            )
             if parent_number not in by_row or child_number not in by_row:
                 raise ImportConflict("mapping references a missing data row")
             relation_type = entry.get("relation_type", "evolved_from")
@@ -1423,12 +1436,18 @@ def _build_components(rows, mapping):
                 union.union(parent_number, child_number)
             root_number = entry.get("root_row")
             if root_number is not None:
-                root_number = int(root_number)
+                root_number = _mapping_row_number(
+                    root_number, "mapping root row"
+                )
                 if root_number not in by_row:
                     raise ImportConflict("mapping root references a missing data row")
                 root_declarations.append((parent_number, root_number))
         for root in mapping.get("roots", []):
-            root_number = int(root["row"])
+            if not isinstance(root, dict) or "row" not in root:
+                raise ImportConflict("mapping root is invalid")
+            root_number = _mapping_row_number(
+                root["row"], "mapping root row"
+            )
             if root_number not in by_row:
                 raise ImportConflict("mapping root references a missing data row")
             root_declarations.append((root_number, root_number))
@@ -2074,6 +2093,13 @@ def _validate_import_plan_rows(plan):
             raise ImportConflict("import plan lineage edge is invalid")
         parent = edge["parent_candidate_id"]
         child = edge["child_candidate_id"]
+        if (
+            by_candidate[parent]["canonical_story"]
+            == by_candidate[child]["canonical_story"]
+        ):
+            raise ImportConflict(
+                "import plan explicit edge duplicates a canonical alias"
+            )
         edge_key = (parent, child, edge["relation_type"])
         if edge_key in seen_edges:
             raise ImportConflict("import plan lineage edge is duplicated")
@@ -2123,6 +2149,27 @@ def _validate_import_plan_rows(plan):
         raise ImportConflict(
             "import plan lineage parent is unreachable from its candidate root"
         )
+    reachable_aliases = {
+        (
+            by_candidate[candidate_id]["lineage_id"],
+            by_candidate[candidate_id]["canonical_hash"],
+            by_candidate[candidate_id]["canonical_story"],
+        )
+        for candidate_id in reachable
+    }
+    for item in rows:
+        alias = (
+            item["lineage_id"],
+            item["canonical_hash"],
+            item["canonical_story"],
+        )
+        if (
+            item["candidate_id"] not in reachable
+            and alias not in reachable_aliases
+        ):
+            raise ImportConflict(
+                "import plan lineage member is unreachable from its candidate root"
+            )
     return sorted(
         edges,
         key=lambda edge: (
