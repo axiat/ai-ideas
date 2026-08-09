@@ -1152,6 +1152,7 @@ copy_external_output() {
   python3 - \
     "$stage" "$mirror" "$RD" "$today" "$diagnostic" \
     "$run_id" "$RUNS_DIR" <<'PY'
+import base64
 import hashlib
 import json
 import os
@@ -1230,6 +1231,11 @@ def atomic_write(destination, raw):
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, destination)
+        directory = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         try:
             temporary.unlink()
@@ -1321,8 +1327,8 @@ elif stage == "report":
     while destination.exists():
         destination = pathlib.Path("ideas") / f"{today}_hunt-{suffix}.md"
         suffix += 1
-    atomic_write(destination, raw)
     binding = {
+        "report_content_base64": base64.b64encode(raw).decode("ascii"),
         "report_path": destination.as_posix(),
         "report_sha256": hashlib.sha256(raw).hexdigest(),
         "run_id": run_id,
@@ -1332,6 +1338,7 @@ elif stage == "report":
         json.dumps(binding, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode("utf-8")
     write_new_binding(binding_destination, binding_raw)
+    atomic_write(destination, raw)
     print(destination)
 else:
     raise SystemExit("unknown external output stage")
@@ -1698,8 +1705,11 @@ PY
 verify_pending_report_binding() {
   local archive=$1 expected_run_id=$2 expected_date=$3
   python3 - "$archive" "$expected_run_id" "$expected_date" <<'PY'
+import base64
+import binascii
 import hashlib
 import json
+import os
 import pathlib
 import re
 import stat
@@ -1726,7 +1736,7 @@ except FileNotFoundError:
 if (
     not stat.S_ISREG(binding_state.st_mode)
     or binding_state.st_nlink != 1
-    or binding_state.st_size > 4096
+    or binding_state.st_size > 2 * 1024 * 1024
 ):
     raise SystemExit("report binding is unsafe")
 raw = binding_path.read_bytes()
@@ -1739,12 +1749,14 @@ except (UnicodeDecodeError, json.JSONDecodeError) as exc:
 if (
     not isinstance(binding, dict)
     or set(binding) != {
-        "schema_version", "run_id", "report_path", "report_sha256"
+        "schema_version", "run_id", "report_path", "report_sha256",
+        "report_content_base64",
     }
     or binding.get("schema_version") != 1
     or binding.get("run_id") != expected_run_id
     or not isinstance(binding.get("report_path"), str)
     or not isinstance(binding.get("report_sha256"), str)
+    or not isinstance(binding.get("report_content_base64"), str)
     or re.fullmatch(r"[0-9a-f]{64}", binding["report_sha256"]) is None
 ):
     raise SystemExit("report binding fields are invalid")
@@ -1753,6 +1765,18 @@ canonical = (
 ).encode("utf-8")
 if raw != canonical:
     raise SystemExit("report binding is not canonical")
+try:
+    sealed_report_raw = base64.b64decode(
+        binding["report_content_base64"], validate=True
+    )
+except (ValueError, TypeError, binascii.Error) as exc:
+    raise SystemExit("bound report content is invalid") from exc
+if (
+    len(sealed_report_raw) > 1024 * 1024
+    or hashlib.sha256(sealed_report_raw).hexdigest()
+    != binding["report_sha256"]
+):
+    raise SystemExit("bound report content does not match its hash")
 report_pattern = re.compile(
     rf"ideas/{re.escape(expected_date)}_hunt(?:-(?:[2-9]|[1-9][0-9]+))?\.md"
 )
@@ -1760,6 +1784,34 @@ if report_pattern.fullmatch(binding["report_path"]) is None:
     raise SystemExit("report binding path does not match the archived date")
 report = pathlib.Path(binding["report_path"])
 try:
+    report_state = report.lstat()
+except FileNotFoundError:
+    parent_state = report.parent.lstat()
+    if (
+        not stat.S_ISDIR(parent_state.st_mode)
+        or stat.S_ISLNK(parent_state.st_mode)
+    ):
+        raise SystemExit("bound report parent is unsafe")
+    temporary = report.with_name(f".{report.name}.recovery-{os.getpid()}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(sealed_report_raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, report, follow_symlinks=False)
+        temporary.unlink()
+        directory = os.open(report.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
     report_state = report.lstat()
 except OSError as exc:
     raise SystemExit(f"bound report is unavailable: {exc}")
@@ -1772,8 +1824,8 @@ if (
 report_raw = report.read_bytes()
 if len(report_raw) != report_state.st_size:
     raise SystemExit("bound report size changed during read")
-if hashlib.sha256(report_raw).hexdigest() != binding["report_sha256"]:
-    raise SystemExit("bound report hash does not match")
+if report_raw != sealed_report_raw:
+    raise SystemExit("bound report does not match sealed content")
 print(binding["report_path"])
 PY
 }
@@ -1971,8 +2023,48 @@ refresh_published_archive() {
   [ "$source" = "$ARCHIVE_SOURCE" ] || rm -rf "$source"
 }
 
+publish_hunt_for_date() {
+  local publication_date=$1 shim rc
+  shim=$(mktemp -d "${TMPDIR:-/tmp}/hunt-publish-date.XXXXXX") || return 2
+  if ! python3 - "$shim/date" <<'PY'
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+script = b'''#!/usr/bin/env bash
+if [ "${1:-}" = "+%F" ]; then
+  printf '%s\\n' "$HUNT_PUBLICATION_DATE"
+else
+  exec /bin/date "$@"
+fi
+'''
+descriptor = os.open(
+    path,
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+    0o700,
+)
+with os.fdopen(descriptor, "wb") as handle:
+    handle.write(script)
+    handle.flush()
+    os.fsync(handle.fileno())
+PY
+  then
+    rm -rf "$shim"
+    return 2
+  fi
+  if HUNT_PUBLICATION_DATE="$publication_date" \
+     PATH="$shim:$PATH" ./publish.sh >> "$LOG" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  rm -rf "$shim"
+  return "$rc"
+}
+
 publish_existing_strong_accept_report() {
-  ./publish.sh >> "$LOG" 2>&1 || {
+  publish_hunt_for_date "$today" || {
     log "Publication recovery failed"
     return 2
   }
@@ -1990,7 +2082,7 @@ finalize_strong_accept() {
         log "Committed Strong Accept report binding is invalid"
         return 2
       fi
-      if ./publish.sh >> "$LOG" 2>&1; then
+      if publish_hunt_for_date "$today"; then
         refresh_published_archive || return 2
         fails=0
         return 0
@@ -2154,7 +2246,7 @@ today=$(date +%F)
 today_sa=$(sa_today)
 if [ "$SA_TARGET" -gt 0 ] && [ "$today_sa" -ge "$SA_TARGET" ]; then
   if [ "$recovered_report" -eq 0 ]; then
-    ./publish.sh >> "$LOG" 2>&1 || {
+    publish_hunt_for_date "$today" || {
       log "Publication recovery failed"
       exit 2
     }

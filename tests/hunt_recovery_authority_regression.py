@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Crash-recovery regressions for hunt.sh decision publication."""
 
+import base64
 import hashlib
 import json
 import os
@@ -150,6 +151,9 @@ class HuntRecoveryAuthorityRegression(unittest.TestCase):
             report = ideas / "2026-08-08_hunt-2.md"
             report.write_text("bound report\n", encoding="utf-8")
             binding = {
+                "report_content_base64": base64.b64encode(report.read_bytes()).decode(
+                    "ascii"
+                ),
                 "report_path": "ideas/2026-08-08_hunt-2.md",
                 "report_sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
                 "run_id": "run-old",
@@ -168,6 +172,15 @@ class HuntRecoveryAuthorityRegression(unittest.TestCase):
             )
             self.assertEqual(verified.returncode, 0, verified.stderr)
             self.assertEqual(verified.stdout.strip(), binding["report_path"])
+
+            report.unlink()
+            restored = run_shell(
+                prefix
+                + "verify_pending_report_binding \"$ARCHIVE\" run-old 2026-08-08\n",
+                root,
+            )
+            self.assertEqual(restored.returncode, 0, restored.stderr)
+            self.assertEqual(report.read_text(encoding="utf-8"), "bound report\n")
 
             unrelated.write_text("changed unrelated report\n", encoding="utf-8")
             still_verified = run_shell(
@@ -210,6 +223,10 @@ class HuntRecoveryAuthorityRegression(unittest.TestCase):
             self.assertEqual(binding["run_id"], "run-bound")
             self.assertEqual(binding["report_path"], "ideas/2026-08-08_hunt.md")
             self.assertEqual(
+                base64.b64decode(binding["report_content_base64"], validate=True),
+                (root / binding["report_path"]).read_bytes(),
+            )
+            self.assertEqual(
                 binding["report_sha256"],
                 hashlib.sha256((root / binding["report_path"]).read_bytes()).hexdigest(),
             )
@@ -217,6 +234,54 @@ class HuntRecoveryAuthorityRegression(unittest.TestCase):
             self.assertNotEqual(second.returncode, 0)
             self.assertEqual(binding_path.read_bytes(), original_binding)
             self.assertFalse((root / "ideas/2026-08-08_hunt-2.md").exists())
+
+    def test_recovery_publication_uses_archived_date(self):
+        publisher = section(
+            "publish_hunt_for_date() {",
+            "publish_existing_strong_accept_report() {",
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            (root / "publish.sh").write_text(
+                (ROOT / "publish.sh").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            (root / "publish.sh").chmod(0o755)
+            bindir = root / "bin"
+            bindir.mkdir()
+            capture = root / "publish-commands"
+            fake_git = bindir / "git"
+            fake_git.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'git' >> \"$CAPTURE\"\n"
+                "printf '\\t%s' \"$@\" >> \"$CAPTURE\"\n"
+                "printf '\\n' >> \"$CAPTURE\"\n"
+                "if [ \"${1:-}\" = diff ] && [ \"${3:-}\" = --quiet ]; then exit 1; fi\n"
+                "if [ \"${1:-}\" = diff ] && [ \"${3:-}\" = --name-only ]; then "
+                "printf 'ideas/report.md\\n'; fi\n"
+                "if [ \"${1:-}\" = rev-parse ] && [ \"${2:-}\" = --abbrev-ref ]; then "
+                "printf 'main\\n'; fi\n",
+                encoding="utf-8",
+            )
+            fake_git.chmod(0o755)
+            fake_gh = bindir / "gh"
+            fake_gh.write_text(
+                "#!/usr/bin/env bash\nprintf 'OPEN\\n'\n", encoding="utf-8"
+            )
+            fake_gh.chmod(0o755)
+            result = run_shell(
+                f"LOG=/dev/null\nTMPDIR={str(root)!r}\n"
+                f"export CAPTURE={str(capture)!r}\n"
+                f"PATH={str(bindir)!r}:$PATH\n"
+                + publisher
+                + "publish_hunt_for_date 2026-08-08\n",
+                root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            commands = capture.read_text(encoding="utf-8")
+            self.assertIn("git\tcheckout\t-b\thunt/2026-08-08", commands)
+            self.assertIn("hunt: publish 2026-08-08 report and ledger", commands)
+            self.assertIn("git\tpush\t-u\torigin\thunt/2026-08-08", commands)
 
     def test_recovery_does_not_use_date_report_counts_as_authority(self):
         recovery = section(
@@ -231,6 +296,8 @@ class HuntRecoveryAuthorityRegression(unittest.TestCase):
         self.assertIn('[ "$RECOVERY_CURRENT_DECISION_COMPLETE" -eq 0 ]', HUNT)
         self.assertIn('"report-binding.json"', HUNT)
         self.assertIn("os.link(temporary, destination", HUNT)
+        self.assertEqual(HUNT.count("./publish.sh"), 1)
+        self.assertIn('publish_hunt_for_date "$today"', HUNT)
 
 
 if __name__ == "__main__":
