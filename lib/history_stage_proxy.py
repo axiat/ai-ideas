@@ -13,6 +13,8 @@ import time
 
 
 CLIENT_REQUEST_MAX_BYTES = 1024 * 1024
+# Maximum silence between body chunks. Progress resets this deadline; the
+# exchange contract supplies a separate overall deadline.
 CLIENT_BODY_READ_TIMEOUT_SECONDS = 1
 # xhigh reasoning streams include large encrypted_content blobs; 256KiB
 # is routinely exceeded on generate.
@@ -1069,17 +1071,27 @@ class _LoopbackServer(socketserver.TCPServer):
             pass
 
 
-def _read_client_body(connection, rfile, length):
-    deadline = time.monotonic() + CLIENT_BODY_READ_TIMEOUT_SECONDS
+def _read_client_body(
+    connection,
+    rfile,
+    length,
+    overall_timeout_seconds,
+):
+    started = time.monotonic()
+    overall_deadline = started + overall_timeout_seconds
+    inactivity_deadline = started + CLIENT_BODY_READ_TIMEOUT_SECONDS
     previous_timeout = connection.gettimeout()
     chunks = []
     remaining = length
     read = getattr(rfile, "read1", rfile.read)
     try:
         while remaining:
-            timeout = deadline - time.monotonic()
+            now = time.monotonic()
+            timeout = min(overall_deadline, inactivity_deadline) - now
             if timeout <= 0:
-                raise ProxyError("canonicalizer request body deadline exceeded")
+                raise ProxyError(
+                    "canonicalizer request body deadline exceeded"
+                )
             connection.settimeout(timeout)
             try:
                 chunk = read(min(65536, remaining))
@@ -1091,6 +1103,9 @@ def _read_client_body(connection, rfile, length):
                 raise ProxyError("canonicalizer request is truncated")
             chunks.append(chunk)
             remaining -= len(chunk)
+            inactivity_deadline = (
+                time.monotonic() + CLIENT_BODY_READ_TIMEOUT_SECONDS
+            )
     finally:
         try:
             connection.settimeout(previous_timeout)
@@ -1118,7 +1133,12 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
             length = int(length_text)
             if not 1 <= length <= CLIENT_REQUEST_MAX_BYTES:
                 raise ProxyError("canonicalizer content length is invalid")
-            raw = _read_client_body(self.connection, self.rfile, length)
+            raw = _read_client_body(
+                self.connection,
+                self.rfile,
+                length,
+                self.server.exchange.exchange_timeout_seconds,
+            )
             response_raw = self.server.exchange.exchange(raw)
         except ProxyError as exc:
             payload = _canonical_bytes(
