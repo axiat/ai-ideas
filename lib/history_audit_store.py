@@ -7746,6 +7746,191 @@ WHERE NOT EXISTS (
 """
 
 
+_AUTHORITY_INPUT_HARDENING_SQL = """
+CREATE TABLE audit_attempt_completion_quarantine_v4(
+  attempt_id TEXT PRIMARY KEY REFERENCES audit_attempt_completions_v2(attempt_id),
+  reason TEXT NOT NULL,
+  quarantined_at TEXT NOT NULL
+);
+CREATE TABLE audit_activation_candidate_quarantine_v4(
+  staging_candidate_id TEXT PRIMARY KEY
+    REFERENCES audit_activation_maps(staging_candidate_id),
+  reason TEXT NOT NULL,
+  quarantined_at TEXT NOT NULL
+);
+""" + _immutable_guards(
+    "audit_attempt_completion_quarantine_v4",
+    "audit_activation_candidate_quarantine_v4",
+) + """
+INSERT INTO audit_attempt_completion_quarantine_v4(
+  attempt_id,reason,quarantined_at
+)
+SELECT attempt_id,'normalized_result_noncanonical',completed_at
+FROM audit_attempt_completions_v2
+WHERE outcome='valid'
+  AND audit_normalized_result_json_valid(normalized_result_json)<>1;
+
+-- activation-candidate-backfill-begin
+INSERT INTO audit_activation_candidate_quarantine_v4(
+  staging_candidate_id,reason,quarantined_at
+)
+SELECT activation.staging_candidate_id,'legacy_candidate_content_mismatch',
+       activation.activated_at
+FROM audit_activation_maps activation
+LEFT JOIN candidates candidate
+  ON candidate.candidate_id=activation.legacy_candidate_id
+ AND candidate.source_sequence=activation.source_sequence
+ AND candidate.raw_sha256=activation.raw_artifact_sha
+WHERE candidate.candidate_id IS NULL;
+-- activation-candidate-backfill-end
+
+CREATE TRIGGER audit_attempt_completion_canonical_result_guard_v4
+BEFORE INSERT ON audit_attempt_completions_v2
+WHEN NEW.outcome='valid'
+ AND audit_normalized_result_json_valid(NEW.normalized_result_json)<>1
+BEGIN
+  SELECT RAISE(ABORT, 'valid completion result must be canonical JSON');
+END;
+CREATE TRIGGER audit_activation_maps_candidate_content_guard_v4
+BEFORE INSERT ON audit_activation_maps
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM candidates candidate
+    WHERE candidate.candidate_id=NEW.legacy_candidate_id
+      AND candidate.source_sequence=NEW.source_sequence
+      AND candidate.raw_sha256=NEW.raw_artifact_sha
+  ) THEN RAISE(ABORT, 'activation candidate durable content mismatch') END;
+END;
+
+CREATE TRIGGER audit_pair_receipt_authority_insert_guard_v5
+BEFORE INSERT ON audit_batch_pair_receipt_authority_v3
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_batch_pair_receipts receipt
+    WHERE receipt.run_id=NEW.run_id AND receipt.batch_id=NEW.batch_id
+      AND NEW.created_at=receipt.completed_at
+      AND (
+        (NEW.event_state='pending' AND NEW.reason='pair_evidence_pending')
+        OR (NEW.event_state='authorized' AND NEW.reason IN (
+          'pair_evidence_complete','legacy_pair_evidence_backfill'))
+      )
+      AND NEW.authority_sha256=audit_pair_receipt_authority_sha(
+        receipt.run_id,receipt.batch_id,receipt.snapshot_id,
+        receipt.pair_plan_sha,receipt.pair_result_sha,receipt.pair_count,
+        receipt.completed_at,NEW.event_state,NEW.reason)
+  ) THEN RAISE(ABORT, 'pair receipt authority event is invalid') END;
+END;
+CREATE TRIGGER audit_activation_receipt_authority_insert_guard_v5
+BEFORE INSERT ON audit_activation_receipt_authority_v3
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_activation_receipts receipt
+    WHERE receipt.activation_receipt_sha=NEW.activation_receipt_sha
+      AND NEW.created_at=receipt.created_at
+      AND (
+        (NEW.event_state='pending' AND NEW.reason='activation_mapping_pending')
+        OR (NEW.event_state='authorized' AND NEW.reason IN (
+          'activation_mapping_complete','legacy_activation_receipt_backfill'))
+      )
+      AND NEW.authority_sha256=audit_activation_receipt_authority_sha(
+        receipt.activation_receipt_sha,receipt.staging_candidate_id,
+        receipt.receipt_json,receipt.created_at,NEW.event_state,NEW.reason)
+  ) THEN RAISE(ABORT, 'activation receipt authority event is invalid') END;
+END;
+CREATE TRIGGER audit_task_settlement_authority_insert_guard_v5
+BEFORE INSERT ON audit_task_settlement_authority_v3
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_task_settlements_v2 settlement
+    WHERE settlement.task_hash=NEW.task_hash
+      AND NEW.created_at=settlement.settled_at
+      AND NEW.event_state='authorized'
+      AND NEW.reason IN ('canonical_settlement','legacy_settlement_backfill')
+      AND NEW.authority_sha256=audit_task_settlement_authority_sha(
+        settlement.task_hash,settlement.settlement_sha256,
+        settlement.settlement_kind,settlement.normalized_result_json,
+        settlement.valid_attempt_ids_json,
+        settlement.valid_output_cas_ids_json,settlement.settled_at,
+        NEW.event_state,NEW.reason)
+  ) THEN RAISE(ABORT, 'task settlement authority event is invalid') END;
+END;
+
+CREATE VIEW audit_valid_batch_pair_receipt_authority_v5 AS
+SELECT receipt.*
+FROM audit_valid_batch_pair_receipt_authority_v4 receipt;
+
+CREATE VIEW audit_valid_activation_receipt_authority_v5 AS
+SELECT receipt.*
+FROM audit_activation_receipt_material_candidates_v3 receipt
+JOIN audit_activation_receipt_authority_v3 authority
+  ON authority.activation_receipt_sha=receipt.activation_receipt_sha
+ AND authority.event_state='authorized'
+JOIN audit_activation_maps activation
+  ON activation.activation_receipt_sha=receipt.activation_receipt_sha
+ AND activation.staging_candidate_id=receipt.staging_candidate_id
+JOIN audit_batch_staging staging
+  ON staging.staging_candidate_id=receipt.staging_candidate_id
+JOIN audit_valid_batch_pair_receipt_authority_v4 pair
+  ON pair.run_id=staging.run_id AND pair.batch_id=staging.batch_id
+ AND pair.pair_plan_sha=activation.pair_plan_sha
+ AND pair.pair_result_sha=activation.pair_result_sha
+JOIN candidates candidate
+  ON candidate.candidate_id=activation.legacy_candidate_id
+ AND candidate.source_sequence=activation.source_sequence
+ AND candidate.raw_sha256=activation.raw_artifact_sha
+WHERE authority.reason IN (
+        'activation_mapping_complete','legacy_activation_receipt_backfill')
+  AND authority.authority_sha256=audit_activation_receipt_authority_sha(
+        receipt.activation_receipt_sha,receipt.staging_candidate_id,
+        receipt.receipt_json,receipt.created_at,
+        authority.event_state,authority.reason);
+
+CREATE VIEW audit_task_settlement_material_candidates_v4 AS
+SELECT settlement.*
+FROM audit_task_settlement_material_candidates_v3 settlement
+WHERE NOT EXISTS (
+  SELECT 1 FROM json_each(settlement.valid_attempt_ids_json) selected
+  JOIN audit_attempt_completions_v2 completion
+    ON completion.attempt_id=selected.value AND completion.outcome='valid'
+  WHERE audit_normalized_result_json_valid(
+          completion.normalized_result_json)<>1
+)
+AND (
+  settlement.settlement_kind='equal'
+  OR 2<=(
+    SELECT count(DISTINCT completion.normalized_result_json)
+    FROM json_each(settlement.valid_attempt_ids_json) selected
+    JOIN audit_attempt_completions_v2 completion
+      ON completion.attempt_id=selected.value AND completion.outcome='valid'
+    WHERE audit_normalized_result_json_valid(
+            completion.normalized_result_json)=1
+  )
+);
+CREATE VIEW audit_valid_task_settlement_authority_v5 AS
+SELECT settlement.*
+FROM audit_task_settlement_material_candidates_v4 settlement
+JOIN audit_task_settlement_authority_v3 authority
+  ON authority.task_hash=settlement.task_hash
+ AND authority.event_state='authorized'
+WHERE authority.reason IN ('canonical_settlement','legacy_settlement_backfill')
+  AND authority.authority_sha256=audit_task_settlement_authority_sha(
+        settlement.task_hash,settlement.settlement_sha256,
+        settlement.settlement_kind,settlement.normalized_result_json,
+        settlement.valid_attempt_ids_json,
+        settlement.valid_output_cas_ids_json,settlement.settled_at,
+        authority.event_state,authority.reason);
+CREATE TRIGGER audit_logical_tasks_settlement_authority_guard_v5
+BEFORE UPDATE ON audit_logical_tasks
+WHEN OLD.state='settling' AND NEW.state='settled'
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_valid_task_settlement_authority_v5 settlement
+    WHERE settlement.task_hash=OLD.task_hash
+  ) THEN RAISE(ABORT, 'settlement lacks canonical completion authority') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("migration-ledger-guard", 1, _MIGRATION_LEDGER_GUARD_SQL),
@@ -7877,6 +8062,9 @@ MIGRATIONS = (
     Migration(
         "l2-terminal-failure-evidence", 1, _L2_TERMINAL_EVIDENCE_SQL,
     ),
+    Migration(
+        "authority-input-hardening", 1, _AUTHORITY_INPUT_HARDENING_SQL,
+    ),
 )
 
 
@@ -7968,10 +8156,13 @@ def _normalized_pair_result_evidence(results_json):
         not isinstance(parsed, list)
         or any(not isinstance(item, dict) or set(item) != required for item in parsed)
         or any(
-            re.fullmatch(r"stg-v2-[0-9a-f]{64}", item["left_staging_candidate_id"] or "")
-            is None
-            or re.fullmatch(r"stg-v2-[0-9a-f]{64}", item["right_staging_candidate_id"] or "")
-            is None
+            not all(isinstance(item[name], str) for name in required)
+            or re.fullmatch(
+                r"stg-v2-[0-9a-f]{64}", item["left_staging_candidate_id"]
+            ) is None
+            or re.fullmatch(
+                r"stg-v2-[0-9a-f]{64}", item["right_staging_candidate_id"]
+            ) is None
             or item["left_staging_candidate_id"] >= item["right_staging_candidate_id"]
             or item["semantic_relation"] not in {
                 "blocking_duplicate", "substantive_overlap", "related_only",
@@ -8031,10 +8222,17 @@ def _authority_canonical_json_text(value, *, newline=False):
     if not isinstance(value, str):
         return _INVALID_AUTHORITY_JSON
     try:
-        parsed = json.loads(value)
-    except (TypeError, ValueError):
+        parsed = json.loads(
+            value,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                ValueError(f"nonfinite JSON constant: {token}")
+            ),
+        )
+        canonical = history_contract_v2.canonical_bytes(parsed).decode("utf-8")
+    except (
+        history_contract_v2.ContractV2Error, TypeError, ValueError,
+    ):
         return _INVALID_AUTHORITY_JSON
-    canonical = history_contract_v2.canonical_bytes(parsed).decode("utf-8")
     if not newline:
         canonical = canonical.rstrip("\n")
     return parsed if canonical == value else _INVALID_AUTHORITY_JSON
@@ -8091,8 +8289,11 @@ def _task_settlement_material_valid(
         or len(set(attempt_ids)) != len(attempt_ids)
         or not isinstance(output_ids, list)
         or len(output_ids) != len(attempt_ids)
-        or any(re.fullmatch(r"[0-9a-f]{64}", value or "") is None
-               for value in attempt_ids + output_ids)
+        or any(
+            not isinstance(value, str)
+            or re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in attempt_ids + output_ids
+        )
     ):
         return 0
     if settlement_kind == "equal":
@@ -8112,11 +8313,22 @@ def _task_settlement_material_valid(
         "valid_attempt_ids": attempt_ids,
         "valid_output_cas_ids": output_ids,
     }
-    expected = history_contract_v2.framed_sha256(
-        "history-task-settlement-v2",
-        history_contract_v2.canonical_bytes(material),
-    )
+    try:
+        expected = history_contract_v2.framed_sha256(
+            "history-task-settlement-v2",
+            history_contract_v2.canonical_bytes(material),
+        )
+    except (
+        history_contract_v2.ContractV2Error, TypeError, ValueError,
+    ):
+        return 0
     return 1 if settlement_sha == expected else 0
+
+
+def _normalized_result_json_valid(value):
+    return 1 if _authority_canonical_json_text(
+        value, newline=True
+    ) is not _INVALID_AUTHORITY_JSON else 0
 
 
 def _task_settlement_authority_sha(*values):
@@ -9766,22 +9978,27 @@ def _migration_sql_for_state(conn, migration):
             )
         }
         required_components = {
-            "l1-strict-pair-completion",
-            "l1-batch-direction-authority",
-            "batch-staging-authority",
-            "batch-direction-gate-authority",
-            "logical-task-transition-integrity",
+            "l1-strict-pair-completion": _STRICT_PAIR_COMPLETION_SQL,
+            "l1-batch-direction-authority": _L1_BATCH_DIRECTION_AUTHORITY_SQL,
+            "batch-staging-authority": _STAGING_AUTHORITY_SQL,
+            "batch-direction-gate-authority": _DIRECTION_GATE_AUTHORITY_SQL,
+            "logical-task-transition-integrity":
+                _LOGICAL_TASK_TRANSITION_INTEGRITY_SQL,
         }
         applied_components = {
-            row[0] for row in conn.execute(
-                "SELECT component FROM audit_schema_migrations"
+            row[0]: row[1] for row in conn.execute(
+                "SELECT component,migration_sha256 FROM audit_schema_migrations"
             )
         }
         if (
             not required.issubset(present)
-            or not required_components.issubset(applied_components)
+            or any(
+                applied_components.get(component)
+                != hashlib.sha256(source.encode("utf-8")).hexdigest()
+                for component, source in required_components.items()
+            )
         ):
-            return ""
+            return None
     if (
         migration.component == "pair-result-authority"
         and migration.version == 1
@@ -9792,11 +10009,54 @@ def _migration_sql_for_state(conn, migration):
             ).fetchone() is None
             or conn.execute(
                 "SELECT 1 FROM audit_schema_migrations "
-                "WHERE component='core-authority-repair' AND version=1"
+                "WHERE component='core-authority-repair' AND version=1 "
+                "AND migration_sha256=?",
+                (hashlib.sha256(
+                    _CORE_AUTHORITY_REPAIR_SQL.encode("utf-8")
+                ).hexdigest(),),
             ).fetchone() is None
         )
     ):
-        return ""
+        return None
+    if (
+        migration.component == "authority-input-hardening"
+        and migration.version == 1
+        and (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='audit_task_settlement_authority_v3'"
+            ).fetchone() is None
+            or conn.execute(
+                "SELECT 1 FROM audit_schema_migrations "
+                "WHERE component='core-authority-repair' AND version=1 "
+                "AND migration_sha256=?",
+                (hashlib.sha256(
+                    _CORE_AUTHORITY_REPAIR_SQL.encode("utf-8")
+                ).hexdigest(),),
+            ).fetchone() is None
+            or conn.execute(
+                "SELECT 1 FROM audit_schema_migrations "
+                "WHERE component='pair-result-authority' AND version=1 "
+                "AND migration_sha256=?",
+                (hashlib.sha256(
+                    _PAIR_RESULT_AUTHORITY_SQL.encode("utf-8")
+                ).hexdigest(),),
+            ).fetchone() is None
+        )
+    ):
+        return None
+    if (
+        migration.component == "authority-input-hardening"
+        and migration.version == 1
+        and conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='candidates'"
+        ).fetchone() is None
+    ):
+        begin = "-- activation-candidate-backfill-begin"
+        end = "-- activation-candidate-backfill-end"
+        prefix, remainder = migration.sql.split(begin, 1)
+        _, suffix = remainder.split(end, 1)
+        return prefix + suffix
     if (
         migration.component != "l2-plans-per-run"
         or migration.version != 1
@@ -9868,6 +10128,8 @@ def _apply_migration(conn, migration):
                         "audit_batch_pair_receipt_authority_v3",
                     "pair-result-authority":
                         "audit_batch_pair_result_manifests_v4",
+                    "authority-input-hardening":
+                        "audit_attempt_completion_quarantine_v4",
                 }.get(migration.component)
                 if (
                     repair_table is not None
@@ -9975,6 +10237,8 @@ def _verify_managed_schema(conn):
                 "managed audit schema postcondition failed: " + " ".join(detail)
             )
         for migration in MIGRATIONS:
+            if _migration_sql_for_state(conn, migration) is None:
+                continue
             row = conn.execute(
                 "SELECT migration_sha256 FROM audit_schema_migrations "
                 "WHERE component=? AND version=?",
@@ -10161,6 +10425,10 @@ def _initialize_schema(conn, *, verify):
     conn.create_function(
         "audit_task_settlement_material_valid", 6,
         _task_settlement_material_valid,
+    )
+    conn.create_function(
+        "audit_normalized_result_json_valid", 1,
+        _normalized_result_json_valid,
     )
     conn.create_function(
         "audit_task_settlement_authority_sha", 9,
@@ -18843,7 +19111,7 @@ def _derive_l2_receipt_provenance(conn, receipt, plan_row):
                terminal.fact_sha256 AS terminal_fact_sha256
         FROM audit_logical_tasks task
         JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
-        LEFT JOIN audit_valid_task_settlement_authority_v3 settlement
+        LEFT JOIN audit_valid_task_settlement_authority_v5 settlement
           ON settlement.task_hash=task.task_hash
         LEFT JOIN audit_task_terminal_facts_v2 terminal
           ON terminal.task_hash=task.task_hash
@@ -20464,7 +20732,7 @@ def validate_l2_terminal_graph(conn, plan_sha=None):
         SELECT 1
         FROM audit_logical_tasks task
         JOIN audit_task_bindings_v2 binding ON binding.task_hash=task.task_hash
-        LEFT JOIN audit_valid_task_settlement_authority_v3 settlement
+        LEFT JOIN audit_valid_task_settlement_authority_v5 settlement
           ON settlement.task_hash=task.task_hash
         WHERE task.state='settled' AND settlement.task_hash IS NULL
           {plan_clause}
