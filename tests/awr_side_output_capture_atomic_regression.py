@@ -26,8 +26,10 @@ class AwrSideOutputCaptureRegression(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root, True)
         (root / "lib").mkdir()
         (root / "roles").mkdir()
+        (root / "history").mkdir()
         for relative in (
             "awr-side.sh",
+            "history/retrieval-policy-v1.json",
             "lib/resolve_cmd.sh",
             "lib/mirror_pre.sh",
             "roles/awr.md",
