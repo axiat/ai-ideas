@@ -269,6 +269,10 @@ claude --bare --dangerously-skip-permissions
 Environment: CLAUDE_CODE_MAX_OUTPUT_TOKENS=<exact reasoning-and-visible cap>
 ```
 
+The adapter accepts exact Claude caps from 1 through 128000 tokens. Larger
+values are rejected before command-intent or provider-capability issuance, so
+they cannot reach portable preflight or launch.
+
 The outer provider JSON must have `is_error=false`, `subtype=success`, and an
 object-valued `structured_output`. The host validates that object with the
 closed response schema and exact request attestation, then imports its

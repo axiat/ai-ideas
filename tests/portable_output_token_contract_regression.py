@@ -130,6 +130,84 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
             self.assertEqual(caught.exception.code, "output_token_cap_unsupported")
             self.assertFalse((pathlib.Path(directory) / "drift-state").exists())
 
+    def test_claude_provider_ceiling_is_enforced_before_issuance(self):
+        intent = self._claude_intent(128_000)
+        self.assertEqual(
+            provider_adapters.require_native_output_token_cap(intent),
+            128_000,
+        )
+        argv, environment = provider_adapters.render_command(
+            intent,
+            pathlib.Path("/portable-mirror"),
+            "PROMPT",
+            response_schema={"type": "object"},
+        )
+        self.assertEqual(
+            argv,
+            [
+                str(FAKE),
+                "--bare",
+                "--dangerously-skip-permissions",
+                "--output-format",
+                "json",
+                "--add-dir",
+                "/portable-mirror",
+                "--model",
+                "fixture-model",
+                "--effort",
+                "high",
+                "--json-schema",
+                '{"type":"object"}',
+                "-p",
+                "PROMPT",
+            ],
+        )
+        self.assertEqual(
+            environment,
+            {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"},
+        )
+
+        with self.assertRaises(
+            provider_adapters.ProviderResolutionError
+        ) as caught:
+            self._claude_intent(128_001)
+        self.assertIn("128000", str(caught.exception))
+
+        oversized_record = provider_adapters.command_intent_record(intent)
+        oversized_record["max_output_tokens"] = 128_001
+        with self.assertRaises(provider_adapters.ProviderResolutionError):
+            provider_adapters.validate_command_intent_record(
+                self.registry,
+                oversized_record,
+            )
+        with self.assertRaises(provider_adapters.ProviderResolutionError):
+            provider_adapters._render_command_fields(
+                "claude",
+                str(FAKE),
+                "fixture-model",
+                "high",
+                pathlib.Path("/portable-mirror"),
+                "PROMPT",
+                '{"type":"object"}',
+                max_output_tokens=128_001,
+                output_token_cap_binding="provider-native-exact",
+                output_token_cap_semantics="reasoning-and-visible-output",
+            )
+
+        probe_calls = []
+        with self.assertRaises(provider_adapters.ProviderResolutionError):
+            provider_adapters._resolve_provider_for_test(
+                self.registry,
+                "hunt",
+                "claude",
+                model="fixture-model",
+                reasoning="high",
+                max_output_tokens=128_001,
+                executable_lookup=lambda _: str(FAKE),
+                version_probe=lambda *args: probe_calls.append(args),
+            )
+        self.assertEqual(probe_calls, [])
+
     def test_empty_content_violates_declared_min_length(self):
         schema = portable_stage._response_schema("generate")
         contract = portable_agent._validate_response_schema_contract(schema)

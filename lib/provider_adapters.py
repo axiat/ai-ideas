@@ -110,6 +110,7 @@ _HOST_PROBE_TIMEOUT_SECONDS = 5
 _HOST_CATALOG_PROBE_TIMEOUT_SECONDS = 30
 _HOST_PROBE_BYTE_LIMIT = 32768
 _AGY_STRUCTURED_JSON_MIN_VERSION = (1, 1, 8)
+_CLAUDE_MAX_OUTPUT_TOKENS = 128_000
 _AGY_VERSION_PATTERN = re.compile(
     rb"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\n"
 )
@@ -286,13 +287,26 @@ def _require_max_output_tokens(value, *, optional=False):
     return value
 
 
+def _require_provider_max_output_tokens(provider, value, *, optional=False):
+    maximum = _require_max_output_tokens(value, optional=optional)
+    if (
+        maximum is not None
+        and provider == "claude"
+        and maximum > _CLAUDE_MAX_OUTPUT_TOKENS
+    ):
+        raise ProviderResolutionError(
+            "claude max_output_tokens must be an integer between 1 and 128000"
+        )
+    return maximum
+
+
 def _output_token_cap(
     registry, provider, max_output_tokens, *, allow_test=False
 ):
     rule = registry["providers"][provider]["output_token_limit"]
     if max_output_tokens is None:
         return "unsupported", None
-    _require_max_output_tokens(max_output_tokens)
+    _require_provider_max_output_tokens(provider, max_output_tokens)
     if rule["binding"] != "environment":
         if allow_test:
             return "test-provider-native-exact", "reasoning-and-visible-output"
@@ -408,8 +422,10 @@ def require_native_output_token_cap(intent, expected=None):
         command_intent_is_issued(intent) or capability_is_issued(intent)
     ):
         raise ProviderResolutionError("provider profile is not resolver-issued")
-    maximum = _require_max_output_tokens(
-        intent.max_output_tokens, optional=True
+    maximum = _require_provider_max_output_tokens(
+        intent.provider,
+        intent.max_output_tokens,
+        optional=True,
     )
     if (
         maximum is None
@@ -427,7 +443,10 @@ def require_native_output_token_cap(intent, expected=None):
         raise ProviderResolutionError(
             f"{intent.provider} has no bound provider-native exact output-token cap"
         )
-    if expected is not None and maximum != _require_max_output_tokens(expected):
+    if expected is not None and maximum != _require_provider_max_output_tokens(
+        intent.provider,
+        expected,
+    ):
         raise ProviderResolutionError("provider output-token cap changed")
     return maximum
 
@@ -2064,8 +2083,10 @@ def _render_command_fields(
     output_token_cap_semantics=None,
 ):
     mirror = str(pathlib.Path(mirror))
-    max_output_tokens = _require_max_output_tokens(
-        max_output_tokens, optional=True
+    max_output_tokens = _require_provider_max_output_tokens(
+        provider,
+        max_output_tokens,
+        optional=True,
     )
     environment = {}
     if max_output_tokens is None:
