@@ -9045,7 +9045,8 @@ def _l2_attempt_capability_valid(plan_json, provider_pool_json, provenance_json)
         capability_fields = {
             "provider", "capability_profile_hash", "model_identity",
             "reasoning_identity", "model_default", "reasoning_default",
-            "executable", "cli_revision",
+            "executable", "cli_revision", "max_output_tokens",
+            "output_token_cap_binding", "output_token_cap_semantics",
         }
         runtime_fields = {
             "attempt_kind", "ordinal", "claim_token", "claim_fence"

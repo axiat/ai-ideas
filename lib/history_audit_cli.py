@@ -1283,6 +1283,9 @@ def _validated_test_only_input(value):
         "reasoning_default",
         "executable",
         "cli_revision",
+        "max_output_tokens",
+        "output_token_cap_binding",
+        "output_token_cap_semantics",
     }
     binding_fields = capability_fields.difference({"provider"})
     for provider in sorted(providers):

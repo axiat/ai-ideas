@@ -26,7 +26,7 @@ def load_policy(name):
     return json.loads((ROOT / "history" / name).read_text(encoding="utf-8"))
 
 
-def runtime_plan():
+def runtime_plan(*, reverse_records=False):
     candidate_id = "stg-v2-" + sha("correctness-candidate")
     candidate = {
         "candidate_id": candidate_id,
@@ -35,16 +35,26 @@ def runtime_plan():
         "source_order": 0,
     }
     candidate["candidate_hash"] = planner.runtime_candidate_hash(candidate)
-    records = [{
-        "item_id": "asset-1",
-        "artifact_sha": sha("frozen record"),
-        "content": "frozen record",
-        "lineage_id": "lineage-1",
-    }]
+    records = [
+        {
+            "item_id": "asset-1",
+            "artifact_sha": sha("frozen record"),
+            "content": "frozen record",
+            "lineage_id": "lineage-1",
+        },
+        {
+            "item_id": "asset-2",
+            "artifact_sha": sha("second frozen record"),
+            "content": "second frozen record",
+            "lineage_id": "lineage-2",
+        },
+    ]
+    if reverse_records:
+        records.reverse()
     run_id = "run-correctness"
     batch_id = "batch-correctness"
     current_ids = [candidate_id]
-    expected_ids = ["asset-1"]
+    expected_ids = ["asset-1", "asset-2"]
     snapshot_material = {
         "run_id": run_id,
         "batch_id": batch_id,
@@ -89,6 +99,9 @@ def runtime_plan():
         "reasoning_default": False,
         "executable": "fake-provider",
         "cli_revision": "fake-cli-v1",
+        "max_output_tokens": 64,
+        "output_token_cap_binding": "test-provider-native-exact",
+        "output_token_cap_semantics": "reasoning-and-visible-output",
     }
     pools = {
         stage: ["fake-provider"]
@@ -189,6 +202,176 @@ class HistoryAuditPlanCorrectnessRegression(unittest.TestCase):
                 [],
             )
         self.assertEqual(caught.exception.code, "unknown_currency_budget")
+
+    def test_verified_settlement_currency_shape_matches_reservation(self):
+        policy = load_policy("l2-budget-v1.json")
+        for scope in ("round", "candidate"):
+            policy["intents"]["duplicate_search"][scope][
+                "currency_micros"
+            ] = 100
+        events = []
+        reserved = planner.reserve_attempt(
+            policy,
+            "duplicate_search",
+            "candidate",
+            "task",
+            "initial",
+            {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "provider_usage_units": 2,
+                "currency_micros": 9,
+            },
+            events,
+        )
+        with self.assertRaises(planner.AuditPlanError) as caught:
+            planner.settle_attempt(
+                reserved["event_id"],
+                {"input_tokens": 1, "output_tokens": 1,
+                 "provider_usage_units": 2},
+                True,
+                events,
+            )
+        self.assertEqual(caught.exception.code, "invalid_settlement")
+        self.assertEqual(len(events), 1)
+        planner.settle_attempt(
+            reserved["event_id"],
+            {"input_tokens": 1, "output_tokens": 1,
+             "provider_usage_units": 2, "currency_micros": 3},
+            True,
+            events,
+        )
+        self.assertEqual(
+            planner.budget_totals(events, "duplicate_search")["currency_micros"],
+            3,
+        )
+
+    def test_verified_settlement_rejects_unbudgeted_currency(self):
+        events = []
+        reserved = planner.reserve_attempt(
+            load_policy("l2-budget-v1.json"),
+            "duplicate_search",
+            "candidate",
+            "task",
+            "initial",
+            {"input_tokens": 1, "output_tokens": 1,
+             "provider_usage_units": 2},
+            events,
+        )
+        with self.assertRaises(planner.AuditPlanError) as caught:
+            planner.settle_attempt(
+                reserved["event_id"],
+                {"input_tokens": 1, "output_tokens": 1,
+                 "provider_usage_units": 2, "currency_micros": 1},
+                True,
+                events,
+            )
+        self.assertEqual(caught.exception.code, "invalid_settlement")
+        self.assertEqual(len(events), 1)
+
+    def test_forged_extra_frozen_record_is_rejected(self):
+        plan = runtime_plan()
+        plan["snapshot"]["records"].append({
+            "item_id": "asset-extra",
+            "artifact_sha": sha("self-consistent extra"),
+            "content": "self-consistent extra",
+            "lineage_id": "lineage-extra",
+        })
+        with self.assertRaises(planner.AuditPlanError) as caught:
+            planner.runtime_plan_sha(plan)
+        self.assertEqual(caught.exception.code, "invalid_runtime_snapshot")
+
+    def test_attempt_manifest_requires_frozen_pool_capability_and_ordinal(self):
+        plan = runtime_plan()
+        capability = copy.deepcopy(plan["provider_capabilities"]["fake-provider"])
+        accepted = planner.attempt_manifest(plan, 0, 0, capability)
+        self.assertEqual(accepted["provenance"]["provider"], "fake-provider")
+        mutations = (
+            ("provider", "other-provider"),
+            ("capability_profile_hash", sha("other capability")),
+            ("model_identity", "other-model"),
+            ("reasoning_identity", "low"),
+        )
+        for field, replacement in mutations:
+            with self.subTest(field=field):
+                forged = copy.deepcopy(capability)
+                forged[field] = replacement
+                with self.assertRaises(planner.AuditPlanError) as caught:
+                    planner.attempt_manifest(plan, 0, 0, forged)
+                self.assertEqual(caught.exception.code, "invalid_attempt")
+        for ordinal in (-1, True, planner.MAX_ATTEMPTS):
+            with self.subTest(ordinal=ordinal):
+                with self.assertRaises(planner.AuditPlanError) as caught:
+                    planner.attempt_manifest(plan, 0, ordinal, capability)
+                self.assertEqual(caught.exception.code, "invalid_attempt")
+        with mock.patch.object(
+            contract,
+            "attempt_id",
+            side_effect=contract.ContractV2Error("forged provenance"),
+        ):
+            with self.assertRaises(planner.AuditPlanError) as caught:
+                planner.attempt_manifest(plan, 0, 0, capability)
+        self.assertEqual(caught.exception.code, "invalid_attempt")
+
+    def test_record_order_is_normalized_before_render_and_storage(self):
+        forward = runtime_plan()
+        reverse = runtime_plan(reverse_records=True)
+        self.assertEqual(forward["plan_sha"], reverse["plan_sha"])
+        self.assertEqual(forward["shards"], reverse["shards"])
+        self.assertEqual(
+            [record["item_id"] for record in reverse["snapshot"]["records"]],
+            ["asset-1", "asset-2"],
+        )
+
+    def test_request_serializer_revisions_have_exact_distinct_bytes(self):
+        value = {"value": "golden"}
+        v1 = planner._serialize_request_value(value, "history-audit-request-v1")
+        v2 = planner._serialize_request_value(value, "history-audit-request-v2")
+        self.assertEqual(v1, b'{"value":"golden"}\n')
+        self.assertEqual(v2, b'{"value":"golden"}')
+        plan = runtime_plan()
+        shard = plan["shards"][0]
+        self.assertFalse(shard["serialized_request"].endswith("\n"))
+        shard["serialized_request"] += "\n"
+        raw = shard["serialized_request"].encode("utf-8")
+        shard["request_sha256"] = hashlib.sha256(raw).hexdigest()
+        shard["final_request_tokens"] = len(raw)
+        with self.assertRaises(planner.AuditPlanError) as caught:
+            planner.runtime_plan_sha(plan)
+        self.assertEqual(caught.exception.code, "invalid_runtime_shards")
+
+    def test_invalid_semantic_host_policy_is_rejected_by_evaluator_authority(self):
+        mutations = (
+            lambda policy: policy["shadow"].__setitem__(
+                "minimum_positive_lineages", "30"
+            ),
+            lambda policy: policy.__setitem__("unknown", 1),
+            lambda policy: policy["production"]["aggregate"].__setitem__(
+                "minimum_recall_lower_bound", True
+            ),
+            lambda policy: policy["shadow"].__setitem__(
+                "minimum_positive_lineages", 29
+            ),
+        )
+        base_names = (
+            "capacity-profiles-v1.json", "l2-budget-v1.json",
+            "risk-policy-v1.json", "settlement-policy-v1.json",
+            "semantic-release-policy-v1.json",
+        )
+        for mutate in mutations:
+            policies = {name: load_policy(name) for name in base_names}
+            mutate(policies["semantic-release-policy-v1.json"])
+            with self.subTest(policy=policies["semantic-release-policy-v1.json"]):
+                with mock.patch.object(
+                    planner,
+                    "_load_host_policy",
+                    side_effect=lambda name, values=policies: copy.deepcopy(
+                        values[name]
+                    ),
+                ):
+                    with self.assertRaises(planner.AuditPlanError) as caught:
+                        planner._host_runtime_authority()
+                self.assertEqual(caught.exception.code, "invalid_host_policy")
 
     def test_negative_shard_index_is_not_python_negative_indexing(self):
         with self.assertRaises(planner.AuditPlanError) as caught:

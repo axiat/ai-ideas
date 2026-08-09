@@ -131,9 +131,22 @@ def _policy_hash(policy):
     return _hash("semantic-release-policy-v1", _decimal_identity(policy))
 
 
+def semantic_policy_authority(policy):
+    """Validate and return the evaluator's one canonical policy identity."""
+    normalized = _validate_policy(policy)
+    canonical = contract.canonical_bytes(_decimal_identity(normalized))
+    return {
+        "policy": normalized,
+        "canonical_bytes": canonical,
+        "sha256": contract.framed_sha256(
+            "semantic-release-policy-v1", canonical
+        ),
+    }
+
+
 def semantic_policy_sha256(policy):
     """Return the exact fixed-decimal identity of a validated release policy."""
-    return _policy_hash(_validate_policy(policy))
+    return semantic_policy_authority(policy)["sha256"]
 
 
 def _require_sha(value, name):

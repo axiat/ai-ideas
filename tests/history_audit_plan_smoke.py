@@ -26,8 +26,11 @@ def capability(provider):
         "model_identity": "fake-model-v1",
         "reasoning_identity": "high",
         "cli_revision": "fake-cli-v1",
-        "serializer_revision": "history-audit-request-v1",
+        "serializer_revision": "portable-agent-command-v1",
         "immutable_capacity_identity": "fake-capacity-v1",
+        "max_output_tokens": 3072,
+        "output_token_cap_binding": "test-provider-native-exact",
+        "output_token_cap_semantics": "reasoning-and-visible-output",
     }
 
 
@@ -45,8 +48,13 @@ def profile(capabilities=None):
             "reasoning_identity": item["reasoning_identity"],
             "cli_revision": item["cli_revision"],
             "capability_serializer_revision": item["serializer_revision"],
-            "request_serializer_revision": "history-audit-request-v1",
+            "request_serializer_revision": "history-audit-request-v2",
             "immutable_capacity_identity": item["immutable_capacity_identity"],
+            "max_output_tokens": item["max_output_tokens"],
+            "output_token_cap_binding": item["output_token_cap_binding"],
+            "output_token_cap_semantics": item[
+                "output_token_cap_semantics"
+            ],
             "prompt_sha256": sha("prompt-v1"),
             "schema_sha256": sha("schema-v1"),
             "evidence_limit_tokens": 12288,
@@ -67,7 +75,7 @@ def profile(capabilities=None):
         "schema": {
             "id": "map-output-v1", "sha256": sha("schema-v1"), "text": "schema-v1"
         },
-        "serializer_revision": "history-audit-request-v1",
+        "serializer_revision": "history-audit-request-v2",
         "usage_source": "fake-usage-v1",
         "expires_at": "2099-01-01T00:00:00+00:00",
         "provider_bindings": bindings,
@@ -363,6 +371,40 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
         with self.assertRaises(self._error()) as caught:
             self._build(records(1), capacity_profile=tampered)
         self.assertEqual(caught.exception.code, "stale_capacity")
+
+    def test_output_token_cap_is_frozen_and_must_match_capacity(self):
+        baseline = self._build(records(1))
+        self.assertEqual(
+            baseline["provider_capabilities"]["codex"]["max_output_tokens"],
+            self.profile["max_output_tokens"],
+        )
+        for field, replacement in (
+            ("max_output_tokens", self.profile["max_output_tokens"] - 1),
+            ("output_token_cap_binding", "unsupported"),
+            ("output_token_cap_semantics", "visible-output-only"),
+        ):
+            with self.subTest(field=field):
+                capabilities = copy.deepcopy(self.capabilities)
+                capabilities["codex"][field] = replacement
+                with self.assertRaises(self._error()) as caught:
+                    self._build(records(1), capabilities=capabilities)
+                self.assertIn(
+                    caught.exception.code,
+                    {"stale_capacity", "unbudgetable_provider"},
+                )
+        forged_capabilities = copy.deepcopy(self.capabilities)
+        forged_profile = copy.deepcopy(self.profile)
+        forged_capabilities["codex"]["max_output_tokens"] -= 1
+        forged_profile["provider_bindings"]["codex"][
+            "max_output_tokens"
+        ] -= 1
+        with self.assertRaises(self._error()) as caught:
+            self._build(
+                records(1),
+                capabilities=forged_capabilities,
+                capacity_profile=forged_profile,
+            )
+        self.assertEqual(caught.exception.code, "unbudgetable_provider")
 
     def test_resolved_frozen_capability_shape_is_plannable(self):
         values = capability("codex")

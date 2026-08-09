@@ -244,6 +244,13 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
                 "reasoning_default": binding["reasoning_default"],
                 "executable": binding["executable"],
                 "cli_revision": binding["cli_revision"],
+                "max_output_tokens": binding["max_output_tokens"],
+                "output_token_cap_binding": binding[
+                    "output_token_cap_binding"
+                ],
+                "output_token_cap_semantics": binding[
+                    "output_token_cap_semantics"
+                ],
             }
         }
         risk_policy = json.loads(
@@ -801,6 +808,27 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
                 for flag in flags:
                     self.assertIn(flag, help_text)
         self._assert_no_real_provider()
+
+    def test_cli_plan_normalizes_reverse_snapshot_record_order(self):
+        self._init()
+        forward = self._full_plan()
+        material = copy.deepcopy(self.input_bundle)
+        material.pop("bundle_sha256")
+        material["snapshot"]["records"].reverse()
+        self.input_bundle = self_hashed(
+            "history-audit-cli-test-only-shadow-input-v1",
+            material,
+            "bundle_sha256",
+        )
+        self.input_path.write_bytes(canonical_bytes(self.input_bundle))
+        reverse = self._full_plan()
+        self.assertEqual(
+            forward["runtime_plan_sha256"], reverse["runtime_plan_sha256"]
+        )
+        self.assertEqual(
+            forward["runtime_plan"]["shards"],
+            reverse["runtime_plan"]["shards"],
+        )
 
     def test_independent_processes_create_full_closed_shadow_lifecycle(self):
         envelope, status = self._successful_lifecycle()

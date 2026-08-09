@@ -136,6 +136,15 @@ def runtime_plan():
         "cli_revision": capacity["provider_bindings"]["codex"][
             "cli_revision"
         ],
+        "max_output_tokens": capacity["provider_bindings"]["codex"][
+            "max_output_tokens"
+        ],
+        "output_token_cap_binding": capacity["provider_bindings"]["codex"][
+            "output_token_cap_binding"
+        ],
+        "output_token_cap_semantics": capacity["provider_bindings"]["codex"][
+            "output_token_cap_semantics"
+        ],
     }
     return {
         "schema_version": "history-audit-plan-v2",
@@ -271,6 +280,7 @@ class HistoryAuditPlanAuthoritySmoke(unittest.TestCase):
             started_attempt_limit=1,
             semantic_policy_profile_id="semantic-test-v1",
             matched_router_rule_ids=["test-rule-l2"],
+            max_output_tokens=base["capacity_profile"]["max_output_tokens"],
         )
         self.assertEqual(issued["authority_scope"], "test-only-shadow")
         self.assertEqual(
@@ -310,6 +320,7 @@ class HistoryAuditPlanAuthoritySmoke(unittest.TestCase):
             started_attempt_limit=4,
             semantic_policy_profile_id="semantic-test-v1",
             matched_router_rule_ids=["retriever_uncalibrated"],
+            max_output_tokens=plan["capacity_profile"]["max_output_tokens"],
         )
         plan.update(copy.deepcopy(issued))
         material = planner.build_runtime_plan_material(plan)
@@ -520,6 +531,9 @@ print(json.dumps({
                     budget_limits={field: 0},
                     semantic_policy_profile_id="semantic-test-v1",
                     matched_router_rule_ids=["test-rule-l2"],
+                    max_output_tokens=plan["capacity_profile"][
+                        "max_output_tokens"
+                    ],
                 )
                 plan.update(issued)
                 self.assert_rejected(plan, "runtime_budget_exceeded")

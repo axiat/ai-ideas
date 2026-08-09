@@ -64,6 +64,9 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 "reasoning_default": False,
                 "executable": provider,
                 "cli_revision": "fake-cli-v1",
+                "max_output_tokens": 64,
+                "output_token_cap_binding": "test-provider-native-exact",
+                "output_token_cap_semantics": "reasoning-and-visible-output",
             }
             for provider in ("codex", "grok", "reviewer")
         }
@@ -261,6 +264,19 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
                 max_output_tokens=64,
             )
         )
+        for shard in shards:
+            raw = history_audit_plan._serialize_request_value(
+                {
+                    "candidate": candidate,
+                    "items": shard["item_ids"],
+                    "output_schema": plan["capacity_profile"]["schema"],
+                    "prompt": plan["capacity_profile"]["prompt"],
+                },
+                plan["capacity_profile"]["serializer_revision"],
+            )
+            shard["serialized_request"] = raw.decode("utf-8")
+            shard["request_sha256"] = hashlib.sha256(raw).hexdigest()
+            shard["final_request_tokens"] = len(raw)
         plan["shard_plan_sha"] = history_contract_v2.framed_sha256(
             "history-shard-plan-v2",
             history_contract_v2.canonical_bytes(

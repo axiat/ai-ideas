@@ -454,6 +454,9 @@ def future_production_plan(
             "reasoning_default": False,
             "executable": provider,
             "cli_revision": "fake-cli-v1",
+            "max_output_tokens": 64,
+            "output_token_cap_binding": "test-provider-native-exact",
+            "output_token_cap_semantics": "reasoning-and-visible-output",
         }
         for provider in ("codex", "grok", "reviewer")
     }
@@ -463,6 +466,11 @@ def future_production_plan(
     profile = copy.deepcopy(plan["capacity_profile"])
     profile["profile_id"] = "future-production-safe-24k-v1"
     profile["status"] = "hard-complete"
+    for provider, capability in plan["provider_capabilities"].items():
+        capability["output_token_cap_binding"] = "provider-native-exact"
+        profile["provider_bindings"][provider][
+            "output_token_cap_binding"
+        ] = "provider-native-exact"
     host = copy.deepcopy(history_audit_plan._host_runtime_authority())
     host["capacity_profiles"][profile["profile_id"]] = profile
     host["semantic_policy_profile_id"] = "semantic-test-v1"

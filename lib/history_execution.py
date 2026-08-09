@@ -33,7 +33,7 @@ LINEAGE_RELATIONS = frozenset(
     {"same_revision", "evolved_from", "recheck_of", "supersedes", "none"}
 )
 TERMINAL_STATES = frozenset({"settled", "superseded", "exhausted"})
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = history_audit_plan.MAX_ATTEMPTS
 
 
 class ExecutionError(RuntimeError):
