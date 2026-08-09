@@ -2081,6 +2081,13 @@ def _publish_pack(
 def _validate_query_for_intent(query, intent):
     if intent != "failure_pattern_search":
         return
+    facets = query.get("facets", {})
+    if (
+        isinstance(facets, dict)
+        and isinstance(facets.get("failure_pattern"), str)
+        and facets["failure_pattern"].strip()
+    ):
+        return
     required = ("verdict", "reason", "category")
     if any(
         not isinstance(query.get(field), str)

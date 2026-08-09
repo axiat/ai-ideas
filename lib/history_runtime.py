@@ -3223,6 +3223,23 @@ def _retrieval_query(candidate, intent=None):
     }
     result["candidate_content_sha256"] = content_sha
     result["candidate_markdown"] = markdown
+    if intent == "failure_pattern_search":
+        failure_lines = []
+        for label in (
+            "Target Failure",
+            "Form",
+            "Minimal Falsification Experiment",
+        ):
+            matches = re.findall(
+                rf"(?mi)^{re.escape(label)}:[ \t]*(.*\S)[ \t]*$",
+                markdown,
+            )
+            if len(matches) == 1:
+                failure_lines.append(matches[0])
+        if failure_lines:
+            result.setdefault("facets", {})[
+                "failure_pattern"
+            ] = " ".join(failure_lines)
     if (
         intent == "evolution_search"
         and candidate.get("declared_parent_candidate_id")
