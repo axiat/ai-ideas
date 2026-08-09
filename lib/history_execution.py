@@ -1353,9 +1353,23 @@ def _has_route_dispatch_authority(conn, plan_sha):
     ).fetchone() is not None
 
 
+def _require_live_attempt_claim(task, claim_fence, claim_token, *, now=None):
+    if claim_fence is None or claim_token is None:
+        raise ExecutionError("attempt_claim_authority_required")
+    if (
+        task["state"] != "claimed"
+        or task["fence"] != claim_fence
+        or task["claim_token"] != claim_token
+        or task["lease_until"] is None
+        or _now(task["lease_until"]) <= _now(now)
+    ):
+        raise history_audit_store.StaleFence("attempt launch claim is stale")
+
+
 def record_attempt(
     conn, task_key, capability, usage_reservation, *, cas_root, request_bytes,
     ordinal=None, now=None, claim_fence=None, claim_token=None,
+    claim_now=None,
 ):
     """Append a started attempt after its request CAS descriptor is durable."""
     task = load_task(conn, task_key)
@@ -1363,14 +1377,15 @@ def record_attempt(
         raise ExecutionError("missing_route_dispatch_authority")
     if task["state"] != "claimed":
         raise ExecutionError("task_not_claimed")
-    if claim_fence is not None or claim_token is not None:
-        if (
-            task["fence"] != claim_fence
-            or task["claim_token"] != claim_token
-        ):
-            raise history_audit_store.StaleFence(
-                "attempt launch claim is stale"
-            )
+    strict_claim = (
+        task["durable_plan"].get("authority_scope") == "production"
+        or claim_fence is not None
+        or claim_token is not None
+    )
+    if strict_claim:
+        _require_live_attempt_claim(
+            task, claim_fence, claim_token, now=claim_now
+        )
     if not isinstance(capability, dict) or not isinstance(capability.get("provider"), str):
         raise ExecutionError("capability_authority_mismatch")
     provider = capability["provider"]
@@ -1461,15 +1476,10 @@ def record_attempt(
     try:
         conn.execute("BEGIN IMMEDIATE")
         current_task = load_task(conn, task_key)
-        if claim_fence is not None or claim_token is not None:
-            if (
-                current_task["state"] != "claimed"
-                or current_task["fence"] != claim_fence
-                or current_task["claim_token"] != claim_token
-            ):
-                raise history_audit_store.StaleFence(
-                    "attempt launch claim is stale"
-                )
+        if strict_claim:
+            _require_live_attempt_claim(
+                current_task, claim_fence, claim_token, now=claim_now
+            )
         _assert_budget_available(conn, current_task, reserved)
         created_at = _now(now).isoformat()
         conn.execute(
@@ -1917,7 +1927,8 @@ def complete_attempt(
 
 
 def _failed_completion(
-    conn, cas_root, task, attempt_id, outcome, raw, usage, *, now=None
+    conn, cas_root, task, attempt_id, outcome, raw, usage, *,
+    claim_fence, claim_token, authority_now=None, now=None,
 ):
     if usage is not None and not isinstance(usage, str):
         raise ExecutionError("usage_authority_unavailable")
@@ -1943,9 +1954,28 @@ def _failed_completion(
             ) from exc
     try:
         conn.execute("BEGIN IMMEDIATE")
+        current_task = load_task(conn, task["task_hash"])
+        current_attempt = conn.execute(
+            "SELECT provenance_json FROM audit_task_attempts "
+            "WHERE attempt_id=? AND task_hash=?",
+            (attempt_id, task["task_hash"]),
+        ).fetchone()
+        if current_attempt is None:
+            raise ExecutionError("unknown_attempt")
+        provenance = _json(current_attempt["provenance_json"])
+        if (
+            provenance.get("claim_fence") != claim_fence
+            or provenance.get("claim_token") != claim_token
+        ):
+            raise history_audit_store.StaleFence(
+                "failed completion claim is stale"
+            )
+        _require_live_attempt_claim(
+            current_task, claim_fence, claim_token, now=authority_now
+        )
         _insert_completion(
-            conn, task, attempt_id, output["object_id"], outcome, None, usage,
-            now=completed_at,
+            conn, current_task, attempt_id, output["object_id"], outcome,
+            None, usage, now=completed_at,
         )
         conn.execute("COMMIT")
     except Exception:
@@ -2245,10 +2275,15 @@ def run_task(
     if not callable(provider):
         raise ExecutionError("provider_must_be_in_memory_callable")
     task = load_task(conn, task_key)
+    runtime_now = _now(now).isoformat()
+    production_execution = (
+        task["durable_plan"].get("authority_scope") == "production"
+    )
+    attempt_now = runtime_now if production_execution else None
     if (
         task["state"] == "claimed"
         and task["lease_until"] is not None
-        and _now(task["lease_until"]) > _now(now)
+        and _now(task["lease_until"]) > _now(runtime_now)
     ):
         latest = conn.execute(
             """
@@ -2263,26 +2298,30 @@ def run_task(
         if latest is None or latest["outcome"] is None:
             raise history_audit_store.StaleFence("logical task lease is live")
     claim = claim_task(
-        conn, task_key, "runtime-worker", lease_seconds, task["fence"], now=now
+        conn, task_key, "runtime-worker", lease_seconds, task["fence"],
+        now=runtime_now,
     )
     task = load_task(conn, task_key)
     terminal_transition = {
         "expected_fence": task["fence"],
         "claim_token": task["claim_token"],
-        "now": (now or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+        "now": runtime_now,
     }
 
     def finish_terminal(result):
         if task["stage"] == "map":
-            materialize_adjudication_tasks(conn, cas_root, plan, now=now)
+            materialize_adjudication_tasks(
+                conn, cas_root, plan, now=runtime_now
+            )
         elif task["stage"] == "detail":
-            materialize_reduce_tasks(conn, cas_root, plan, now=now)
+            materialize_reduce_tasks(conn, cas_root, plan, now=runtime_now)
         return result
 
     existing_valid = _valid_completions(conn, task_key)
     if existing_valid:
         result = settle_task(
-            conn, task_key, existing_valid, cas_root=cas_root, now=now
+            conn, task_key, existing_valid, cas_root=cas_root,
+            now=runtime_now,
         )
         return finish_terminal(result)
     request_bytes = task["durable_request_text"].encode("utf-8")
@@ -2299,7 +2338,9 @@ def run_task(
         (task_key,),
     ).fetchall()
     if attempts and attempts[-1]["outcome"] is None:
-        _cancel_unterminal_attempt(conn, attempts[-1]["attempt_id"])
+        _cancel_unterminal_attempt(
+            conn, attempts[-1]["attempt_id"], now=attempt_now
+        )
         attempts = conn.execute(
             """
             SELECT attempt.ordinal, attempt.attempt_id, attempt.provenance_json,
@@ -2364,6 +2405,7 @@ def run_task(
                 ),
                 reservation, cas_root=cas_root, request_bytes=request_bytes,
                 claim_fence=claim["fence"], claim_token=claim["claim_token"],
+                claim_now=runtime_now, now=attempt_now,
             )
         except ExecutionError as exc:
             if exc.code != "attempt_budget_exceeded":
@@ -2386,6 +2428,7 @@ def run_task(
                     valid = complete_attempt(
                         conn, cas_root, task_key, attempt["attempt_id"],
                         response.get("output"), plan["snapshot"], usage=usage,
+                        now=attempt_now,
                     )
                 except MapValidationError as exc:
                     if (
@@ -2406,12 +2449,15 @@ def run_task(
                 if fault_after_cas:
                     raise ExecutionCrash("fault injected after durable output CAS")
                 result = settle_task(
-                    conn, task_key, [valid], cas_root=cas_root, now=now
+                    conn, task_key, [valid], cas_root=cas_root,
+                    now=runtime_now,
                 )
                 return finish_terminal(result)
             _failed_completion(
                 conn, cas_root, task, attempt["attempt_id"], kind,
                 response.get("raw", kind), usage,
+                claim_fence=claim["fence"], claim_token=claim["claim_token"],
+                authority_now=runtime_now, now=attempt_now,
             )
             if kind == "overflow":
                 if task["stage"] == "map":
@@ -2436,8 +2482,12 @@ def run_task(
                     conn, task_key, "provider_exhausted", **terminal_transition
                 )
             )
+        except history_audit_store.StaleFence:
+            raise
         except Exception:
-            _cancel_unterminal_attempt(conn, attempt["attempt_id"])
+            _cancel_unterminal_attempt(
+                conn, attempt["attempt_id"], now=attempt_now
+            )
             raise
     return finish_terminal(
         exhaust_task(conn, task_key, "attempt_limit", **terminal_transition)

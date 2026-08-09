@@ -393,6 +393,192 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
             ).fetchone()[0],
             2,
         )
+    def test_production_attempt_requires_explicit_claim_authority(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        history_execution.claim_task(
+            self.fixture.conn, task_key, "worker", 60, 0,
+            now=history_execution.load_task(
+                self.fixture.conn, task_key
+            )["created_at"],
+        )
+        production_task = history_execution.load_task(
+            self.fixture.conn, task_key
+        )
+        production_task["durable_plan"]["authority_scope"] = "production"
+        with (
+            mock.patch.object(
+                history_execution, "load_task", return_value=production_task
+            ),
+            mock.patch.object(
+                history_execution, "_has_route_dispatch_authority",
+                return_value=True,
+            ),
+        ):
+            with self.assertRaises(history_execution.ExecutionError) as caught:
+                history_execution.record_attempt(
+                    self.fixture.conn, task_key,
+                    copy.deepcopy(plan["provider_capabilities"]["codex"]),
+                    {"attempt_kind": "initial"},
+                    cas_root=self.fixture.cas_root,
+                    request_bytes=plan["shards"][0][
+                        "serialized_request"
+                    ].encode(),
+                )
+        self.assertEqual(
+            caught.exception.code, "attempt_claim_authority_required"
+        )
+
+    def test_attempt_cannot_start_at_expired_claim_timestamp(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        task = history_execution.load_task(self.fixture.conn, task_key)
+        claim = history_execution.claim_task(
+            self.fixture.conn, task_key, "worker", 0, 0,
+            now=task["created_at"],
+        )
+        with self.assertRaises(history_audit_store.StaleFence):
+            history_execution.record_attempt(
+                self.fixture.conn, task_key,
+                copy.deepcopy(plan["provider_capabilities"]["codex"]),
+                {"attempt_kind": "initial"},
+                cas_root=self.fixture.cas_root,
+                request_bytes=task["durable_request_text"].encode(),
+                claim_fence=claim["fence"],
+                claim_token=claim["claim_token"],
+                claim_now=task["created_at"], now=task["created_at"],
+            )
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT count(*) FROM audit_task_attempts WHERE task_hash=?",
+                (task_key,),
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_failed_completion_rechecks_reclaimed_fence_under_write_lock(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        connections = [
+            sqlite3.connect(
+                self.fixture.db_path, timeout=5, check_same_thread=False
+            )
+            for _ in range(2)
+        ]
+        for connection in connections:
+            connection.row_factory = sqlite3.Row
+            history_audit_store.init_schema(connection)
+        task = history_execution.load_task(connections[0], task_key)
+        claim = history_execution.claim_task(
+            connections[0], task_key, "worker-a", 1, 0,
+            now=task["created_at"],
+        )
+        task = history_execution.load_task(connections[0], task_key)
+        attempt = history_execution.record_attempt(
+            connections[0], task_key,
+            copy.deepcopy(plan["provider_capabilities"]["codex"]),
+            {"attempt_kind": "initial"},
+            cas_root=self.fixture.cas_root,
+            request_bytes=task["durable_request_text"].encode(),
+            claim_fence=claim["fence"], claim_token=claim["claim_token"],
+            claim_now=task["created_at"], now=task["created_at"],
+        )
+        output_written = threading.Barrier(2)
+        release_failure = threading.Event()
+        original_put = history_execution.history_cas.put_object
+        failures = []
+
+        def blocked_put(*args, **kwargs):
+            result = original_put(*args, **kwargs)
+            output_written.wait(timeout=5)
+            if not release_failure.wait(5):
+                raise AssertionError("failed completion release timed out")
+            return result
+
+        def stale_failure():
+            try:
+                history_execution._failed_completion(
+                    connections[0], self.fixture.cas_root, task,
+                    attempt["attempt_id"], "timeout", "timed out", None,
+                    claim_fence=claim["fence"],
+                    claim_token=claim["claim_token"],
+                    authority_now=claim["lease_until"],
+                    now=claim["lease_until"],
+                )
+            except BaseException as exc:
+                failures.append(exc)
+
+        with mock.patch.object(
+            history_execution.history_cas, "put_object",
+            side_effect=blocked_put,
+        ):
+            worker = threading.Thread(target=stale_failure)
+            worker.start()
+            output_written.wait(timeout=5)
+            recovered = history_execution.recover_run(
+                connections[1], plan["plan_sha"],
+                cas_root=self.fixture.cas_root,
+                now=claim["lease_until"],
+            )
+            self.assertEqual(recovered, [task_key])
+            release_failure.set()
+            worker.join(10)
+        for connection in connections:
+            connection.close()
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], history_audit_store.StaleFence)
+        counts = self.fixture.conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM audit_attempt_completions_v2
+               WHERE attempt_id=?),
+              (SELECT count(*) FROM audit_runtime_budget_settlements_v2
+               WHERE attempt_id=?),
+              (SELECT count(*) FROM audit_attempt_cost_settlements_v2
+               WHERE attempt_id=?)
+            """,
+            (attempt["attempt_id"],) * 3,
+        ).fetchone()
+        self.assertEqual(tuple(counts), (0, 0, 0))
+
+    def test_run_task_uses_one_normalized_attempt_timestamp(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        task_ready_at = history_execution.load_task(
+            self.fixture.conn, task_key
+        )["created_at"]
+        original_load = history_execution.load_task
+
+        def production_load(connection, key):
+            task = original_load(connection, key)
+            task["durable_plan"]["authority_scope"] = "production"
+            return task
+
+        with mock.patch.object(
+            history_execution, "load_task", side_effect=production_load
+        ):
+            history_execution.run_map_task(
+                self.fixture.conn, self.fixture.cas_root, plan, task_key,
+                lambda *_: {
+                    "kind": "success", "output": self.fixture._output(plan)
+                },
+                now=task_ready_at,
+            )
+        timestamps = self.fixture.conn.execute(
+            """
+            SELECT attempt.created_at, completion.completed_at,
+                   budget.created_at, cost.completed_at, settlement.settled_at
+            FROM audit_task_attempts attempt
+            JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+            JOIN audit_runtime_budget_settlements_v2 budget USING(attempt_id)
+            JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+            JOIN audit_task_settlements_v2 settlement USING(task_hash)
+            WHERE attempt.task_hash=?
+            """,
+            (task_key,),
+        ).fetchone()
+        self.assertEqual(tuple(timestamps), (task_ready_at,) * 5)
 
 
 if __name__ == "__main__":
