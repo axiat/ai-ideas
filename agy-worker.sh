@@ -40,6 +40,86 @@ gap=${AGY_LAUNCH_GAP_SEC:-60}
 prompt=${1:?usage: agy-worker.sh <prompt>}
 case "$gap" in ''|*[!0-9]*) echo "agy-worker: AGY_LAUNCH_GAP_SEC must be a nonnegative integer: $gap" >&2; exit 2 ;; esac
 
+# Read no more than 65 bytes from a nonblocking, no-follow descriptor. Invalid,
+# foreign-owned, and multiply linked stamps are ignored. Writes use a fresh
+# single-link file and rename it into place so an existing inode is never
+# truncated through an attacker-controlled link.
+launch_stamp() {
+  python3 - "$1" "$stamp" "${2:-}" <<'PY'
+import os
+import stat
+import sys
+import tempfile
+
+operation, path, value = sys.argv[1:]
+
+if operation == "read":
+    if not hasattr(os, "O_NOFOLLOW"):
+        print(0)
+        raise SystemExit
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        print(0)
+        raise SystemExit
+    try:
+        state = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(state.st_mode)
+            or state.st_nlink != 1
+            or state.st_uid != os.geteuid()
+        ):
+            print(0)
+            raise SystemExit
+        payload = os.read(descriptor, 65)
+    finally:
+        os.close(descriptor)
+    if len(payload) > 64:
+        print(0)
+        raise SystemExit
+    payload = payload.rstrip(b"\n")
+    if not payload or not payload.isdigit():
+        print(0)
+        raise SystemExit
+    print(int(payload))
+    raise SystemExit
+
+if operation != "write" or not value.isdigit():
+    raise SystemExit(2)
+directory = os.path.dirname(path)
+descriptor, temporary = tempfile.mkstemp(prefix=".agy.last-launch.", dir=directory)
+try:
+    state = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(state.st_mode)
+        or state.st_nlink != 1
+        or state.st_uid != os.geteuid()
+    ):
+        raise OSError("unsafe launch-stamp temporary")
+    os.fchmod(descriptor, 0o600)
+    payload = (value + "\n").encode("ascii")
+    while payload:
+        written = os.write(descriptor, payload)
+        if written <= 0:
+            raise OSError("short launch-stamp write")
+        payload = payload[written:]
+    os.fsync(descriptor)
+    os.close(descriptor)
+    descriptor = -1
+    os.replace(temporary, path)
+except BaseException:
+    if descriptor >= 0:
+        os.close(descriptor)
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
+PY
+}
+
 # The mkdir lock covers stamp read, wait, and stamp write so concurrent judges
 # cannot all pass on the same old timestamp. A dead holder or a lock older than
 # gap+60 seconds is stale. A lock without a pid is cleared only by age.
@@ -60,14 +140,18 @@ if [ "$gap" -gt 0 ]; then
   done
   echo $$ > "$lockd/pid"
   trap 'rm -rf "$lockd"' EXIT
-  now=$(date +%s); last=$(cat "$stamp" 2>/dev/null || echo 0)
+  now=$(date +%s); last=$(launch_stamp read)
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
   wait_s=$(( last + gap - now ))
   if [ "$wait_s" -gt 0 ]; then
     echo "agy-worker: launch gap is ${gap}s; waiting ${wait_s}s" >&2
     sleep "$wait_s"
   fi
-  date +%s > "$stamp"
+  now=$(date +%s)
+  if ! launch_stamp write "$now"; then
+    echo "agy-worker: cannot atomically update launch stamp: $stamp" >&2
+    exit 1
+  fi
   rm -rf "$lockd"
   trap - EXIT
 fi
