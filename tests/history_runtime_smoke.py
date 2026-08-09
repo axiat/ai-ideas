@@ -2826,8 +2826,6 @@ class RoundCoordinatorContract(CapabilityContract):
             )
         if review_contract_path is None:
             review_contract_path = self.review_contract_path
-        if authority is None:
-            authority = self.shadow_test_authority()
         plan_path = self.root / f"{stem}-review-plan.json"
         plan = history_runtime.seal_round_review_plan(
             db_path=self.database,
@@ -4030,6 +4028,7 @@ class RoundCoordinatorContract(CapabilityContract):
             stem="frozen-source",
             prior_work_path=prior_work,
             review_contract_path=review_contract,
+            authority=self.shadow_test_authority(),
         )
         prior_work.unlink()
         review_contract.write_text(
