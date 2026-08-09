@@ -6996,6 +6996,55 @@ DROP TABLE audit_router_host_production_authority_probe;
 """
 
 
+_LOGICAL_TASK_TRANSITION_INTEGRITY_SQL = """
+CREATE TABLE audit_logical_task_transition_upgrade_probe(
+  value INTEGER NOT NULL CHECK(value=0)
+);
+INSERT INTO audit_logical_task_transition_upgrade_probe(value)
+SELECT 1
+FROM audit_logical_tasks task
+WHERE task.state='settled'
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_task_settlements_v2 settlement
+    WHERE settlement.task_hash=task.task_hash
+  );
+DROP TABLE audit_logical_task_transition_upgrade_probe;
+DROP TRIGGER IF EXISTS audit_logical_tasks_fenced_update;
+CREATE TRIGGER audit_logical_tasks_fenced_update
+BEFORE UPDATE ON audit_logical_tasks
+BEGIN
+  SELECT CASE WHEN audit_fenced_cas_allowed()<>1
+    THEN RAISE(ABORT, 'logical task update requires fenced CAS') END;
+  SELECT CASE WHEN NEW.task_hash<>OLD.task_hash OR NEW.run_id<>OLD.run_id
+    OR NEW.stage<>OLD.stage
+    OR NEW.staging_candidate_id<>OLD.staging_candidate_id
+    OR NEW.input_id<>OLD.input_id OR NEW.created_at<>OLD.created_at
+    THEN RAISE(ABORT, 'logical task identity is immutable') END;
+  SELECT CASE WHEN NEW.fence<>OLD.fence+1
+    THEN RAISE(ABORT, 'logical task fence must increase by one') END;
+  SELECT CASE WHEN NOT (
+    (OLD.state='planned' AND NEW.state='claimed')
+    OR (OLD.state='claimed' AND NEW.state IN ('claimed','planned','settling'))
+    OR (OLD.state='settling' AND NEW.state='planned')
+    OR (
+      OLD.state='settling' AND NEW.state='settled'
+      AND EXISTS (
+        SELECT 1 FROM audit_task_settlements_v2 settlement
+        WHERE settlement.task_hash=OLD.task_hash
+      )
+    )
+    OR (
+      OLD.state='claimed' AND NEW.state IN ('superseded','exhausted')
+      AND audit_l2_terminal_transition_allowed(
+        OLD.task_hash, OLD.state, OLD.fence, OLD.claim_token, OLD.lease_until,
+        NEW.state, NEW.fence, NEW.claim_token, NEW.lease_until
+      )=1
+    )
+  ) THEN RAISE(ABORT, 'illegal logical task transition') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("migration-ledger-guard", 1, _MIGRATION_LEDGER_GUARD_SQL),
@@ -7114,6 +7163,10 @@ MIGRATIONS = (
         _L2_SNAPSHOT_RECORDS_PER_SNAPSHOT_SQL,
     ),
     Migration("l2-plans-per-run", 1, _L2_PLANS_PER_RUN_SQL),
+    Migration(
+        "logical-task-transition-integrity", 1,
+        _LOGICAL_TASK_TRANSITION_INTEGRITY_SQL,
+    ),
 )
 
 
@@ -18673,6 +18726,36 @@ def quarantine_legacy_receipts(conn):
         raise AuditMigrationError("legacy receipt quarantine failed") from exc
 
 
+_LOGICAL_TASK_TRANSITIONS = {
+    "planned": frozenset({"claimed"}),
+    "claimed": frozenset({
+        "claimed", "planned", "settling", "superseded", "exhausted",
+    }),
+    "settling": frozenset({"planned", "settled"}),
+    "settled": frozenset(),
+    "superseded": frozenset(),
+    "exhausted": frozenset(),
+}
+
+
+def _logical_task_transition_allowed(conn, task_hash, old_state, new_state):
+    """Validate the generic task lifecycle and durable settlement authority."""
+    enforced = conn.execute(
+        "SELECT 1 FROM audit_schema_migrations "
+        "WHERE component='logical-task-transition-integrity' AND version=1"
+    ).fetchone()
+    if enforced is None:
+        return True
+    if new_state not in _LOGICAL_TASK_TRANSITIONS.get(old_state, frozenset()):
+        return False
+    if new_state == "settled":
+        return conn.execute(
+            "SELECT 1 FROM audit_task_settlements_v2 WHERE task_hash=?",
+            (task_hash,),
+        ).fetchone() is not None
+    return True
+
+
 def compare_and_set_logical_task(
     conn,
     task_hash,
@@ -18692,6 +18775,12 @@ def compare_and_set_logical_task(
         or new_fence != expected_fence + 1
     ):
         raise ValueError("logical task fence must increase by exactly one")
+    if not _logical_task_transition_allowed(
+        conn, task_hash, expected_state, new_state
+    ):
+        raise sqlite3.IntegrityError(
+            f"illegal logical task transition: {expected_state}->{new_state}"
+        )
     guard = _FENCE_GUARDS.get(id(conn))
     if guard is None:
         raise AuditMigrationError("fenced CAS is not initialized for connection")
