@@ -4433,18 +4433,26 @@ def _validated_portable_request_profile(
         or not _valid_sha256(profile.execution_request_profile_hash)
         or type(profile.max_output_tokens) is not int
         or profile.max_output_tokens <= 0
-        or profile.output_token_cap_binding not in {
-            "provider-native-exact",
-            "test-provider-native-exact",
-        }
-        or profile.output_token_cap_semantics
-        != "reasoning-and-visible-output"
+        or not (
+            (
+                profile.output_token_cap_binding in {
+                    "provider-native-exact",
+                    "test-provider-native-exact",
+                }
+                and profile.output_token_cap_semantics
+                == "reasoning-and-visible-output"
+            )
+            or (
+                profile.output_token_cap_binding == "unsupported"
+                and profile.output_token_cap_semantics is None
+            )
+        )
     ):
         raise RuntimeContractError(
             "portable provider request profile is invalid"
         )
     try:
-        provider_module.require_native_output_token_cap(
+        provider_module.require_portable_output_token_budget(
             profile, max_output_tokens
         )
     except provider_module.ProviderResolutionError as exc:

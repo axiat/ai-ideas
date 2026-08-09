@@ -1808,7 +1808,7 @@ def run_portable_stdout_attempt(
         raise PortableAgentError("invalid_capability")
     try:
         bound_max_output_tokens = (
-            provider_adapters.require_native_output_token_cap(
+            provider_adapters.require_portable_output_token_budget(
                 capability, max_output_tokens
             )
         )
@@ -1860,7 +1860,7 @@ def run_portable_stdout_attempt(
         environment = _provider_environment(mirror, environment_delta)
         _revalidate_provider_model_authority(capability)
         try:
-            provider_adapters.require_native_output_token_cap(
+            provider_adapters.require_portable_output_token_budget(
                 capability, bound_max_output_tokens
             )
         except provider_adapters.ProviderResolutionError as exc:
@@ -1962,7 +1962,7 @@ def run_portable_attempt(
         raise PortableAgentError("invalid_capability")
     try:
         bound_max_output_tokens = (
-            provider_adapters.require_native_output_token_cap(
+            provider_adapters.require_portable_output_token_budget(
                 capability, max_output_tokens
             )
         )
@@ -2000,7 +2000,7 @@ def run_portable_attempt(
         )
         environment = _provider_environment(mirror, environment_delta)
         try:
-            provider_adapters.require_native_output_token_cap(
+            provider_adapters.require_portable_output_token_budget(
                 capability, bound_max_output_tokens
             )
         except provider_adapters.ProviderResolutionError as exc:

@@ -446,8 +446,8 @@ run_awr_agy_catalog_dedup_case() {
     catalog_calls=$(wc -l < "$catalog" | tr -d '[:space:]')
   fi
   if [ "$status" -ne 2 ] \
-    || ! grep -q 'no provider-native exact output-token cap' "$log"; then
-    record_failure "AwR agy catalog $name did not reject unsupported output cap"
+    || ! grep -q 'must be nonnegative integers' "$log"; then
+    record_failure "AwR agy catalog $name did not reach ordinary validation"
   elif [ "$after" != "$before" ] || [ -e "$marker" ]; then
     record_failure "AwR agy catalog $name mutated protected state or launched a provider"
   elif [ "$catalog_calls" -ne "$expected_catalog_calls" ]; then
@@ -481,8 +481,8 @@ run_awr_rejection v2-unknown-provider \
   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=unknown
 run_awr_valid_v2_no_fallback
 run_awr_role_isolation
-run_awr_agy_catalog_dedup_case inherited 0
-run_awr_agy_catalog_dedup_case distinct-model 0 \
+run_awr_agy_catalog_dedup_case inherited 1
+run_awr_agy_catalog_dedup_case distinct-model 2 \
   AWR_RESEARCH_MODEL=gemini-3.6-flash-high
 
 if [ "$FAILURES" -ne 0 ]; then

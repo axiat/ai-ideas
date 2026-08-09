@@ -310,9 +310,7 @@ def _output_token_cap(
     if rule["binding"] != "environment":
         if allow_test:
             return "test-provider-native-exact", "reasoning-and-visible-output"
-        raise ProviderResolutionError(
-            f"{provider} has no provider-native exact output-token cap"
-        )
+        return "unsupported", None
     return "provider-native-exact", rule["semantics"]
 
 
@@ -449,6 +447,39 @@ def require_native_output_token_cap(intent, expected=None):
     ):
         raise ProviderResolutionError("provider output-token cap changed")
     return maximum
+
+
+def require_portable_output_token_budget(intent, expected=None):
+    """Return a recorded stage budget without inventing provider cap support."""
+    if not (
+        command_intent_is_issued(intent) or capability_is_issued(intent)
+    ):
+        raise ProviderResolutionError("provider profile is not resolver-issued")
+    maximum = _require_provider_max_output_tokens(
+        intent.provider,
+        intent.max_output_tokens,
+        optional=True,
+    )
+    if maximum is None:
+        raise ProviderResolutionError("portable output-token budget is unavailable")
+    if expected is not None and maximum != _require_provider_max_output_tokens(
+        intent.provider,
+        expected,
+    ):
+        raise ProviderResolutionError("provider output-token budget changed")
+    if intent.output_token_cap_binding in {
+        "provider-native-exact",
+        "test-provider-native-exact",
+    }:
+        return require_native_output_token_cap(intent, maximum)
+    if (
+        intent.output_token_cap_binding == "unsupported"
+        and intent.output_token_cap_semantics is None
+        and intent.authority == "shadow-only"
+        and intent.hard_complete_eligible is False
+    ):
+        return maximum
+    raise ProviderResolutionError("portable output-token budget is invalid")
 
 
 def capability_is_issued(value):
@@ -1710,11 +1741,16 @@ def _resolve_provider(
     )
     model_identity = evidence["effective_model"] or "provider-default"
     reasoning_identity = evidence["effective_reasoning"] or "provider-default"
-    hard_complete = allow_hard_complete and bool(
-        evidence["effective_model"]
-        and evidence["effective_reasoning"]
-        and evidence["immutable_capacity_identity"]
-        and evidence["cli_revision"] != "unprobed"
+    hard_complete = (
+        allow_hard_complete
+        and output_token_cap_binding == "provider-native-exact"
+        and output_token_cap_semantics == "reasoning-and-visible-output"
+        and bool(
+            evidence["effective_model"]
+            and evidence["effective_reasoning"]
+            and evidence["immutable_capacity_identity"]
+            and evidence["cli_revision"] != "unprobed"
+        )
     )
     material = {
         "provider": provider,
@@ -2095,6 +2131,11 @@ def _render_command_fields(
             or output_token_cap_semantics is not None
         ):
             raise ProviderResolutionError("output-token command binding is invalid")
+    elif (
+        output_token_cap_binding == "unsupported"
+        and output_token_cap_semantics is None
+    ):
+        pass
     elif output_token_cap_semantics != "reasoning-and-visible-output":
         raise ProviderResolutionError(
             "provider-native exact output-token cap is unsupported"

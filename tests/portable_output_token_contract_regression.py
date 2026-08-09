@@ -208,6 +208,32 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
             )
         self.assertEqual(probe_calls, [])
 
+    def test_unsupported_cap_never_gains_hard_complete_authority(self):
+        evidence = {
+            "cli_revision": "fixture-cli-v1",
+            "serializer_revision": "portable-agent-command-v1",
+            "effective_model": "fixture-model",
+            "effective_reasoning": "high",
+            "model_override_applied": True,
+            "reasoning_override_applied": True,
+            "immutable_capacity_identity": "fixture-capacity-v1",
+        }
+        capability = provider_adapters._resolve_provider(
+            self.registry,
+            "hunt",
+            "codex",
+            "fixture-model",
+            "high",
+            3072,
+            executable_lookup=lambda _: str(FAKE),
+            version_probe=lambda *args: evidence,
+            issuance_scope="fixture-host",
+            allow_hard_complete=True,
+        )
+        self.assertEqual(capability.output_token_cap_binding, "unsupported")
+        self.assertFalse(capability.hard_complete_eligible)
+        self.assertEqual(capability.authority, "shadow-only")
+
     def test_empty_content_violates_declared_min_length(self):
         schema = portable_stage._response_schema("generate")
         contract = portable_agent._validate_response_schema_contract(schema)
@@ -227,7 +253,7 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
             portable_agent._validate_response_value(value, contract)
         self.assertEqual(caught.exception.code, "schema_mismatch")
 
-    def test_omission_and_unsupported_providers_fail_before_launch(self):
+    def test_omission_fails_but_provider_default_budgets_are_recorded(self):
         omitted = provider_adapters._resolve_command_intent_for_test(
             self.registry,
             "hunt",
@@ -263,17 +289,40 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
                         ),
                     }
                     kwargs["version_probe"] = lambda *_: b"1.1.10\n"
-                with self.assertRaises(provider_adapters.ProviderResolutionError):
-                    provider_adapters._resolve_command_intent(
-                        self.registry,
-                        surface,
-                        provider,
-                        "vendor/fixture",
-                        None,
-                        3072,
-                        executable_lookup=lambda _: str(FAKE),
-                        **kwargs,
-                    )
+                intent = provider_adapters._resolve_command_intent(
+                    self.registry,
+                    surface,
+                    provider,
+                    "vendor/fixture",
+                    None,
+                    3072,
+                    executable_lookup=lambda _: str(FAKE),
+                    **kwargs,
+                )
+                self.assertEqual(intent.max_output_tokens, 3072)
+                self.assertFalse(intent.hard_complete_eligible)
+                self.assertEqual(intent.authority, "shadow-only")
+                self.assertEqual(
+                    intent.output_token_cap_binding, "unsupported"
+                )
+                self.assertIsNone(intent.output_token_cap_semantics)
+                self.assertEqual(
+                    provider_adapters.require_portable_output_token_budget(
+                        intent, 3072
+                    ),
+                    3072,
+                )
+                argv, environment = provider_adapters.render_command(
+                    intent,
+                    pathlib.Path("/portable-mirror"),
+                    "PROMPT",
+                    response_schema=(
+                        {"type": "object"} if provider == "agy" else None
+                    ),
+                )
+                self.assertTrue(argv)
+                self.assertNotIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS", environment)
+                self.assertNotIn("FAKE_PROVIDER_MAX_OUTPUT_TOKENS", environment)
 
 
 if __name__ == "__main__":

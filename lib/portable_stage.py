@@ -725,7 +725,10 @@ def _provider_request(
         raise PortableStageError("contract_text_hash_mismatch", "role_text")
     if type(max_output_tokens) is not int or max_output_tokens <= 0:
         raise PortableStageError("output_token_cap_unsupported")
-    if output_token_cap_semantics != "reasoning-and-visible-output":
+    if output_token_cap_semantics not in {
+        None,
+        "reasoning-and-visible-output",
+    }:
         raise PortableStageError("output_token_cap_unsupported")
     base = {
         "schema_version": "portable-stage-request-v1",
@@ -1037,6 +1040,16 @@ def _rendered_exec_budget(intent, provider_request, response_schema, state_root)
     }
 
 
+def _valid_output_token_budget(binding, semantics):
+    return (
+        binding in {
+            "provider-native-exact",
+            "test-provider-native-exact",
+        }
+        and semantics == "reasoning-and-visible-output"
+    ) or (binding == "unsupported" and semantics is None)
+
+
 def prepare_stage(
     intent_or_capability,
     *,
@@ -1059,8 +1072,10 @@ def prepare_stage(
     if launch_intent.surface != expected_surface:
         raise PortableStageError("provider_surface_mismatch")
     try:
-        max_output_tokens = provider_adapters.require_native_output_token_cap(
-            launch_intent
+        max_output_tokens = (
+            provider_adapters.require_portable_output_token_budget(
+                launch_intent
+            )
         )
     except provider_adapters.ProviderResolutionError as exc:
         raise PortableStageError("output_token_cap_unsupported") from exc
@@ -1293,7 +1308,7 @@ def _load_launch_intent(prepared, private):
         raise PortableStageError("provider_request_changed")
     try:
         provider_adapters.revalidate_command_intent_for_launch(intent)
-        provider_adapters.require_native_output_token_cap(
+        provider_adapters.require_portable_output_token_budget(
             intent, prepared["max_output_tokens"]
         )
     except provider_adapters.ProviderResolutionError as exc:
@@ -1809,12 +1824,10 @@ def _validate_public_preflight(value):
         or value.get("authority") != "shadow-only"
         or type(value.get("max_output_tokens")) is not int
         or value["max_output_tokens"] <= 0
-        or value.get("output_token_cap_binding") not in {
-            "provider-native-exact",
-            "test-provider-native-exact",
-        }
-        or value.get("output_token_cap_semantics")
-        != "reasoning-and-visible-output"
+        or not _valid_output_token_budget(
+            value.get("output_token_cap_binding"),
+            value.get("output_token_cap_semantics"),
+        )
     ):
         raise PortableStageError("invalid_preflight")
     for name in (
@@ -1979,12 +1992,10 @@ def _validate_public_completion(value):
         or value.get("authority") != "shadow-only"
         or type(value.get("max_output_tokens")) is not int
         or value["max_output_tokens"] <= 0
-        or value.get("output_token_cap_binding") not in {
-            "provider-native-exact",
-            "test-provider-native-exact",
-        }
-        or value.get("output_token_cap_semantics")
-        != "reasoning-and-visible-output"
+        or not _valid_output_token_budget(
+            value.get("output_token_cap_binding"),
+            value.get("output_token_cap_semantics"),
+        )
         or type(value.get("outputs")) is not dict
     ):
         raise PortableStageError("invalid_completion")
@@ -2158,12 +2169,10 @@ def verify_public_descriptor(descriptor, reference_root):
         or stage not in _OUTPUT_PROFILES
         or type(descriptor.get("max_output_tokens")) is not int
         or descriptor["max_output_tokens"] <= 0
-        or descriptor.get("output_token_cap_binding") not in {
-            "provider-native-exact",
-            "test-provider-native-exact",
-        }
-        or descriptor.get("output_token_cap_semantics")
-        != "reasoning-and-visible-output"
+        or not _valid_output_token_budget(
+            descriptor.get("output_token_cap_binding"),
+            descriptor.get("output_token_cap_semantics"),
+        )
         or any(
             not _valid_text(descriptor.get(name))
             for name in (
@@ -2392,7 +2401,7 @@ def main(argv=None):
                 registry,
             )
             try:
-                provider_adapters.require_native_output_token_cap(
+                provider_adapters.require_portable_output_token_budget(
                     intent, arguments.max_output_tokens
                 )
             except provider_adapters.ProviderResolutionError as exc:

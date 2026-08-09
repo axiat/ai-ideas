@@ -715,6 +715,13 @@ for path in completions:
     value = json.loads(path.read_text(encoding="utf-8"))
     if value.get("execution_boundary") != "portable-mirror-v1":
         raise SystemExit(f"AwR completion boundary changed: {path}")
+    if profile == "all-agy" and (
+        value.get("max_output_tokens") != 2048
+        or value.get("output_token_cap_binding") != "unsupported"
+        or value.get("output_token_cap_semantics") is not None
+        or value.get("authority") != "shadow-only"
+    ):
+        raise SystemExit(f"AwR agy output budget gained exact-cap authority: {path}")
 PY
 }
 
@@ -784,12 +791,13 @@ run_awr_v2_all_agy() {
       "EXPECTED_PROVIDER_CODEX_HOME=$home/codex-config" \
       "PATH=$repo/.test-bin:$PATH" \
       "FAKE_PORTABLE_STAGE_LOG=$provider_log" \
-      FAKE_PORTABLE_STAGE_MODE=mirror-audit \
+      FAKE_PORTABLE_STAGE_MODE=agy-portable-audit \
       HISTORY_RUNTIME_ABI=v2 \
-      AWR_PROVIDER=claude \
-      AWR_RESEARCH_PROVIDER=claude \
-      AWR_PRIORWORK_PROVIDER=claude \
-      AWR_JUDGE_PROVIDER=claude \
+      AWR_PROVIDER=agy \
+      AWR_MODEL=gemini/fixture-model \
+      AWR_RESEARCH_PROVIDER=agy \
+      AWR_PRIORWORK_PROVIDER=agy \
+      AWR_JUDGE_PROVIDER=agy \
       SIDE_POLL_SEC=0 \
       SIDE_MAX_ROUNDS=1 \
       SIDE_MAX_BAD=1 \
@@ -804,7 +812,7 @@ run_awr_v2_all_agy() {
     sed -n '1,180p' "$log" >&2
     return
   fi
-  if ! check_awr_result "$repo" "$provider_log" mixed; then
+  if ! check_awr_result "$repo" "$provider_log" all-agy; then
     fail 'all-agy AwR stdout override, validators, or receipts'
     return
   fi
