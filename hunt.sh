@@ -280,8 +280,10 @@ ARCHIVE_SOURCE=
 RECOVERY_ARCHIVE_DIR=
 RECOVERY_RUN_ID=
 RECOVERY_ROUND=
+RECOVERY_DATE=
 RECOVERY_REASON=
-RECOVERY_REPORT_COUNT_BEFORE=
+RECOVERY_OUTCOME=
+RECOVERY_REPORT_PATH=
 HALT_MARK=tmp/HALTED-ARCHIVE-FAIL
 HISTORY_DB=.ai-ideas/history.sqlite3
 HISTORY_STATE_ROOT=.ai-ideas
@@ -1146,7 +1148,11 @@ PY
 
 copy_external_output() {
   local stage=$1 mirror=$2 diagnostic=${3:-}
-  python3 - "$stage" "$mirror" "$RD" "$today" "$diagnostic" <<'PY'
+  python3 - \
+    "$stage" "$mirror" "$RD" "$today" "$diagnostic" \
+    "$run_id" "$RUNS_DIR" <<'PY'
+import hashlib
+import json
 import os
 import pathlib
 import stat
@@ -1157,6 +1163,8 @@ mirror = pathlib.Path(sys.argv[2]).resolve()
 round_root = pathlib.Path(sys.argv[3]).resolve()
 today = sys.argv[4]
 diagnostic = sys.argv[5]
+run_id = sys.argv[6]
+runs_root = pathlib.Path(sys.argv[7]).resolve()
 
 outputs = {
     "select": ("tmp/round/select.tsv", round_root / "select.tsv", 65536, False),
@@ -1227,6 +1235,41 @@ def atomic_write(destination, raw):
         except FileNotFoundError:
             pass
 
+
+def write_new_binding(destination, raw):
+    archive = destination.parent
+    archive_state = archive.lstat()
+    if (
+        not stat.S_ISDIR(archive_state.st_mode)
+        or stat.S_ISLNK(archive_state.st_mode)
+        or archive.name != run_id
+        or archive.parent != runs_root
+    ):
+        raise SystemExit("report binding archive is unsafe")
+    temporary = archive / f".report-binding.tmp-{os.getpid()}"
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o444,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, destination, follow_symlinks=False)
+        temporary.unlink()
+        directory = os.open(archive, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
 if diagnostic:
     if stage != "research":
         raise SystemExit("diagnostic copy is only valid for research")
@@ -1264,6 +1307,13 @@ elif stage == "report":
     candidates = sorted((mirror / "ideas").glob("*.md"))
     if len(candidates) != 1:
         raise SystemExit("report must create exactly one markdown artifact")
+    binding_destination = runs_root / run_id / "report-binding.json"
+    try:
+        binding_destination.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise SystemExit("report binding already exists")
     raw = read_regular(candidates[0], 1024 * 1024, True)
     destination = pathlib.Path("ideas") / f"{today}_hunt.md"
     suffix = 2
@@ -1271,6 +1321,16 @@ elif stage == "report":
         destination = pathlib.Path("ideas") / f"{today}_hunt-{suffix}.md"
         suffix += 1
     atomic_write(destination, raw)
+    binding = {
+        "report_path": destination.as_posix(),
+        "report_sha256": hashlib.sha256(raw).hexdigest(),
+        "run_id": run_id,
+        "schema_version": 1,
+    }
+    binding_raw = (
+        json.dumps(binding, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    write_new_binding(binding_destination, binding_raw)
     print(destination)
 else:
     raise SystemExit("unknown external output stage")
@@ -1609,6 +1669,114 @@ reports_today() {
   printf '%s\n' "$count"
 }
 
+seal_decision_outcome() {
+  local count=$1
+  python3 - "$RD/history/decision-outcome.tsv" "$count" <<'PY'
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    count = int(sys.argv[2])
+except ValueError as exc:
+    raise SystemExit("decision outcome count is invalid") from exc
+if count < 0:
+    raise SystemExit("decision outcome count is invalid")
+outcome = "strong-accept" if count else "no-strong-accept"
+raw = f"{outcome}\t{count}\n".encode("ascii")
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(path, flags, 0o444)
+with os.fdopen(descriptor, "wb") as handle:
+    handle.write(raw)
+    handle.flush()
+    os.fsync(handle.fileno())
+PY
+}
+
+verify_pending_report_binding() {
+  local archive=$1 expected_run_id=$2 expected_date=$3
+  python3 - "$archive" "$expected_run_id" "$expected_date" <<'PY'
+import hashlib
+import json
+import pathlib
+import re
+import stat
+import sys
+
+archive = pathlib.Path(sys.argv[1])
+expected_run_id = sys.argv[2]
+expected_date = sys.argv[3]
+binding_path = archive / "report-binding.json"
+try:
+    archive_state = archive.lstat()
+except OSError as exc:
+    raise SystemExit(f"report binding archive is unavailable: {exc}")
+if (
+    not stat.S_ISDIR(archive_state.st_mode)
+    or stat.S_ISLNK(archive_state.st_mode)
+    or archive.name != expected_run_id
+):
+    raise SystemExit("report binding archive is unsafe")
+try:
+    binding_state = binding_path.lstat()
+except FileNotFoundError:
+    raise SystemExit(3)
+if (
+    not stat.S_ISREG(binding_state.st_mode)
+    or binding_state.st_nlink != 1
+    or binding_state.st_size > 4096
+):
+    raise SystemExit("report binding is unsafe")
+raw = binding_path.read_bytes()
+if len(raw) != binding_state.st_size:
+    raise SystemExit("report binding size changed during read")
+try:
+    binding = json.loads(raw)
+except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    raise SystemExit("report binding is malformed") from exc
+if (
+    not isinstance(binding, dict)
+    or set(binding) != {
+        "schema_version", "run_id", "report_path", "report_sha256"
+    }
+    or binding.get("schema_version") != 1
+    or binding.get("run_id") != expected_run_id
+    or not isinstance(binding.get("report_path"), str)
+    or not isinstance(binding.get("report_sha256"), str)
+    or re.fullmatch(r"[0-9a-f]{64}", binding["report_sha256"]) is None
+):
+    raise SystemExit("report binding fields are invalid")
+canonical = (
+    json.dumps(binding, sort_keys=True, separators=(",", ":")) + "\n"
+).encode("utf-8")
+if raw != canonical:
+    raise SystemExit("report binding is not canonical")
+report_pattern = re.compile(
+    rf"ideas/{re.escape(expected_date)}_hunt(?:-(?:[2-9]|[1-9][0-9]+))?\.md"
+)
+if report_pattern.fullmatch(binding["report_path"]) is None:
+    raise SystemExit("report binding path does not match the archived date")
+report = pathlib.Path(binding["report_path"])
+try:
+    report_state = report.lstat()
+except OSError as exc:
+    raise SystemExit(f"bound report is unavailable: {exc}")
+if (
+    not stat.S_ISREG(report_state.st_mode)
+    or report_state.st_nlink != 1
+    or report_state.st_size > 1024 * 1024
+):
+    raise SystemExit("bound report is unsafe")
+report_raw = report.read_bytes()
+if len(report_raw) != report_state.st_size:
+    raise SystemExit("bound report size changed during read")
+if hashlib.sha256(report_raw).hexdigest() != binding["report_sha256"]:
+    raise SystemExit("bound report hash does not match")
+print(binding["report_path"])
+PY
+}
+
 snapshot_archive_source() {
   local source=$1 destination=$2
   rm -rf "$destination"
@@ -1628,7 +1796,8 @@ restore_archive_source() {
 
 verify_pending_recovery_archive() {
   local archive=$1
-  python3 - "$archive" "$today" <<'PY'
+  python3 - "$archive" <<'PY'
+import datetime
 import pathlib
 import stat
 import sys
@@ -1636,7 +1805,6 @@ import sys
 from lib.history_archive import ArchiveError, verify_archive
 
 archive = pathlib.Path(sys.argv[1])
-expected_date = sys.argv[2]
 manifest = archive / "manifest.tsv"
 try:
     archive_state = archive.lstat()
@@ -1664,7 +1832,13 @@ expected = {
 }
 if set(fields) != expected:
     raise SystemExit("recovery archive manifest fields are invalid")
-if fields["date"] != expected_date or fields["reason"] != "decision":
+try:
+    archived_date = datetime.date.fromisoformat(fields["date"])
+except ValueError as exc:
+    raise SystemExit("recovery archive date is invalid") from exc
+if archived_date.isoformat() != fields["date"]:
+    raise SystemExit("recovery archive date is invalid")
+if fields["reason"] != "decision":
     raise SystemExit(3)
 if archive.name != fields["run_id"]:
     raise SystemExit("recovery archive run identity is inconsistent")
@@ -1686,26 +1860,40 @@ except ArchiveError as exc:
     raise SystemExit(f"recovery archive verification failed: {exc}") from exc
 if receipt.get("created_reason") not in {"decision", "published"}:
     raise SystemExit("recovery archive lifecycle is invalid")
-count_path = archive / "round/history/report-count-before"
-count = ""
-if count_path.exists():
-    count_state = count_path.lstat()
-    if not stat.S_ISREG(count_state.st_mode) or count_state.st_nlink != 1:
-        raise SystemExit("recovery report count is unsafe")
-    count = count_path.read_text(encoding="ascii").strip()
-    if not count.isdigit():
-        raise SystemExit("recovery report count is invalid")
-print("\t".join((fields["run_id"], fields["round"], fields["reason"], count)))
+outcome_path = archive / "round/history/decision-outcome.tsv"
+outcome = "compatibility-unknown"
+if outcome_path.exists():
+    outcome_state = outcome_path.lstat()
+    if not stat.S_ISREG(outcome_state.st_mode) or outcome_state.st_nlink != 1:
+        raise SystemExit("recovery decision outcome is unsafe")
+    parts = outcome_path.read_text(encoding="ascii").rstrip("\n").split("\t")
+    if len(parts) != 2 or not parts[1].isdigit():
+        raise SystemExit("recovery decision outcome is invalid")
+    count = int(parts[1])
+    outcome = parts[0]
+    if (
+        (outcome == "strong-accept" and count < 1)
+        or (outcome == "no-strong-accept" and count != 0)
+        or outcome not in {"strong-accept", "no-strong-accept"}
+    ):
+        raise SystemExit("recovery decision outcome is inconsistent")
+print("\t".join((
+    fields["run_id"], fields["round"], fields["date"],
+    fields["reason"], outcome,
+)))
 PY
 }
 
 find_pending_archive_report_view() {
-  local archive view candidate metadata rc
+  local archive view candidate metadata outcome rc saw_report_view
+  local candidate_run_id candidate_round candidate_date candidate_reason
   RECOVERY_ARCHIVE_DIR=
   RECOVERY_RUN_ID=
   RECOVERY_ROUND=
+  RECOVERY_DATE=
   RECOVERY_REASON=
-  RECOVERY_REPORT_COUNT_BEFORE=
+  RECOVERY_OUTCOME=
+  RECOVERY_REPORT_PATH=
   CURRENT_REPORT_VIEW=
   for archive in "$RUNS_DIR"/*; do
     [ -e "$archive" ] || continue
@@ -1717,19 +1905,36 @@ find_pending_archive_report_view() {
       log "Invalid pending recovery archive: $archive"
       return 2
     fi
+    IFS=$'\t' read -r \
+      candidate_run_id candidate_round candidate_date candidate_reason outcome \
+      <<< "$metadata"
+    if [ "$outcome" = no-strong-accept ]; then
+      continue
+    fi
     candidate=
+    saw_report_view=0
     for view in "$archive"/round/history/review-attempts/*/report-view; do
+      [ -f "$view/accepted.tsv" ] || continue
+      saw_report_view=1
       [ -s "$view/accepted.tsv" ] || continue
       candidate=$view
     done
-    [ -n "$candidate" ] || {
-      log "Pending archive lacks a verified Strong Accept report view: $archive"
+    if [ -z "$candidate" ]; then
+      if [ "$outcome" = compatibility-unknown ] \
+         && [ "$saw_report_view" -eq 1 ]; then
+        # Pre-marker decision archives with only empty accepted.tsv files are
+        # completed no-Strong-Accept decisions, not pending publication.
+        continue
+      fi
+      log "Pending Strong Accept archive lacks its report view: $archive"
       return 2
-    }
+    fi
     RECOVERY_ARCHIVE_DIR=$archive
-    IFS=$'\t' read -r \
-      RECOVERY_RUN_ID RECOVERY_ROUND RECOVERY_REASON RECOVERY_REPORT_COUNT_BEFORE \
-      <<< "$metadata"
+    RECOVERY_RUN_ID=$candidate_run_id
+    RECOVERY_ROUND=$candidate_round
+    RECOVERY_DATE=$candidate_date
+    RECOVERY_REASON=$candidate_reason
+    RECOVERY_OUTCOME=strong-accept
     CURRENT_REPORT_VIEW=$candidate
   done
   [ -n "$RECOVERY_ARCHIVE_DIR" ]
@@ -1766,26 +1971,34 @@ publish_existing_strong_accept_report() {
 }
 
 finalize_strong_accept() {
-  local before_reports after_reports
   while :; do
-    before_reports=$(reports_today)
-    if run_external_stage \
-      "$BACK_CMD" \
-      "Read roles/report.md and follow it" \
-      report \
-      1; then
-      after_reports=$(reports_today)
-      if [ "$after_reports" -gt "$before_reports" ]; then
-        ./publish.sh >> "$LOG" 2>&1 || {
-          log "publish.sh failed"
-          return 2
-        }
+    if [ -n "${RUNS_DIR:-}" ] \
+       && { [ -e "$RUNS_DIR/$run_id/report-binding.json" ] \
+            || [ -L "$RUNS_DIR/$run_id/report-binding.json" ]; }; then
+      if ! RECOVERY_REPORT_PATH=$(verify_pending_report_binding \
+        "$RUNS_DIR/$run_id" "$run_id" "$today" 2>> "$LOG"); then
+        log "Committed Strong Accept report binding is invalid"
+        return 2
+      fi
+      if ./publish.sh >> "$LOG" 2>&1; then
         refresh_published_archive || return 2
         fails=0
         return 0
       fi
-      log "Report stage created no report"
+      log "publish.sh failed"
     else
+      if run_external_stage \
+        "$BACK_CMD" \
+        "Read roles/report.md and follow it" \
+        report \
+        1; then
+        if ! RECOVERY_REPORT_PATH=$(verify_pending_report_binding \
+          "$RUNS_DIR/$run_id" "$run_id" "$today" 2>> "$LOG"); then
+          log "Report stage did not seal an exact run-bound report"
+          return 2
+        fi
+        continue
+      fi
       log "Report stage failed after committed Strong Accept"
     fi
     fails=$((fails + 1))
@@ -1909,25 +2122,25 @@ while :; do
   fi
   run_id=$RECOVERY_RUN_ID
   round=$RECOVERY_ROUND
-  current_report_count=$(reports_today)
-  report_already_exists=0
-  if [ -n "$RECOVERY_REPORT_COUNT_BEFORE" ]; then
-    [ "$current_report_count" -le "$RECOVERY_REPORT_COUNT_BEFORE" ] \
-      || report_already_exists=1
-  elif [ "$current_report_count" -gt 0 ]; then
-    # Compatibility for decision archives created before report-count sealing.
-    report_already_exists=1
-  fi
-  if [ "$report_already_exists" -eq 1 ]; then
+  today=$RECOVERY_DATE
+  if RECOVERY_REPORT_PATH=$(verify_pending_report_binding \
+    "$RECOVERY_ARCHIVE_DIR" "$run_id" "$today" 2>> "$LOG"); then
     log "Recovering publication for pending Strong Accept archive $run_id"
     publish_existing_strong_accept_report || exit $?
   else
-    log "Recovering missing report for pending Strong Accept archive $run_id"
-    finalize_strong_accept || exit $?
+    recovery_rc=$?
+    if [ "$recovery_rc" -eq 3 ]; then
+      log "Recovering missing report for pending Strong Accept archive $run_id"
+      finalize_strong_accept || exit $?
+    else
+      log "Pending Strong Accept report binding is invalid: $run_id"
+      exit 2
+    fi
   fi
   recovered_report=1
 done
 
+today=$(date +%F)
 today_sa=$(sa_today)
 if [ "$SA_TARGET" -gt 0 ] && [ "$today_sa" -ge "$SA_TARGET" ]; then
   if [ "$recovered_report" -eq 0 ]; then
@@ -1945,8 +2158,10 @@ if [ "$recovered_report" -eq 1 ]; then
   RECOVERY_ARCHIVE_DIR=
   RECOVERY_RUN_ID=
   RECOVERY_ROUND=
+  RECOVERY_DATE=
   RECOVERY_REASON=
-  RECOVERY_REPORT_COUNT_BEFORE=
+  RECOVERY_OUTCOME=
+  RECOVERY_REPORT_PATH=
   CURRENT_REPORT_VIEW=
 fi
 
@@ -2415,6 +2630,10 @@ PY
     exit 2
   fi
   fails=0
+  if ! seal_decision_outcome "$sa_count"; then
+    log "Cannot seal explicit decision outcome"
+    exit 2
+  fi
   if [ "$sa_count" -gt 0 ]; then
     ARCHIVE_SOURCE="tmp/archive-source.${run_id}.$$"
     if ! snapshot_archive_source "$RD" "$ARCHIVE_SOURCE"; then
