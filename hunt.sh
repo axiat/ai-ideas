@@ -1926,16 +1926,30 @@ if (
 ):
     raise SystemExit("recovery archive paths are unsafe")
 fields = {}
+# The manifest is `key<TAB>value` lines. Keys are control-free tokens written
+# by the archiver; values are authoritative for new-format manifests and are
+# validated field by field below. Legacy manifests (pre-recovery-protocol) may
+# carry wrapped or empty descriptive values — those lines are ignored because
+# legacy manifests are skipped by field shape, never trusted for recovery.
 for line in manifest.read_text(encoding="utf-8").splitlines():
-    parts = line.split("\t")
-    if len(parts) != 2 or parts[0] in fields or not parts[1]:
-        raise SystemExit("recovery archive manifest is malformed")
-    fields[parts[0]] = parts[1]
+    parts = line.split("\t", 1)
+    if len(parts) != 2:
+        continue
+    key, value = parts
+    if key and not any(ord(char) < 0x21 or ord(char) == 0x7F for char in key):
+        fields.setdefault(key, value)
 expected = {
     "run_id", "round", "date", "policy_mode", "reason", "archived_at"
 }
 if set(fields) != expected:
+    if not {"run_id", "round", "date", "policy_mode", "reason"} <= set(fields):
+        # Archives written before the recovery protocol (no policy_mode or
+        # reason fields) are completed pre-receipt history; they carry no
+        # recovery authority, so skip rather than reject.
+        raise SystemExit(3)
     raise SystemExit("recovery archive manifest fields are invalid")
+if any(not fields[key] for key in expected):
+    raise SystemExit("recovery archive manifest is malformed")
 try:
     archived_date = datetime.date.fromisoformat(fields["date"])
 except ValueError as exc:

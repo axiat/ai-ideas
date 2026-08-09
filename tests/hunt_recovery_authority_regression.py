@@ -117,6 +117,85 @@ class HuntRecoveryAuthorityRegression(unittest.TestCase):
                 "run-old\t4\t2026-08-08\tdecision\tstrong-accept",
             )
 
+    def test_pre_protocol_archive_is_skipped_not_invalid(self):
+        verifier = section(
+            "verify_pending_recovery_archive() {",
+            "find_pending_archive_report_view() {",
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            archive = root / "runs" / "20260715T091056-p80970-r1"
+            (archive / "round").mkdir(parents=True)
+            (archive / "manifest.tsv").write_text(
+                "run_id\t20260715T091056-p80970-r1\n"
+                "date\t2026-07-15\n"
+                "source\thunt\n"
+                "round\t1\n"
+                "lens\tlegacy lens\n"
+                "exit_reason\tverdict\n"
+                "sa_count\t0\n"
+                "reviewers\t3\n"
+                "git_head\t09531fc999bf4c9d6f12345a04393c3e458932a0\n"
+                "policy_sha\tce11fcf9220c\n"
+                "verdicts\tI10=1,1,1->accept-w-rev\n"
+                "archived_at\t2026-07-15 10:01:03\n",
+                encoding="utf-8",
+            )
+            library = root / "lib"
+            library.mkdir()
+            (library / "history_archive.py").write_text(
+                "class ArchiveError(Exception):\n    pass\n"
+                "def verify_archive(*args, **kwargs):\n"
+                "    return {'created_reason': 'decision'}\n",
+                encoding="utf-8",
+            )
+            result = run_shell(
+                "LOG=/dev/null\n"
+                + verifier
+                + f"verify_pending_recovery_archive {str(archive)!r}\n",
+                root,
+            )
+            self.assertEqual(result.returncode, 3, result.stderr)
+            self.assertEqual(result.stdout, "")
+
+    def test_corrupt_recovery_manifest_stays_fail_closed(self):
+        verifier = section(
+            "verify_pending_recovery_archive() {",
+            "find_pending_archive_report_view() {",
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            archive = root / "runs" / "run-corrupt"
+            (archive / "round").mkdir(parents=True)
+            (archive / "manifest.tsv").write_text(
+                "run_id\trun-corrupt\n"
+                "round\t4\n"
+                "date\t2026-08-08\n"
+                "policy_mode\tenforcement\n"
+                "reason\tdecision\n"
+                "reviewers\t3\n"
+                "archived_at\t2026-08-08 23:59:59+0000\n",
+                encoding="utf-8",
+            )
+            library = root / "lib"
+            library.mkdir()
+            (library / "history_archive.py").write_text(
+                "class ArchiveError(Exception):\n    pass\n"
+                "def verify_archive(*args, **kwargs):\n"
+                "    return {'created_reason': 'decision'}\n",
+                encoding="utf-8",
+            )
+            result = run_shell(
+                "LOG=/dev/null\n"
+                + verifier
+                + f"verify_pending_recovery_archive {str(archive)!r}\n",
+                root,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "recovery archive manifest fields are invalid", result.stderr
+            )
+
     def test_no_accept_decision_is_not_pending_recovery(self):
         finder = section(
             "find_pending_archive_report_view() {",
