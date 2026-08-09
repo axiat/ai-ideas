@@ -420,9 +420,131 @@ fi
 
 portable_attempt_counter=0
 
+# Capture a backend-declared artifact before any host utility parses it. The
+# source must remain an owned, bounded, single-link regular file throughout a
+# nonblocking, no-follow descriptor read. Publication uses a fresh file and
+# rename so neither aliases nor partial copies can become trusted state.
+capture_declared_output() {
+  local source=$1 destination=$2 label=$3 maximum=${4:-1048576}
+  python3 - "$source" "$destination" "$label" "$maximum" <<'PY'
+import os
+import stat
+import sys
+import tempfile
+
+source, destination, label, maximum_text = sys.argv[1:]
+maximum = int(maximum_text)
+
+
+def identity(value):
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def unsafe(detail):
+    print(f"awr-side: unsafe declared output {label}: {detail}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+if not hasattr(os, "O_NOFOLLOW"):
+    unsafe("host lacks O_NOFOLLOW")
+try:
+    before = os.lstat(source)
+except FileNotFoundError:
+    raise SystemExit(3)
+except OSError:
+    unsafe("cannot inspect file")
+if (
+    not stat.S_ISREG(before.st_mode)
+    or before.st_nlink != 1
+    or before.st_uid != os.geteuid()
+    or before.st_size > maximum
+):
+    unsafe("expected an owned, bounded, single-link regular file")
+
+fd = None
+try:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(source, flags)
+    opened = os.fstat(fd)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or opened.st_uid != os.geteuid()
+        or opened.st_size > maximum
+        or identity(opened) != identity(before)
+    ):
+        unsafe("file changed before capture")
+    chunks = []
+    total = 0
+    while True:
+        chunk = os.read(fd, min(65536, maximum + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > maximum:
+            unsafe("file exceeds byte limit")
+    after = os.fstat(fd)
+finally:
+    if fd is not None:
+        os.close(fd)
+try:
+    current = os.lstat(source)
+except OSError:
+    unsafe("file changed during capture")
+if (
+    identity(after) != identity(before)
+    or identity(current) != identity(before)
+    or total != before.st_size
+):
+    unsafe("file changed during capture")
+
+payload = b"".join(chunks)
+directory = os.path.dirname(destination)
+out_fd, temporary = tempfile.mkstemp(prefix=".awr-capture.", dir=directory)
+try:
+    created = os.fstat(out_fd)
+    if (
+        not stat.S_ISREG(created.st_mode)
+        or created.st_nlink != 1
+        or created.st_uid != os.geteuid()
+    ):
+        unsafe("unsafe capture temporary")
+    os.fchmod(out_fd, 0o600)
+    view = memoryview(payload)
+    while view:
+        written = os.write(out_fd, view)
+        if written <= 0:
+            unsafe("cannot publish captured bytes")
+        view = view[written:]
+    os.fsync(out_fd)
+    os.close(out_fd)
+    out_fd = -1
+    os.replace(temporary, destination)
+except BaseException:
+    if out_fd >= 0:
+        os.close(out_fd)
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
+PY
+}
+
 run_portable_agent() {
   local profile=$1 target=$2 logf=$3 stage=$4 output_name=$5
-  local attempt prompt_path output_root state_root input rc
+  local attempt prompt_path output_root state_root input rc capture_status
   local -a command
   shift 5
   throttle
@@ -450,8 +572,12 @@ run_portable_agent() {
   done
   "${command[@]}" >> "$logf" 2>&1
   rc=$?
-  if [ -s "$output_root/$output_name" ]; then
-    cp "$output_root/$output_name" "$target" || return 1
+  if capture_declared_output \
+      "$output_root/$output_name" "$target" "$stage/$output_name"; then
+    :
+  else
+    capture_status=$?
+    [ "$capture_status" -eq 3 ] || rc=1
   fi
   if [ -e "$target" ]; then
     nofile=0
@@ -475,7 +601,7 @@ run_portable_agent() {
 # role inputs through portable-mirror-v1.
 run_agent() {
   local cmd=$1 target=$2 prompt=$3 logf=$4 stage=${5:-} output_name=${6:-}
-  local first sandbox rel target_in_sandbox prompt_in_sandbox pre rc is_agy_wrapper=0
+  local first sandbox rel target_in_sandbox prompt_in_sandbox pre rc capture_status is_agy_wrapper=0
   if [ "$AWR_RUNTIME_ABI" = v2 ]; then
     shift 6
     run_portable_agent \
@@ -524,7 +650,12 @@ ${prompt_in_sandbox}" < /dev/null >> "$logf" 2>&1 )
     fi
   fi
   rc=$?
-  if [ -e "$target_in_sandbox" ]; then cp "$target_in_sandbox" "$target"; fi
+  if capture_declared_output "$target_in_sandbox" "$target" "legacy/$rel"; then
+    :
+  else
+    capture_status=$?
+    [ "$capture_status" -eq 3 ] || rc=1
+  fi
   rm -rf "$sandbox"
   if [ -e "$target" ]; then
     nofile=0
@@ -622,13 +753,84 @@ check_judge() {
   [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "AGY-DONE" ] || { echo "missing final AGY-DONE sentinel"; return 1; }
 }
 
-# Build the terminal artifact from the current draft and latest evidence.
+# A terminal artifact must contain a validated draft plus every role section
+# required by its status. This prevents a nonempty prefix left by an interrupted
+# legacy in-place write from suppressing the task forever.
+check_final() {
+  local f=$1 expected_key=$2 n first status prior_sections judge_sections
+  [ -s "$f" ] || { echo "empty final artifact"; return 1; }
+  first=$(sed -n '1p' "$f")
+  # Pre-stable-key terminal state used this complete one-line compatibility
+  # marker and has no reconstructable product sections to validate.
+  if [ "$first" = "# Historical terminal result" ]; then
+    [ "$(grep -cve '^[[:space:]]*$' "$f" || true)" -eq 1 ] \
+      || { echo "invalid historical terminal artifact"; return 1; }
+    return 0
+  fi
+  [ "$first" = "# AwR Result $expected_key" ] \
+    || { echo "invalid final artifact header"; return 1; }
+  n=$(grep -cE '^Status:[[:space:]]*(ready|not-ready)[[:space:]]*$' "$f" || true)
+  [ "${n:-0}" -eq 1 ] || { echo "missing or invalid final status"; return 1; }
+  status=$(sed -nE 's/^Status:[[:space:]]*(ready|not-ready)[[:space:]]*$/\1/p' "$f")
+  grep -qE '^Outcome:[[:space:]]*[^[:space:]]' "$f" \
+    || { echo "missing final outcome"; return 1; }
+  grep -qE '^Original Idea:[[:space:]]*[^[:space:]]' "$f" \
+    || { echo "missing original idea"; return 1; }
+  grep -qxF "Process Record: $expected_key.task.md" "$f" \
+    || { echo "invalid process record"; return 1; }
+  prior_sections=$(grep -cFx -- '## Independent Prior-Work Evidence' "$f" || true)
+  judge_sections=$(grep -cFx -- '## Final Reviewer Decision' "$f" || true)
+  [ "$prior_sections" -le 1 ] \
+    || { echo "duplicate independent prior-work evidence"; return 1; }
+  [ "$judge_sections" -le 1 ] \
+    || { echo "duplicate final reviewer decision"; return 1; }
+  check_draft "$f" >/dev/null 2>&1 || { echo "invalid embedded draft"; return 1; }
+  if [ "$prior_sections" -eq 1 ]; then
+    check_priorwork "$f" >/dev/null 2>&1 \
+      || { echo "invalid embedded prior work"; return 1; }
+  fi
+  if [ "$judge_sections" -eq 1 ]; then
+    check_judge "$f" >/dev/null 2>&1 \
+      || { echo "invalid embedded reviewer decision"; return 1; }
+  fi
+  if [ "$status" = ready ]; then
+    [ "$prior_sections" -eq 1 ] \
+      || { echo "ready artifact lacks independent prior-work evidence"; return 1; }
+    [ "$judge_sections" -eq 1 ] \
+      || { echo "ready artifact lacks final reviewer decision"; return 1; }
+    grep -qxE 'Decision:[[:space:]]*SA-possible' "$f" \
+      || { echo "ready artifact lacks SA-possible decision"; return 1; }
+  fi
+}
+
+# Build and validate a complete sibling temporary before atomically publishing
+# it. A crash can leave only an ignored hidden temporary, never a terminal
+# nonempty prefix at the public path.
 finalize() {
-  { printf '# AwR Result %s\nStatus: %s\nOutcome: %s\nOriginal Idea: %s\nProcess Record: %s.task.md\n\n' "$1" "$2" "$3" "$idea" "$1"
+  local final_key=$1 status=$2 outcome=$3 temporary
+  temporary=$(mktemp "$outdir/.${final_key}.final.XXXXXX") || return 1
+  if ! {
+    printf '# AwR Result %s\nStatus: %s\nOutcome: %s\nOriginal Idea: %s\nProcess Record: %s.task.md\n\n' \
+      "$final_key" "$status" "$outcome" "$idea" "$final_key"
     cat "$draft"
-    if check_priorwork "$pwork" >/dev/null 2>&1; then printf '\n---\n## Independent Prior-Work Evidence\n'; cat "$pwork"; fi
-    if check_judge "$judgef" >/dev/null 2>&1; then printf '\n---\n## Final Reviewer Decision\n'; cat "$judgef"; fi
-  } > "$out"
+    if check_priorwork "$pwork" >/dev/null 2>&1; then
+      printf '\n---\n## Independent Prior-Work Evidence\n'
+      cat "$pwork"
+    fi
+    if check_judge "$judgef" >/dev/null 2>&1; then
+      printf '\n---\n## Final Reviewer Decision\n'
+      cat "$judgef"
+    fi
+  } > "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  chmod 600 "$temporary" || { rm -f "$temporary"; return 1; }
+  if ! check_final "$temporary" "$final_key"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  mv -f "$temporary" "$out"
 }
 
 cd "$repo" || { echo "awr-side: cannot enter repository root $repo" >&2; exit 1; }
@@ -648,12 +850,31 @@ while :; do
     migrate_legacy_state "$key" "$legacy_key" "$d" "$theme" "$idea" "$reason" \
       || { log "Failed to migrate compatibility state for $key"; exit 2; }
     out="$outdir/$key.md"
-    [ -s "$out" ] && continue                                  # Terminal artifact.
     nbad=0
     for badf in "$outdir/$key".*.bad*; do
-      [ -e "$badf" ] || continue
+      [ -e "$badf" ] || [ -L "$badf" ] || continue
       nbad=$((nbad + 1))
     done
+    if [ -e "$out" ] || [ -L "$out" ]; then
+      existing_snapshot="$outdir/.${key}.existing.$$"
+      rm -f "$existing_snapshot"
+      if capture_declared_output "$out" "$existing_snapshot" "existing/$key.md"; then
+        if why=$(check_final "$existing_snapshot" "$key"); then
+          rm -f "$existing_snapshot"
+          continue
+        fi
+      else
+        why="unsafe final artifact"
+      fi
+      rm -f "$existing_snapshot"
+      bad_target="$outdir/$key.final.bad$((nbad + 1))"
+      if ! mv -f "$out" "$bad_target"; then
+        log "Cannot quarantine invalid final artifact for $key"
+        exit 2
+      fi
+      nbad=$((nbad + 1))
+      log "Rejected [final:$key]: ${why}; quarantined as $(basename "$bad_target")"
+    fi
     if [ "$nbad" -ge "$max_bad" ]; then continue; fi
     pending=1
     task="$outdir/$key.task.md"; draft="$outdir/$key.draft.md"
@@ -688,7 +909,10 @@ while :; do
     fi
     # The last feedback has been incorporated; stop before another review.
     if [ "$rounds" -ge "$max_rounds" ]; then
-      finalize "$key" "not-ready" "The revision remained below the acceptance gate after ${max_rounds} feedback rounds; the final reviewer decision targets the preceding draft."
+      if ! finalize "$key" "not-ready" "The revision remained below the acceptance gate after ${max_rounds} feedback rounds; the final reviewer decision targets the preceding draft."; then
+        log "Failed to publish complete final artifact for $key"
+        exit 2
+      fi
       log "Finalized [awr:$key]: not-ready after ${max_rounds} feedback rounds"
       did=1; continue
     fi
@@ -723,7 +947,10 @@ while :; do
       continue
     fi
     if grep -qxE 'Decision:[[:space:]]*SA-possible' "$judgef"; then
-      finalize "$key" "ready" "The reviewer returned SA-possible in round $((rounds + 1))."
+      if ! finalize "$key" "ready" "The reviewer returned SA-possible in round $((rounds + 1))."; then
+        log "Failed to publish complete final artifact for $key"
+        exit 2
+      fi
       log "Finalized [awr:$key]: ready in round $((rounds + 1))"
     else
       { printf '\n## Reviewer Feedback\nRound: %s\n' "$((rounds + 1))"; grep -E '^- Defect:' "$judgef"; } >> "$task"
