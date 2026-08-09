@@ -2779,6 +2779,7 @@ class RoundCoordinatorContract(CapabilityContract):
             ),
             prior_work_path=prior_work,
             output_path=resume_path,
+            authority=self.shadow_test_authority(),
         )
         return state, resume_path
 
@@ -4383,7 +4384,9 @@ class RoundCoordinatorContract(CapabilityContract):
         identity = state["direction_identity"]
         self.assertTrue(
             history_runtime.validate_resume_state(
-                resume_path, expected_direction=identity
+                resume_path,
+                authority=self.shadow_test_authority(),
+                expected_direction=identity,
             )
         )
 
@@ -4414,13 +4417,17 @@ class RoundCoordinatorContract(CapabilityContract):
                 ):
                     history_runtime.validate_resume_state(
                         resume_path,
+                        authority=self.shadow_test_authority(),
                         expected_direction=expected,
                     )
 
     def test_resume_omitted_expected_direction_preserves_api_behavior(self):
         _, resume_path = self.directed_resume()
         self.assertTrue(
-            history_runtime.validate_resume_state(resume_path)
+            history_runtime.validate_resume_state(
+                resume_path,
+                authority=self.shadow_test_authority(),
+            )
         )
 
     def test_schema_v1_resume_chain_is_fenced_as_undirected(self):
@@ -4431,12 +4438,15 @@ class RoundCoordinatorContract(CapabilityContract):
         self.assertIsNone(state["direction_identity"])
         self.assertTrue(
             history_runtime.validate_resume_state(
-                resume_path, expected_direction=None
+                resume_path,
+                authority=self.shadow_test_authority(),
+                expected_direction=None,
             )
         )
         with self.assertRaises(history_runtime.RuntimeContractError):
             history_runtime.validate_resume_state(
                 resume_path,
+                authority=self.shadow_test_authority(),
                 expected_direction={
                     "direction_id":
                         "dynamic-spatial-memory-vla-v1",
@@ -4467,16 +4477,21 @@ class RoundCoordinatorContract(CapabilityContract):
             ),
             prior_work_path=prior_work,
             output_path=resume_path,
+            authority=self.shadow_test_authority(),
         )
         self.assertTrue(
-            history_runtime.validate_resume_state(resume_path)
+            history_runtime.validate_resume_state(
+                resume_path,
+                authority=self.shadow_test_authority(),
+            )
         )
         prior_work.write_text(
             "## I2\nPapers Read: forged\n",
             encoding="utf-8",
         )
         sealed = history_runtime.validate_resume_state(
-            resume_path
+            resume_path,
+            authority=self.shadow_test_authority(),
         )
         frozen_prior = pathlib.Path(
             sealed["prior_work"]["path"]
@@ -4492,7 +4507,10 @@ class RoundCoordinatorContract(CapabilityContract):
         with self.assertRaises(
             history_runtime.RuntimeContractError
         ):
-            history_runtime.validate_resume_state(resume_path)
+            history_runtime.validate_resume_state(
+                resume_path,
+                authority=self.shadow_test_authority(),
+            )
 
     def test_resume_attempt_receipt_binds_validated_resume(self):
         state = self._compared_round()
@@ -4514,6 +4532,7 @@ class RoundCoordinatorContract(CapabilityContract):
             ),
             prior_work_path=prior_work,
             output_path=resume_path,
+            authority=self.shadow_test_authority(),
         )
         output = self.root / "resume-attempt.json"
         receipt = history_runtime.seal_resume_attempt(
@@ -4522,6 +4541,7 @@ class RoundCoordinatorContract(CapabilityContract):
             resumed_from_run_id="run-1",
             prior_archive_path=None,
             output_path=output,
+            authority=self.shadow_test_authority(),
         )
         self.assertEqual(
             set(receipt),
@@ -4585,6 +4605,7 @@ class RoundCoordinatorContract(CapabilityContract):
                 comparison_index_path=index_path,
                 prior_work_path=prior_work,
                 output_path=self.root / "invalid-resume.json",
+                authority=self.shadow_test_authority(),
             )
 
     def test_shadow_resume_binds_nonpermanent_observation_to_generation(self):
@@ -4607,13 +4628,17 @@ class RoundCoordinatorContract(CapabilityContract):
             ),
             prior_work_path=prior_work,
             output_path=resume_path,
+            authority=self.shadow_test_authority(),
         )
         self.assertEqual(
             [item["intent"] for item in sealed["bindings"]],
             ["duplicate_search", "failure_pattern_search"],
         )
         self.assertTrue(
-            history_runtime.validate_resume_state(resume_path)
+            history_runtime.validate_resume_state(
+                resume_path,
+                authority=self.shadow_test_authority(),
+            )
         )
         connection = history_store.connect(self.database)
         try:
@@ -4630,7 +4655,10 @@ class RoundCoordinatorContract(CapabilityContract):
         finally:
             connection.close()
         with self.assertRaises(history_runtime.RuntimeContractError):
-            history_runtime.validate_resume_state(resume_path)
+            history_runtime.validate_resume_state(
+                resume_path,
+                authority=self.shadow_test_authority(),
+            )
 
     def test_enforcement_resume_requires_exact_authority_and_summary(self):
         state = self._enforcement_round(contained=True)
