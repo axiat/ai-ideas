@@ -327,6 +327,40 @@ def _emit(value):
     return 0
 
 
+def _reject_path_argument_aliases(arguments):
+    paths = []
+    for name in (
+        "state",
+        "receipt",
+        "db",
+        "plan",
+        "input",
+        "output",
+        "prepare_receipt",
+    ):
+        value = getattr(arguments, name, None)
+        if value is None:
+            continue
+        label = "--" + name.replace("_", "-")
+        path = pathlib.Path(value)
+        try:
+            resolved = path.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise AuditCliError(f"invalid {label} path") from exc
+        for other_label, other_path, other_resolved in paths:
+            aliases = resolved == other_resolved
+            if not aliases:
+                try:
+                    aliases = os.path.samefile(path, other_path)
+                except OSError:
+                    aliases = False
+            if aliases:
+                raise AuditCliError(
+                    f"{other_label} and {label} paths must be distinct"
+                )
+        paths.append((label, path, resolved))
+
+
 def _provider_command(arguments):
     registry = provider_adapters.load_registry(REGISTRY)
     intent = provider_adapters.resolve_command_intent(
@@ -2437,6 +2471,7 @@ def main(argv=None):
     parser = _parser()
     arguments = parser.parse_args(argv)
     try:
+        _reject_path_argument_aliases(arguments)
         return arguments.handler(arguments)
     except provider_adapters.ProviderResolutionError as exc:
         print(f"history-audit: {arguments.command}: {exc}", file=sys.stderr)
