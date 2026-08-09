@@ -66,6 +66,9 @@ _COMMAND_RECORD_FIELDS = frozenset(
         "grammar_status",
         "provider_validation",
         "execution_request_profile_hash",
+        "max_output_tokens",
+        "output_token_cap_binding",
+        "output_token_cap_semantics",
         "argv",
         "environment",
     }
@@ -86,6 +89,9 @@ _PROFILE_DESCRIPTOR_FIELDS = frozenset(
         "default_probe_revision",
         "model_catalog_probe_revision",
         "model_catalog_sha256",
+        "max_output_tokens",
+        "output_token_cap_binding",
+        "output_token_cap_semantics",
         "execution_request_profile_hash",
     }
 )
@@ -110,7 +116,7 @@ _AGY_VERSION_PATTERN = re.compile(
 _HOST_CATALOG_MODEL_LIMIT = 4096
 _MULTI_BACKEND_PROVIDERS = frozenset({"opencode", "agy"})
 _PROVIDER_REGISTRY_V1_SHA256 = (
-    "f705a1b5da333daa3898059e58f98acaee9f9dd41d472c40bb634903925ea2df"
+    "dcd5021256e04a2d300f934c6621cb57b417ef329303108775bfe11ad5b61712"
 )
 _DYNAMIC_MODEL_ROUTE_MARKERS = frozenset(
     {"auto", "default", "current", "configured"}
@@ -191,6 +197,9 @@ class ProviderCapability:
     serializer_revision: str
     immutable_capacity_identity: object
     evidence_sha256: str
+    max_output_tokens: object
+    output_token_cap_binding: str
+    output_token_cap_semantics: object
     profile_hash: str
     hard_complete_eligible: bool
     authority: str
@@ -216,6 +225,9 @@ class ProviderCommandIntent:
     grammar_revision: str
     serializer_revision: str
     provider_validation: str
+    max_output_tokens: object
+    output_token_cap_binding: str
+    output_token_cap_semantics: object
     execution_request_profile_hash: str
     hard_complete_eligible: bool
     authority: str
@@ -261,6 +273,28 @@ def _require_text(value, name, *, optional=False):
     if unicodedata.normalize("NFC", value) != value:
         raise ProviderResolutionError(f"{name} must be NFC-normalized")
     return value
+
+
+def _require_max_output_tokens(value, *, optional=False):
+    if optional and value is None:
+        return None
+    if type(value) is not int or not 1 <= value <= 1_000_000:
+        raise ProviderResolutionError(
+            "max_output_tokens must be an integer between 1 and 1000000"
+        )
+    return value
+
+
+def _output_token_cap(registry, provider, max_output_tokens):
+    rule = registry["providers"][provider]["output_token_limit"]
+    if max_output_tokens is None:
+        return "unsupported", None
+    _require_max_output_tokens(max_output_tokens)
+    if rule["binding"] != "environment":
+        raise ProviderResolutionError(
+            f"{provider} has no provider-native exact output-token cap"
+        )
+    return "provider-native-exact", rule["semantics"]
 
 
 def _require_exact_json_types(value):
@@ -359,6 +393,29 @@ def command_intent_is_issued(value):
         return False
 
 
+def require_native_output_token_cap(intent, expected=None):
+    """Return the exact provider-native cap or reject before workload launch."""
+    if not (
+        command_intent_is_issued(intent) or capability_is_issued(intent)
+    ):
+        raise ProviderResolutionError("provider profile is not resolver-issued")
+    maximum = _require_max_output_tokens(
+        intent.max_output_tokens, optional=True
+    )
+    if (
+        maximum is None
+        or intent.output_token_cap_binding != "provider-native-exact"
+        or intent.output_token_cap_semantics
+        != "reasoning-and-visible-output"
+    ):
+        raise ProviderResolutionError(
+            f"{intent.provider} has no bound provider-native exact output-token cap"
+        )
+    if expected is not None and maximum != _require_max_output_tokens(expected):
+        raise ProviderResolutionError("provider output-token cap changed")
+    return maximum
+
+
 def capability_is_issued(value):
     """Return whether value is an unmodified resolver-issued capability."""
     if type(value) is not ProviderCapability:
@@ -419,13 +476,28 @@ def load_registry(path):
     for name, entry in value["providers"].items():
         _require_text(name, "provider")
         if type(entry) is not dict or set(entry) != {
-            "executable", "grammar_revision", "reasoning_values"
+            "executable", "grammar_revision", "output_token_limit",
+            "reasoning_values"
         }:
             raise ProviderResolutionError(f"provider entry is not closed: {name}")
         _require_text(entry["executable"], "executable")
         if entry["executable"] != name:
             raise ProviderResolutionError("provider executable aliases are forbidden")
         _require_text(entry["grammar_revision"], "grammar_revision")
+        token_limit = entry["output_token_limit"]
+        if name == "claude":
+            if token_limit != {
+                "binding": "environment",
+                "name": "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+                "semantics": "reasoning-and-visible-output",
+            }:
+                raise ProviderResolutionError(
+                    "provider output-token grammar drifted"
+                )
+        elif token_limit != {"binding": "unsupported"}:
+            raise ProviderResolutionError(
+                "unsupported provider falsely declares an output-token cap"
+            )
         values = entry["reasoning_values"]
         if (
             type(values) is not list
@@ -896,6 +968,9 @@ def _command_profile_hash(
     default_probe_revision=None,
     model_catalog_probe_revision=None,
     model_catalog_sha256=None,
+    max_output_tokens=None,
+    output_token_cap_binding="unsupported",
+    output_token_cap_semantics=None,
 ):
     material = {
         "provider": provider,
@@ -908,6 +983,9 @@ def _command_profile_hash(
         "default_probe_revision": default_probe_revision,
         "model_catalog_probe_revision": model_catalog_probe_revision,
         "model_catalog_sha256": model_catalog_sha256,
+        "max_output_tokens": max_output_tokens,
+        "output_token_cap_binding": output_token_cap_binding,
+        "output_token_cap_semantics": output_token_cap_semantics,
         "grammar_revision": registry["providers"][provider]["grammar_revision"],
         "serializer_revision": "portable-agent-command-v1",
         "provider_validation": "unverified",
@@ -959,6 +1037,18 @@ def validate_command_profile_descriptor(registry, descriptor):
     model_catalog_sha256 = descriptor.get("model_catalog_sha256")
     if model_catalog_sha256 is not None:
         _require_sha(model_catalog_sha256, "model_catalog_sha256")
+    max_output_tokens = _require_max_output_tokens(
+        descriptor.get("max_output_tokens"), optional=True
+    )
+    output_token_cap_binding, output_token_cap_semantics = _output_token_cap(
+        registry, provider, max_output_tokens
+    )
+    if (
+        descriptor.get("output_token_cap_binding") != output_token_cap_binding
+        or descriptor.get("output_token_cap_semantics")
+        != output_token_cap_semantics
+    ):
+        raise ProviderResolutionError("provider output-token profile does not verify")
     if effective_reasoning is not None:
         raise ProviderResolutionError("unexpected effective reasoning identity")
     if provider in _MULTI_BACKEND_PROVIDERS:
@@ -1001,6 +1091,9 @@ def validate_command_profile_descriptor(registry, descriptor):
         "default_probe_revision": default_probe_revision,
         "model_catalog_probe_revision": model_catalog_probe_revision,
         "model_catalog_sha256": model_catalog_sha256,
+        "max_output_tokens": max_output_tokens,
+        "output_token_cap_binding": output_token_cap_binding,
+        "output_token_cap_semantics": output_token_cap_semantics,
         "execution_request_profile_hash": _command_profile_hash(
             registry,
             surface,
@@ -1012,6 +1105,9 @@ def validate_command_profile_descriptor(registry, descriptor):
             default_probe_revision,
             model_catalog_probe_revision,
             model_catalog_sha256,
+            max_output_tokens,
+            output_token_cap_binding,
+            output_token_cap_semantics,
         ),
     }
     if observed_raw != _exact_json_bytes(expected):
@@ -1025,6 +1121,7 @@ def _resolve_command_intent(
     provider,
     model,
     reasoning,
+    max_output_tokens,
     *,
     executable_lookup,
     default_identity_probe=None,
@@ -1041,6 +1138,12 @@ def _resolve_command_intent(
     )
     grammar_revision = registry["providers"][provider]["grammar_revision"]
     serializer_revision = "portable-agent-command-v1"
+    max_output_tokens = _require_max_output_tokens(
+        max_output_tokens, optional=True
+    )
+    output_token_cap_binding, output_token_cap_semantics = _output_token_cap(
+        registry, provider, max_output_tokens
+    )
     effective_model = None
     default_probe_revision = None
     model_catalog_probe_revision = None
@@ -1083,6 +1186,9 @@ def _resolve_command_intent(
         default_probe_revision,
         model_catalog_probe_revision,
         model_catalog_sha256,
+        max_output_tokens,
+        output_token_cap_binding,
+        output_token_cap_semantics,
     )
     return _issue_command_intent(ProviderCommandIntent(
         provider=provider,
@@ -1101,6 +1207,9 @@ def _resolve_command_intent(
         grammar_revision=grammar_revision,
         serializer_revision=serializer_revision,
         provider_validation="unverified",
+        max_output_tokens=max_output_tokens,
+        output_token_cap_binding=output_token_cap_binding,
+        output_token_cap_semantics=output_token_cap_semantics,
         execution_request_profile_hash=profile_hash,
         hard_complete_eligible=False,
         authority="shadow-only",
@@ -1113,6 +1222,7 @@ def resolve_command_intent(
     provider,
     model=None,
     reasoning=None,
+    max_output_tokens=None,
     executable_lookup=None,
 ):
     """Return a host-resolved, grammar-only request with shadow authority."""
@@ -1123,6 +1233,7 @@ def resolve_command_intent(
         provider,
         model,
         reasoning,
+        max_output_tokens,
         executable_lookup=_host_executable_lookup,
         default_identity_probe=_host_default_identity_probe,
         model_catalog_probe=_host_model_catalog_probe,
@@ -1136,6 +1247,7 @@ def _resolve_command_intent_for_test(
     provider,
     model=None,
     reasoning=None,
+    max_output_tokens=None,
     *,
     executable_lookup,
     default_identity_probe=None,
@@ -1149,6 +1261,7 @@ def _resolve_command_intent_for_test(
         provider,
         model,
         reasoning,
+        max_output_tokens,
         executable_lookup=executable_lookup,
         default_identity_probe=default_identity_probe,
         model_catalog_probe=model_catalog_probe,
@@ -1218,6 +1331,9 @@ def command_intent_record(intent):
         default_probe_revision=intent.default_probe_revision,
         model_catalog_probe_revision=intent.model_catalog_probe_revision,
         model_catalog_sha256=intent.model_catalog_sha256,
+        max_output_tokens=intent.max_output_tokens,
+        output_token_cap_binding=intent.output_token_cap_binding,
+        output_token_cap_semantics=intent.output_token_cap_semantics,
         profile_hash=intent.execution_request_profile_hash,
     )
 
@@ -1225,7 +1341,8 @@ def command_intent_record(intent):
 def _command_record_from_fields(
     *, surface, provider, executable, model, reasoning, effective_model,
     default_probe_revision, model_catalog_probe_revision,
-    model_catalog_sha256, profile_hash
+    model_catalog_sha256, max_output_tokens, output_token_cap_binding,
+    output_token_cap_semantics, profile_hash
 ):
     execution_model = model
     if provider in _MULTI_BACKEND_PROVIDERS:
@@ -1254,6 +1371,9 @@ def _command_record_from_fields(
             if provider == "codex"
             else None
         ),
+        max_output_tokens=max_output_tokens,
+        output_token_cap_binding=output_token_cap_binding,
+        output_token_cap_semantics=output_token_cap_semantics,
     )
     return {
         "schema_version": "provider-command-v1",
@@ -1277,6 +1397,9 @@ def _command_record_from_fields(
         "grammar_status": "accepted",
         "provider_validation": "unverified",
         "execution_request_profile_hash": profile_hash,
+        "max_output_tokens": max_output_tokens,
+        "output_token_cap_binding": output_token_cap_binding,
+        "output_token_cap_semantics": output_token_cap_semantics,
         "argv": argv,
         "environment": environment,
     }
@@ -1299,6 +1422,18 @@ def validate_command_intent_record(registry, record):
         record.get("requested_reasoning"),
     )
     effective_model = record.get("effective_model")
+    max_output_tokens = _require_max_output_tokens(
+        record.get("max_output_tokens"), optional=True
+    )
+    output_token_cap_binding, output_token_cap_semantics = _output_token_cap(
+        registry, provider, max_output_tokens
+    )
+    if (
+        record.get("output_token_cap_binding") != output_token_cap_binding
+        or record.get("output_token_cap_semantics")
+        != output_token_cap_semantics
+    ):
+        raise ProviderResolutionError("provider output-token command does not verify")
     default_probe_revision = None
     model_catalog_probe_revision = record.get("model_catalog_probe_revision")
     model_catalog_sha256 = record.get("model_catalog_sha256")
@@ -1340,6 +1475,9 @@ def validate_command_intent_record(registry, record):
         default_probe_revision=default_probe_revision,
         model_catalog_probe_revision=model_catalog_probe_revision,
         model_catalog_sha256=model_catalog_sha256,
+        max_output_tokens=max_output_tokens,
+        output_token_cap_binding=output_token_cap_binding,
+        output_token_cap_semantics=output_token_cap_semantics,
         profile_hash=_command_profile_hash(
             registry,
             surface,
@@ -1351,6 +1489,9 @@ def validate_command_intent_record(registry, record):
             default_probe_revision,
             model_catalog_probe_revision,
             model_catalog_sha256,
+            max_output_tokens,
+            output_token_cap_binding,
+            output_token_cap_semantics,
         ),
     )
     if observed_raw != _exact_json_bytes(expected):
@@ -1373,6 +1514,7 @@ def command_intent_from_record(
         record.get("provider"),
         model=record.get("requested_model"),
         reasoning=record.get("requested_reasoning"),
+        max_output_tokens=record.get("max_output_tokens"),
     )
     if _exact_json_bytes(record) != _exact_json_bytes(
         command_intent_record(intent)
@@ -1451,6 +1593,7 @@ def _resolve_provider(
     provider,
     model,
     reasoning,
+    max_output_tokens,
     *,
     executable_lookup,
     version_probe,
@@ -1465,6 +1608,12 @@ def _resolve_provider(
         model,
         reasoning,
         executable_lookup,
+    )
+    max_output_tokens = _require_max_output_tokens(
+        max_output_tokens, optional=True
+    )
+    output_token_cap_binding, output_token_cap_semantics = _output_token_cap(
+        registry, provider, max_output_tokens
     )
     if not callable(version_probe):
         raise ProviderResolutionError("provider capability probe is unavailable")
@@ -1530,6 +1679,9 @@ def _resolve_provider(
         "serializer_revision": evidence["serializer_revision"],
         "immutable_capacity_identity": evidence["immutable_capacity_identity"],
         "evidence_sha256": evidence["evidence_sha256"],
+        "max_output_tokens": max_output_tokens,
+        "output_token_cap_binding": output_token_cap_binding,
+        "output_token_cap_semantics": output_token_cap_semantics,
         "grammar_revision": registry["providers"][provider]["grammar_revision"],
         "hard_complete_eligible": hard_complete,
     }
@@ -1549,6 +1701,9 @@ def _resolve_provider(
         serializer_revision=evidence["serializer_revision"],
         immutable_capacity_identity=evidence["immutable_capacity_identity"],
         evidence_sha256=evidence["evidence_sha256"],
+        max_output_tokens=max_output_tokens,
+        output_token_cap_binding=output_token_cap_binding,
+        output_token_cap_semantics=output_token_cap_semantics,
         profile_hash=profile_hash,
         hard_complete_eligible=hard_complete,
         authority="hard-complete" if hard_complete else "shadow-only",
@@ -1561,6 +1716,7 @@ def resolve_provider(
     provider,
     model=None,
     reasoning=None,
+    max_output_tokens=None,
     executable_lookup=None,
     version_probe=None,
 ):
@@ -1572,6 +1728,7 @@ def resolve_provider(
         provider,
         model,
         reasoning,
+        max_output_tokens,
         executable_lookup=_host_executable_lookup,
         version_probe=_host_version_probe,
         issuance_scope="host-owned",
@@ -1585,6 +1742,7 @@ def _resolve_provider_for_test(
     provider,
     model=None,
     reasoning=None,
+    max_output_tokens=None,
     *,
     executable_lookup,
     version_probe,
@@ -1596,6 +1754,7 @@ def _resolve_provider_for_test(
         provider,
         model,
         reasoning,
+        max_output_tokens,
         executable_lookup=executable_lookup,
         version_probe=version_probe,
         issuance_scope="test-only-shadow",
@@ -1845,6 +2004,7 @@ def _resolve_provider_with_test_host_probe_runner(
         provider,
         model,
         reasoning,
+        None,
         executable_lookup=lambda requested: (
             executable_path if requested == executable else None
         ),
@@ -1865,8 +2025,29 @@ def _render_command_fields(
     response_schema_argument=None,
     output_schema_path=None,
     output_last_message_path=None,
+    *,
+    max_output_tokens=None,
+    output_token_cap_binding="unsupported",
+    output_token_cap_semantics=None,
 ):
     mirror = str(pathlib.Path(mirror))
+    max_output_tokens = _require_max_output_tokens(
+        max_output_tokens, optional=True
+    )
+    if max_output_tokens is None:
+        if (
+            output_token_cap_binding != "unsupported"
+            or output_token_cap_semantics is not None
+        ):
+            raise ProviderResolutionError("output-token command binding is invalid")
+    elif (
+        provider != "claude"
+        or output_token_cap_binding != "provider-native-exact"
+        or output_token_cap_semantics != "reasoning-and-visible-output"
+    ):
+        raise ProviderResolutionError(
+            "provider-native exact output-token cap is unsupported"
+        )
     argv = [executable_path]
     if provider == "codex":
         structured_output = (
@@ -1947,10 +2128,13 @@ def _render_command_fields(
             argv += ["--model", model]
         if reasoning is not None:
             argv += ["--effort", reasoning]
-        argv += [
-            "--json-schema", response_schema_argument,
-            "-p", prompt,
-        ]
+        if response_schema_argument is not None:
+            argv += ["--json-schema", response_schema_argument]
+        argv += ["-p", prompt]
+        if max_output_tokens is not None:
+            return argv, {
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max_output_tokens)
+            }
     else:
         raise ProviderResolutionError("capability provider is not renderable")
     return argv, {}
@@ -2068,6 +2252,13 @@ def render_command(
         response_schema_argument,
         output_schema_path,
         output_last_message_path,
+        max_output_tokens=getattr(capability, "max_output_tokens", None),
+        output_token_cap_binding=getattr(
+            capability, "output_token_cap_binding", "unsupported"
+        ),
+        output_token_cap_semantics=getattr(
+            capability, "output_token_cap_semantics", None
+        ),
     )
 
 

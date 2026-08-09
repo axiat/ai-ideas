@@ -809,7 +809,8 @@ class PortableAgentSmoke(unittest.TestCase):
         )
         registry = load_registry(REGISTRY)
         return resolve_provider(
-            registry, "hunt", "codex", model="MODEL", reasoning="high",
+            registry, "hunt", "claude", model="MODEL", reasoning="high",
+            max_output_tokens=3072,
             executable_lookup=lambda _: str(FAKE), version_probe=probe,
         )
 
@@ -841,6 +842,7 @@ class PortableAgentSmoke(unittest.TestCase):
             self._capability(), inputs=list(inputs), output_contract=self._contract(),
             prompt=json.dumps(request),
             state_root=root, timeout_seconds=timeout,
+            max_output_tokens=3072,
         )
 
     def test_manifest_only_mirror_and_validated_single_output(self):

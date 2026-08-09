@@ -247,7 +247,7 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
                 )
             self.assertEqual(
                 caught.exception.code,
-                "provider_model_authority_changed",
+                "output_token_cap_unsupported",
             )
             render.assert_not_called()
 
@@ -293,7 +293,7 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
                 )
             self.assertEqual(
                 caught.exception.code,
-                "provider_model_authority_changed",
+                "output_token_cap_unsupported",
             )
             catalog_probe.assert_not_called()
             render.assert_not_called()
@@ -352,7 +352,7 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
                 )
             self.assertEqual(
                 caught.exception.code,
-                "provider_model_authority_changed",
+                "output_token_cap_unsupported",
             )
             popen.assert_not_called()
 

@@ -94,6 +94,9 @@ _PREFLIGHT_FIELDS = {
     "provider_validation",
     "authority",
     "execution_request_profile_hash",
+    "max_output_tokens",
+    "output_token_cap_binding",
+    "output_token_cap_semantics",
     "serialized_prompt_sha256",
     "role_sha256",
     "input_sha256s",
@@ -118,6 +121,9 @@ _COMPLETION_FIELDS = {
     "provider_validation",
     "authority",
     "execution_request_profile_hash",
+    "max_output_tokens",
+    "output_token_cap_binding",
+    "output_token_cap_semantics",
     "preflight_sha256",
     "model_envelope_sha256",
     "outputs",
@@ -204,6 +210,8 @@ _CONTRACT_ERROR_CODES = frozenset(
         "input_sha_mismatch",
         "unexpected_artifact",
         "provider_model_authority_changed",
+        "output_token_cap_unsupported",
+        "output_token_cap_changed",
         "import_conflict",
     }
 )
@@ -644,6 +652,8 @@ def _provider_request(
     input_sha256s,
     role_sha256,
     schema,
+    max_output_tokens,
+    output_token_cap_semantics,
     *,
     role_text,
     declared_input_texts,
@@ -713,10 +723,16 @@ def _provider_request(
             raise PortableStageError("contract_text_hash_mismatch", name)
     if _sha(role_text.encode("utf-8")) != role_sha256:
         raise PortableStageError("contract_text_hash_mismatch", "role_text")
+    if type(max_output_tokens) is not int or max_output_tokens <= 0:
+        raise PortableStageError("output_token_cap_unsupported")
+    if output_token_cap_semantics != "reasoning-and-visible-output":
+        raise PortableStageError("output_token_cap_unsupported")
     base = {
         "schema_version": "portable-stage-request-v1",
         "stage": stage,
         "seat_id": seat_id,
+        "max_output_tokens": max_output_tokens,
+        "output_token_cap_semantics": output_token_cap_semantics,
         "serialized_prompt": serialized_prompt,
         "role_path": "role.md",
         "role_text": role_text,
@@ -821,14 +837,18 @@ def _write_owner_file(path, raw, mode=0o600):
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(path, flags, mode)
+    identity = None
     try:
         view = memoryview(raw)
         while view:
             written = os.write(descriptor, view)
             view = view[written:]
         os.fsync(descriptor)
+        info = os.fstat(descriptor)
+        identity = (info.st_dev, info.st_ino)
     finally:
         os.close(descriptor)
+    return identity
 
 
 def _fsync_directory(path):
@@ -855,11 +875,13 @@ def _remove_owned_tree(path, identity):
 
 def _unlink_owned_file(path, identity):
     path = pathlib.Path(path)
-    try:
-        if _path_identity(path) == identity:
-            path.unlink()
-    except OSError:
-        return
+    for _ in range(2):
+        try:
+            if _path_identity(path) == identity:
+                path.unlink()
+            return
+        except OSError:
+            continue
 
 
 def _absolute_root(path):
@@ -1036,6 +1058,14 @@ def prepare_stage(
     expected_surface = "awr" if stage.startswith("awr-") else "hunt"
     if launch_intent.surface != expected_surface:
         raise PortableStageError("provider_surface_mismatch")
+    try:
+        max_output_tokens = provider_adapters.require_native_output_token_cap(
+            launch_intent
+        )
+    except provider_adapters.ProviderResolutionError as exc:
+        raise PortableStageError("output_token_cap_unsupported") from exc
+    output_token_cap_binding = launch_intent.output_token_cap_binding
+    output_token_cap_semantics = launch_intent.output_token_cap_semantics
     if not isinstance(input_paths, dict):
         raise PortableStageError("invalid_inputs")
 
@@ -1069,6 +1099,8 @@ def prepare_stage(
         input_sha256s,
         role_sha256,
         schema,
+        max_output_tokens,
+        output_token_cap_semantics,
         role_text=role_text,
         declared_input_texts=declared_input_texts,
     )
@@ -1130,6 +1162,9 @@ def prepare_stage(
         "provider_validation": provider_validation,
         "authority": authority,
         "execution_request_profile_hash": profile_hash,
+        "max_output_tokens": max_output_tokens,
+        "output_token_cap_binding": output_token_cap_binding,
+        "output_token_cap_semantics": output_token_cap_semantics,
         "serialized_prompt_sha256": _sha(prompt_bytes),
         "role_sha256": role_sha256,
         "input_sha256s": input_sha256s,
@@ -1202,6 +1237,9 @@ def prepare_stage(
         "authority": authority,
         "hard_complete_eligible": launch_intent.hard_complete_eligible,
         "execution_request_profile_hash": profile_hash,
+        "max_output_tokens": max_output_tokens,
+        "output_token_cap_binding": output_token_cap_binding,
+        "output_token_cap_semantics": output_token_cap_semantics,
         "provider_command": provider_command,
         "executable_path": launch_intent.executable_path,
         "serialized_prompt": serialized_prompt,
@@ -1245,11 +1283,19 @@ def _load_launch_intent(prepared, private):
         or intent.surface != prepared["surface"]
         or intent.profile_hash
         != prepared["execution_request_profile_hash"]
+        or intent.max_output_tokens != prepared["max_output_tokens"]
+        or intent.output_token_cap_binding
+        != prepared["output_token_cap_binding"]
+        or intent.output_token_cap_semantics
+        != prepared["output_token_cap_semantics"]
         or _executable_identity(intent) != private["executable_identity"]
     ):
         raise PortableStageError("provider_request_changed")
     try:
         provider_adapters.revalidate_command_intent_for_launch(intent)
+        provider_adapters.require_native_output_token_cap(
+            intent, prepared["max_output_tokens"]
+        )
     except provider_adapters.ProviderResolutionError as exc:
         raise PortableStageError("provider_default_changed") from exc
     return intent
@@ -1558,6 +1604,7 @@ def run_stage(prepared, timeout_seconds=600):
             state_root=prepared["state_root"],
             timeout_seconds=timeout_seconds,
             max_stdout_bytes=prepared["output_contract"]["max_bytes"],
+            max_output_tokens=prepared["max_output_tokens"],
             response_schema=response_schema,
             expected_response_attestation={
                 "schema_version": "portable-stage-response-attestation-v1",
@@ -1575,6 +1622,11 @@ def run_stage(prepared, timeout_seconds=600):
         attempt.get("provider") != prepared["provider"]
         or attempt.get("execution_request_profile_hash")
         != prepared["execution_request_profile_hash"]
+        or attempt.get("max_output_tokens") != prepared["max_output_tokens"]
+        or attempt.get("output_token_cap_binding")
+        != prepared["output_token_cap_binding"]
+        or attempt.get("output_token_cap_semantics")
+        != prepared["output_token_cap_semantics"]
     ):
         raise PortableStageError("provider_request_changed")
     outputs = _project_outputs(prepared, attempt["raw"], input_raws)
@@ -1595,6 +1647,13 @@ def run_stage(prepared, timeout_seconds=600):
             "execution_request_profile_hash": prepared[
                 "execution_request_profile_hash"
             ],
+            "max_output_tokens": prepared["max_output_tokens"],
+            "output_token_cap_binding": prepared[
+                "output_token_cap_binding"
+            ],
+            "output_token_cap_semantics": prepared[
+                "output_token_cap_semantics"
+            ],
             "preflight_sha256": _sha(preflight_raw),
             "model_envelope_sha256": attempt["model_envelope_sha256"],
             "outputs": descriptors,
@@ -1602,8 +1661,9 @@ def run_stage(prepared, timeout_seconds=600):
         completion = dict(material)
         completion["completion_id"] = _completion_id(material)
         completion_raw = _canonical_bytes(completion)
-        _write_owner_file(completion_path, completion_raw)
-        completion_identity = _path_identity(completion_path)
+        completion_identity = _write_owner_file(
+            completion_path, completion_raw
+        )
         _fsync_directory(completion_path.parent)
         return completion
     except Exception:
@@ -1665,6 +1725,12 @@ def verify_completion(prepared):
         or completion.get("authority") != prepared["authority"]
         or completion.get("execution_request_profile_hash")
         != prepared["execution_request_profile_hash"]
+        or completion.get("max_output_tokens")
+        != prepared["max_output_tokens"]
+        or completion.get("output_token_cap_binding")
+        != prepared["output_token_cap_binding"]
+        or completion.get("output_token_cap_semantics")
+        != prepared["output_token_cap_semantics"]
         or completion.get("preflight_sha256") != _sha(preflight_raw)
         or completion_id != _completion_id(material)
     ):
@@ -1741,6 +1807,12 @@ def _validate_public_preflight(value):
         or not _valid_text(value.get("provider"))
         or value.get("provider_validation") != "unverified"
         or value.get("authority") != "shadow-only"
+        or type(value.get("max_output_tokens")) is not int
+        or value["max_output_tokens"] <= 0
+        or value.get("output_token_cap_binding")
+        != "provider-native-exact"
+        or value.get("output_token_cap_semantics")
+        != "reasoning-and-visible-output"
     ):
         raise PortableStageError("invalid_preflight")
     for name in (
@@ -1770,6 +1842,11 @@ def _validate_public_preflight(value):
         != ("awr" if value["stage"].startswith("awr-") else "hunt")
         or command.get("execution_request_profile_hash")
         != value["execution_request_profile_hash"]
+        or command.get("max_output_tokens") != value["max_output_tokens"]
+        or command.get("output_token_cap_binding")
+        != value["output_token_cap_binding"]
+        or command.get("output_token_cap_semantics")
+        != value["output_token_cap_semantics"]
     ):
         raise PortableStageError("invalid_preflight")
     output_contract = value.get("output_contract")
@@ -1898,6 +1975,12 @@ def _validate_public_completion(value):
         or not _valid_text(value.get("provider"))
         or value.get("provider_validation") != "unverified"
         or value.get("authority") != "shadow-only"
+        or type(value.get("max_output_tokens")) is not int
+        or value["max_output_tokens"] <= 0
+        or value.get("output_token_cap_binding")
+        != "provider-native-exact"
+        or value.get("output_token_cap_semantics")
+        != "reasoning-and-visible-output"
         or type(value.get("outputs")) is not dict
     ):
         raise PortableStageError("invalid_completion")
@@ -1988,6 +2071,9 @@ def public_descriptor(prepared, reference_root):
         "execution_request_profile_hash": runtime[
             "execution_request_profile_hash"
         ],
+        "max_output_tokens": runtime["max_output_tokens"],
+        "output_token_cap_binding": runtime["output_token_cap_binding"],
+        "output_token_cap_semantics": runtime["output_token_cap_semantics"],
         "serialized_prompt_sha256": runtime["serialized_prompt_sha256"],
         "role_sha256": runtime["role_sha256"],
         "input_sha256s": dict(runtime["input_sha256s"]),
@@ -2040,6 +2126,9 @@ def verify_public_descriptor(descriptor, reference_root):
         "provider_validation",
         "authority",
         "execution_request_profile_hash",
+        "max_output_tokens",
+        "output_token_cap_binding",
+        "output_token_cap_semantics",
         "serialized_prompt_sha256",
         "role_sha256",
         "input_sha256s",
@@ -2063,6 +2152,12 @@ def verify_public_descriptor(descriptor, reference_root):
         or descriptor["execution_boundary"] != BOUNDARY
         or not _valid_text(stage)
         or stage not in _OUTPUT_PROFILES
+        or type(descriptor.get("max_output_tokens")) is not int
+        or descriptor["max_output_tokens"] <= 0
+        or descriptor.get("output_token_cap_binding")
+        != "provider-native-exact"
+        or descriptor.get("output_token_cap_semantics")
+        != "reasoning-and-visible-output"
         or any(
             not _valid_text(descriptor.get(name))
             for name in (
@@ -2151,6 +2246,9 @@ def verify_public_descriptor(descriptor, reference_root):
         "provider_validation",
         "authority",
         "execution_request_profile_hash",
+        "max_output_tokens",
+        "output_token_cap_binding",
+        "output_token_cap_semantics",
     )
     for name in shared_identity_fields:
         if not descriptor[name] == preflight.get(name) == completion.get(name):
@@ -2216,6 +2314,13 @@ def verify_public_descriptor(descriptor, reference_root):
             "execution_request_profile_hash": descriptor[
                 "execution_request_profile_hash"
             ],
+            "max_output_tokens": descriptor["max_output_tokens"],
+            "output_token_cap_binding": descriptor[
+                "output_token_cap_binding"
+            ],
+            "output_token_cap_semantics": descriptor[
+                "output_token_cap_semantics"
+            ],
             "preflight_path": str(preflight_path),
             "completion_path": str(completion_path),
             "model_envelope_path": str(envelope_path),
@@ -2246,6 +2351,7 @@ def _parser():
     run.add_argument("--provider")
     run.add_argument("--model")
     run.add_argument("--reasoning")
+    run.add_argument("--max-output-tokens", type=int, required=True)
     run.add_argument("--registry", default=str(_REGISTRY))
     run.add_argument("--stage", choices=tuple(_ROLES), required=True)
     run.add_argument("--seat", required=True)
@@ -2279,6 +2385,12 @@ def main(argv=None):
                 arguments.provider_request_profile,
                 registry,
             )
+            try:
+                provider_adapters.require_native_output_token_cap(
+                    intent, arguments.max_output_tokens
+                )
+            except provider_adapters.ProviderResolutionError as exc:
+                raise PortableStageError("output_token_cap_changed") from exc
         else:
             if arguments.surface is None or arguments.provider is None:
                 raise PortableStageError("missing_provider_request")
@@ -2288,6 +2400,7 @@ def main(argv=None):
                 arguments.provider,
                 model=arguments.model,
                 reasoning=arguments.reasoning,
+                max_output_tokens=arguments.max_output_tokens,
             )
         prompt_raw = _capture_regular(
             arguments.serialized_prompt,

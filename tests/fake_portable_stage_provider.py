@@ -655,6 +655,14 @@ def main():
             _write(pathlib.Path(marker), schema_raw)
     request = json.loads(_prompt(arguments))
     _record(request)
+    if mode == "output-token-cap-audit":
+        if (
+            request.get("max_output_tokens") != 3072
+            or request.get("output_token_cap_semantics")
+            != "reasoning-and-visible-output"
+            or os.environ.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") != "3072"
+        ):
+            return 68
     output = pathlib.Path("output/result.json")
     if mode == "grok-compatibility-audit":
         for name in (

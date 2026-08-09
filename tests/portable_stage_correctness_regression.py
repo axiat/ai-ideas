@@ -29,9 +29,10 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
         return provider_adapters._resolve_command_intent_for_test(
             provider_adapters.load_registry(REGISTRY),
             "hunt",
-            "codex",
+            "claude",
             model="MODEL",
             reasoning="high",
+            max_output_tokens=3072,
             executable_lookup=lambda _: str(FAKE),
         )
 
@@ -228,6 +229,13 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
                 "execution_request_profile_hash": prepared[
                     "execution_request_profile_hash"
                 ],
+                "max_output_tokens": prepared["max_output_tokens"],
+                "output_token_cap_binding": prepared[
+                    "output_token_cap_binding"
+                ],
+                "output_token_cap_semantics": prepared[
+                    "output_token_cap_semantics"
+                ],
                 "model_envelope_sha256": "a" * 64,
                 "raw": b"unused\n",
             }
@@ -266,6 +274,80 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
                 "winner\n",
             )
             self.assertEqual(completion_path.read_bytes(), b"winner receipt\n")
+
+    def test_completion_write_failure_cleans_receipt_and_allows_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepared = self._prepare(pathlib.Path(directory))
+            completion_path = pathlib.Path(prepared["completion_path"])
+            outputs = {name: b"ours\n" for name in prepared["output_paths"]}
+            attempt = {
+                "provider": prepared["provider"],
+                "execution_request_profile_hash": prepared[
+                    "execution_request_profile_hash"
+                ],
+                "max_output_tokens": prepared["max_output_tokens"],
+                "output_token_cap_binding": prepared[
+                    "output_token_cap_binding"
+                ],
+                "output_token_cap_semantics": prepared[
+                    "output_token_cap_semantics"
+                ],
+                "model_envelope_sha256": "a" * 64,
+                "raw": b"unused\n",
+            }
+            real_identity = portable_stage._path_identity
+            fsync_calls = 0
+            completion_identity_failures = 0
+
+            def reject_late_completion_identity(path):
+                nonlocal completion_identity_failures
+                if (
+                    pathlib.Path(path) == completion_path
+                    and completion_identity_failures == 0
+                ):
+                    completion_identity_failures += 1
+                    raise OSError("late completion stat failed")
+                return real_identity(path)
+
+            def fail_after_completion_write(_path):
+                nonlocal fsync_calls
+                fsync_calls += 1
+                if fsync_calls == 3:
+                    raise OSError("simulated completion directory fsync failure")
+
+            common = (
+                mock.patch.object(
+                    portable_stage.portable_agent,
+                    "run_portable_stdout_attempt",
+                    return_value=attempt,
+                ),
+                mock.patch.object(
+                    portable_stage, "_project_outputs", return_value=outputs
+                ),
+            )
+            with common[0], common[1], mock.patch.object(
+                portable_stage,
+                "_path_identity",
+                side_effect=reject_late_completion_identity,
+            ), mock.patch.object(
+                portable_stage,
+                "_fsync_directory",
+                side_effect=fail_after_completion_write,
+            ):
+                with self.assertRaises(OSError):
+                    portable_stage.run_stage(prepared, timeout_seconds=1)
+
+            self.assertFalse(completion_path.exists())
+            self.assertFalse(pathlib.Path(prepared["output_root"]).exists())
+            with mock.patch.object(
+                portable_stage.portable_agent,
+                "run_portable_stdout_attempt",
+                return_value=attempt,
+            ), mock.patch.object(
+                portable_stage, "_project_outputs", return_value=outputs
+            ):
+                completion = portable_stage.run_stage(prepared, timeout_seconds=1)
+            self.assertEqual(completion["max_output_tokens"], 3072)
 
     def test_nonfinite_json_and_non_nfc_artifacts_are_rejected(self):
         for token in (b"NaN", b"Infinity", b"-Infinity"):

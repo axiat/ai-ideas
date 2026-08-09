@@ -862,6 +862,7 @@ def _validate_response_schema_contract(schema):
         "schema_version": version["minimum"],
         "stage": stage["enum"][0],
         "artifact_kinds": tuple(kind["enum"]),
+        "content_min_length": content.get("minLength", 0),
         "content_max_length": content["maxLength"],
     }
 
@@ -913,6 +914,7 @@ def _validate_response_value(value, contract):
             or type(item.get("artifact_kind")) is not str
             or item["artifact_kind"] != expected_kind
             or type(item.get("content")) is not str
+            or len(item["content"]) < contract["content_min_length"]
             or len(item["content"]) > contract["content_max_length"]
         ):
             raise PortableAgentError("schema_mismatch")
@@ -1798,11 +1800,20 @@ def run_portable_stdout_attempt(
     expected_response_attestation,
     state_root,
     timeout_seconds,
+    max_output_tokens=None,
     max_stdout_bytes=128 * 1024,
 ):
     """Run one disposable mirror and import one canonical stdout envelope."""
     if not provider_adapters.command_intent_is_issued(capability):
         raise PortableAgentError("invalid_capability")
+    try:
+        bound_max_output_tokens = (
+            provider_adapters.require_native_output_token_cap(
+                capability, max_output_tokens
+            )
+        )
+    except provider_adapters.ProviderResolutionError as exc:
+        raise PortableAgentError("output_token_cap_unsupported") from exc
     _revalidate_provider_model_authority(capability)
     if not isinstance(prompt, str) or not prompt:
         raise PortableAgentError("invalid_prompt")
@@ -1848,6 +1859,12 @@ def run_portable_stdout_attempt(
         )
         environment = _provider_environment(mirror, environment_delta)
         _revalidate_provider_model_authority(capability)
+        try:
+            provider_adapters.require_native_output_token_cap(
+                capability, bound_max_output_tokens
+            )
+        except provider_adapters.ProviderResolutionError as exc:
+            raise PortableAgentError("output_token_cap_changed") from exc
         process = subprocess.Popen(
             argv,
             cwd=mirror,
@@ -1908,6 +1925,9 @@ def run_portable_stdout_attempt(
         return {
             "provider": capability.provider,
             "execution_request_profile_hash": capability.profile_hash,
+            "max_output_tokens": bound_max_output_tokens,
+            "output_token_cap_binding": capability.output_token_cap_binding,
+            "output_token_cap_semantics": capability.output_token_cap_semantics,
             "model_envelope_sha256": output_sha,
             "output_path": str(imported),
             "value": value,
@@ -1935,10 +1955,19 @@ def run_portable_attempt(
     prompt,
     state_root,
     timeout_seconds,
+    max_output_tokens=None,
 ):
     """Run one disposable mirror and import one validated output."""
     if not provider_adapters.capability_is_issued(capability):
         raise PortableAgentError("invalid_capability")
+    try:
+        bound_max_output_tokens = (
+            provider_adapters.require_native_output_token_cap(
+                capability, max_output_tokens
+            )
+        )
+    except provider_adapters.ProviderResolutionError as exc:
+        raise PortableAgentError("output_token_cap_unsupported") from exc
     if not isinstance(prompt, str) or not prompt:
         raise PortableAgentError("invalid_prompt")
     if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
@@ -1960,9 +1989,22 @@ def run_portable_attempt(
         mirror.mkdir(mode=0o700)
         copied = _copy_inputs(inputs, mirror)
         argv, environment_delta = provider_adapters.render_command(
-            capability, mirror, prompt
+            capability,
+            mirror,
+            prompt,
+            response_schema=(
+                {"type": "object"}
+                if capability.provider in {"agy", "claude"}
+                else None
+            ),
         )
         environment = _provider_environment(mirror, environment_delta)
+        try:
+            provider_adapters.require_native_output_token_cap(
+                capability, bound_max_output_tokens
+            )
+        except provider_adapters.ProviderResolutionError as exc:
+            raise PortableAgentError("output_token_cap_changed") from exc
         process = subprocess.Popen(
             argv,
             cwd=mirror,
@@ -2011,6 +2053,9 @@ def run_portable_attempt(
         return {
             "provider": capability.provider,
             "capability_profile_hash": capability.profile_hash,
+            "max_output_tokens": bound_max_output_tokens,
+            "output_token_cap_binding": capability.output_token_cap_binding,
+            "output_token_cap_semantics": capability.output_token_cap_semantics,
             "output_sha256": output_sha,
             "output_path": str(imported),
             "value": value,
