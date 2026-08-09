@@ -111,7 +111,7 @@ run_judge() {
 JSON
   pre=$(mirror_pre "$mirror" "tmp/out/verdict.tsv and tmp/out/review.md")
   # Wrapper root overrides pin every backend's working root into the mirror; GROK_DISABLE_WEB=1 enforces frozen-panel retrieval policy for Grok.
-  ( cd "$mirror" && GROK_REPO="$mirror" CLAUDE_REPO="$mirror" AGY_REPO="$mirror" GROK_DISABLE_WEB=1 $RESOLVED_CMD "${pre}
+  ( cd "$mirror" && GROK_REPO="$mirror" CLAUDE_REPO="$mirror" AGY_REPO="$mirror" AGY_OUT_HINT=tmp/out/ GROK_DISABLE_WEB=1 $RESOLVED_CMD "${pre}
 
 Read roles/review.md and follow it. Use D = tmp/out/ for ideas.md and priorwork.md, with rubric.md and brainstorming_policy.md at the repository root. Write verdicts to tmp/out/verdict.tsv and complete accepted reviews to tmp/out/review.md. Calibration override: do not use WebSearch, WebFetch, or any network retrieval. Judge novelty only from tmp/out/priorwork.md. If an idea appears to match a published work, do not change the verdict from memory; append exactly one line to review.md in the form suspected published counterpart: <name>." \
       < /dev/null > "$logf" 2>&1 )

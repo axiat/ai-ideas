@@ -274,6 +274,10 @@ RESEARCH_DIRECTION_FILE=${RESEARCH_DIRECTION_FILE:-}
 LOG=hunt.log
 RD=tmp/round
 LOCK=tmp/hunt.lock
+LOCK_STATUS=
+LOCK_HOLDER_PID=
+ARCHIVE_SOURCE=
+RECOVERY_ARCHIVE_DIR=
 HALT_MARK=tmp/HALTED-ARCHIVE-FAIL
 HISTORY_DB=.ai-ideas/history.sqlite3
 HISTORY_STATE_ROOT=.ai-ideas
@@ -370,6 +374,97 @@ sleep_minutes() {
 random_no_hit_sleep_min() {
   printf '%s\n' \
     "$((NO_HIT_SLEEP_MIN_LO + RANDOM % (NO_HIT_SLEEP_MIN_HI - NO_HIT_SLEEP_MIN_LO + 1)))"
+}
+
+acquire_hunt_lock() {
+  local status tries owner
+  if [ -d "$LOCK" ]; then
+    owner=$(cat "$LOCK/pid" 2>/dev/null || true)
+    log "Legacy hunt lock directory is present (pid ${owner:-unknown}); remove it only after verifying no legacy hunt is running"
+    return 1
+  fi
+  LOCK_STATUS="${LOCK}.status.$$.$RANDOM"
+  rm -f "$LOCK_STATUS"
+  python3 - "$LOCK" "$LOCK_STATUS" "$$" <<'PY' &
+import fcntl
+import os
+import pathlib
+import secrets
+import signal
+import sys
+import time
+
+lock_path = pathlib.Path(sys.argv[1])
+status_path = pathlib.Path(sys.argv[2])
+parent_pid = int(sys.argv[3])
+token = secrets.token_hex(16)
+
+def publish_status(value):
+    temporary = status_path.with_name(status_path.name + ".tmp-" + token)
+    with temporary.open("x", encoding="utf-8") as stream:
+        stream.write(value + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, status_path)
+
+try:
+    descriptor = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except (OSError, BlockingIOError):
+    publish_status("busy")
+    raise SystemExit(2)
+
+owner = f"pid={parent_pid} token={token}\n".encode("ascii")
+os.ftruncate(descriptor, 0)
+os.write(descriptor, owner)
+os.fsync(descriptor)
+publish_status("locked")
+signal.signal(signal.SIGTERM, lambda *_: raise_exit())
+
+def parent_alive():
+    try:
+        os.kill(parent_pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return os.getppid() == parent_pid
+
+def raise_exit():
+    raise SystemExit(0)
+
+while parent_alive():
+    time.sleep(0.25)
+PY
+  LOCK_HOLDER_PID=$!
+  tries=0
+  while [ ! -s "$LOCK_STATUS" ] && kill -0 "$LOCK_HOLDER_PID" 2>/dev/null; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 200000 ] || break
+  done
+  status=$(cat "$LOCK_STATUS" 2>/dev/null || true)
+  rm -f "$LOCK_STATUS"
+  case "$status" in
+    locked) return 0 ;;
+    busy)
+      owner=$(cat "$LOCK" 2>/dev/null || true)
+      log "Another hunt.sh instance is running (${owner:-owner unavailable})"
+      wait "$LOCK_HOLDER_PID" 2>/dev/null || true
+      LOCK_HOLDER_PID=
+      return 1
+      ;;
+    *)
+      log "Cannot acquire hunt lock"
+      kill "$LOCK_HOLDER_PID" 2>/dev/null || true
+      wait "$LOCK_HOLDER_PID" 2>/dev/null || true
+      LOCK_HOLDER_PID=
+      return 1
+      ;;
+  esac
 }
 
 pick_lens() {
@@ -1284,13 +1379,30 @@ is_axiom_idea() {
     | grep -q '^Form:[[:space:]]*remove-load-bearing-assumption[[:space:]]*$'
 }
 
+theme_in_vocabulary() {
+  local wanted=$1
+  awk -v wanted="$wanted" '
+    /^## Theme Vocabulary[[:space:]]*$/ {inside=1; next}
+    inside && /^## / {exit}
+    inside && NF {
+      count=split($0, values, /[[:space:]]*\/[[:space:]]*/)
+      for (i=1; i<=count; i++) {
+        value=values[i]
+        sub(/^[[:space:]]+/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        if (value == wanted) found=1
+      }
+    }
+    END {exit !found}
+  ' brainstorming_policy.md
+}
+
 themes_ok() {
   local tsv=${1:-$RD/ideas.tsv} id story theme
   while IFS=$'\t' read -r id story theme; do
     [ -n "$id" ] || continue
     theme=$(printf '%s' "$theme" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-    # Case-insensitive exact line/snippet match against the policy catalog.
-    grep -Fi -- "$theme" brainstorming_policy.md >/dev/null || {
+    theme_in_vocabulary "$theme" || {
       log "Theme gate: $id uses an unknown theme: $theme"
       return 1
     }
@@ -1433,7 +1545,7 @@ cracks_ok() {
 # Retained as a compatibility validator for archived pre-cutover review blocks.
 # New reviews use the compact sealed review contract and are gated by Python.
 archive_round() {
-  local reason=$1 destination
+  local reason=$1 source_root=${2:-$RD} destination
   local -a archive_args
   [ -n "${run_id:-}" ] && [ "$run_id" != "-" ] || return 0
   case "$run_id" in
@@ -1441,7 +1553,7 @@ archive_round() {
   esac
   destination="$RUNS_DIR/$run_id"
   archive_args=(
-    --source-root "$RD"
+    --source-root "$source_root"
     --destination "$destination"
     --run-id "$run_id"
     --round "$round"
@@ -1479,6 +1591,104 @@ reports_today() {
     count=$((count + 1))
   done
   printf '%s\n' "$count"
+}
+
+snapshot_archive_source() {
+  local source=$1 destination=$2
+  rm -rf "$destination"
+  mkdir -p "$destination" || return 1
+  cp -R "$source"/. "$destination"/ || {
+    rm -rf "$destination"
+    return 1
+  }
+}
+
+restore_archive_source() {
+  local archive=$1 destination=$2
+  snapshot_archive_source "$archive/round" "$destination" || return 1
+  rm -f "$destination/history/archive-receipt.json"
+  rm -rf "$destination/history/archive-authority"
+}
+
+find_recovery_report_view() {
+  local archive manifest view candidate
+  RECOVERY_ARCHIVE_DIR=
+  CURRENT_REPORT_VIEW=
+  for archive in "$RUNS_DIR"/*; do
+    [ -d "$archive/round" ] || continue
+    manifest="$archive/manifest.tsv"
+    [ "$(awk -F'\t' '$1=="date" {print $2; exit}' "$manifest" 2>/dev/null)" = "$today" ] \
+      || continue
+    case "$(awk -F'\t' '$1=="reason" {print $2; exit}' "$manifest" 2>/dev/null)" in
+      decision|published) ;;
+      *) continue ;;
+    esac
+    candidate=
+    for view in "$archive"/round/history/review-attempts/*/report-view; do
+      [ -s "$view/accepted.tsv" ] || continue
+      candidate=$view
+    done
+    [ -n "$candidate" ] || continue
+    RECOVERY_ARCHIVE_DIR=$archive
+    CURRENT_REPORT_VIEW=$candidate
+  done
+  [ -n "$CURRENT_REPORT_VIEW" ] && return 0
+  for view in "$RD"/history/review-attempts/*/report-view; do
+    [ -s "$view/accepted.tsv" ] || continue
+    CURRENT_REPORT_VIEW=$view
+  done
+  [ -n "$CURRENT_REPORT_VIEW" ]
+}
+
+refresh_published_archive() {
+  local source=$ARCHIVE_SOURCE
+  if [ -z "$source" ] && [ -n "$RECOVERY_ARCHIVE_DIR" ]; then
+    source="tmp/archive-source.recovery.$$"
+    restore_archive_source "$RECOVERY_ARCHIVE_DIR" "$source" || {
+      log "Cannot reconstruct the committed archive source"
+      return 1
+    }
+  fi
+  if [ -z "$source" ]; then
+    log "Published archive refresh has no immutable decision source"
+    return 1
+  fi
+  if ! archive_round published "$source"; then
+    log "Published archive refresh failed"
+    [ "$source" = "$ARCHIVE_SOURCE" ] || rm -rf "$source"
+    return 1
+  fi
+  [ "$source" = "$ARCHIVE_SOURCE" ] || rm -rf "$source"
+}
+
+finalize_strong_accept() {
+  local before_reports after_reports
+  while :; do
+    before_reports=$(reports_today)
+    if run_external_stage \
+      "$BACK_CMD" \
+      "Read roles/report.md and follow it" \
+      report \
+      1; then
+      after_reports=$(reports_today)
+      if [ "$after_reports" -gt "$before_reports" ]; then
+        ./publish.sh >> "$LOG" 2>&1 || {
+          log "publish.sh failed"
+          return 2
+        }
+        refresh_published_archive || return 2
+        fails=0
+        return 0
+      fi
+      log "Report stage created no report"
+    else
+      log "Report stage failed after committed Strong Accept"
+    fi
+    fails=$((fails + 1))
+    log "Committed Strong Accept report failure (${fails}/${MAX_FAILS})"
+    [ "$fails" -lt "$MAX_FAILS" ] || return 1
+    sleep_minutes "$FAIL_SLEEP_MIN"
+  done
 }
 
 fail_round() {
@@ -1522,24 +1732,17 @@ reject_direction_round() {
 validate_config
 mkdir -p tmp "$HISTORY_STATE_ROOT"
 
-if ! mkdir "$LOCK" 2>/dev/null; then
-  other=$(cat "$LOCK/pid" 2>/dev/null || true)
-  if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
-    log "Another hunt.sh instance is running (pid $other)"
-    exit 2
-  fi
-  case "$LOCK" in
-    tmp/hunt.lock) rm -rf "$LOCK" ;;
-    *) log "Refusing to remove unexpected lock path: $LOCK"; exit 2 ;;
-  esac
-  mkdir "$LOCK" 2>/dev/null || { log "Cannot acquire hunt lock"; exit 2; }
-fi
-printf '%s\n' "$$" > "$LOCK/pid"
+acquire_hunt_lock || exit 2
 trap '
   case "$ACTIVE_EXTERNAL_MIRROR" in
     "${TMPDIR:-/tmp}"/hunt-*) rm -rf "$ACTIVE_EXTERNAL_MIRROR" ;;
   esac
-  rm -rf "$LOCK"
+  [ -z "$ARCHIVE_SOURCE" ] || rm -rf "$ARCHIVE_SOURCE"
+  rm -f "$LOCK_STATUS"
+  if [ -n "$LOCK_HOLDER_PID" ]; then
+    kill "$LOCK_HOLDER_PID" 2>/dev/null || true
+    wait "$LOCK_HOLDER_PID" 2>/dev/null || true
+  fi
 ' EXIT
 
 mkdir -p "$RUNS_DIR" || { log "Cannot create archive directory"; exit 2; }
@@ -1587,8 +1790,29 @@ policy_mode=$(history_policy_mode "$startup_root/startup.json") || exit 2
 log "History runtime ready in $policy_mode mode"
 
 today=$(date +%F)
-if [ "$SA_TARGET" -gt 0 ] && [ "$(sa_today)" -ge "$SA_TARGET" ]; then
-  if [ "$(reports_today)" -gt 0 ]; then
+fails=0
+round=0
+run_id=-
+resume_candidate=0
+recovered_report=0
+today_sa=$(sa_today)
+if [ "$today_sa" -gt 0 ] && [ "$(reports_today)" -eq 0 ]; then
+  if ! find_recovery_report_view; then
+    log "Committed Strong Accept is missing both its report and verified report view"
+    exit 2
+  fi
+  if [ -n "$RECOVERY_ARCHIVE_DIR" ]; then
+    run_id=$(awk -F'\t' '$1=="run_id" {print $2; exit}' \
+      "$RECOVERY_ARCHIVE_DIR/manifest.tsv")
+    round=$(awk -F'\t' '$1=="round" {print $2; exit}' \
+      "$RECOVERY_ARCHIVE_DIR/manifest.tsv")
+  fi
+  log "Recovering missing report for committed Strong Accept"
+  finalize_strong_accept || exit $?
+  recovered_report=1
+fi
+if [ "$SA_TARGET" -gt 0 ] && [ "$today_sa" -ge "$SA_TARGET" ]; then
+  if [ "$recovered_report" -eq 0 ]; then
     ./publish.sh >> "$LOG" 2>&1 || {
       log "Publication recovery failed"
       exit 2
@@ -1597,12 +1821,15 @@ if [ "$SA_TARGET" -gt 0 ] && [ "$(sa_today)" -ge "$SA_TARGET" ]; then
   log "Daily Strong Accept target is already satisfied"
   exit 0
 fi
+if [ "$recovered_report" -eq 1 ]; then
+  round=0
+  run_id=-
+  RECOVERY_ARCHIVE_DIR=
+  CURRENT_REPORT_VIEW=
+fi
 
-fails=0
-round=0
-run_id=-
-resume_candidate=0
-if [ "$RESUME_FRONT" = 1 ] && [ -s "$RD/history/resume-state.json" ]; then
+if [ "$recovered_report" -eq 0 ] && [ "$RESUME_FRONT" = 1 ] \
+   && [ -s "$RD/history/resume-state.json" ]; then
   if history_receipts_ok "$RD/history/resume-state.json" \
     > "$startup_root/resume-validation.json"; then
     resume_candidate=1
@@ -2066,8 +2293,15 @@ PY
     exit 2
   fi
   fails=0
+  if [ "$sa_count" -gt 0 ]; then
+    ARCHIVE_SOURCE="tmp/archive-source.${run_id}.$$"
+    if ! snapshot_archive_source "$RD" "$ARCHIVE_SOURCE"; then
+      log "Cannot seal immutable Strong Accept archive source"
+      exit 2
+    fi
+  fi
 
-  if ! archive_round decision; then
+  if ! archive_round decision "${ARCHIVE_SOURCE:-$RD}"; then
     if [ "$sa_count" -gt 0 ]; then
       printf '%s\trun_id=%s\tsa_count=%s\n' \
         "$(date '+%F %T')" "$run_id" "$sa_count" > "$HALT_MARK"
@@ -2078,24 +2312,9 @@ PY
   fi
 
   if [ "$sa_count" -gt 0 ]; then
-    before_reports=$(reports_today)
-    if ! run_external_stage \
-      "$BACK_CMD" \
-      "Read roles/report.md and follow it" \
-      report \
-      1; then
-      fail_round report || exit 1
-      continue
-    fi
-    if [ "$(reports_today)" -le "$before_reports" ]; then
-      log "Report stage created no report"
-      exit 2
-    fi
-    ./publish.sh >> "$LOG" 2>&1 || {
-      log "publish.sh failed"
-      exit 2
-    }
-    archive_round published || true
+    finalize_strong_accept || exit $?
+    rm -rf "$ARCHIVE_SOURCE"
+    ARCHIVE_SOURCE=
     if [ "$SA_TARGET" -gt 0 ] && [ "$(sa_today)" -ge "$SA_TARGET" ]; then
       log "Daily Strong Accept target reached"
       break

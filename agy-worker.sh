@@ -15,6 +15,8 @@
 #                      `gemini-3.6-flash-high`. Verify the selected-model line
 #                      in the CLI log.
 #   AGY_PRINT_TIMEOUT  Default 8m.
+#   AGY_LAUNCH_ROOT    Shared launch-gate root; defaults to this adapter's
+#                      repository so per-seat AGY_REPO mirrors share one gap.
 #   AGY_LAUNCH_GAP_SEC Minimum seconds between launches; default 60, 0 disables.
 set -u
 self_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -25,6 +27,13 @@ case "$repo" in
 esac
 [ -d "$repo" ] || { echo "agy-worker: repository root is not a directory: $repo" >&2; exit 2; }
 repo="$(cd "$repo" && pwd)"
+launch_root=${AGY_LAUNCH_ROOT:-$self_dir}
+case "$launch_root" in
+  /*) ;;
+  *) echo "agy-worker: AGY_LAUNCH_ROOT must be absolute: $launch_root" >&2; exit 2 ;;
+esac
+[ -d "$launch_root" ] || { echo "agy-worker: launch root is not a directory: $launch_root" >&2; exit 2; }
+launch_root="$(cd "$launch_root" && pwd)"
 model=${AGY_MODEL:-gemini-3.6-flash-high}
 ptimeout=${AGY_PRINT_TIMEOUT:-8m}
 gap=${AGY_LAUNCH_GAP_SEC:-60}
@@ -34,10 +43,10 @@ case "$gap" in ''|*[!0-9]*) echo "agy-worker: AGY_LAUNCH_GAP_SEC must be a nonne
 # The mkdir lock covers stamp read, wait, and stamp write so concurrent judges
 # cannot all pass on the same old timestamp. A dead holder or a lock older than
 # gap+60 seconds is stale. A lock without a pid is cleared only by age.
-stamp="$repo/tmp/agy.last-launch"
-lockd="$repo/tmp/agy.launch.lock"
+stamp="$launch_root/tmp/agy.last-launch"
+lockd="$launch_root/tmp/agy.launch.lock"
 if [ "$gap" -gt 0 ]; then
-  mkdir -p "$repo/tmp"
+  mkdir -p "$launch_root/tmp"
   while ! mkdir "$lockd" 2>/dev/null; do
     holder=$(cat "$lockd/pid" 2>/dev/null || echo "")
     lock_m=$(stat -f %m "$lockd" 2>/dev/null || echo "")
