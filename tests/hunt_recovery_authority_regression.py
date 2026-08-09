@@ -8,6 +8,7 @@ import os
 import pathlib
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -32,6 +33,49 @@ def run_shell(script: str, cwd: pathlib.Path) -> subprocess.CompletedProcess[str
 
 
 class HuntRecoveryAuthorityRegression(unittest.TestCase):
+    def test_lock_handshake_child_crash_reaches_fifo_eof(self):
+        lock_function = section("acquire_hunt_lock() {", "pick_lens() {")
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            bindir = root / "bin"
+            bindir.mkdir()
+            fake_python = bindir / "python3"
+            fake_python.write_text(
+                "#!/usr/bin/env bash\n"
+                "status=$3\n"
+                "exec 7> \"$status\"\n"
+                "printf 'ready\\n' >&7\n"
+                "exit 17\n",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+            script = root / "lock-child-crash.sh"
+            script.write_text(
+                "#!/usr/bin/env bash\nset -u\n"
+                f"PATH={str(bindir)!r}:$PATH\n"
+                f"LOCK={str(root / 'hunt.lock')!r}\n"
+                "LOCK_STATUS=\nLOCK_HOLDER_PID=\n"
+                "HUNT_LOCK_HANDSHAKE_SEC=10\n"
+                "log() { :; }\n"
+                + lock_function
+                + "if acquire_hunt_lock; then exit 9; fi\n"
+                + "[ -z \"$LOCK_HOLDER_PID\" ]\n",
+                encoding="utf-8",
+            )
+            started = time.monotonic()
+            result = subprocess.run(
+                ["bash", str(script)],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+            elapsed = time.monotonic() - started
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertLess(elapsed, 4)
+            self.assertEqual(list(root.glob("hunt.lock.status.*")), [])
+
     def test_verified_pending_archive_carries_its_archived_date(self):
         verifier = section(
             "verify_pending_recovery_archive() {",

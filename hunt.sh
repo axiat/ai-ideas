@@ -384,7 +384,7 @@ random_no_hit_sleep_min() {
 }
 
 acquire_hunt_lock() {
-  local status owner
+  local status owner ready attempts handshake_timeout
   if [ -d "$LOCK" ]; then
     owner=$(cat "$LOCK/pid" 2>/dev/null || true)
     log "Legacy hunt lock directory is present (pid ${owner:-unknown}); remove it only after verifying no legacy hunt is running"
@@ -401,7 +401,12 @@ acquire_hunt_lock() {
     log "Cannot open hunt lock handshake"
     return 1
   }
-  python3 - "$LOCK" "$LOCK_STATUS" "$$" <<'PY' &
+  handshake_timeout=${HUNT_LOCK_HANDSHAKE_SEC:-5}
+  case "$handshake_timeout" in
+    [1-9]|[12][0-9]|30) ;;
+    *) handshake_timeout=5 ;;
+  esac
+  python3 - "$LOCK" "$LOCK_STATUS" "$$" 9>&- <<'PY' &
 import fcntl
 import os
 import pathlib
@@ -415,11 +420,13 @@ lock_path = pathlib.Path(sys.argv[1])
 status_path = pathlib.Path(sys.argv[2])
 parent_pid = int(sys.argv[3])
 token = secrets.token_hex(16)
+status_stream = status_path.open("w", encoding="utf-8")
+status_stream.write("ready\n")
+status_stream.flush()
 
 def publish_status(value):
-    with status_path.open("w", encoding="utf-8") as stream:
-        stream.write(value + "\n")
-        stream.flush()
+    status_stream.write(value + "\n")
+    status_stream.flush()
 
 def safe_lock_state(descriptor):
     state = os.fstat(descriptor)
@@ -462,10 +469,43 @@ while os.getppid() == parent_pid:
     time.sleep(0.25)
 PY
   LOCK_HOLDER_PID=$!
-  if ! IFS= read -r status <&9; then
-    status=error
+  ready=
+  attempts=0
+  while [ "$attempts" -lt "$handshake_timeout" ]; do
+    if IFS= read -r -t 1 ready <&9; then
+      break
+    fi
+    if ! kill -0 "$LOCK_HOLDER_PID" 2>/dev/null; then
+      break
+    fi
+    attempts=$((attempts + 1))
+  done
+  if [ "$ready" != ready ]; then
+    exec 9>&-
+    rm -f "$LOCK_STATUS"
+    log "Hunt lock holder exited or timed out before readiness"
+    kill "$LOCK_HOLDER_PID" 2>/dev/null || true
+    wait "$LOCK_HOLDER_PID" 2>/dev/null || true
+    LOCK_HOLDER_PID=
+    return 1
+  fi
+  # Open the status reader while the bootstrap descriptor still guarantees a
+  # writer. Closing descriptor 9 then removes the parent's writer, so child
+  # death produces EOF instead of an unbounded read.
+  if ! exec 8< "$LOCK_STATUS"; then
+    exec 9>&-
+    rm -f "$LOCK_STATUS"
+    log "Cannot open hunt lock status reader"
+    kill "$LOCK_HOLDER_PID" 2>/dev/null || true
+    wait "$LOCK_HOLDER_PID" 2>/dev/null || true
+    LOCK_HOLDER_PID=
+    return 1
   fi
   exec 9>&-
+  if ! IFS= read -r -t "$handshake_timeout" status <&8; then
+    status=error
+  fi
+  exec 8<&-
   rm -f "$LOCK_STATUS"
   case "$status" in
     locked) return 0 ;;
