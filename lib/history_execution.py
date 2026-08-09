@@ -1842,9 +1842,35 @@ def complete_attempt(
             ) from exc
     try:
         conn.execute("BEGIN IMMEDIATE")
+        current_task = load_task(conn, task_key)
+        current_attempt = conn.execute(
+            "SELECT provenance_json, created_at FROM audit_task_attempts "
+            "WHERE attempt_id=? AND task_hash=?",
+            (attempt_id, task_key),
+        ).fetchone()
+        if current_attempt is None:
+            raise ExecutionError("unknown_attempt")
+        current_provenance = _json(current_attempt["provenance_json"])
+        if (
+            current_task["state"] != "claimed"
+            or current_task["claim_token"]
+            != current_provenance.get("claim_token")
+            or current_task["fence"]
+            != current_provenance.get("claim_fence")
+            or current_task["lease_until"] is None
+            # A lease only supplies temporal authority if it covered launch.
+            or (
+                _now(current_attempt["created_at"])
+                <= _now(current_task["lease_until"])
+                <= _now(completed_at)
+            )
+        ):
+            raise history_audit_store.StaleFence(
+                "attempt completion claim is stale"
+            )
         _insert_completion(
-            conn, task, attempt_id, output["object_id"], outcome, normalized,
-            usage, now=completed_at,
+            conn, current_task, attempt_id, output["object_id"], outcome,
+            normalized, usage, now=completed_at,
         )
         conn.execute("COMMIT")
     except Exception:
@@ -1953,6 +1979,29 @@ def cancel_attempt(
             conn.execute("ROLLBACK")
         raise
     return {"attempt_id": attempt_id, "outcome": "cancelled"}
+
+
+def _cancel_unterminal_attempt(conn, attempt_id, *, now=None):
+    """Durably close a started attempt when runtime code raises unexpectedly."""
+    terminal = conn.execute(
+        """
+        SELECT completion.attempt_id AS completion_id,
+               cost.attempt_id AS cost_id
+        FROM audit_task_attempts attempt
+        LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+        LEFT JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+        WHERE attempt.attempt_id=?
+        """,
+        (attempt_id,),
+    ).fetchone()
+    if terminal is None:
+        raise ExecutionError("unknown_attempt")
+    if terminal["completion_id"] is not None or terminal["cost_id"] is not None:
+        return
+    cancel_attempt(
+        conn, attempt_id, billing_state="unknown", usage=None,
+        error_class="runtime_exception", now=now,
+    )
 
 
 def settlement_decision(valid_attempts):
@@ -2213,68 +2262,72 @@ def run_task(
                     conn, task_key, "budget_exceeded", **terminal_transition
                 )
             )
-        response = provider(task_key, provider_name, ordinal, request_bytes)
-        if not isinstance(response, dict) or response.get("kind") not in {
-            "success", "timeout", "429", "5xx", "overflow", "syntax", "schema", "provider_error"
-        }:
-            response = {"kind": "provider_error", "raw": "invalid fake response"}
-        kind = response["kind"]
-        usage = response["usage"] if "usage" in response else None
-        if kind == "success":
-            try:
-                valid = complete_attempt(
-                    conn, cas_root, task_key, attempt["attempt_id"],
-                    response.get("output"), plan["snapshot"], usage=usage,
+        try:
+            response = provider(task_key, provider_name, ordinal, request_bytes)
+            if not isinstance(response, dict) or response.get("kind") not in {
+                "success", "timeout", "429", "5xx", "overflow", "syntax", "schema", "provider_error"
+            }:
+                response = {"kind": "provider_error", "raw": "invalid fake response"}
+            kind = response["kind"]
+            usage = response["usage"] if "usage" in response else None
+            if kind == "success":
+                try:
+                    valid = complete_attempt(
+                        conn, cas_root, task_key, attempt["attempt_id"],
+                        response.get("output"), plan["snapshot"], usage=usage,
+                    )
+                except MapValidationError as exc:
+                    if (
+                        task["stage"] == "map"
+                        and exc.code in {"item_set_mismatch", "truncated", "overflow"}
+                    ):
+                        return finish_terminal(
+                            split_task(conn, task_key, **terminal_transition)
+                        )
+                    if exc.code in {"syntax", "schema", "stale_snapshot"} and ordinal + 1 < MAX_ATTEMPTS:
+                        prior_failure = exc.code
+                        continue
+                    return finish_terminal(
+                        exhaust_task(
+                            conn, task_key, exc.code, **terminal_transition
+                        )
+                    )
+                if fault_after_cas:
+                    raise ExecutionCrash("fault injected after durable output CAS")
+                result = settle_task(
+                    conn, task_key, [valid], cas_root=cas_root, now=now
                 )
-            except MapValidationError as exc:
-                if (
-                    task["stage"] == "map"
-                    and exc.code in {"item_set_mismatch", "truncated", "overflow"}
-                ):
+                return finish_terminal(result)
+            _failed_completion(
+                conn, cas_root, task, attempt["attempt_id"], kind,
+                response.get("raw", kind), usage,
+            )
+            if kind == "overflow":
+                if task["stage"] == "map":
                     return finish_terminal(
                         split_task(conn, task_key, **terminal_transition)
                     )
-                if exc.code in {"syntax", "schema", "stale_snapshot"} and ordinal + 1 < MAX_ATTEMPTS:
-                    prior_failure = exc.code
-                    continue
                 return finish_terminal(
                     exhaust_task(
-                        conn, task_key, exc.code, **terminal_transition
+                        conn, task_key, "overflow", **terminal_transition
                     )
                 )
-            if fault_after_cas:
-                raise ExecutionCrash("fault injected after durable output CAS")
-            result = settle_task(
-                conn, task_key, [valid], cas_root=cas_root, now=now
-            )
-            return finish_terminal(result)
-        _failed_completion(
-            conn, cas_root, task, attempt["attempt_id"], kind,
-            response.get("raw", kind), usage,
-        )
-        if kind == "overflow":
-            if task["stage"] == "map":
-                return finish_terminal(
-                    split_task(conn, task_key, **terminal_transition)
-                )
+            if kind in {"timeout", "429", "5xx"}:
+                provider_index += 1
+                prior_failure = kind
+                if provider_index < len(pool) and ordinal + 1 < MAX_ATTEMPTS:
+                    continue
+            elif kind in {"syntax", "schema"} and ordinal + 1 < MAX_ATTEMPTS:
+                prior_failure = kind
+                continue
             return finish_terminal(
                 exhaust_task(
-                    conn, task_key, "overflow", **terminal_transition
+                    conn, task_key, "provider_exhausted", **terminal_transition
                 )
             )
-        if kind in {"timeout", "429", "5xx"}:
-            provider_index += 1
-            prior_failure = kind
-            if provider_index < len(pool) and ordinal + 1 < MAX_ATTEMPTS:
-                continue
-        elif kind in {"syntax", "schema"} and ordinal + 1 < MAX_ATTEMPTS:
-            prior_failure = kind
-            continue
-        return finish_terminal(
-            exhaust_task(
-                conn, task_key, "provider_exhausted", **terminal_transition
-            )
-        )
+        except Exception:
+            _cancel_unterminal_attempt(conn, attempt["attempt_id"])
+            raise
     return finish_terminal(
         exhaust_task(conn, task_key, "attempt_limit", **terminal_transition)
     )
