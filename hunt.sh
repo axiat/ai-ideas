@@ -278,6 +278,10 @@ LOCK_STATUS=
 LOCK_HOLDER_PID=
 ARCHIVE_SOURCE=
 RECOVERY_ARCHIVE_DIR=
+RECOVERY_RUN_ID=
+RECOVERY_ROUND=
+RECOVERY_REASON=
+RECOVERY_REPORT_COUNT_BEFORE=
 HALT_MARK=tmp/HALTED-ARCHIVE-FAIL
 HISTORY_DB=.ai-ideas/history.sqlite3
 HISTORY_STATE_ROOT=.ai-ideas
@@ -377,7 +381,7 @@ random_no_hit_sleep_min() {
 }
 
 acquire_hunt_lock() {
-  local status tries owner
+  local status owner
   if [ -d "$LOCK" ]; then
     owner=$(cat "$LOCK/pid" 2>/dev/null || true)
     log "Legacy hunt lock directory is present (pid ${owner:-unknown}); remove it only after verifying no legacy hunt is running"
@@ -385,12 +389,22 @@ acquire_hunt_lock() {
   fi
   LOCK_STATUS="${LOCK}.status.$$.$RANDOM"
   rm -f "$LOCK_STATUS"
+  mkfifo "$LOCK_STATUS" || {
+    log "Cannot create hunt lock handshake"
+    return 1
+  }
+  exec 9<> "$LOCK_STATUS" || {
+    rm -f "$LOCK_STATUS"
+    log "Cannot open hunt lock handshake"
+    return 1
+  }
   python3 - "$LOCK" "$LOCK_STATUS" "$$" <<'PY' &
 import fcntl
 import os
 import pathlib
 import secrets
 import signal
+import stat
 import sys
 import time
 
@@ -400,12 +414,20 @@ parent_pid = int(sys.argv[3])
 token = secrets.token_hex(16)
 
 def publish_status(value):
-    temporary = status_path.with_name(status_path.name + ".tmp-" + token)
-    with temporary.open("x", encoding="utf-8") as stream:
+    with status_path.open("w", encoding="utf-8") as stream:
         stream.write(value + "\n")
         stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, status_path)
+
+def safe_lock_state(descriptor):
+    state = os.fstat(descriptor)
+    return (
+        stat.S_ISREG(state.st_mode)
+        and state.st_nlink == 1
+        and state.st_uid == os.geteuid()
+    )
+
+def raise_exit(*_):
+    raise SystemExit(0)
 
 try:
     descriptor = os.open(
@@ -413,40 +435,34 @@ try:
         os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
         0o600,
     )
+    if not safe_lock_state(descriptor):
+        raise OSError("unsafe lock file identity")
     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except (OSError, BlockingIOError):
+    if not safe_lock_state(descriptor):
+        raise OSError("lock file identity changed")
+except BlockingIOError:
     publish_status("busy")
+    raise SystemExit(2)
+except OSError:
+    publish_status("error")
     raise SystemExit(2)
 
 owner = f"pid={parent_pid} token={token}\n".encode("ascii")
 os.ftruncate(descriptor, 0)
+os.lseek(descriptor, 0, os.SEEK_SET)
 os.write(descriptor, owner)
 os.fsync(descriptor)
 publish_status("locked")
-signal.signal(signal.SIGTERM, lambda *_: raise_exit())
+signal.signal(signal.SIGTERM, raise_exit)
 
-def parent_alive():
-    try:
-        os.kill(parent_pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return os.getppid() == parent_pid
-
-def raise_exit():
-    raise SystemExit(0)
-
-while parent_alive():
+while os.getppid() == parent_pid:
     time.sleep(0.25)
 PY
   LOCK_HOLDER_PID=$!
-  tries=0
-  while [ ! -s "$LOCK_STATUS" ] && kill -0 "$LOCK_HOLDER_PID" 2>/dev/null; do
-    tries=$((tries + 1))
-    [ "$tries" -lt 200000 ] || break
-  done
-  status=$(cat "$LOCK_STATUS" 2>/dev/null || true)
+  if ! IFS= read -r status <&9; then
+    status=error
+  fi
+  exec 9>&-
   rm -f "$LOCK_STATUS"
   case "$status" in
     locked) return 0 ;;
@@ -458,7 +474,7 @@ PY
       return 1
       ;;
     *)
-      log "Cannot acquire hunt lock"
+      log "Cannot acquire hunt lock safely"
       kill "$LOCK_HOLDER_PID" 2>/dev/null || true
       wait "$LOCK_HOLDER_PID" 2>/dev/null || true
       LOCK_HOLDER_PID=
@@ -1561,12 +1577,12 @@ archive_round() {
     --policy-mode "${policy_mode:--}"
     --reason "$reason"
     --policy "$HISTORY_POLICY"
-    --startup "$RD/history/startup.json"
+    --startup "$source_root/history/startup.json"
     --state-root "$HISTORY_STATE_ROOT"
   )
-  if [ -f "$RD/history/materialize-ledger.json" ]; then
+  if [ -f "$source_root/history/materialize-ledger.json" ]; then
     archive_args+=(
-      --projection "$RD/history/materialize-ledger.json"
+      --projection "$source_root/history/materialize-ledger.json"
     )
   fi
   if [ -n "$HISTORY_CALIBRATION_CAPABILITY" ]; then
@@ -1610,34 +1626,113 @@ restore_archive_source() {
   rm -rf "$destination/history/archive-authority"
 }
 
-find_recovery_report_view() {
-  local archive manifest view candidate
+verify_pending_recovery_archive() {
+  local archive=$1
+  python3 - "$archive" "$today" <<'PY'
+import pathlib
+import stat
+import sys
+
+from lib.history_archive import ArchiveError, verify_archive
+
+archive = pathlib.Path(sys.argv[1])
+expected_date = sys.argv[2]
+manifest = archive / "manifest.tsv"
+try:
+    archive_state = archive.lstat()
+    round_state = (archive / "round").lstat()
+    manifest_state = manifest.lstat()
+except OSError as exc:
+    raise SystemExit(f"recovery archive metadata is unavailable: {exc}")
+if (
+    not stat.S_ISDIR(archive_state.st_mode)
+    or stat.S_ISLNK(archive_state.st_mode)
+    or not stat.S_ISDIR(round_state.st_mode)
+    or stat.S_ISLNK(round_state.st_mode)
+    or not stat.S_ISREG(manifest_state.st_mode)
+    or manifest_state.st_nlink != 1
+):
+    raise SystemExit("recovery archive paths are unsafe")
+fields = {}
+for line in manifest.read_text(encoding="utf-8").splitlines():
+    parts = line.split("\t")
+    if len(parts) != 2 or parts[0] in fields or not parts[1]:
+        raise SystemExit("recovery archive manifest is malformed")
+    fields[parts[0]] = parts[1]
+expected = {
+    "run_id", "round", "date", "policy_mode", "reason", "archived_at"
+}
+if set(fields) != expected:
+    raise SystemExit("recovery archive manifest fields are invalid")
+if fields["date"] != expected_date or fields["reason"] != "decision":
+    raise SystemExit(3)
+if archive.name != fields["run_id"]:
+    raise SystemExit("recovery archive run identity is inconsistent")
+try:
+    round_number = int(fields["round"])
+except ValueError as exc:
+    raise SystemExit("recovery archive round is invalid") from exc
+if round_number < 1:
+    raise SystemExit("recovery archive round is invalid")
+try:
+    receipt = verify_archive(
+        archive / "round",
+        run_id=fields["run_id"],
+        round_number=round_number,
+        policy_mode=fields["policy_mode"],
+        reason="decision",
+    )
+except ArchiveError as exc:
+    raise SystemExit(f"recovery archive verification failed: {exc}") from exc
+if receipt.get("created_reason") not in {"decision", "published"}:
+    raise SystemExit("recovery archive lifecycle is invalid")
+count_path = archive / "round/history/report-count-before"
+count = ""
+if count_path.exists():
+    count_state = count_path.lstat()
+    if not stat.S_ISREG(count_state.st_mode) or count_state.st_nlink != 1:
+        raise SystemExit("recovery report count is unsafe")
+    count = count_path.read_text(encoding="ascii").strip()
+    if not count.isdigit():
+        raise SystemExit("recovery report count is invalid")
+print("\t".join((fields["run_id"], fields["round"], fields["reason"], count)))
+PY
+}
+
+find_pending_archive_report_view() {
+  local archive view candidate metadata rc
   RECOVERY_ARCHIVE_DIR=
+  RECOVERY_RUN_ID=
+  RECOVERY_ROUND=
+  RECOVERY_REASON=
+  RECOVERY_REPORT_COUNT_BEFORE=
   CURRENT_REPORT_VIEW=
   for archive in "$RUNS_DIR"/*; do
-    [ -d "$archive/round" ] || continue
-    manifest="$archive/manifest.tsv"
-    [ "$(awk -F'\t' '$1=="date" {print $2; exit}' "$manifest" 2>/dev/null)" = "$today" ] \
-      || continue
-    case "$(awk -F'\t' '$1=="reason" {print $2; exit}' "$manifest" 2>/dev/null)" in
-      decision|published) ;;
-      *) continue ;;
-    esac
+    [ -e "$archive" ] || continue
+    if metadata=$(verify_pending_recovery_archive "$archive" 2>> "$LOG"); then
+      :
+    else
+      rc=$?
+      [ "$rc" -eq 3 ] && continue
+      log "Invalid pending recovery archive: $archive"
+      return 2
+    fi
     candidate=
     for view in "$archive"/round/history/review-attempts/*/report-view; do
       [ -s "$view/accepted.tsv" ] || continue
       candidate=$view
     done
-    [ -n "$candidate" ] || continue
+    [ -n "$candidate" ] || {
+      log "Pending archive lacks a verified Strong Accept report view: $archive"
+      return 2
+    }
     RECOVERY_ARCHIVE_DIR=$archive
+    IFS=$'\t' read -r \
+      RECOVERY_RUN_ID RECOVERY_ROUND RECOVERY_REASON RECOVERY_REPORT_COUNT_BEFORE \
+      <<< "$metadata"
     CURRENT_REPORT_VIEW=$candidate
   done
-  [ -n "$CURRENT_REPORT_VIEW" ] && return 0
-  for view in "$RD"/history/review-attempts/*/report-view; do
-    [ -s "$view/accepted.tsv" ] || continue
-    CURRENT_REPORT_VIEW=$view
-  done
-  [ -n "$CURRENT_REPORT_VIEW" ]
+  [ -n "$RECOVERY_ARCHIVE_DIR" ]
 }
 
 refresh_published_archive() {
@@ -1659,6 +1754,15 @@ refresh_published_archive() {
     return 1
   fi
   [ "$source" = "$ARCHIVE_SOURCE" ] || rm -rf "$source"
+}
+
+publish_existing_strong_accept_report() {
+  ./publish.sh >> "$LOG" 2>&1 || {
+    log "Publication recovery failed"
+    return 2
+  }
+  refresh_published_archive || return 2
+  log "Recovered publication and archive lifecycle for committed Strong Accept"
 }
 
 finalize_strong_accept() {
@@ -1795,22 +1899,36 @@ round=0
 run_id=-
 resume_candidate=0
 recovered_report=0
-today_sa=$(sa_today)
-if [ "$today_sa" -gt 0 ] && [ "$(reports_today)" -eq 0 ]; then
-  if ! find_recovery_report_view; then
-    log "Committed Strong Accept is missing both its report and verified report view"
-    exit 2
+while :; do
+  if find_pending_archive_report_view; then
+    :
+  else
+    recovery_rc=$?
+    [ "$recovery_rc" -eq 1 ] && break
+    exit "$recovery_rc"
   fi
-  if [ -n "$RECOVERY_ARCHIVE_DIR" ]; then
-    run_id=$(awk -F'\t' '$1=="run_id" {print $2; exit}' \
-      "$RECOVERY_ARCHIVE_DIR/manifest.tsv")
-    round=$(awk -F'\t' '$1=="round" {print $2; exit}' \
-      "$RECOVERY_ARCHIVE_DIR/manifest.tsv")
+  run_id=$RECOVERY_RUN_ID
+  round=$RECOVERY_ROUND
+  current_report_count=$(reports_today)
+  report_already_exists=0
+  if [ -n "$RECOVERY_REPORT_COUNT_BEFORE" ]; then
+    [ "$current_report_count" -le "$RECOVERY_REPORT_COUNT_BEFORE" ] \
+      || report_already_exists=1
+  elif [ "$current_report_count" -gt 0 ]; then
+    # Compatibility for decision archives created before report-count sealing.
+    report_already_exists=1
   fi
-  log "Recovering missing report for committed Strong Accept"
-  finalize_strong_accept || exit $?
+  if [ "$report_already_exists" -eq 1 ]; then
+    log "Recovering publication for pending Strong Accept archive $run_id"
+    publish_existing_strong_accept_report || exit $?
+  else
+    log "Recovering missing report for pending Strong Accept archive $run_id"
+    finalize_strong_accept || exit $?
+  fi
   recovered_report=1
-fi
+done
+
+today_sa=$(sa_today)
 if [ "$SA_TARGET" -gt 0 ] && [ "$today_sa" -ge "$SA_TARGET" ]; then
   if [ "$recovered_report" -eq 0 ]; then
     ./publish.sh >> "$LOG" 2>&1 || {
@@ -1825,6 +1943,10 @@ if [ "$recovered_report" -eq 1 ]; then
   round=0
   run_id=-
   RECOVERY_ARCHIVE_DIR=
+  RECOVERY_RUN_ID=
+  RECOVERY_ROUND=
+  RECOVERY_REASON=
+  RECOVERY_REPORT_COUNT_BEFORE=
   CURRENT_REPORT_VIEW=
 fi
 
@@ -2299,6 +2421,10 @@ PY
       log "Cannot seal immutable Strong Accept archive source"
       exit 2
     fi
+    reports_today > "$ARCHIVE_SOURCE/history/report-count-before" || {
+      log "Cannot seal pre-report publication count"
+      exit 2
+    }
   fi
 
   if ! archive_round decision "${ARCHIVE_SOURCE:-$RD}"; then

@@ -54,6 +54,34 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
             self.assertEqual(reacquired.returncode, 0)
             self.assertTrue((root / "hunt.lock").is_file())
 
+    def test_hunt_lock_rejects_hardlinked_lock_file(self):
+        lock_function = section(HUNT, "acquire_hunt_lock() {", "pick_lens() {")
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            external = root / "external.txt"
+            external.write_text("must-not-change\n", encoding="utf-8")
+            lock = root / "hunt.lock"
+            os.link(external, lock)
+            script = root / "hardlink-test.sh"
+            script.write_text(
+                "#!/usr/bin/env bash\nset -u\n"
+                + f"LOCK={str(lock)!r}\n"
+                + "LOCK_STATUS=\nLOCK_HOLDER_PID=\n"
+                + "log() { :; }\n"
+                + lock_function
+                + "cleanup() {\n"
+                + "  rm -f \"$LOCK_STATUS\"\n"
+                + "  if [ -n \"$LOCK_HOLDER_PID\" ]; then\n"
+                + "    kill \"$LOCK_HOLDER_PID\" 2>/dev/null || true\n"
+                + "    wait \"$LOCK_HOLDER_PID\" 2>/dev/null || true\n"
+                + "  fi\n}\ntrap cleanup EXIT\n"
+                + "acquire_hunt_lock\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(["bash", str(script)], check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(external.read_text(encoding="utf-8"), "must-not-change\n")
+
     def test_report_failure_is_bounded_without_round_reset(self):
         finalize = section(HUNT, "finalize_strong_accept() {", "fail_round() {")
         with tempfile.TemporaryDirectory() as raw:
@@ -75,12 +103,21 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertEqual(attempts.read_text(encoding="utf-8").strip(), "3")
 
-    def test_startup_recovers_missing_committed_report(self):
-        self.assertIn('if [ "$today_sa" -gt 0 ] && [ "$(reports_today)" -eq 0 ]', HUNT)
-        self.assertIn('log "Recovering missing report for committed Strong Accept"', HUNT)
+    def test_startup_recovers_verified_pending_archives_before_target_gate(self):
+        pending = HUNT.index("while :; do\n  if find_pending_archive_report_view")
+        target = HUNT.index('if [ "$SA_TARGET" -gt 0 ]', pending)
+        self.assertLess(pending, target)
+        self.assertIn('reason="decision"', HUNT)
+        self.assertIn('archive.name != fields["run_id"]', HUNT)
+        self.assertIn('log "Recovering missing report for pending Strong Accept archive $run_id"', HUNT)
+        self.assertIn('log "Recovering publication for pending Strong Accept archive $run_id"', HUNT)
+        self.assertIn("publish_existing_strong_accept_report || exit $?", HUNT)
         self.assertIn("finalize_strong_accept || exit $?", HUNT)
         self.assertNotIn("archive_round published || true", HUNT)
         self.assertIn('archive_round published "$source"', HUNT)
+        self.assertIn('--startup "$source_root/history/startup.json"', HUNT)
+        self.assertIn('--projection "$source_root/history/materialize-ledger.json"', HUNT)
+        self.assertIn('reports_today > "$ARCHIVE_SOURCE/history/report-count-before"', HUNT)
 
     def test_theme_gate_uses_exact_closed_vocabulary(self):
         theme_functions = section(HUNT, "theme_in_vocabulary() {", "axiom_ok() {")
@@ -152,7 +189,8 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
 
     def test_harnesses_forward_agy_output_hints(self):
         self.assertIn('AGY_OUT_HINT="$(dirname "$rel")/" $cmd', AWR)
-        self.assertNotIn("*agy-worker.sh) gate", AWR)
+        self.assertIn("*agy-worker.sh) gate; is_agy_wrapper=1", AWR)
+        self.assertIn("AGY_LAUNCH_GAP_SEC=0 $cmd", AWR)
         self.assertIn("AGY_OUT_HINT=tmp/out/ GROK_DISABLE_WEB=1", CALIB)
 
 
