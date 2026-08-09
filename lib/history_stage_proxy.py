@@ -20,6 +20,8 @@ CLIENT_BODY_READ_TIMEOUT_SECONDS = 1
 # is routinely exceeded on generate.
 SSE_MAX_BYTES = 4 * 1024 * 1024
 MODEL_OUTPUT_MAX_BYTES = 256 * 1024
+# Independent of interpreter-specific json decoder recursion behavior.
+JSON_MAX_NESTING_DEPTH = 128
 # Upstream SSE with xhigh reasoning + large generate prompts needs minutes.
 UPSTREAM_EXCHANGE_TIMEOUT_SECONDS = 180
 PROXY_SHUTDOWN_TIMEOUT_SECONDS = 1
@@ -152,8 +154,39 @@ def canonical_request(
     )
 
 
+def _validate_json_nesting(raw):
+    stack = bytearray()
+    in_string = False
+    escaped = False
+    for byte in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:
+                escaped = True
+            elif byte == 0x22:
+                in_string = False
+            elif byte < 0x20:
+                raise ValueError("invalid control character in JSON string")
+        elif byte == 0x22:
+            in_string = True
+        elif byte in (0x5B, 0x7B):
+            if len(stack) >= JSON_MAX_NESTING_DEPTH:
+                raise ValueError("JSON nesting depth exceeds its bound")
+            stack.append(byte)
+        elif byte == 0x5D:
+            if not stack or stack.pop() != 0x5B:
+                raise ValueError("JSON nesting is unbalanced")
+        elif byte == 0x7D:
+            if not stack or stack.pop() != 0x7B:
+                raise ValueError("JSON nesting is unbalanced")
+    if in_string or stack:
+        raise ValueError("JSON nesting is unbalanced")
+
+
 def _load_json(raw, label):
     try:
+        _validate_json_nesting(raw)
         return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise ProxyError(f"{label} is invalid") from exc

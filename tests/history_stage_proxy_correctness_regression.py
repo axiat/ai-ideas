@@ -80,26 +80,88 @@ class HistoryStageProxyCorrectnessRegression(unittest.TestCase):
         ):
             self.exchange()._validate_response(encode_sse_records(records))
 
-    def test_deep_json_failures_keep_public_error_mapping(self):
+    def test_json_depth_bound_precedes_interpreter_parser(self):
+        depth = history_stage_proxy.JSON_MAX_NESTING_DEPTH + 1
+        overflow = {
+            "arrays": b"[" * depth + b"0" + b"]" * depth,
+            "objects": b'{"item":' * depth + b"0" + b"}" * depth,
+        }
+        for label, raw in overflow.items():
+            with self.subTest(parser="proxy", shape=label):
+                loads = mock.Mock(return_value={})
+                with mock.patch.object(
+                    history_stage_proxy.json,
+                    "loads",
+                    loads,
+                ):
+                    with self.assertRaises(
+                        history_stage_proxy.ProxyError
+                    ) as caught:
+                        history_stage_proxy._load_json(raw, "fixture")
+                loads.assert_not_called()
+                self.assertEqual(
+                    caught.exception.failure_code,
+                    "canonicalizer_rejected",
+                )
+
+            with self.subTest(parser="adapter", shape=label):
+                loads = mock.Mock(return_value={})
+                with mock.patch.object(
+                    history_stage_adapter.json,
+                    "loads",
+                    loads,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "not UTF-8 JSON",
+                    ):
+                        history_stage_adapter.parse_model_output("meta", raw)
+                loads.assert_not_called()
+
+    def test_json_depth_bound_accepts_arrays_and_objects_at_limit(self):
+        depth = history_stage_proxy.JSON_MAX_NESTING_DEPTH
+        fixtures = (
+            (b"[" * depth + b"0" + b"]" * depth, list, 0),
+            (b'{"item":' * depth + b"0" + b"}" * depth, dict, 0),
+        )
+        for raw, container_type, terminal in fixtures:
+            value = history_stage_proxy._load_json(raw, "fixture")
+            for _ in range(depth):
+                self.assertIsInstance(value, container_type)
+                value = value[0] if container_type is list else value["item"]
+            self.assertEqual(value, terminal)
+
+    def test_json_nesting_ignores_brackets_and_escapes_in_strings(self):
+        content = (
+            '[{"close": "]}", "quote": "\\\"", '
+            '"slash": "\\\\"}]' * 200
+        )
+        raw = self._adapter_output(content)
+        value = history_stage_proxy._load_json(raw, "fixture")
+        self.assertEqual(value["artifacts"][0]["content"], content)
+        rendered = history_stage_adapter.parse_model_output("meta", raw)
+        self.assertEqual(
+            rendered["output/failure-distillation.json"],
+            content.encode("utf-8"),
+        )
+
+    def test_malformed_json_nesting_keeps_public_error_mapping(self):
+        malformed = (b"[}", b'{"item":[0}', b'"unterminated\\')
+        for raw in malformed:
+            with self.subTest(raw=raw):
+                with self.assertRaises(
+                    history_stage_proxy.ProxyError
+                ) as caught:
+                    history_stage_proxy._load_json(raw, "fixture")
+                self.assertEqual(
+                    caught.exception.failure_code,
+                    "canonicalizer_rejected",
+                )
+                with self.assertRaisesRegex(ValueError, "not UTF-8 JSON"):
+                    history_stage_adapter.parse_model_output("meta", raw)
+
+    def test_deep_client_json_keeps_public_http_error_mapping(self):
         deep_json = b"[" * 2000 + b"]" * 2000
-        with self.assertRaises(history_stage_proxy.ProxyError) as caught:
-            history_stage_proxy._load_json(deep_json, "fixture")
-        self.assertEqual(caught.exception.failure_code, "canonicalizer_rejected")
-
-        cyclic_schema = {}
-        cyclic_schema["self"] = cyclic_schema
-        with self.assertRaises(history_stage_proxy.ProxyError):
-            history_stage_proxy.canonical_request(
-                prompt=self.prompt,
-                schema=cyclic_schema,
-                model="fixture-model",
-                reasoning_effort="high",
-                max_output_tokens=2048,
-            )
-
-        with self.assertRaisesRegex(ValueError, "not UTF-8 JSON"):
-            history_stage_adapter.parse_model_output("meta", deep_json)
-
         with history_stage_proxy.CanonicalProxyServer(
             prompt=self.prompt,
             canonical_request=self.canonical_request,
@@ -111,6 +173,18 @@ class HistoryStageProxyCorrectnessRegression(unittest.TestCase):
             self.assertIn(b"HTTP/1.1 400 Bad Request", response)
             self.assertIn(b'"type":"canonicalizer_rejected"', response)
             self.assertEqual(proxy.failure_code, "canonicalizer_rejected")
+
+    def test_cyclic_schema_keeps_public_error_mapping(self):
+        cyclic_schema = {}
+        cyclic_schema["self"] = cyclic_schema
+        with self.assertRaises(history_stage_proxy.ProxyError):
+            history_stage_proxy.canonical_request(
+                prompt=self.prompt,
+                schema=cyclic_schema,
+                model="fixture-model",
+                reasoning_effort="high",
+                max_output_tokens=2048,
+            )
 
     def test_partial_client_body_has_deadline_and_short_eof(self):
         for short_eof in (False, True):

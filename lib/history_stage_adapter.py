@@ -70,6 +70,38 @@ _MODEL_ARTIFACTS = {
     ),
 }
 _MODEL_OUTPUT_MAX_BYTES = 128 * 1024
+# Independent of interpreter-specific json decoder recursion behavior.
+JSON_MAX_NESTING_DEPTH = 128
+
+
+def _validate_json_nesting(raw):
+    stack = bytearray()
+    in_string = False
+    escaped = False
+    for byte in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:
+                escaped = True
+            elif byte == 0x22:
+                in_string = False
+            elif byte < 0x20:
+                raise ValueError("invalid control character in JSON string")
+        elif byte == 0x22:
+            in_string = True
+        elif byte in (0x5B, 0x7B):
+            if len(stack) >= JSON_MAX_NESTING_DEPTH:
+                raise ValueError("JSON nesting depth exceeds its bound")
+            stack.append(byte)
+        elif byte == 0x5D:
+            if not stack or stack.pop() != 0x5B:
+                raise ValueError("JSON nesting is unbalanced")
+        elif byte == 0x7D:
+            if not stack or stack.pop() != 0x7B:
+                raise ValueError("JSON nesting is unbalanced")
+    if in_string or stack:
+        raise ValueError("JSON nesting is unbalanced")
 
 
 def _canonical_bytes(value):
@@ -152,6 +184,7 @@ def parse_model_output(stage, raw):
     ):
         raise ValueError("model output byte bound is invalid")
     try:
+        _validate_json_nesting(raw)
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise ValueError("model output is not UTF-8 JSON") from exc
