@@ -20690,11 +20690,14 @@ def claim_l2_failure_recovery(
 
 
 def transition_l2_split_task(
-    conn, parent_task_hash, *, expected_fence, claim_token, now
+    conn, parent_task_hash, *, expected_fence, claim_token, now,
+    refresh_authority=False,
 ):
     """Atomically derive and persist one exact two-child split transition."""
     if conn.in_transaction:
         raise AuditMigrationError("split transition requires an idle connection")
+    if type(refresh_authority) is not bool:
+        raise ValueError("split transition authority refresh is invalid")
     now = _l2_transition_timestamp(now)
     parent = _l2_transition_parent(conn, parent_task_hash)
     if parent["state"] == "superseded":
@@ -20787,16 +20790,26 @@ def transition_l2_split_task(
     )
     try:
         conn.execute("BEGIN IMMEDIATE")
+        transaction_now = (
+            _l2_transition_timestamp(_utc_now())
+            if refresh_authority else now
+        )
         current = conn.execute(
             "SELECT state, fence, claim_token, lease_until "
             "FROM audit_logical_tasks WHERE task_hash=?",
             (parent_task_hash,),
         ).fetchone()
-        if current is None or tuple(current) != (
-            "claimed", parent["fence"], parent["claim_token"],
-            parent["lease_until"],
+        if (
+            current is None
+            or tuple(current) != (
+                "claimed", parent["fence"], parent["claim_token"],
+                parent["lease_until"],
+            )
+            or _metadata_lease_live(
+                current["lease_until"], transaction_now
+            ) != 1
         ):
-            raise StaleFence("split claim changed before transition")
+            raise StaleFence("split claim expired or changed before transition")
         with _l2_terminal_transition_guard(
             conn, children=children, transition=transition,
             terminal=terminal, edges=edges, authority=authority,
@@ -20896,11 +20909,14 @@ def transition_l2_split_task(
 
 
 def transition_l2_exhaust_task(
-    conn, task_hash, reason, *, expected_fence, claim_token, now
+    conn, task_hash, reason, *, expected_fence, claim_token, now,
+    refresh_authority=False,
 ):
     """Atomically persist one claimed task exhaustion with exact authority."""
     if conn.in_transaction:
         raise AuditMigrationError("exhaust transition requires an idle connection")
+    if type(refresh_authority) is not bool:
+        raise ValueError("exhaust transition authority refresh is invalid")
     now = _l2_transition_timestamp(now)
     parent = _l2_transition_parent(conn, task_hash)
     if parent["state"] == "exhausted":
@@ -20947,6 +20963,10 @@ def transition_l2_exhaust_task(
     )
     try:
         conn.execute("BEGIN IMMEDIATE")
+        transaction_now = (
+            _l2_transition_timestamp(_utc_now())
+            if refresh_authority else now
+        )
         current = conn.execute(
             "SELECT state,fence,claim_token,lease_until "
             "FROM audit_logical_tasks WHERE task_hash=?",
@@ -20958,7 +20978,9 @@ def transition_l2_exhaust_task(
                 "claimed", parent["fence"], parent["claim_token"],
                 parent["lease_until"],
             )
-            or _metadata_lease_live(current["lease_until"], now) != 1
+            or _metadata_lease_live(
+                current["lease_until"], transaction_now
+            ) != 1
         ):
             raise StaleFence("exhaustion claim expired before transition")
         with _l2_terminal_transition_guard(

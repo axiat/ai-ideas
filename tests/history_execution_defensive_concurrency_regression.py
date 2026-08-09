@@ -555,25 +555,47 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
             ),
             [task_key],
         )
-        original_claim = history_audit_store.claim_l2_failure_recovery
+        connection = sqlite3.connect(
+            self.fixture.db_path, timeout=5, check_same_thread=False
+        )
+        connection.row_factory = sqlite3.Row
+        history_audit_store.init_schema(connection)
+        original_split = history_execution.split_task
         original_load = history_execution.load_task
         original_now = history_execution._now
         resumed_at = self.fixture._now(62)
+        refreshed_at = original_now(resumed_at) + datetime.timedelta(
+            milliseconds=500
+        )
         expired_at = original_now(resumed_at) + datetime.timedelta(seconds=2)
-        clock = [original_now(resumed_at)]
+        transition_entered = threading.Barrier(2)
+        release_transition = threading.Event()
+        store_clock = [refreshed_at]
+        failures = []
 
-        def production_load(connection, key):
-            loaded = original_load(connection, key)
+        def production_load(target, key):
+            loaded = original_load(target, key)
             loaded["durable_plan"]["authority_scope"] = "production"
             return loaded
 
         def controlled_now(value=None):
-            return original_now(value) if value is not None else clock[0]
+            return original_now(value) if value is not None else refreshed_at
 
-        def delayed_transfer(*args, **kwargs):
-            transferred = original_claim(*args, **kwargs)
-            clock[0] = expired_at
-            return transferred
+        def blocked_split(*args, **kwargs):
+            transition_entered.wait(timeout=5)
+            if not release_transition.wait(5):
+                raise AssertionError("terminal transition release timed out")
+            return original_split(*args, **kwargs)
+
+        def runner():
+            try:
+                history_execution.run_map_task(
+                    connection, self.fixture.cas_root, plan, task_key,
+                    lambda *_: self.fail("recovered failure called provider"),
+                    now=resumed_at, lease_seconds=1,
+                )
+            except BaseException as exc:
+                failures.append(exc)
 
         with (
             mock.patch.object(
@@ -583,16 +605,23 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
                 history_execution, "_now", side_effect=controlled_now
             ),
             mock.patch.object(
-                history_audit_store, "claim_l2_failure_recovery",
-                side_effect=delayed_transfer,
+                history_execution, "split_task", side_effect=blocked_split
+            ),
+            mock.patch.object(
+                history_audit_store, "_utc_now",
+                side_effect=lambda: store_clock[0].isoformat(),
             ),
         ):
-            with self.assertRaises(history_audit_store.StaleFence):
-                history_execution.run_map_task(
-                    self.fixture.conn, self.fixture.cas_root, plan, task_key,
-                    lambda *_: self.fail("recovered failure called provider"),
-                    now=resumed_at, lease_seconds=1,
-                )
+            worker = threading.Thread(target=runner)
+            worker.start()
+            transition_entered.wait(timeout=5)
+            store_clock[0] = expired_at
+            release_transition.set()
+            worker.join(10)
+        connection.close()
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], history_audit_store.StaleFence)
         transferred = history_execution.load_task(self.fixture.conn, task_key)
         self.assertEqual(transferred["state"], "claimed")
         self.assertEqual(

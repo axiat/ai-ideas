@@ -241,6 +241,29 @@ class HistoryAuditStoreTerminalEvidenceRegression(unittest.TestCase):
                 now=self.transition_now,
             )
 
+    def test_production_exhaustion_refreshes_time_under_write_lock(self):
+        _, task_hash, claim = self._install_and_claim(self.fixture.records)
+        expired_at = (
+            datetime.datetime.fromisoformat(claim["lease_until"])
+            + datetime.timedelta(seconds=1)
+        ).isoformat()
+        with mock.patch.object(
+            history_audit_store, "_utc_now", return_value=expired_at
+        ):
+            with self.assertRaisesRegex(
+                history_audit_store.StaleFence,
+                "expired before transition",
+            ):
+                history_audit_store.transition_l2_exhaust_task(
+                    self.fixture.conn, task_hash, "provider_exhausted",
+                    expected_fence=claim["fence"],
+                    claim_token=claim["claim_token"],
+                    now=self.transition_now, refresh_authority=True,
+                )
+        task = history_execution.load_task(self.fixture.conn, task_hash)
+        self.assertEqual(task["state"], "claimed")
+        self.assertEqual(task["fence"], claim["fence"])
+
     def test_exhaustion_rechecks_lease_under_write_lock(self):
         _, task_hash, claim = self._install_and_claim(self.fixture.records)
         with mock.patch.object(

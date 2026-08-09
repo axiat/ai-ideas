@@ -2214,7 +2214,8 @@ def settle_task(conn, task_key, valid_attempts, *, cas_root, now=None):
 
 
 def exhaust_task(
-    conn, task_key, reason, *, expected_fence=None, claim_token=None, now=None
+    conn, task_key, reason, *, expected_fence=None, claim_token=None, now=None,
+    refresh_authority=False,
 ):
     task = load_task(conn, task_key)
     if task["state"] in {"settled", "superseded"}:
@@ -2233,6 +2234,7 @@ def exhaust_task(
             expected_fence=expected_fence,
             claim_token=claim_token,
             now=(now or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+            refresh_authority=refresh_authority,
         )
     except history_audit_store.StaleFence:
         raise
@@ -2246,7 +2248,8 @@ def exhaust_task(
 
 
 def split_task(
-    conn, parent_key, *, expected_fence=None, claim_token=None, now=None
+    conn, parent_key, *, expected_fence=None, claim_token=None, now=None,
+    refresh_authority=False,
 ):
     """Supersede an invalid parent with stable, nonempty .0/.1 children."""
     parent = load_task(conn, parent_key)
@@ -2256,6 +2259,7 @@ def split_task(
                 conn, parent_key, expected_fence=expected_fence,
                 claim_token=claim_token,
                 now=(now or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+                refresh_authority=refresh_authority,
             )
         except history_audit_store.AuditMigrationError as exc:
             raise ExecutionError("invalid_split_authority") from exc
@@ -2265,6 +2269,7 @@ def split_task(
                 conn, parent_key, "single_item_overflow",
                 expected_fence=expected_fence, claim_token=claim_token,
                 now=(now or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+                refresh_authority=refresh_authority,
             )
         except history_audit_store.AuditMigrationError as exc:
             raise ExecutionError("invalid_exhaust_authority") from exc
@@ -2281,6 +2286,7 @@ def split_task(
         return exhaust_task(
             conn, parent_key, "single_item_overflow",
             expected_fence=expected_fence, claim_token=claim_token, now=now,
+            refresh_authority=refresh_authority,
         )
     try:
         return history_audit_store.transition_l2_split_task(
@@ -2289,6 +2295,7 @@ def split_task(
             expected_fence=expected_fence,
             claim_token=claim_token,
             now=(now or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+            refresh_authority=refresh_authority,
         )
     except history_audit_store.StaleFence:
         raise
@@ -2445,6 +2452,7 @@ def run_task(
                 "expected_fence": task["fence"],
                 "claim_token": task["claim_token"],
                 "now": lifecycle_now,
+                "refresh_authority": production_execution,
             }
             if task["stage"] == "map":
                 return finish_terminal(
@@ -2460,6 +2468,7 @@ def run_task(
                 "expected_fence": task["fence"],
                 "claim_token": task["claim_token"],
                 "now": lifecycle_now,
+                "refresh_authority": production_execution,
             }
             return finish_terminal(
                 exhaust_task(
@@ -2494,6 +2503,7 @@ def run_task(
             "expected_fence": claim["fence"],
             "claim_token": claim["claim_token"],
             "now": lifecycle_now,
+            "refresh_authority": production_execution,
         }
         if task["stage"] == "map":
             return finish_terminal(
@@ -2512,6 +2522,7 @@ def run_task(
         "expected_fence": task["fence"],
         "claim_token": task["claim_token"],
         "now": lifecycle_now,
+        "refresh_authority": production_execution,
     }
 
     existing_valid = _valid_completions(conn, task_key)
