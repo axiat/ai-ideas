@@ -1540,11 +1540,20 @@ def validate_map_output(task, raw_output, snapshot):
     ):
         raise MapValidationError("stale_snapshot")
     assigned = task.get("assigned_item_ids")
-    if not isinstance(assigned, list) or not assigned:
+    if (
+        not isinstance(assigned, list)
+        or not assigned
+        or any(type(item_id) is not str for item_id in assigned)
+    ):
         raise MapValidationError("schema")
     if not isinstance(output["items"], list):
         raise MapValidationError("schema")
-    ids = [item.get("item_id") if isinstance(item, dict) else None for item in output["items"]]
+    if any(
+        not isinstance(item, dict) or type(item.get("item_id")) is not str
+        for item in output["items"]
+    ):
+        raise MapValidationError("schema")
+    ids = [item["item_id"] for item in output["items"]]
     if sorted(ids) != sorted(assigned) or len(set(ids)) != len(ids):
         raise MapValidationError("item_set_mismatch")
     records = {item["item_id"]: item for item in durable_records}
@@ -1655,11 +1664,14 @@ def validate_detail_output(task, raw_output, snapshot=None):
             "asset_id", "artifact_sha", "start", "end", "quote",
         }:
             raise MapValidationError("invalid_anchor")
-        source = records.get(anchor["asset_id"])
+        asset_id = anchor.get("asset_id")
+        if type(asset_id) is not str:
+            raise MapValidationError("invalid_anchor")
+        source = records.get(asset_id)
         start, end = anchor["start"], anchor["end"]
         if (
             source is None
-            or anchor["asset_id"] not in assigned
+            or asset_id not in assigned
             or anchor["artifact_sha"] != source["artifact_sha"]
             or type(start) is not int
             or type(end) is not int
