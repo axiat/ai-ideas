@@ -846,6 +846,64 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
         )
         self.input_path.write_bytes(canonical_bytes(self.input_bundle))
 
+    def test_parent_closed_v2_plan_golden_replays_through_cli_and_store(self):
+        golden = json.loads(
+            (
+                ROOT
+                / "tests/fixtures/history-audit-cli-parent-35d1039-plan.json"
+            ).read_text(encoding="utf-8")
+        )
+        validated = history_audit_cli._validated_test_plan(golden)
+        rebuilt = history_audit_cli._reconstruct_test_runtime_plan(validated)
+        self.assertEqual(
+            rebuilt["plan_sha"], golden["runtime_plan_sha256"]
+        )
+        self.assertEqual(rebuilt["schema_version"], "history-audit-plan-v2")
+        self.assertEqual(
+            rebuilt["capacity_profile"]["serializer_revision"],
+            "history-audit-request-v2",
+        )
+        runtime_material = copy.deepcopy(golden["runtime_plan"])
+        runtime_material.pop("plan_sha")
+        capability = runtime_material["provider_capabilities"]["codex"]
+        provenance = {
+            **capability,
+            "attempt_kind": "initial",
+            "ordinal": 0,
+            "claim_token": "parent-golden-claim",
+            "claim_fence": 1,
+        }
+        plan_json = canonical_bytes(runtime_material).decode("utf-8")
+        pool_json = canonical_bytes(["codex"]).decode("utf-8")
+        self.assertEqual(
+            history_audit_store._l2_attempt_capability_valid(
+                plan_json,
+                pool_json,
+                canonical_bytes(provenance).decode("utf-8"),
+            ),
+            1,
+        )
+        for ordinal, attempt_kind in (
+            (1, "initial"),
+            (0, "retry"),
+            (0, "failover"),
+            (2, "retry"),
+        ):
+            changed = {
+                **provenance,
+                "ordinal": ordinal,
+                "attempt_kind": attempt_kind,
+            }
+            with self.subTest(ordinal=ordinal, attempt_kind=attempt_kind):
+                self.assertEqual(
+                    history_audit_store._l2_attempt_capability_valid(
+                        plan_json,
+                        pool_json,
+                        canonical_bytes(changed).decode("utf-8"),
+                    ),
+                    0,
+                )
+
     def test_legacy_plan_load_reconstruct_and_store_capability_validation(self):
         envelope, runtime = self._legacy_envelope()
         validated = history_audit_cli._validated_test_plan(envelope)

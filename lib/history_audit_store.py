@@ -9204,7 +9204,10 @@ def _l2_attempt_capability_valid(
             "reasoning_identity", "model_default", "reasoning_default",
             "executable", "cli_revision",
         }
-        if plan["schema_version"] == history_audit_plan.RUNTIME_PLAN_SCHEMA:
+        if (
+            history_audit_plan._runtime_authority_revision(plan)
+            != history_audit_plan._LEGACY_AUTHORITY_REVISION
+        ):
             capability_fields.update({
                 "max_output_tokens", "output_token_cap_binding",
                 "output_token_cap_semantics",

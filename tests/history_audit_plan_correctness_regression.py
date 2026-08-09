@@ -454,6 +454,8 @@ class HistoryAuditPlanCorrectnessRegression(unittest.TestCase):
             ("provider_pools_ordered", {"map": "fake-provider"}),
             ("provider_capabilities", []),
             ("provider_capability_profile_hashes", []),
+            ("authority_id", []),
+            ("capacity_profile_id", []),
         )
         for field, replacement in mutations:
             with self.subTest(field=field, replacement=replacement):
@@ -517,12 +519,42 @@ class HistoryAuditPlanCorrectnessRegression(unittest.TestCase):
             plan, 0, 1, primary, attempt_kind="retry"
         )
         self.assertEqual(retry["provenance"]["provider"], "fake-primary")
+        self.assertEqual(retry["provenance"]["attempt_kind"], "retry")
         failed_over = planner.attempt_manifest(
             plan, 0, 1, failover, attempt_kind="failover"
         )
         self.assertEqual(
             failed_over["provenance"]["provider"], "fake-failover"
         )
+        self.assertEqual(failed_over["provenance"]["attempt_kind"], "failover")
+        one_provider = runtime_plan()
+        only = one_provider["provider_capabilities"]["fake-provider"]
+        same_provider_retry = planner.attempt_manifest(
+            one_provider, 0, 1, only, attempt_kind="retry"
+        )
+        same_provider_failover = planner.attempt_manifest(
+            one_provider, 0, 1, only, attempt_kind="failover"
+        )
+        self.assertNotEqual(
+            same_provider_retry["attempt_id"],
+            same_provider_failover["attempt_id"],
+        )
+        for ordinal, attempt_kind in (
+            (1, "initial"),
+            (0, "retry"),
+            (0, "failover"),
+            (0, "cancel"),
+            (planner.MAX_ATTEMPTS, "retry"),
+        ):
+            with self.subTest(ordinal=ordinal, attempt_kind=attempt_kind):
+                with self.assertRaises(planner.AuditPlanError):
+                    planner.attempt_manifest(
+                        one_provider,
+                        0,
+                        ordinal,
+                        only,
+                        attempt_kind=attempt_kind,
+                    )
         for capability, attempt_kind in (
             (failover, "retry"),
             (primary, "failover"),
@@ -537,6 +569,29 @@ class HistoryAuditPlanCorrectnessRegression(unittest.TestCase):
                         attempt_kind=attempt_kind,
                     )
                 self.assertEqual(caught.exception.code, "invalid_attempt")
+
+    def test_runtime_attempt_provider_enforces_execution_state_pairs(self):
+        pool = ["primary", "failover"]
+        for attempt_kind in ("initial", "split", "detail", "reduce"):
+            with self.subTest(ordinal=0, attempt_kind=attempt_kind):
+                self.assertEqual(
+                    planner.runtime_attempt_provider(pool, 0, attempt_kind),
+                    "primary",
+                )
+        self.assertEqual(
+            planner.runtime_attempt_provider(pool, 1, "retry"), "primary"
+        )
+        self.assertEqual(
+            planner.runtime_attempt_provider(pool, 1, "failover"), "failover"
+        )
+        for ordinal, attempt_kind in (
+            (1, "initial"), (0, "retry"), (0, "failover"),
+            (1, "split"), (1, "detail"), (1, "reduce"),
+            (0, "cancel"), (planner.MAX_ATTEMPTS, "retry"),
+        ):
+            with self.subTest(ordinal=ordinal, attempt_kind=attempt_kind):
+                with self.assertRaises(planner.AuditPlanError):
+                    planner.runtime_attempt_provider(pool, ordinal, attempt_kind)
 
     def test_huge_semantic_policy_integer_fails_closed(self):
         policies = {

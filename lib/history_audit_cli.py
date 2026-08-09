@@ -1169,9 +1169,27 @@ def _validated_test_only_input(value, *, allow_legacy=False):
     material = copy.deepcopy(value)
     bundle_sha = material.pop("bundle_sha256", None)
     input_schema = value.get("schema_version")
-    authority_revision = (
-        "v1" if input_schema == LEGACY_TEST_INPUT_SCHEMA else "v2"
+    capacity = value.get("capacity_profile")
+    serializer = (
+        capacity.get("serializer_revision")
+        if isinstance(capacity, dict)
+        else None
     )
+    if input_schema == TEST_INPUT_SCHEMA and serializer == "history-audit-request-v2":
+        authority_revision = "v2"
+    elif (
+        input_schema == LEGACY_TEST_INPUT_SCHEMA
+        and serializer == "history-audit-request-v1"
+    ):
+        authority_revision = "v1"
+    elif (
+        input_schema == LEGACY_TEST_INPUT_SCHEMA
+        and serializer == "history-audit-request-v2"
+    ):
+        authority_revision = "parent-v2"
+    else:
+        raise AuditCliError("invalid test-only shadow input authority")
+    identity_revision = "v2" if authority_revision == "v2" else "v1"
     if (
         input_schema not in _TEST_INPUT_SCHEMAS
         or (input_schema == LEGACY_TEST_INPUT_SCHEMA and not allow_legacy)
@@ -1254,16 +1272,18 @@ def _validated_test_only_input(value, *, allow_legacy=False):
     except history_audit_plan.AuditPlanError as exc:
         raise AuditCliError("invalid host runtime policy") from exc
     capacity = value.get("capacity_profile")
-    if (
-        not _canonical_equal(
-            capacity,
-            host["capacity_profiles"].get(
-                f"fake-safe-24k-{authority_revision}"
-            ),
+    expected_capacity = (
+        history_audit_plan._parent_closed_capacity_profile(host)
+        if authority_revision == "parent-v2"
+        else host["capacity_profiles"].get(
+            f"fake-safe-24k-{authority_revision}"
         )
+    )
+    if (
+        not _canonical_equal(capacity, expected_capacity)
         or value.get("capacity_profile_sha256")
         != _canonical_sha(
-            f"history-audit-cli-test-capacity-{authority_revision}", capacity
+            f"history-audit-cli-test-capacity-{identity_revision}", capacity
         )
     ):
         raise AuditCliError("invalid test-only capacity authority")
@@ -1281,7 +1301,7 @@ def _validated_test_only_input(value, *, allow_legacy=False):
         or set(capabilities) != providers
         or value.get("provider_capabilities_sha256")
         != _canonical_sha(
-            f"history-audit-cli-test-provider-capabilities-{authority_revision}",
+            f"history-audit-cli-test-provider-capabilities-{identity_revision}",
             capabilities,
         )
     ):
@@ -1296,7 +1316,7 @@ def _validated_test_only_input(value, *, allow_legacy=False):
         "executable",
         "cli_revision",
     }
-    if authority_revision == "v2":
+    if authority_revision != "v1":
         capability_fields.update({
             "max_output_tokens",
             "output_token_cap_binding",
@@ -1358,6 +1378,14 @@ def _validated_test_only_input(value, *, allow_legacy=False):
     return copy.deepcopy(value)
 
 
+def _test_bundle_authority_revision(bundle):
+    if bundle["schema_version"] == TEST_INPUT_SCHEMA:
+        return "v2"
+    if bundle["capacity_profile"]["serializer_revision"] == "history-audit-request-v2":
+        return "parent-v2"
+    return "v1"
+
+
 def _load_test_only_input(path):
     value, _ = _read_canonical_json(
         path, "test-only shadow input", maximum=32 * 1024 * 1024
@@ -1373,11 +1401,7 @@ def _test_router_round_material(bundle):
         semantic_policy_profile_id=bundle["semantic_policy_profile_id"],
         matched_router_rule_ids=(),
         max_output_tokens=bundle["capacity_profile"]["max_output_tokens"],
-        _authority_revision=(
-            "v1"
-            if bundle["schema_version"] == LEGACY_TEST_INPUT_SCHEMA
-            else "v2"
-        ),
+        _authority_revision=_test_bundle_authority_revision(bundle),
     )
     snapshot_fields = {
         "snapshot_id",
@@ -1504,11 +1528,7 @@ def _persist_test_only_plan(connection, bundle):
             max_output_tokens=bundle["capacity_profile"][
                 "max_output_tokens"
             ],
-            _authority_revision=(
-                "v1"
-                if bundle["schema_version"] == LEGACY_TEST_INPUT_SCHEMA
-                else "v2"
-            ),
+            _authority_revision=_test_bundle_authority_revision(bundle),
         )
         history_execution.persist_plan(connection, plan)
         material = history_audit_plan.build_runtime_plan_material(plan)
@@ -1790,11 +1810,7 @@ def _build_test_runtime_plan(bundle, matched_router_rule_ids):
                 ],
             },
             max_output_tokens=bundle["capacity_profile"]["max_output_tokens"],
-            _authority_revision=(
-                "v1"
-                if bundle["schema_version"] == LEGACY_TEST_INPUT_SCHEMA
-                else "v2"
-            ),
+            _authority_revision=_test_bundle_authority_revision(bundle),
         )
     except history_audit_plan.AuditPlanError as exc:
         raise AuditCliError("invalid reconstructed test-only plan") from exc

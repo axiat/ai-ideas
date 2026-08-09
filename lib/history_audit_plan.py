@@ -42,6 +42,9 @@ MAX_ATTEMPTS = 2
 _REQUEST_SERIALIZER_REVISIONS = frozenset(
     {"history-audit-request-v1", "history-audit-request-v2"}
 )
+_LEGACY_AUTHORITY_REVISION = "v1"
+_PARENT_CLOSED_AUTHORITY_REVISION = "parent-v2"
+_CURRENT_AUTHORITY_REVISION = "v2"
 _HOST_POLICY_ROOT = pathlib.Path(__file__).resolve().parents[1] / "history"
 _TEST_RUNTIME_AUTHORITIES = {}
 _TEST_RUNTIME_AUTHORITY_IDS = {}
@@ -196,18 +199,69 @@ def _canonical_equal(left, right):
         return False
 
 
-def _host_authority_for_capacity(capacity_profile_id):
+def _runtime_authority_revision(value):
+    if not isinstance(value, dict):
+        raise AuditPlanError("invalid_runtime_plan")
+    profile = value.get("capacity_profile")
+    if not isinstance(profile, dict):
+        raise AuditPlanError("invalid_capacity_profile")
+    serializer = profile.get("serializer_revision")
+    schema = value.get("schema_version")
+    if (
+        schema == LEGACY_RUNTIME_PLAN_SCHEMA
+        and serializer == "history-audit-request-v1"
+    ):
+        return _LEGACY_AUTHORITY_REVISION
+    if (
+        schema == LEGACY_RUNTIME_PLAN_SCHEMA
+        and serializer == "history-audit-request-v2"
+    ):
+        return _PARENT_CLOSED_AUTHORITY_REVISION
+    if (
+        schema == RUNTIME_PLAN_SCHEMA
+        and serializer == "history-audit-request-v2"
+    ):
+        return _CURRENT_AUTHORITY_REVISION
+    raise AuditPlanError("invalid_capacity_profile")
+
+
+def _parent_closed_capacity_profile(authority):
+    try:
+        profile = copy.deepcopy(authority["capacity_profiles"]["fake-safe-24k-v2"])
+        profile["profile_id"] = "fake-safe-24k-v1"
+        profile["provider_bindings"]["codex"][
+            "immutable_capacity_identity"
+        ] = "fake-capacity-v1"
+        return profile
+    except (KeyError, TypeError) as exc:
+        raise AuditPlanError("invalid_host_policy") from exc
+
+
+def _host_authority_for_capacity(capacity_profile_id, claimed_profile=None):
+    if not isinstance(capacity_profile_id, str) or not capacity_profile_id:
+        raise AuditPlanError("unauthorized_capacity_profile")
     authority = _host_runtime_authority()
     profile = authority["capacity_profiles"].get(capacity_profile_id)
+    parent_closed = _parent_closed_capacity_profile(authority)
+    if (
+        capacity_profile_id == "fake-safe-24k-v1"
+        and claimed_profile is not None
+        and _canonical_equal(claimed_profile, parent_closed)
+    ):
+        profile = parent_closed
     if profile is None:
         raise AuditPlanError("unauthorized_capacity_profile")
     scope = _capacity_authority_scope(profile)
     authority = copy.deepcopy(authority)
+    authority["capacity_profiles"][capacity_profile_id] = copy.deepcopy(profile)
     authority["authority_scope"] = scope
     authority["private_test_authority"] = False
     authority_revision = (
         "v1"
-        if profile.get("serializer_revision") == "history-audit-request-v1"
+        if (
+            profile.get("serializer_revision") == "history-audit-request-v1"
+            or profile.get("profile_id") == "fake-safe-24k-v1"
+        )
         else "v2"
     )
     authority["authority_id"] = _canonical_sha(
@@ -304,11 +358,7 @@ def _reconstruct_test_runtime_authority(value):
             semantic_policy_profile_id=value["semantic_policy_profile_id"],
             matched_router_rule_ids=value["matched_router_rule_ids"],
             max_output_tokens=capacity["max_output_tokens"],
-            _authority_revision=(
-                "v1"
-                if value.get("schema_version") == LEGACY_RUNTIME_PLAN_SCHEMA
-                else "v2"
-            ),
+            _authority_revision=_runtime_authority_revision(value),
         )
     except (KeyError, TypeError, AuditPlanError) as exc:
         raise AuditPlanError("unauthorized_runtime_authority") from exc
@@ -333,6 +383,11 @@ def _reconstruct_test_runtime_authority(value):
 
 def _resolve_plan_authority(plan):
     requested = plan.get("authority_id")
+    capacity_profile_id = plan.get("capacity_profile_id")
+    if not isinstance(capacity_profile_id, str) or not capacity_profile_id:
+        raise AuditPlanError("unauthorized_capacity_profile")
+    if requested is not None and not _is_sha(requested):
+        raise AuditPlanError("unauthorized_runtime_authority")
     if requested in _TEST_RUNTIME_AUTHORITIES:
         return copy.deepcopy(_TEST_RUNTIME_AUTHORITIES[requested])
     if (
@@ -342,7 +397,9 @@ def _resolve_plan_authority(plan):
         and plan["capacity_profile_id"].startswith("fake-runtime-")
     ):
         return _reconstruct_test_runtime_authority(plan)
-    authority = _host_authority_for_capacity(plan.get("capacity_profile_id"))
+    authority = _host_authority_for_capacity(
+        plan.get("capacity_profile_id"), plan.get("capacity_profile")
+    )
     if requested is not None and requested != authority["authority_id"]:
         raise AuditPlanError("unauthorized_runtime_authority")
     return authority
@@ -350,6 +407,11 @@ def _resolve_plan_authority(plan):
 
 def _resolve_material_authority(material):
     authority_id = material["authority_id"]
+    capacity_profile_id = material["capacity_profile_id"]
+    if not isinstance(capacity_profile_id, str) or not capacity_profile_id:
+        raise AuditPlanError("unauthorized_capacity_profile")
+    if not _is_sha(authority_id):
+        raise AuditPlanError("unauthorized_runtime_authority")
     if authority_id in _TEST_RUNTIME_AUTHORITIES:
         return copy.deepcopy(_TEST_RUNTIME_AUTHORITIES[authority_id])
     if (
@@ -358,7 +420,9 @@ def _resolve_material_authority(material):
         and material["capacity_profile_id"].startswith("fake-runtime-")
     ):
         return _reconstruct_test_runtime_authority(material)
-    authority = _host_authority_for_capacity(material["capacity_profile_id"])
+    authority = _host_authority_for_capacity(
+        material["capacity_profile_id"], material.get("capacity_profile")
+    )
     if authority_id != authority["authority_id"]:
         raise AuditPlanError("unauthorized_runtime_authority")
     return authority
@@ -377,8 +441,17 @@ def _issue_test_runtime_authority(
     _authority_revision="v2",
 ):
     """Issue one process-local, fake-only shadow authority for offline tests."""
-    if _authority_revision not in {"v1", "v2"}:
+    if _authority_revision not in {
+        _LEGACY_AUTHORITY_REVISION,
+        _PARENT_CLOSED_AUTHORITY_REVISION,
+        _CURRENT_AUTHORITY_REVISION,
+    }:
         raise AuditPlanError("invalid_test_authority")
+    closed_capability = _authority_revision != _LEGACY_AUTHORITY_REVISION
+    identity_revision = (
+        "v2" if _authority_revision == _CURRENT_AUTHORITY_REVISION else "v1"
+    )
+    base_revision = "v2" if closed_capability else "v1"
     _validate_pools(provider_pools_ordered)
     host = _host_runtime_authority()
     providers = {
@@ -391,7 +464,7 @@ def _issue_test_runtime_authority(
         "reasoning_identity", "model_default", "reasoning_default",
         "executable", "cli_revision",
     }
-    if _authority_revision == "v2":
+    if closed_capability:
         capability_fields.update({
             "max_output_tokens", "output_token_cap_binding",
             "output_token_cap_semantics",
@@ -427,7 +500,7 @@ def _issue_test_runtime_authority(
             or type(capability["model_default"]) is not bool
             or type(capability["reasoning_default"]) is not bool
             or (
-                _authority_revision == "v2"
+                closed_capability
                 and (
                     capability["max_output_tokens"] != max_output_tokens
                     or capability["output_token_cap_binding"]
@@ -438,7 +511,7 @@ def _issue_test_runtime_authority(
             )
         ):
             raise AuditPlanError("invalid_test_authority", provider)
-    base_profile_id = f"fake-safe-24k-{_authority_revision}"
+    base_profile_id = f"fake-safe-24k-{base_revision}"
     base_capacity = host["capacity_profiles"].get(base_profile_id)
     if (
         not isinstance(base_capacity, dict)
@@ -483,9 +556,9 @@ def _issue_test_runtime_authority(
         "max_output_tokens": max_output_tokens,
     }
     profile_identity = _canonical_sha(
-        f"history-runtime-test-capacity-{_authority_revision}", identity_material
+        f"history-runtime-test-capacity-{identity_revision}", identity_material
     )
-    profile_id = f"fake-runtime-{profile_identity[:24]}-{_authority_revision}"
+    profile_id = f"fake-runtime-{profile_identity[:24]}-{identity_revision}"
     bindings = {}
     for provider in sorted(providers):
         capability = provider_capabilities[provider]
@@ -499,7 +572,7 @@ def _issue_test_runtime_authority(
             "executable": capability["executable"],
             "cli_revision": capability["cli_revision"],
             "capability_serializer_revision": (
-                f"test-runtime-capability-{_authority_revision}"
+                f"test-runtime-capability-{identity_revision}"
             ),
             "request_serializer_revision": base_capacity[
                 "serializer_revision"
@@ -509,7 +582,7 @@ def _issue_test_runtime_authority(
             "schema_sha256": base_capacity["schema"]["sha256"],
             "evidence_limit_tokens": base_capacity["evidence_limit_tokens"],
         }
-        if _authority_revision == "v2":
+        if closed_capability:
             binding.update({
                 "max_output_tokens": max_output_tokens,
                 "output_token_cap_binding": capability[
@@ -535,7 +608,7 @@ def _issue_test_runtime_authority(
         "prompt": copy.deepcopy(base_capacity["prompt"]),
         "schema": copy.deepcopy(base_capacity["schema"]),
         "serializer_revision": base_capacity["serializer_revision"],
-        "usage_source": f"fake-runtime-usage-{_authority_revision}",
+        "usage_source": f"fake-runtime-usage-{identity_revision}",
         "expires_at": base_capacity["expires_at"],
         "provider_bindings": bindings,
     }
@@ -548,11 +621,11 @@ def _issue_test_runtime_authority(
         "matched_router_rule_ids": list(matched_router_rule_ids),
     }
     fingerprint = _canonical_sha(
-        f"history-runtime-test-authority-fingerprint-{_authority_revision}",
+        f"history-runtime-test-authority-fingerprint-{identity_revision}",
         authority_material,
     )
     authority_id = _canonical_sha(
-        f"history-runtime-test-authority-{_authority_revision}", authority_material
+        f"history-runtime-test-authority-{identity_revision}", authority_material
     )
     prior_authority_id = _TEST_RUNTIME_AUTHORITY_IDS.get(fingerprint)
     if prior_authority_id not in (None, authority_id):
@@ -1328,9 +1401,10 @@ def validate_runtime_plan_material(material, *, _frozen_records=None):
         raise AuditPlanError("invalid_runtime_shards")
     _validate_pools(material["provider_pools_ordered"])
     capacity = material["capacity_profile"]
+    authority_revision = _runtime_authority_revision(material)
     expected_serializer = (
         "history-audit-request-v1"
-        if material["schema_version"] == LEGACY_RUNTIME_PLAN_SCHEMA
+        if authority_revision == _LEGACY_AUTHORITY_REVISION
         else "history-audit-request-v2"
     )
     if (
@@ -1374,7 +1448,7 @@ def validate_runtime_plan_material(material, *, _frozen_records=None):
         "reasoning_identity", "model_default", "reasoning_default",
         "executable", "cli_revision",
     }
-    if material["schema_version"] == RUNTIME_PLAN_SCHEMA:
+    if authority_revision != _LEGACY_AUTHORITY_REVISION:
         capability_fields.update({
             "max_output_tokens", "output_token_cap_binding",
             "output_token_cap_semantics",
@@ -1397,7 +1471,7 @@ def validate_runtime_plan_material(material, *, _frozen_records=None):
             or type(capability["model_default"]) is not bool
             or type(capability["reasoning_default"]) is not bool
             or (
-                material["schema_version"] == RUNTIME_PLAN_SCHEMA
+                authority_revision != _LEGACY_AUTHORITY_REVISION
                 and (
                     capability["max_output_tokens"]
                     != capacity["max_output_tokens"]
@@ -2181,7 +2255,11 @@ def build_test_only_runtime_plan(
         or not batch_id
         or not isinstance(snapshot, dict)
         or not isinstance(candidate, dict)
-        or _authority_revision not in {"v1", "v2"}
+        or _authority_revision not in {
+            _LEGACY_AUTHORITY_REVISION,
+            _PARENT_CLOSED_AUTHORITY_REVISION,
+            _CURRENT_AUTHORITY_REVISION,
+        }
     ):
         raise AuditPlanError("invalid_runtime_plan")
     _validate_pools(provider_pools_ordered)
@@ -2287,7 +2365,7 @@ def build_test_only_runtime_plan(
     plan = {
         "schema_version": (
             LEGACY_RUNTIME_PLAN_SCHEMA
-            if _authority_revision == "v1"
+            if _authority_revision != _CURRENT_AUTHORITY_REVISION
             else RUNTIME_PLAN_SCHEMA
         ),
         "run_id": run_id,
@@ -2324,13 +2402,16 @@ def build_test_only_runtime_plan(
 
 def runtime_attempt_provider(provider_pool, ordinal, attempt_kind):
     """Return the provider selected by the persisted runtime routing rule."""
+    initial_kinds = {"initial", "split", "detail", "reduce"}
+    retry_kinds = {"retry", "failover"}
     if (
         not isinstance(provider_pool, list)
         or not provider_pool
         or any(not isinstance(provider, str) or not provider for provider in provider_pool)
         or type(ordinal) is not int
-        or ordinal < 0
-        or attempt_kind not in _RUNTIME_ATTEMPT_KINDS | {"cancel"}
+        or not 0 <= ordinal < MAX_ATTEMPTS
+        or (ordinal == 0 and attempt_kind not in initial_kinds)
+        or (ordinal > 0 and attempt_kind not in retry_kinds)
     ):
         raise AuditPlanError("invalid_attempt")
     if attempt_kind == "failover":
@@ -2348,6 +2429,7 @@ def attempt_manifest(
         or type(ordinal) is not int
         or ordinal < 0
         or ordinal >= MAX_ATTEMPTS
+        or attempt_kind not in {"initial", "retry", "failover"}
     ):
         raise AuditPlanError("invalid_attempt")
     try:
@@ -2396,6 +2478,7 @@ def attempt_manifest(
             "reasoning_identity": supplied["reasoning_identity"],
             "cli_revision": supplied["cli_revision"],
             "request_sha256": shard["request_sha256"],
+            "attempt_kind": attempt_kind,
         }
         attempt_id = history_contract_v2.attempt_id(
             logical_key, ordinal, provenance
