@@ -2601,6 +2601,7 @@ def _verify_epoch_results(conn, plan, epoch, cas_root, repair):
             search = (item["row_number"],)
         if search is None or search[0] != item["row_number"]:
             raise ImportConflict("sealed search projection is missing or conflicting")
+    pending_edges = []
     for index, edge in enumerate(ordered_edges, 1):
         evidence_record = edge.get("evidence")
         if (
@@ -2656,16 +2657,12 @@ def _verify_epoch_results(conn, plan, epoch, cas_root, repair):
             ),
         ).fetchone()
         if typed_edge is None and repair:
-            _insert_lineage_edge(
-                conn,
-                edge["parent_candidate_id"],
-                edge["child_candidate_id"],
-                edge["relation_type"],
-                evidence_id,
-            )
+            pending_edges.append((edge, evidence_id))
             typed_edge = (evidence_id,)
         if typed_edge is None or typed_edge[0] != evidence_id:
             raise ImportConflict("sealed typed lineage edge is missing or conflicting")
+    if pending_edges:
+        _insert_prevalidated_lineage_edges(conn, pending_edges)
     projection = conn.execute(
         """
         SELECT snapshot_sha256, row_count FROM ledger_projection_outbox
@@ -2864,17 +2861,14 @@ def _commit_import_plan_locked(conn, plan, *, _manage_transaction=True):
             )
             _queue_search_projection(conn, item)
             inserted += 1
+        pending_edges = []
         for index, edge in enumerate(ordered_edges, 1):
             evidence_id = _insert_artifact_from_evidence(
                 conn, edge["evidence"], index, cas_root
             )
-            _insert_lineage_edge(
-                conn,
-                edge["parent_candidate_id"],
-                edge["child_candidate_id"],
-                edge["relation_type"],
-                evidence_id,
-            )
+            pending_edges.append((edge, evidence_id))
+        if pending_edges:
+            _insert_prevalidated_lineage_edges(conn, pending_edges)
         projection_sequence = None
         if inserted or initializes_projection:
             projection_sequence = _enqueue_ledger_projection(conn)
@@ -4171,6 +4165,159 @@ def export_tsv(conn, path):
     data = render_tsv(conn)
     _atomic_replace(destination, data, None, None, None)
     return {"path": str(destination), "sha256": _sha(data), "byte_count": len(data)}
+
+
+def _validate_complete_lineage_graph(conn):
+    lineages = dict(
+        conn.execute(
+            "SELECT lineage_id, root_candidate_id FROM lineages"
+        ).fetchall()
+    )
+    candidate_rows = conn.execute(
+        "SELECT candidate_id, lineage_id, story FROM candidates"
+    ).fetchall()
+    candidates = {
+        row["candidate_id"]: (row["lineage_id"], canonical_story_v1(row["story"]))
+        for row in candidate_rows
+    }
+    aliases = {
+        row["canonical_hash"]: (row["canonical_story"], row["lineage_id"])
+        for row in conn.execute(
+            """
+            SELECT canonical_hash, canonical_story, lineage_id
+            FROM story_aliases WHERE canonical_version = ?
+            """,
+            (CANONICAL_VERSION,),
+        )
+    }
+    candidate_aliases = {
+        (_canonical_hash(story), story, lineage_id)
+        for lineage_id, story in candidates.values()
+    }
+    if len(aliases) != len(candidate_aliases):
+        raise ImportConflict("lineage aliases do not match candidate aliases")
+    for canonical_hash, (story, lineage_id) in aliases.items():
+        if (
+            canonical_story_v1(story) != story
+            or canonical_hash != _canonical_hash(story)
+            or (canonical_hash, story, lineage_id) not in candidate_aliases
+        ):
+            raise ImportConflict("lineage alias is invalid or conflicting")
+    for candidate_id, (lineage_id, story) in candidates.items():
+        if aliases.get(_canonical_hash(story)) != (story, lineage_id):
+            raise ImportConflict("candidate lineage alias is missing or conflicting")
+    for lineage_id, root in lineages.items():
+        if candidates.get(root, (None,))[0] != lineage_id:
+            raise ImportConflict("lineage root is missing or conflicting")
+    if {lineage_id for lineage_id, _ in candidates.values()} != set(lineages):
+        raise ImportConflict("candidate references a missing lineage")
+
+    children = collections.defaultdict(list)
+    parents = collections.defaultdict(set)
+    indegree = {candidate_id: 0 for candidate_id in candidates}
+    seen = set()
+    for edge in conn.execute(
+        """
+        SELECT edge.parent_candidate_id, edge.child_candidate_id,
+               edge.relation_type, edge.evidence_artifact_id,
+               artifact.state AS evidence_state
+        FROM lineage_edges edge
+        LEFT JOIN artifacts artifact
+          ON artifact.artifact_id = edge.evidence_artifact_id
+        """
+    ):
+        parent = edge["parent_candidate_id"]
+        child = edge["child_candidate_id"]
+        relation = edge["relation_type"]
+        edge_key = (parent, child, relation)
+        if edge_key in seen:
+            raise ImportConflict("lineage edge is duplicated")
+        seen.add(edge_key)
+        if (
+            relation not in ALLOWED_RELATIONS
+            or parent == child
+            or parent not in candidates
+            or child not in candidates
+        ):
+            raise ImportConflict("lineage edge is invalid")
+        parent_lineage, parent_story = candidates[parent]
+        child_lineage, child_story = candidates[child]
+        if parent_lineage != child_lineage:
+            raise ImportConflict("lineage edge crosses lineages")
+        if parent_story == child_story:
+            raise ImportConflict("lineage edge duplicates a canonical alias")
+        if edge["evidence_state"] not in ("installed", "archived"):
+            raise ImportConflict("lineage edge evidence is not durable")
+        parents[child].add(parent)
+        if len(parents[child]) > 1:
+            raise ImportConflict("lineage candidate has multiple explicit parents")
+        children[parent].append(child)
+        indegree[child] += 1
+
+    for lineage_id, root in lineages.items():
+        if parents.get(root):
+            raise ImportConflict("lineage root has an explicit parent")
+    frontier = collections.deque(
+        candidate_id
+        for candidate_id, degree in indegree.items()
+        if degree == 0
+    )
+    visited = 0
+    while frontier:
+        parent = frontier.popleft()
+        visited += 1
+        for child in children.get(parent, ()):
+            indegree[child] -= 1
+            if indegree[child] == 0:
+                frontier.append(child)
+    if visited != len(candidates):
+        raise LineageCycle("lineage graph contains a cycle")
+
+    reachable = set(lineages.values())
+    pending = collections.deque(reachable)
+    while pending:
+        parent = pending.popleft()
+        for child in children.get(parent, ()):
+            if child not in reachable:
+                reachable.add(child)
+                pending.append(child)
+    reachable_aliases = {
+        candidates[candidate_id] for candidate_id in reachable
+    }
+    if any(
+        candidate_id not in reachable and alias not in reachable_aliases
+        for candidate_id, alias in candidates.items()
+    ):
+        raise ImportConflict("lineage candidate is unreachable from its root")
+
+
+def _insert_prevalidated_lineage_edges(conn, edges):
+    rows = []
+    for edge, evidence_id in edges:
+        if (
+            edge.get("authority") not in ALLOWED_EDGE_AUTHORITIES
+            or edge.get("relation_type") not in ALLOWED_RELATIONS
+            or not evidence_id
+        ):
+            raise ImportConflict("prevalidated lineage edge is invalid")
+        rows.append(
+            (
+                edge["parent_candidate_id"],
+                edge["child_candidate_id"],
+                edge["relation_type"],
+                evidence_id,
+            )
+        )
+    conn.executemany(
+        """
+        INSERT INTO lineage_edges(
+          parent_candidate_id, child_candidate_id, relation_type,
+          evidence_artifact_id
+        ) VALUES(?, ?, ?, ?)
+        """,
+        rows,
+    )
+    _validate_complete_lineage_graph(conn)
 
 
 def _insert_lineage_edge(conn, parent, child, relation, evidence):
