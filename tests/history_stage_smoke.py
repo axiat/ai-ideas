@@ -630,6 +630,9 @@ class HistoryStageSmoke(unittest.TestCase):
                 "## I1\n"
                 "One-Sentence Story: Bounded candidate.\n"
                 "Theme: World Models\n"
+                "Target Failure: bounded synthetic failure\n"
+                "Form: remove-load-bearing-assumption\n"
+                "Minimal Falsification Experiment: compare bounded arms\n"
             ),
         }
         candidate["content_sha256"] = (
