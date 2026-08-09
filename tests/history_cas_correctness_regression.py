@@ -313,6 +313,109 @@ class HistoryCasCorrectnessRegression(unittest.TestCase):
             pin_conn.close()
             gc_conn.close()
 
+    def test_gc_replay_retires_tombstone_when_pin_wins_initial_recheck(self):
+        descriptor = self._put(
+            b"pin committed during tombstone replay",
+            "transient",
+            "2000-01-01T00:00:00+00:00",
+        )
+        object_id = descriptor["object_id"]
+        with mock.patch.object(
+            history_cas,
+            "_delete_payload",
+            side_effect=RuntimeError("interrupt after tombstone commit"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "interrupt after tombstone"):
+                history_cas.collect_garbage(
+                    self.conn,
+                    self.cas_root,
+                    "2026-08-09T00:00:00+00:00",
+                    grace_seconds=0,
+                )
+        self.assertIsNotNone(
+            self.conn.execute(
+                "SELECT 1 FROM audit_cas_tombstones WHERE object_id=?", (object_id,)
+            ).fetchone()
+        )
+
+        barrier = threading.Barrier(2)
+
+        class InitialRecheckBarrierConnection(sqlite3.Connection):
+            armed = False
+
+            def execute(self, sql, parameters=()):
+                if self.armed and sql.strip().upper() == "BEGIN IMMEDIATE":
+                    self.armed = False
+                    barrier.wait(timeout=10)
+                    barrier.wait(timeout=10)
+                return super().execute(sql, parameters)
+
+        database = self.root / "history.sqlite3"
+        gc_conn = sqlite3.connect(
+            database,
+            factory=InitialRecheckBarrierConnection,
+            check_same_thread=False,
+        )
+        gc_conn.row_factory = sqlite3.Row
+        pin_conn = sqlite3.connect(database)
+        pin_conn.row_factory = sqlite3.Row
+        outcome = {}
+
+        def replay():
+            try:
+                outcome["removed"] = history_cas.collect_garbage(
+                    gc_conn,
+                    self.cas_root,
+                    "2026-08-09T00:00:00+00:00",
+                    grace_seconds=0,
+                )
+            except BaseException as exc:
+                outcome["error"] = exc
+
+        try:
+            gc_conn.armed = True
+            worker = threading.Thread(target=replay)
+            worker.start()
+            barrier.wait(timeout=10)
+            pin_conn.execute(
+                "INSERT INTO audit_cas_pins(object_id, pin_reason, pinned_at) "
+                "VALUES(?, ?, ?)",
+                (object_id, "replay-racing-pin", "2026-08-09T00:00:00+00:00"),
+            )
+            pin_conn.commit()
+            barrier.wait(timeout=10)
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+            if "error" in outcome:
+                raise outcome["error"]
+
+            self.assertEqual(outcome["removed"], [])
+            self.assertTrue((self.cas_root / descriptor["relative_path"]).is_file())
+            self.assertEqual(
+                history_cas.verify_object(self.conn, self.cas_root, object_id)[
+                    "integrity_state"
+                ],
+                "verified",
+            )
+        finally:
+            pin_conn.close()
+            gc_conn.close()
+
+    def test_put_rejects_tombstone_retirement_pin_namespace(self):
+        with self.assertRaisesRegex(history_cas.CASError, "reserved CAS prefix"):
+            history_cas.put_object(
+                self.conn,
+                self.cas_root,
+                b"caller cannot forge tombstone retirement",
+                "transient",
+                expires_at="2000-01-01T00:00:00+00:00",
+                pin_reason="cas-tombstone-retired:" + "0" * 64,
+            )
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM audit_cas_objects").fetchone()[0],
+            0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

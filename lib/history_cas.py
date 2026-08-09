@@ -458,6 +458,8 @@ def put_object(
         not isinstance(pin_reason, str) or not pin_reason
     ):
         raise CASError("pin_reason must be a non-empty string")
+    if pin_reason is not None and pin_reason.startswith(_TOMBSTONE_RETIRED_PREFIX):
+        raise CASError("pin_reason uses a reserved CAS prefix")
 
     compressed = zlib.compress(raw, level=9)
     object_id = _sha256(raw)
@@ -731,6 +733,7 @@ def collect_garbage(conn, root, now, grace_seconds):
             conn.execute("BEGIN IMMEDIATE")
             descriptor = _gc_eligible_descriptor(conn, object_id, cutoff)
             if descriptor is None:
+                _retire_tombstone(conn, root, object_id)
                 conn.execute("COMMIT")
                 continue
             stored = conn.execute(
