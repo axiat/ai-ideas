@@ -2494,6 +2494,21 @@ def _derive_relation_heldout_counts(queries, qrels):
     return result
 
 
+def _evaluation_evidence_sha(confidence_intervals, channel_depths):
+    if channel_depths is None:
+        # Legacy v1 synthetic capabilities retain their historical digest.
+        return sha256(canonical_bytes(confidence_intervals))
+    return _framed_sha256(
+        "history-calibration-evaluation-v2",
+        canonical_bytes(
+            {
+                "confidence_intervals": confidence_intervals,
+                "channel_depths": channel_depths,
+            }
+        ),
+    )
+
+
 def _gate_evidence(context, metrics, confidence_intervals):
     commitment = context["commitment"]
     end_to_end = metrics["end-to-end"]
@@ -2598,11 +2613,16 @@ def _gate_evidence(context, metrics, confidence_intervals):
     }
     output = context["outputs"]["end-to-end"]
     corpus = context["corpus"]
+    channel_depths = None
     if context["output_schema_version"] == OUTPUT_SCHEMA_VERSION:
-        per_channel_depth = max(
-            max(value["row"]["channel_depths"].values())
-            for value in output.values()
-        )
+        channel_depths = {
+            channel: max(
+                value["row"]["channel_depths"][channel]
+                for value in output.values()
+            )
+            for channel in sorted(CHANNEL_DEPTH_FIELDS)
+        }
+        per_channel_depth = max(channel_depths.values())
     else:
         # v1 is retained only for synthetic compatibility and has no
         # execution-level channel evidence. It cannot authorize production.
@@ -2653,8 +2673,8 @@ def _gate_evidence(context, metrics, confidence_intervals):
         "error_budgets": errors,
         "resource_limits": resources,
         "selected_depths": depths,
-        "confidence_intervals_sha256": sha256(
-            canonical_bytes(confidence_intervals)
+        "confidence_intervals_sha256": _evaluation_evidence_sha(
+            confidence_intervals, channel_depths
         ),
         "all_gates_passed": all_gates,
     }
@@ -3048,8 +3068,12 @@ def _criteria_sha(commitment):
             "token_budget",
         )
     }
+    material["per_channel_depths"] = {
+        channel: commitment["selected_depths"]["per_channel_depth"]
+        for channel in sorted(CHANNEL_DEPTH_FIELDS)
+    }
     return _framed_sha256(
-        "history-calibration-criteria-v1",
+        "history-calibration-criteria-v2",
         canonical_bytes(material),
     )
 
