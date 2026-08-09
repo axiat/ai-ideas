@@ -7,6 +7,7 @@ import pathlib
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 import zlib
 from unittest import mock
@@ -198,6 +199,119 @@ class HistoryCasCorrectnessRegression(unittest.TestCase):
                 (descriptor["object_id"],),
             ).fetchone()
         )
+
+    def test_gc_pin_after_tombstone_retires_it_until_retention_expires(self):
+        descriptor = self._put(
+            b"pin committed after tombstone",
+            "transient",
+            "2000-01-01T00:00:00+00:00",
+        )
+        object_id = descriptor["object_id"]
+        database = self.root / "history.sqlite3"
+        barrier = threading.Barrier(2)
+
+        class TombstoneBarrierConnection(sqlite3.Connection):
+            armed = False
+
+            def execute(self, sql, parameters=()):
+                cursor = super().execute(sql, parameters)
+                if (
+                    self.armed
+                    and sql.strip().upper() == "COMMIT"
+                    and super().execute(
+                        "SELECT 1 FROM audit_cas_tombstones WHERE object_id=?",
+                        (object_id,),
+                    ).fetchone()
+                    is not None
+                ):
+                    self.armed = False
+                    barrier.wait(timeout=10)
+                    barrier.wait(timeout=10)
+                return cursor
+
+        gc_conn = sqlite3.connect(
+            database,
+            factory=TombstoneBarrierConnection,
+            check_same_thread=False,
+        )
+        gc_conn.row_factory = sqlite3.Row
+        pin_conn = sqlite3.connect(database)
+        pin_conn.row_factory = sqlite3.Row
+        outcome = {}
+
+        def collect():
+            try:
+                outcome["removed"] = history_cas.collect_garbage(
+                    gc_conn,
+                    self.cas_root,
+                    "2026-08-09T00:00:00+00:00",
+                    grace_seconds=0,
+                )
+            except BaseException as exc:
+                outcome["error"] = exc
+
+        try:
+            gc_conn.armed = True
+            worker = threading.Thread(target=collect)
+            worker.start()
+            barrier.wait(timeout=10)
+            self.assertIsNotNone(
+                pin_conn.execute(
+                    "SELECT 1 FROM audit_cas_tombstones WHERE object_id=?",
+                    (object_id,),
+                ).fetchone()
+            )
+            pin_conn.execute(
+                "INSERT INTO audit_cas_pins(object_id, pin_reason, pinned_at) "
+                "VALUES(?, ?, ?)",
+                (
+                    object_id,
+                    "cas-retention-until:2099-01-01T00:00:00+00:00",
+                    "2026-08-09T00:00:00+00:00",
+                ),
+            )
+            pin_conn.commit()
+            barrier.wait(timeout=10)
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+            if "error" in outcome:
+                raise outcome["error"]
+
+            self.assertEqual(outcome["removed"], [])
+            self.assertTrue((self.cas_root / descriptor["relative_path"]).is_file())
+            self.assertEqual(
+                history_cas.verify_object(self.conn, self.cas_root, object_id)[
+                    "integrity_state"
+                ],
+                "verified",
+            )
+            self.assertEqual(
+                history_cas.collect_garbage(
+                    self.conn,
+                    self.cas_root,
+                    "2098-01-01T00:00:00+00:00",
+                    grace_seconds=0,
+                ),
+                [],
+            )
+            self.assertEqual(
+                history_cas.collect_garbage(
+                    self.conn,
+                    self.cas_root,
+                    "2100-01-01T00:00:00+00:00",
+                    grace_seconds=0,
+                ),
+                [object_id],
+            )
+            self.assertEqual(
+                history_cas.verify_object(self.conn, self.cas_root, object_id)[
+                    "integrity_state"
+                ],
+                "expired",
+            )
+        finally:
+            pin_conn.close()
+            gc_conn.close()
 
 
 if __name__ == "__main__":

@@ -410,6 +410,7 @@ def _assert_descriptor_matches(row, expected):
 
 _RETENTION_UNTIL_PREFIX = "cas-retention-until:"
 _RETENTION_PERMANENT_PIN = "cas-retention-permanent"
+_TOMBSTONE_RETIRED_PREFIX = "cas-tombstone-retired:"
 
 
 def _retention_extension_pin(conn, row, expires_at):
@@ -555,8 +556,14 @@ def verify_object(conn, root, object_id):
         raise CASIntegrityError("CAS raw hash mismatch")
     if tombstone is not None:
         _validate_tombstone(dict(tombstone), descriptor)
-        descriptor["integrity_state"] = "tombstoned"
-        descriptor["tombstone_sha256"] = tombstone["tombstone_sha256"]
+        retirement = _tombstone_retirement_reason(tombstone)
+        retired = conn.execute(
+            "SELECT 1 FROM audit_cas_pins WHERE object_id=? AND pin_reason=?",
+            (object_id, retirement),
+        ).fetchone()
+        if retired is None:
+            descriptor["integrity_state"] = "tombstoned"
+            descriptor["tombstone_sha256"] = tombstone["tombstone_sha256"]
     return descriptor
 
 
@@ -572,6 +579,10 @@ def _tombstone_material(descriptor, reason, marked_at, delete_after):
         "marked_at": marked_at,
         "delete_after": delete_after,
     }
+
+
+def _tombstone_retirement_reason(tombstone):
+    return _TOMBSTONE_RETIRED_PREFIX + tombstone["tombstone_sha256"]
 
 
 def _validate_tombstone(tombstone, descriptor):
@@ -605,6 +616,57 @@ def _delete_payload(target):
         return False
 
 
+def _retire_tombstone(conn, root, object_id):
+    tombstone = conn.execute(
+        "SELECT * FROM audit_cas_tombstones WHERE object_id=?", (object_id,)
+    ).fetchone()
+    if tombstone is None:
+        return False
+    descriptor = conn.execute(
+        "SELECT * FROM audit_cas_objects WHERE object_id=?", (object_id,)
+    ).fetchone()
+    if descriptor is None:
+        raise CASIntegrityError("CAS descriptor disappeared during collection")
+    _validate_tombstone(dict(tombstone), dict(descriptor))
+    observed = verify_object(conn, root, object_id)
+    if observed["integrity_state"] == "expired":
+        return False
+    conn.execute(
+        "INSERT OR IGNORE INTO audit_cas_pins("
+        "object_id, pin_reason, pinned_at) VALUES(?, ?, ?)",
+        (
+            object_id,
+            _tombstone_retirement_reason(tombstone),
+            _utc_now(),
+        ),
+    )
+    return True
+
+
+def _pin_preserves_object(conn, object_id, cutoff):
+    pins = conn.execute(
+        "SELECT pin_reason FROM audit_cas_pins WHERE object_id=?", (object_id,)
+    ).fetchall()
+    tombstone = conn.execute(
+        "SELECT tombstone_sha256 FROM audit_cas_tombstones WHERE object_id=?",
+        (object_id,),
+    ).fetchone()
+    retirement = (
+        _tombstone_retirement_reason(tombstone) if tombstone is not None else None
+    )
+    for pin in pins:
+        reason = pin["pin_reason"]
+        if reason == retirement:
+            continue
+        if reason.startswith(_RETENTION_UNTIL_PREFIX):
+            if _timestamp(
+                reason[len(_RETENTION_UNTIL_PREFIX):], "retention pin"
+            ) <= cutoff:
+                continue
+        return True
+    return False
+
+
 def _gc_eligible_descriptor(conn, object_id, cutoff):
     row = conn.execute(
         "SELECT * FROM audit_cas_objects WHERE object_id=?", (object_id,)
@@ -617,16 +679,7 @@ def _gc_eligible_descriptor(conn, object_id, cutoff):
         return None
     if descriptor["relative_path"] != _relative_path(object_id).as_posix():
         raise CASIntegrityError("CAS descriptor path is invalid")
-    pins = conn.execute(
-        "SELECT pin_reason FROM audit_cas_pins WHERE object_id=?", (object_id,)
-    ).fetchall()
-    for pin in pins:
-        reason = pin["pin_reason"]
-        if reason.startswith(_RETENTION_UNTIL_PREFIX):
-            if _timestamp(
-                reason[len(_RETENTION_UNTIL_PREFIX):], "retention pin"
-            ) <= cutoff:
-                continue
+    if _pin_preserves_object(conn, object_id, cutoff):
         return None
     return descriptor
 
@@ -648,6 +701,20 @@ def collect_garbage(conn, root, now, grace_seconds):
         object_id = row["object_id"]
         descriptor = _gc_eligible_descriptor(conn, object_id, cutoff)
         if descriptor is None:
+            tombstone = conn.execute(
+                "SELECT 1 FROM audit_cas_tombstones WHERE object_id=?", (object_id,)
+            ).fetchone()
+            if tombstone is None:
+                continue
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                if _gc_eligible_descriptor(conn, object_id, cutoff) is None:
+                    _retire_tombstone(conn, root, object_id)
+                conn.execute("COMMIT")
+            except Exception:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
             continue
         tombstone = conn.execute(
             "SELECT * FROM audit_cas_tombstones WHERE object_id=?", (object_id,)
@@ -702,6 +769,11 @@ def collect_garbage(conn, root, now, grace_seconds):
             conn.execute("BEGIN IMMEDIATE")
             descriptor = _gc_eligible_descriptor(conn, object_id, cutoff)
             if descriptor is None:
+                # Keep the immutable deletion record for replay, but retire its
+                # read effect while the winning pin preserves a valid payload.
+                # The retirement marker is not itself retention authority, so
+                # an expired extension remains collectible on a later replay.
+                _retire_tombstone(conn, root, object_id)
                 conn.execute("COMMIT")
                 continue
             stored = conn.execute(
