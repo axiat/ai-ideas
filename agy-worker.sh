@@ -17,7 +17,7 @@
 #   AGY_PRINT_TIMEOUT  Default 8m.
 #   AGY_LAUNCH_ROOT    Shared launch-gate root; defaults to this adapter's
 #                      repository so per-seat AGY_REPO mirrors share one gap.
-#   AGY_LAUNCH_GAP_SEC Minimum seconds between launches; default 60, 0 disables.
+#   AGY_LAUNCH_GAP_SEC Minimum seconds between launches; default 0, disabled.
 set -u
 self_dir="$(cd "$(dirname "$0")" && pwd)"
 repo=${AGY_REPO:-$self_dir}
@@ -36,7 +36,7 @@ esac
 launch_root="$(cd "$launch_root" && pwd)"
 model=${AGY_MODEL:-gemini-3.6-flash-high}
 ptimeout=${AGY_PRINT_TIMEOUT:-8m}
-gap=${AGY_LAUNCH_GAP_SEC:-60}
+gap=${AGY_LAUNCH_GAP_SEC:-0}
 prompt=${1:?usage: agy-worker.sh <prompt>}
 case "$gap" in ''|*[!0-9]*) echo "agy-worker: AGY_LAUNCH_GAP_SEC must be a nonnegative integer: $gap" >&2; exit 2 ;; esac
 

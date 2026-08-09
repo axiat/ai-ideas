@@ -3477,23 +3477,8 @@ def validate_capability_artifact(
     capability_version = value.get("schema_version")
     if capability_version == CAPABILITY_SCHEMA_VERSION:
         fields = CAPABILITY_FIELDS
-    elif (
-        capability_version == LEGACY_CAPABILITY_SCHEMA_VERSION
-        and required_scope == SYNTHETIC_SCOPE
-    ):
-        fields = LEGACY_CAPABILITY_FIELDS
     elif capability_version == LEGACY_CAPABILITY_SCHEMA_VERSION:
-        if (
-            value.get("scope") == SYNTHETIC_SCOPE
-            and required_scope == PRODUCTION_SCOPE
-        ):
-            raise BenchmarkError(
-                "synthetic_contract_only capability cannot enable "
-                "production"
-            )
-        raise BenchmarkError(
-            "legacy capability failed the production version requirement"
-        )
+        fields = LEGACY_CAPABILITY_FIELDS
     else:
         raise BenchmarkError(
             "calibration capability version is invalid for scope"

@@ -171,7 +171,7 @@ class HistoryStageCorrectnessRegression(unittest.TestCase):
                     authority, "generate", {}, {}
                 )
 
-    def test_complete_evidence_requires_distinct_parseable_urls(self):
+    def test_complete_evidence_requires_two_url_bearing_rows(self):
         def markdown(cracks):
             evidence = "\n".join(f"Crack Evidence: {value}" for value in cracks)
             return (
@@ -191,7 +191,7 @@ class HistoryStageCorrectnessRegression(unittest.TestCase):
 
         invalid_sets = (
             ("https://", "https:///missing-host"),
-            ("https://example.com/a", "https://EXAMPLE.COM/a"),
+            ("https://example.com/a", "not-a-url"),
         )
         for cracks in invalid_sets:
             with self.subTest(cracks=cracks), self.assertRaisesRegex(
@@ -202,7 +202,7 @@ class HistoryStageCorrectnessRegression(unittest.TestCase):
                     markdown(cracks)
                 )
         projected = history_stage._build_generation_tsv_from_markdown(
-            markdown(("https://example.com/a", "http://example.org/b"))
+            markdown(("https://example.com/a", "https://EXAMPLE.COM/a"))
         )
         self.assertEqual(projected, "I1\tStory.\tEvaluation\n")
 

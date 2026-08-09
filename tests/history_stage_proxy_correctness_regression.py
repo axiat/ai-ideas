@@ -44,19 +44,27 @@ class HistoryStageProxyCorrectnessRegression(unittest.TestCase):
             max_output_tokens=2048,
         )
 
-    def test_declared_output_budget_includes_reasoning_and_text(self):
+    def test_output_budget_allows_reasoning_overhead(self):
         transcript = valid_sse(
             json.loads(self.canonical_request),
             output_tokens=2049,
             reasoning_tokens=2000,
         )
+        self.exchange()._validate_response(transcript)
+
+    def test_output_budget_retains_a_sanity_ceiling(self):
+        transcript = valid_sse(
+            json.loads(self.canonical_request),
+            output_tokens=65537,
+            reasoning_tokens=65000,
+        )
         with self.assertRaisesRegex(
             history_stage_proxy.ProxyError,
-            r"output_tokens=2049 > 2048",
+            r"output_tokens=65537 > 65536",
         ):
             self.exchange()._validate_response(transcript)
 
-    def test_multiple_completed_assistant_outputs_are_rejected(self):
+    def test_last_completed_assistant_output_wins(self):
         records = parse_sse_records(
             valid_sse(json.loads(self.canonical_request))
         )
@@ -68,17 +76,22 @@ class HistoryStageProxyCorrectnessRegression(unittest.TestCase):
         )
         second_done = json.loads(canonical(first_done))
         second_done["item"]["id"] = "msg_local_2"
+        final_output = model_output()
+        final_output["artifacts"][0]["content"] = (
+            '{"mappings":[{"source":"final"}],"schema_version":1}\n'
+        )
+        final_text = canonical(final_output).decode("utf-8")
+        second_done["item"]["content"][0]["text"] = final_text
         second_done["output_index"] += 1
         records.insert(-1, ("response.output_item.done", second_done))
         records[-1][1]["response"]["output"] = []
         for sequence_number, (_, value) in enumerate(records):
             value["sequence_number"] = sequence_number
 
-        with self.assertRaisesRegex(
-            history_stage_proxy.ProxyError,
-            "multiple assistant message outputs are ambiguous",
-        ):
-            self.exchange()._validate_response(encode_sse_records(records))
+        output_raw, _, _ = self.exchange()._validate_response(
+            encode_sse_records(records)
+        )
+        self.assertEqual(output_raw, final_text.encode("utf-8"))
 
     def test_json_depth_bound_precedes_interpreter_parser(self):
         depth = history_stage_proxy.JSON_MAX_NESTING_DEPTH + 1

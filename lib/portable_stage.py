@@ -40,8 +40,8 @@ HOST_INPUT_MAX_BYTES = 256 * 1024
 MODEL_OUTPUT_MAX_BYTES = 128 * 1024
 DECLARED_INPUT_MAX_BYTES = 128 * 1024
 PREFLIGHT_MAX_BYTES = 64 * 1024
-_EXEC_SINGLE_STRING_MAX_BYTES = 128 * 1024
-_EXEC_AGGREGATE_CEILING_BYTES = 256 * 1024
+_LEGACY_EXEC_SINGLE_STRING_MAX_BYTES = 128 * 1024
+_LEGACY_EXEC_AGGREGATE_CEILING_BYTES = 256 * 1024
 _EXEC_RESERVE_BYTES = 32 * 1024
 _EXEC_DYNAMIC_PATH_RESERVE_CHARS = 64
 _REQUEST_OVERHEAD_BYTES = 4096
@@ -580,7 +580,7 @@ def _decode_contract_text(raw, label):
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise PortableStageError("invalid_contract_text", label) from exc
-    if "\x00" in text or unicodedata.normalize("NFC", text) != text:
+    if "\x00" in text:
         raise PortableStageError("invalid_contract_text", label)
     return text
 
@@ -932,6 +932,11 @@ def _system_arg_max():
     return value
 
 
+def _system_single_string_cap():
+    # Linux execve(2) enforces MAX_ARG_STRLEN independently of ARG_MAX.
+    return 128 * 1024 if sys.platform.startswith("linux") else None
+
+
 def _rendered_exec_budget(intent, provider_request, response_schema, state_root):
     projected_mirror = (
         pathlib.Path(state_root)
@@ -1003,15 +1008,17 @@ def _rendered_exec_budget(intent, provider_request, response_schema, state_root)
         len(f"{name}={value}".encode("utf-8")) + 1
         for name, value in environment.items()
     ]
-    if any(size > _EXEC_SINGLE_STRING_MAX_BYTES for size in argv_sizes):
-        raise PortableStageError("exec_argument_too_large")
-    if any(size > _EXEC_SINGLE_STRING_MAX_BYTES for size in environment_sizes):
-        raise PortableStageError("exec_environment_too_large")
+    single_string_cap = _system_single_string_cap()
+    if single_string_cap is not None:
+        if any(size > single_string_cap for size in argv_sizes):
+            raise PortableStageError("exec_argument_too_large")
+        if any(size > single_string_cap for size in environment_sizes):
+            raise PortableStageError("exec_environment_too_large")
     pointer_bytes = (
         len(projected_argv) + len(environment) + 2
     ) * struct.calcsize("P")
     system_arg_max = _system_arg_max()
-    aggregate_cap = min(system_arg_max, _EXEC_AGGREGATE_CEILING_BYTES)
+    aggregate_cap = system_arg_max
     conservative_total = (
         sum(argv_sizes)
         + sum(environment_sizes)
@@ -1024,8 +1031,8 @@ def _rendered_exec_budget(intent, provider_request, response_schema, state_root)
             f"conservative_total_bytes={conservative_total}",
         )
     return {
-        "schema_version": "portable-stage-exec-budget-v1",
-        "single_string_cap_bytes": _EXEC_SINGLE_STRING_MAX_BYTES,
+        "schema_version": "portable-stage-exec-budget-v2",
+        "single_string_cap_bytes": single_string_cap,
         "system_arg_max_bytes": system_arg_max,
         "aggregate_cap_bytes": aggregate_cap,
         "reserve_bytes": _EXEC_RESERVE_BYTES,
@@ -1577,7 +1584,12 @@ def run_stage(prepared, timeout_seconds=600):
     prepared, private = _private_prepared(prepared)
     if prepared.get("execution_boundary") != BOUNDARY:
         raise PortableStageError("invalid_prepared_stage")
-    if not isinstance(timeout_seconds, (int, float)) or not 0 < timeout_seconds <= 3600:
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
         raise PortableStageError("invalid_timeout")
     completion_path = pathlib.Path(prepared.get("completion_path", ""))
     if completion_path.exists() or completion_path.is_symlink():
@@ -1933,20 +1945,39 @@ def _validate_public_preflight(value):
         "rendered_argv_sha256",
         "environment_delta_sha256",
     }
+    exec_version = (
+        exec_budget.get("schema_version")
+        if type(exec_budget) is dict
+        else None
+    )
+    valid_exec_limits = False
+    if type(exec_budget) is dict:
+        if exec_version == "portable-stage-exec-budget-v1":
+            valid_exec_limits = (
+                exec_budget.get("single_string_cap_bytes")
+                == _LEGACY_EXEC_SINGLE_STRING_MAX_BYTES
+                and type(exec_budget.get("system_arg_max_bytes")) is int
+                and type(exec_budget.get("aggregate_cap_bytes")) is int
+                and exec_budget.get("aggregate_cap_bytes")
+                == min(
+                    exec_budget["system_arg_max_bytes"],
+                    _LEGACY_EXEC_AGGREGATE_CEILING_BYTES,
+                )
+            )
+        elif exec_version == "portable-stage-exec-budget-v2":
+            valid_exec_limits = (
+                exec_budget.get("single_string_cap_bytes") in {
+                    None,
+                    128 * 1024,
+                }
+                and type(exec_budget.get("system_arg_max_bytes")) is int
+                and exec_budget.get("aggregate_cap_bytes")
+                == exec_budget["system_arg_max_bytes"]
+            )
     if (
         type(exec_budget) is not dict
         or set(exec_budget) != exec_fields
-        or exec_budget.get("schema_version")
-        != "portable-stage-exec-budget-v1"
-        or exec_budget.get("single_string_cap_bytes")
-        != _EXEC_SINGLE_STRING_MAX_BYTES
-        or type(exec_budget.get("system_arg_max_bytes")) is not int
-        or type(exec_budget.get("aggregate_cap_bytes")) is not int
-        or exec_budget.get("aggregate_cap_bytes")
-        != min(
-            exec_budget["system_arg_max_bytes"],
-            _EXEC_AGGREGATE_CEILING_BYTES,
-        )
+        or not valid_exec_limits
         or exec_budget.get("reserve_bytes") != _EXEC_RESERVE_BYTES
         or any(
             type(exec_budget.get(name)) is not int

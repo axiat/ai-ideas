@@ -100,7 +100,7 @@ class RuntimeFinalIntegrityRegression(smoke.RuntimeFixture):
         )
         self.assertEqual(report["rejected_count"], 1)
 
-    def test_malformed_evolution_declarations_fail_closed(self):
+    def test_malformed_optional_evolution_declarations_are_ignored(self):
         ideas_tsv = self.root / "malformed-evolution.tsv"
         ideas_tsv.write_text(
             "I1\tA malformed evolution.\tEvaluation and Diagnostics\n",
@@ -121,12 +121,17 @@ class RuntimeFinalIntegrityRegression(smoke.RuntimeFixture):
                 encoding="utf-8",
             )
             with self.subTest(declaration=declaration):
-                with self.assertRaises(history_runtime.RuntimeContractError):
-                    history_runtime.freeze_candidate_batch(
-                        ideas_tsv,
-                        markdown,
-                        self.root / f"malformed-frozen-{index}",
+                batch = history_runtime.freeze_candidate_batch(
+                    ideas_tsv,
+                    markdown,
+                    self.root / f"malformed-frozen-{index}",
+                )
+                candidate = json.loads(
+                    pathlib.Path(batch["candidates"][0]["path"]).read_text(
+                        encoding="utf-8"
                     )
+                )
+                self.assertIsNone(candidate["declared_parent_candidate_id"])
 
     def test_summary_publication_recomputes_child_observation_hash(self):
         state = self._enforcement_round(contained=True)

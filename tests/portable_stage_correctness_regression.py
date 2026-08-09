@@ -71,23 +71,33 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
                 pathlib.Path(directory) / "state",
             )
 
-    def test_exec_budget_rejects_individual_argument(self):
-        argument = "x" * portable_stage._EXEC_SINGLE_STRING_MAX_BYTES
-        with mock.patch.dict(os.environ, {}, clear=True):
-            with self.assertRaises(portable_stage.PortableStageError) as caught:
-                self._budget_with_render([argument])
-        self.assertEqual(caught.exception.code, "exec_argument_too_large")
+    def test_exec_budget_uses_system_arg_max_without_per_string_policy(self):
+        argument = "x" * 200_000
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            portable_stage, "_system_arg_max", return_value=512_000
+        ):
+            budget = self._budget_with_render([argument])
+        self.assertEqual(
+            budget["single_string_cap_bytes"],
+            portable_stage._system_single_string_cap(),
+        )
+        self.assertEqual(budget["aggregate_cap_bytes"], 512_000)
 
-    def test_exec_budget_rejects_individual_environment_entry(self):
-        value = "x" * portable_stage._EXEC_SINGLE_STRING_MAX_BYTES
-        with mock.patch.dict(os.environ, {}, clear=True):
-            with self.assertRaises(portable_stage.PortableStageError) as caught:
-                self._budget_with_render(["provider"], {"OVERSIZED": value})
-        self.assertEqual(caught.exception.code, "exec_environment_too_large")
+    def test_exec_budget_allows_large_environment_within_system_limit(self):
+        value = "x" * 200_000
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            portable_stage, "_system_arg_max", return_value=512_000
+        ):
+            budget = self._budget_with_render(["provider"], {"LARGE": value})
+        self.assertLessEqual(
+            budget["conservative_total_bytes"], budget["aggregate_cap_bytes"]
+        )
 
-    def test_exec_budget_rejects_aggregate_argv_and_environment(self):
+    def test_exec_budget_rejects_only_at_system_aggregate_limit(self):
         arguments = ["x" * 100_000, "y" * 100_000, "z" * 100_000]
-        with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            portable_stage, "_system_arg_max", return_value=256_000
+        ):
             with self.assertRaises(portable_stage.PortableStageError) as caught:
                 self._budget_with_render(arguments)
         self.assertEqual(caught.exception.code, "exec_aggregate_too_large")
@@ -370,6 +380,50 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
         with self.assertRaises(portable_stage.PortableStageError) as caught:
             portable_stage._parse_json_artifact(raw, "fixture")
         self.assertEqual(caught.exception.code, "invalid_fixture")
+
+    def test_contract_text_accepts_decomposed_utf8(self):
+        self.assertEqual(
+            portable_stage._decode_contract_text("é".encode("utf-8"), "fixture"),
+            "é",
+        )
+        with self.assertRaises(portable_stage.PortableStageError):
+            portable_stage._decode_contract_text(b"nul\x00text", "fixture")
+
+    def test_timeout_validation_accepts_long_runs_and_rejects_nonfinite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepared = self._prepare(pathlib.Path(directory))
+            for value in (True, float("nan"), float("inf"), 0, -1):
+                with self.subTest(value=value), self.assertRaises(
+                    portable_stage.PortableStageError
+                ) as caught:
+                    portable_stage.run_stage(prepared, timeout_seconds=value)
+                self.assertEqual(caught.exception.code, "invalid_timeout")
+            with mock.patch.object(
+                portable_stage.portable_agent,
+                "run_portable_stdout_attempt",
+                side_effect=portable_stage.portable_agent.PortableAgentError(
+                    "timeout"
+                ),
+            ) as run:
+                with self.assertRaises(portable_stage.PortableStageError):
+                    portable_stage.run_stage(prepared, timeout_seconds=7200)
+                self.assertEqual(run.call_args.kwargs["timeout_seconds"], 7200)
+
+    def test_public_preflight_still_accepts_legacy_exec_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepared = self._prepare(pathlib.Path(directory))
+            preflight = json.loads(
+                pathlib.Path(prepared["preflight_path"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            budget = preflight["exec_budget"]
+            budget["schema_version"] = "portable-stage-exec-budget-v1"
+            budget["single_string_cap_bytes"] = 128 * 1024
+            budget["aggregate_cap_bytes"] = min(
+                budget["system_arg_max_bytes"], 256 * 1024
+            )
+            portable_stage._validate_public_preflight(preflight)
 
     def test_malformed_exec_budget_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:

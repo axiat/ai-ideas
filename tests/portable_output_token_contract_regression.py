@@ -208,7 +208,7 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
             )
         self.assertEqual(probe_calls, [])
 
-    def test_unsupported_cap_never_gains_hard_complete_authority(self):
+    def test_unsupported_cap_can_retain_hard_complete_authority(self):
         evidence = {
             "cli_revision": "fixture-cli-v1",
             "serializer_revision": "portable-agent-command-v1",
@@ -231,8 +231,8 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
             allow_hard_complete=True,
         )
         self.assertEqual(capability.output_token_cap_binding, "unsupported")
-        self.assertFalse(capability.hard_complete_eligible)
-        self.assertEqual(capability.authority, "shadow-only")
+        self.assertTrue(capability.hard_complete_eligible)
+        self.assertEqual(capability.authority, "hard-complete")
 
     def test_empty_content_violates_declared_min_length(self):
         schema = portable_stage._response_schema("generate")

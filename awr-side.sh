@@ -53,8 +53,8 @@
 # Tuning:
 #   AGY_MODEL                         default: gemini-3.6-flash-high
 #   AGY_PRINT_TIMEOUT                 default: 10m
-#   SIDE_GAP_SEC                      default: 120; built-in agy gate, 0 disables
-#   SIDE_GAP_MIN_SEC/MAX_SEC          default: 60/270; all-backend throttle
+#   SIDE_GAP_SEC                      default: 0; built-in agy gate, opt-in
+#   SIDE_GAP_MIN_SEC/MAX_SEC          default: 0/0; all-backend throttle, opt-in
 #   SIDE_POLL_SEC                     default: 9000; 0 exits after a terminal scan
 #   SIDE_MAX_BAD / SIDE_MAX_ROUNDS    default: 3 / 3
 #   SIDE_COOLDOWN_SEC                 default: 3600; 0 exits on circuit break
@@ -248,9 +248,9 @@ side_cmd=$SIDE_CMD
 research_cmd=${SIDE_RESEARCH_CMD:-$side_cmd}
 judge_cmd=${SIDE_JUDGE_CMD:-$side_cmd}
 priorwork_cmd=${SIDE_PRIORWORK_CMD:-$judge_cmd}   # Prior work follows the reviewer's trust level.
-gap=${SIDE_GAP_SEC:-120}
-gap_min=${SIDE_GAP_MIN_SEC:-60}
-gap_max=${SIDE_GAP_MAX_SEC:-270}
+gap=${SIDE_GAP_SEC:-0}
+gap_min=${SIDE_GAP_MIN_SEC:-0}
+gap_max=${SIDE_GAP_MAX_SEC:-0}
 poll=${SIDE_POLL_SEC:-9000}
 max_bad=${SIDE_MAX_BAD:-3}
 max_rounds=${SIDE_MAX_ROUNDS:-3}

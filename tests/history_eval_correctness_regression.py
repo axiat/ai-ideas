@@ -106,7 +106,7 @@ class HistoryEvalCorrectnessRegression(unittest.TestCase):
             capability["evaluation_evidence"]["all_gates_passed"]
         )
 
-    def test_legacy_output_and_capability_versions_are_synthetic_only(self):
+    def test_legacy_capability_retains_scope_compatibility(self):
         bundle = history_eval.build_synthetic_capability_for_test(BENCHMARK)
         capability = bundle["calibration_capability"]
         self.assertEqual(
@@ -116,6 +116,15 @@ class HistoryEvalCorrectnessRegression(unittest.TestCase):
         history_eval.validate_capability_artifact(
             capability, required_scope=history_eval.SYNTHETIC_SCOPE
         )
+        with self.assertRaisesRegex(
+            history_eval.BenchmarkError,
+            "production calibration evidence is advisory or failed",
+        ):
+            production = dict(capability)
+            production["scope"] = history_eval.PRODUCTION_SCOPE
+            history_eval.validate_capability_artifact(
+                production, required_scope=history_eval.PRODUCTION_SCOPE
+            )
         with self.assertRaisesRegex(
             history_eval.BenchmarkError,
             "synthetic_contract_only.*production",

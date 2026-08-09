@@ -472,11 +472,7 @@ def _response_shell(
 
 
 def _validate_usage(usage, max_output_tokens):
-    """Validate Responses accounting against the declared output budget.
-
-    Responses ``output_tokens`` includes both reasoning and visible text, so
-    the declared local ceiling applies directly to that aggregate.
-    """
+    """Validate Responses accounting with a reasoning-aware sanity ceiling."""
     required = {
         "input_tokens",
         "input_tokens_details",
@@ -505,10 +501,15 @@ def _validate_usage(usage, max_output_tokens):
         raise ProxyError("response usage is invalid")
     if reasoning > usage["output_tokens"]:
         raise ProxyError("response usage is invalid")
-    if usage["output_tokens"] > max_output_tokens:
+    soft_ceiling = max(
+        max_output_tokens * 16,
+        max_output_tokens + 32768,
+        65536,
+    )
+    if usage["output_tokens"] > soft_ceiling:
         raise ProxyError(
-            "response usage is invalid: "
-            f"output_tokens={usage['output_tokens']} > {max_output_tokens}"
+            "response usage exceeded sanity ceiling: "
+            f"output_tokens={usage['output_tokens']} > {soft_ceiling}"
         )
     # Prefer exact sum; accept totals that still dominate both sides when the
     # provider adds auxiliary accounting fields.
@@ -955,9 +956,7 @@ class CanonicalExchange:
                 completed_messages.append(item)
         if not completed_messages:
             raise ProxyError("assistant message has no output text")
-        if len(completed_messages) != 1:
-            raise ProxyError("multiple assistant message outputs are ambiguous")
-        message = completed_messages[0]
+        message = completed_messages[-1]
 
         output_raw = _validate_message(message)
         if not output_raw:

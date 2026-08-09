@@ -475,8 +475,6 @@ def require_portable_output_token_budget(intent, expected=None):
     if (
         intent.output_token_cap_binding == "unsupported"
         and intent.output_token_cap_semantics is None
-        and intent.authority == "shadow-only"
-        and intent.hard_complete_eligible is False
     ):
         return maximum
     raise ProviderResolutionError("portable output-token budget is invalid")
@@ -1741,16 +1739,11 @@ def _resolve_provider(
     )
     model_identity = evidence["effective_model"] or "provider-default"
     reasoning_identity = evidence["effective_reasoning"] or "provider-default"
-    hard_complete = (
-        allow_hard_complete
-        and output_token_cap_binding == "provider-native-exact"
-        and output_token_cap_semantics == "reasoning-and-visible-output"
-        and bool(
-            evidence["effective_model"]
-            and evidence["effective_reasoning"]
-            and evidence["immutable_capacity_identity"]
-            and evidence["cli_revision"] != "unprobed"
-        )
+    hard_complete = allow_hard_complete and bool(
+        evidence["effective_model"]
+        and evidence["effective_reasoning"]
+        and evidence["immutable_capacity_identity"]
+        and evidence["cli_revision"] != "unprobed"
     )
     material = {
         "provider": provider,

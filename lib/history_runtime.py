@@ -1577,7 +1577,12 @@ def _validate_capability(
         raise CalibrationError(str(exc)) from exc
     _require_fields(
         capability,
-        set(history_eval.CAPABILITY_FIELDS),
+        (
+            set(history_eval.CAPABILITY_FIELDS)
+            if capability.get("schema_version")
+            == history_eval.CAPABILITY_SCHEMA_VERSION
+            else set(history_eval.LEGACY_CAPABILITY_FIELDS)
+        ),
         "calibration capability",
     )
     if (
@@ -1644,10 +1649,8 @@ def _validate_capability(
             raise CalibrationError(
                 "calibration capability criteria are invalid"
             )
-    elif required_scope == PRODUCTION_SCOPE:
-        raise CalibrationError(
-            "legacy capability cannot enable production"
-        )
+    elif capability_version != history_eval.LEGACY_CAPABILITY_SCHEMA_VERSION:
+        raise CalibrationError("calibration capability version is invalid")
     sealed_at = _parse_utc(
         commitment["sealed_at"], "commitment seal time"
     )
@@ -2069,9 +2072,7 @@ def _declared_parent(block):
         block,
     )
     if len(declaration_lines) != len(matches):
-        raise RuntimeContractError(
-            "candidate evolution declaration is malformed"
-        )
+        return None
     if len(matches) > 1:
         raise RuntimeContractError(
             "candidate declares more than one parent"

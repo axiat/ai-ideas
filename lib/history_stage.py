@@ -3010,7 +3010,7 @@ def _build_generation_tsv_from_markdown(markdown, direction_contract=None):
             "Direction Evidence",
         )
     assumption_ids = set()
-    # id -> distinct parseable http(s) Crack Evidence URLs
+    # id -> number of Crack Evidence rows with a parseable http(s) URL
     assumption_url_cracks = {}
     rows = []
     for position, (start, identifier) in enumerate(headings):
@@ -3098,10 +3098,10 @@ def _build_generation_tsv_from_markdown(markdown, direction_contract=None):
         rows.append(f"{identifier}\t{story}\t{theme}")
         if values["Form"] == "remove-load-bearing-assumption":
             assumption_ids.add(identifier)
-            url_cracks = set().union(
-                *(_evidence_urls(evidence) for evidence in crack_evidence)
+            assumption_url_cracks[identifier] = sum(
+                bool(_evidence_urls(evidence))
+                for evidence in crack_evidence
             )
-            assumption_url_cracks[identifier] = url_cracks
             if (
                 any(
                     label not in values
@@ -3133,7 +3133,7 @@ def _build_generation_tsv_from_markdown(markdown, direction_contract=None):
     # Incomplete markers satisfy the attempt quota; placeholder cracks OK.
     if complete is not None:
         complete_id = complete.group(1)
-        if len(assumption_url_cracks.get(complete_id, set())) < 2:
+        if assumption_url_cracks.get(complete_id, 0) < 2:
             raise StageError(
                 f"assumption-removal crack evidence lacks URLs: "
                 f"{complete_id}"
