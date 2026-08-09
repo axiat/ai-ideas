@@ -178,9 +178,9 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
             first_env = env | {"AGY_REPO": str(mirrors[0])}
             second_env = env | {"AGY_REPO": str(mirrors[1])}
             subprocess.run([str(worker), "first"], env=first_env, check=True)
-            started = time.monotonic()
+            started = time.time()
             subprocess.run([str(worker), "second"], env=second_env, check=True)
-            self.assertGreaterEqual(time.monotonic() - started, 0.8)
+            self.assertGreaterEqual(time.time() - started, 0.8)
             self.assertTrue((root / "tmp/agy.last-launch").is_file())
             self.assertFalse((mirrors[0] / "tmp/agy.last-launch").exists())
             self.assertFalse((mirrors[1] / "tmp/agy.last-launch").exists())
@@ -233,7 +233,7 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
                 "prompt = sys.argv[-1]\n"
                 "label = 'external' if 'external-probe' in prompt else 'wrapper'\n"
                 "with open(os.environ['LAUNCH_LOG'], 'a') as stream:\n"
-                "    stream.write(f'{label}\\t{time.monotonic_ns()}\\n')\n"
+                "    stream.write(f'{label}\\t{time.time_ns()}\\n')\n"
                 "    stream.flush()\n"
                 "    os.fsync(stream.fileno())\n"
                 "if label == 'external':\n"

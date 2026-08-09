@@ -194,44 +194,51 @@ class HistoryRouterSourceAuthoritySmoke(unittest.TestCase):
             )
             for shard in changed["shards"]
         ]
-        if all(set(parsed) == {"item_ids"} for parsed in parsed_requests):
-            for shard in changed["shards"]:
+        for shard, parsed in zip(changed["shards"], parsed_requests):
+            fields = set(parsed)
+            if fields == {"item_ids"}:
                 raw = json.dumps(
                     {"item_ids": shard["item_ids"]}, sort_keys=True
                 ).encode("utf-8")
-                shard["serialized_request"] = raw.decode("utf-8")
-                shard["request_sha256"] = hashlib.sha256(raw).hexdigest()
-                shard["final_request_tokens"] = len(raw)
-        else:
-            request_snapshot = copy.deepcopy(parsed_requests[0]["snapshot"])
-            for field in (
-                "snapshot_id", "snapshot_hash", "history_as_of_watermark",
-                "current_batch_id_namespace", "current_batch_ids_hash",
-                "current_batch_ids", "exclusion_policy_sha",
-                "expected_asset_ids_hash", "expected_asset_ids",
-            ):
-                if field in request_snapshot:
-                    request_snapshot[field] = copy.deepcopy(snapshot[field])
-            records = history_audit_plan.runtime_snapshot_records(
-                request_snapshot["records"]
-            )
-            items_by_id = {
-                item["item_id"]: item
-                for item in history_audit_plan._record_items(records)
-            }
-            for shard in changed["shards"]:
+            elif fields == {"candidate", "items", "output_schema", "prompt"}:
+                raw = history_audit_plan._serialize_request_value(
+                    {
+                        "candidate": candidate,
+                        "items": shard["item_ids"],
+                        "output_schema": changed["capacity_profile"]["schema"],
+                        "prompt": changed["capacity_profile"]["prompt"],
+                    },
+                    changed["capacity_profile"]["serializer_revision"],
+                )
+            else:
+                request_snapshot = copy.deepcopy(parsed["snapshot"])
+                for field in (
+                    "snapshot_id", "snapshot_hash", "history_as_of_watermark",
+                    "current_batch_id_namespace", "current_batch_ids_hash",
+                    "current_batch_ids", "exclusion_policy_sha",
+                    "expected_asset_ids_hash", "expected_asset_ids",
+                ):
+                    if field in request_snapshot:
+                        request_snapshot[field] = copy.deepcopy(snapshot[field])
+                records = history_audit_plan.runtime_snapshot_records(
+                    request_snapshot["records"]
+                )
+                items_by_id = {
+                    item["item_id"]: item
+                    for item in history_audit_plan._record_items(records)
+                }
                 selected = [
                     items_by_id[item_id] for item_id in shard["item_ids"]
                 ]
-                raw, byte_count = history_audit_plan._serialized_request(
+                raw, _ = history_audit_plan._serialized_request(
                     request_snapshot,
                     candidate,
                     changed["capacity_profile"],
                     selected,
                 )
-                shard["serialized_request"] = raw.decode("utf-8")
-                shard["request_sha256"] = hashlib.sha256(raw).hexdigest()
-                shard["final_request_tokens"] = byte_count
+            shard["serialized_request"] = raw.decode("utf-8")
+            shard["request_sha256"] = hashlib.sha256(raw).hexdigest()
+            shard["final_request_tokens"] = len(raw)
         changed["shard_plan_sha"] = history_audit_plan.runtime_shard_plan_sha(
             changed["shards"]
         )
