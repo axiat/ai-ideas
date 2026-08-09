@@ -56,6 +56,12 @@ class HistoryExecutionClockRegression(unittest.TestCase):
               outcome TEXT NOT NULL,
               normalized_result_json TEXT
             );
+            CREATE TABLE audit_attempt_cost_settlements_v2(
+              attempt_id TEXT PRIMARY KEY
+            );
+            CREATE TABLE audit_runtime_budget_settlements_v2(
+              attempt_id TEXT PRIMARY KEY
+            );
             CREATE TABLE audit_task_settlements_v2(
               task_hash TEXT PRIMARY KEY,
               settlement_sha256 TEXT NOT NULL,
@@ -77,6 +83,14 @@ class HistoryExecutionClockRegression(unittest.TestCase):
         conn.execute(
             "INSERT INTO audit_attempt_completions_v2 VALUES(?, ?, 'valid', ?)",
             (attempt_id, "output-object", history_execution._canonical(normalized)),
+        )
+        conn.execute(
+            "INSERT INTO audit_attempt_cost_settlements_v2 VALUES(?)",
+            (attempt_id,),
+        )
+        conn.execute(
+            "INSERT INTO audit_runtime_budget_settlements_v2 VALUES(?)",
+            (attempt_id,),
         )
         conn.commit()
 

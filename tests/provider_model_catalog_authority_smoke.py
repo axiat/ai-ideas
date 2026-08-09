@@ -84,13 +84,17 @@ class RegistryAbiAuthoritySmoke(unittest.TestCase):
             with self.assertRaises(provider_adapters.ProviderResolutionError):
                 provider_adapters.load_registry(reformatted)
 
+            registry_text = REGISTRY.read_text(encoding="utf-8")
+            duplicate_text = registry_text.replace(
+                '"registry_revision": ',
+                '"registry_revision": "forged",\n'
+                '  "registry_revision": ',
+                1,
+            )
+            self.assertNotEqual(duplicate_text, registry_text)
             duplicate = root / "duplicate.json"
             duplicate.write_text(
-                REGISTRY.read_text(encoding="utf-8").replace(
-                    '"registry_revision": "2026-08-07",',
-                    '"registry_revision": "forged",\n'
-                    '  "registry_revision": "2026-08-07",',
-                ),
+                duplicate_text,
                 encoding="utf-8",
             )
             with self.assertRaises(provider_adapters.ProviderResolutionError):

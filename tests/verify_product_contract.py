@@ -11,15 +11,15 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 EXPECTED = {
-    "stable_projection": "e83e63d21c98793a9237b71c41307079e3a14074dac207c105b4e9b1ce635e7f",
-    "theme_projection": "0fe4dcc0fd467ab4f6e18a42e49c3ad15890d545ccad66a4829b20dad731532a",
-    "row_urls": "ab4dc50b551a4bb9fa28e2cbdc025a9653401db7eb4377e132c5e941d7b95f4d",
-    "row_technical_tokens": "348129d3629c4974f03231b2c20ee221582419c58281457b777739cadffec141",
-    "row_count_units": "29c6bfa20d487989590bdfb20b684f9079fd697eba3daf8e75afb22fc8ef479c",
-    "row_labeled_quantities": "c6d836cbddb0a5633899ef182869fb10a0e287f8970fb42503303ae5651c477a",
-    "row_numeric_operators": "76beb5849c86bb78478bf613a75846bf862c0e4b49bba920da1398ec5bcd2fc2",
-    "row_code_spans": "7be72d7825ae0d5e8234219066ea638478cf084bd5fe3397e67505eb6c64e8c1",
-    "row_symbols": "fe650735fb3b6cc9ee45de391c5f7804bbb3e381ab87c0a9872cbc1496edf92d",
+    "stable_projection": "ff148c760e8c2e5252f9455ced3612f66481eb80cdca336dcf9f711c93988176",
+    "theme_projection": "578d8eee579450f08e6f1061672bf5105da28e635bb819bdcbde14d0e5d59db7",
+    "row_urls": "0ec19624e604eb7a2d3d0c2eb760858160ae2d60a8096e27eddbaad49c94519a",
+    "row_technical_tokens": "9d7c3fe8568ceb7c7bb0b8c9bab45ab3093205ad57d9364bb4c3c1f0169f4740",
+    "row_count_units": "9eac31b945b12918e85dd330fee5ceae0b7738d39b485122cfc4f8210662ff5f",
+    "row_labeled_quantities": "b3fc9c6291218498973292464faf68b7f1c30d7468fffd7a282049b5a61266a2",
+    "row_numeric_operators": "2b41a59af3ed6234a0c8bd6c121b198b2e2dde77121ae1a75b295220b89591bc",
+    "row_code_spans": "a298862e98d1ce8a90780b54c8c7b5a91961b40d096ecc83a0ecfbf9592f850a",
+    "row_symbols": "7373e7b5c685af15b2c2b6a346bda7be43e826f739ccab1fafca2a338ac16286",
     "case_ids": "f60b9cad357cf1bbf3a8e591e17251ef388f0ed6fbac01fa3fda9477419a14b6",
     "assertions": "5f12400d936aa208097077d680eefa74babb0ef6f0090984cc264a42031c7da0",
     "calibration_evidence": "ed86ecc2dcd80b2d248a931e87d47357c15586d4250b240b494cf2ccc3a4495e",
@@ -1252,11 +1252,11 @@ def verify_ledger_evidence(data=None, header=None):
         data = rows[1:]
     if header is not None and header != LEDGER_HEADER:
         raise AssertionError(f"ledger header changed: {header}")
-    if len(data) != 538:
+    if len(data) != 556:
         raise AssertionError(f"ledger row count changed: {len(data)}")
     nf7 = sum(len(row) == 7 for row in data)
     nf8 = sum(len(row) == 8 for row in data)
-    if (nf7, nf8) != (216, 322):
+    if (nf7, nf8) != (216, 340):
         raise AssertionError(f"ledger shape changed: nf7={nf7}, nf8={nf8}")
     actual = ledger_evidence(data)
     for key, value in actual.items():

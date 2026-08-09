@@ -1811,7 +1811,7 @@ class StorageReleaseAuthorizationTests(unittest.TestCase):
                 lambda *_, task_output=task_output: {
                     "kind": "success", "output": task_output,
                 },
-                now=ready_at,
+                now=task["created_at"],
             )
         durable_summary = history_execution.build_coverage_receipt(
             plan,
