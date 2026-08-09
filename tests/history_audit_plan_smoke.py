@@ -60,7 +60,7 @@ def profile(capabilities=None):
             "evidence_limit_tokens": 12288,
         }
     return {
-        "profile_id": "fake-safe-24k-v1",
+        "profile_id": "fake-safe-24k-v2",
         "base_profile_id": "safe-24k-v1",
         "status": "hard-complete-test-only",
         "counter": {"kind": "exact", "revision": "fake-utf8-byte-counter-v1"},
@@ -209,7 +209,7 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
 
     def test_safe_profile_550_records_has_at_least_46_shards(self):
         plan = self._build(records(550, payload_size=2))
-        self.assertEqual(plan["capacity_profile_id"], "fake-safe-24k-v1")
+        self.assertEqual(plan["capacity_profile_id"], "fake-safe-24k-v2")
         self.assertEqual(plan["base_capacity_profile_id"], "safe-24k-v1")
         self.assertGreaterEqual(len(plan["shards"]), 46)
 
@@ -283,13 +283,13 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
         }
         self.assertEqual(len(hashes), 6)
 
-    def test_attempt_provider_does_not_change_logical_task_key(self):
+    def test_legacy_v1_plan_cannot_mint_unverified_attempt_manifest(self):
         plan = self._build(records(1))
-        make_attempt = self._api("attempt_manifest")
-        codex = make_attempt(plan, 0, 0, self.capabilities["codex"])
-        grok = make_attempt(plan, 0, 0, self.capabilities["grok"])
-        self.assertEqual(codex["logical_task_key"], grok["logical_task_key"])
-        self.assertNotEqual(codex["attempt_id"], grok["attempt_id"])
+        with self.assertRaises(self._error()) as caught:
+            self._api("attempt_manifest")(
+                plan, 0, 0, self.capabilities["codex"]
+            )
+        self.assertEqual(caught.exception.code, "invalid_attempt")
 
     def test_candidate_gate_rejects_whole_set_before_fake_launch(self):
         reserve = self._api("reserve_candidate_set")
@@ -435,8 +435,9 @@ class HistoryAuditPlanSmoke(unittest.TestCase):
             records(1), capabilities=capabilities, capacity_profile=capacity
         )
         self.assertEqual(plan["provider_capability_profile_hashes"]["codex"], values["profile_hash"])
-        attempt = self._api("attempt_manifest")(plan, 0, 0, capabilities["codex"])
-        self.assertEqual(attempt["provenance"]["provider"], "codex")
+        self.assertEqual(
+            plan["provider_capabilities"]["codex"]["provider"], "codex"
+        )
 
     def test_grammar_only_command_intent_cannot_enter_hard_complete_plan(self):
         resolve_intent = getattr(

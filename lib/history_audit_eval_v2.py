@@ -138,9 +138,7 @@ def semantic_policy_authority(policy):
     return {
         "policy": normalized,
         "canonical_bytes": canonical,
-        "sha256": contract.framed_sha256(
-            "semantic-release-policy-v1", canonical
-        ),
+        "sha256": _policy_hash(normalized),
     }
 
 
@@ -240,9 +238,9 @@ def _validate_policy(policy):
             if (
                 not isinstance(value, (int, float))
                 or isinstance(value, bool)
-                or not math.isfinite(float(value))
                 or value < 0
                 or value > 1
+                or (isinstance(value, float) and not math.isfinite(value))
             ):
                 raise ValueError("production metric bound is invalid")
     return copy.deepcopy(policy)

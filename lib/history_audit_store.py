@@ -9045,9 +9045,13 @@ def _l2_attempt_capability_valid(plan_json, provider_pool_json, provenance_json)
         capability_fields = {
             "provider", "capability_profile_hash", "model_identity",
             "reasoning_identity", "model_default", "reasoning_default",
-            "executable", "cli_revision", "max_output_tokens",
-            "output_token_cap_binding", "output_token_cap_semantics",
+            "executable", "cli_revision",
         }
+        if plan["schema_version"] == history_audit_plan.RUNTIME_PLAN_SCHEMA:
+            capability_fields.update({
+                "max_output_tokens", "output_token_cap_binding",
+                "output_token_cap_semantics",
+            })
         runtime_fields = {
             "attempt_kind", "ordinal", "claim_token", "claim_fence"
         }
@@ -9067,10 +9071,8 @@ def _l2_attempt_capability_valid(plan_json, provider_pool_json, provenance_json)
             or provenance["claim_fence"] < 0
         ):
             return 0
-        expected_provider = (
-            pool[min(provenance["ordinal"], len(pool) - 1)]
-            if provenance["attempt_kind"] == "failover"
-            else pool[0]
+        expected_provider = history_audit_plan.runtime_attempt_provider(
+            pool, provenance["ordinal"], provenance["attempt_kind"]
         )
         bound = plan["provider_capabilities"].get(expected_provider)
         return 1 if (

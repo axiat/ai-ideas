@@ -33,7 +33,7 @@ def canonical_sha(domain, value):
 
 def runtime_plan():
     capacity_registry = load_json("history/capacity-profiles-v1.json")
-    capacity = copy.deepcopy(capacity_registry["profiles"]["fake-safe-24k-v1"])
+    capacity = copy.deepcopy(capacity_registry["profiles"]["fake-safe-24k-v2"])
     budget = load_json("history/l2-budget-v1.json")
     semantic = load_json("history/semantic-release-policy-v1.json")
     risk = load_json("history/risk-policy-v1.json")
@@ -147,7 +147,7 @@ def runtime_plan():
         ],
     }
     return {
-        "schema_version": "history-audit-plan-v2",
+        "schema_version": "history-audit-plan-v3",
         "run_id": snapshot_material["run_id"],
         "batch_id": snapshot_material["batch_id"],
         "candidate": candidate,
@@ -443,7 +443,7 @@ print(json.dumps({
             with self.subTest(label=label):
                 artifacts = copy.deepcopy(host_artifacts)
                 profile = artifacts["capacity-profiles-v1.json"]["profiles"][
-                    "fake-safe-24k-v1"
+                    "fake-safe-24k-v2"
                 ]
                 mutate(profile)
                 plan = runtime_plan()

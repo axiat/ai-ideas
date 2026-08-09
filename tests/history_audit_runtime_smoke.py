@@ -231,7 +231,7 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             if provider in active_providers
         }
         plan = {
-            "schema_version": "history-audit-plan-v2",
+            "schema_version": "history-audit-plan-v3",
             "run_id": "run-runtime-smoke",
             "batch_id": "batch-1",
             "candidate": candidate,

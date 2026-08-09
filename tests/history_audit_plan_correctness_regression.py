@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import pathlib
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -26,7 +27,9 @@ def load_policy(name):
     return json.loads((ROOT / "history" / name).read_text(encoding="utf-8"))
 
 
-def runtime_plan(*, reverse_records=False):
+def runtime_plan(
+    *, reverse_records=False, providers=("fake-provider",), authority_revision="v2"
+):
     candidate_id = "stg-v2-" + sha("correctness-candidate")
     candidate = {
         "candidate_id": candidate_id,
@@ -90,21 +93,27 @@ def runtime_plan(*, reverse_records=False):
         "expected_asset_ids": expected_ids,
         "records": records,
     }
-    capability = {
-        "provider": "fake-provider",
-        "capability_profile_hash": sha("capability"),
-        "model_identity": "fake-model-v1",
-        "reasoning_identity": "high",
-        "model_default": False,
-        "reasoning_default": False,
-        "executable": "fake-provider",
-        "cli_revision": "fake-cli-v1",
-        "max_output_tokens": 64,
-        "output_token_cap_binding": "test-provider-native-exact",
-        "output_token_cap_semantics": "reasoning-and-visible-output",
-    }
+    capabilities = {}
+    for provider in providers:
+        capability = {
+            "provider": provider,
+            "capability_profile_hash": sha("capability-" + provider),
+            "model_identity": "fake-model-v1",
+            "reasoning_identity": "high",
+            "model_default": False,
+            "reasoning_default": False,
+            "executable": provider,
+            "cli_revision": "fake-cli-v1",
+        }
+        if authority_revision == "v2":
+            capability.update({
+                "max_output_tokens": 64,
+                "output_token_cap_binding": "test-provider-native-exact",
+                "output_token_cap_semantics": "reasoning-and-visible-output",
+            })
+        capabilities[provider] = capability
     pools = {
-        stage: ["fake-provider"]
+        stage: list(providers)
         for stage in ("comparator", "map", "detail", "reduce")
     }
     return planner.build_test_only_runtime_plan(
@@ -113,7 +122,7 @@ def runtime_plan(*, reverse_records=False):
         snapshot=snapshot,
         candidate=candidate,
         provider_pools_ordered=pools,
-        provider_capabilities={"fake-provider": capability},
+        provider_capabilities=capabilities,
         intent="duplicate_search",
         matched_router_rule_ids=["test-rule"],
         semantic_policy_profile_id="semantic-test-v1",
@@ -123,6 +132,7 @@ def runtime_plan(*, reverse_records=False):
             "protocol_revision": "fake-protocol-v1",
         },
         max_output_tokens=64,
+        _authority_revision=authority_revision,
     )
 
 
@@ -323,11 +333,11 @@ class HistoryAuditPlanCorrectnessRegression(unittest.TestCase):
             ["asset-1", "asset-2"],
         )
 
-    def test_request_serializer_revisions_have_exact_distinct_bytes(self):
+    def test_request_serializer_revisions_preserve_exact_v1_bytes(self):
         value = {"value": "golden"}
         v1 = planner._serialize_request_value(value, "history-audit-request-v1")
         v2 = planner._serialize_request_value(value, "history-audit-request-v2")
-        self.assertEqual(v1, b'{"value":"golden"}\n')
+        self.assertEqual(v1, b'{"value":"golden"}')
         self.assertEqual(v2, b'{"value":"golden"}')
         plan = runtime_plan()
         shard = plan["shards"][0]
@@ -372,6 +382,182 @@ class HistoryAuditPlanCorrectnessRegression(unittest.TestCase):
                     with self.assertRaises(planner.AuditPlanError) as caught:
                         planner._host_runtime_authority()
                 self.assertEqual(caught.exception.code, "invalid_host_policy")
+
+    def test_legacy_v1_request_and_v2_plan_replay_exact_historical_bytes(self):
+        plan = runtime_plan(authority_revision="v1")
+        self.assertEqual(plan["schema_version"], "history-audit-plan-v2")
+        self.assertEqual(
+            plan["capacity_profile"]["serializer_revision"],
+            "history-audit-request-v1",
+        )
+        self.assertNotIn(
+            "max_output_tokens",
+            plan["provider_capabilities"]["fake-provider"],
+        )
+        self.assertFalse(plan["shards"][0]["serialized_request"].endswith("\n"))
+        material = planner.build_runtime_plan_material(plan)
+        self.assertEqual(
+            planner.runtime_plan_sha_from_material(material), plan["plan_sha"]
+        )
+        replay = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json,sys; "
+                    "from lib import history_audit_plan as p; "
+                    "m=json.load(sys.stdin); "
+                    "print(p.runtime_plan_sha_from_material(m))"
+                ),
+            ],
+            cwd=ROOT,
+            input=json.dumps(material),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(replay.returncode, 0, replay.stderr)
+        self.assertEqual(replay.stdout.strip(), plan["plan_sha"])
+
+        item_ids_plan = copy.deepcopy(plan)
+        item_ids_plan.pop("test_execution_binding")
+        for shard in item_ids_plan["shards"]:
+            raw = json.dumps(
+                {"item_ids": shard["item_ids"]}, sort_keys=True
+            ).encode("utf-8")
+            shard["serialized_request"] = raw.decode("utf-8")
+            shard["request_sha256"] = hashlib.sha256(raw).hexdigest()
+            shard["final_request_tokens"] = len(raw)
+        item_ids_plan["shard_plan_sha"] = planner.runtime_shard_plan_sha(
+            item_ids_plan["shards"]
+        )
+        item_ids_plan["plan_sha"] = planner.runtime_plan_sha(item_ids_plan)
+        item_ids_plan["logical_task_keys"] = [
+            contract.logical_task_key(
+                item_ids_plan["plan_sha"],
+                "map",
+                item_ids_plan["candidate"]["candidate_id"],
+                shard["request_sha256"],
+            )
+            for shard in item_ids_plan["shards"]
+        ]
+        replayed = planner.build_runtime_plan_material(item_ids_plan)
+        self.assertEqual(
+            planner.runtime_plan_sha_from_material(replayed),
+            item_ids_plan["plan_sha"],
+        )
+
+    def test_malformed_provider_containers_fail_with_plan_error(self):
+        mutations = (
+            ("provider_pools_ordered", []),
+            ("provider_pools_ordered", {"map": "fake-provider"}),
+            ("provider_capabilities", []),
+            ("provider_capability_profile_hashes", []),
+        )
+        for field, replacement in mutations:
+            with self.subTest(field=field, replacement=replacement):
+                plan = runtime_plan()
+                plan[field] = replacement
+                with self.assertRaises(planner.AuditPlanError):
+                    planner.runtime_plan_sha(plan)
+
+    def test_new_v3_plan_rejects_legacy_capability_and_profile_mixing(self):
+        plan = runtime_plan()
+        self.assertEqual(plan["schema_version"], "history-audit-plan-v3")
+        self.assertEqual(
+            plan["capacity_profile"]["serializer_revision"],
+            "history-audit-request-v2",
+        )
+        self.assertTrue(plan["capacity_profile_id"].endswith("-v2"))
+        for mutation in ("capability", "profile"):
+            with self.subTest(mutation=mutation):
+                changed = copy.deepcopy(plan)
+                if mutation == "capability":
+                    changed["provider_capabilities"]["fake-provider"].pop(
+                        "max_output_tokens"
+                    )
+                else:
+                    legacy = runtime_plan(authority_revision="v1")
+                    for field in (
+                        "capacity_profile_id", "base_capacity_profile_id",
+                        "capacity_profile", "authority_id",
+                    ):
+                        changed[field] = copy.deepcopy(legacy[field])
+                with self.assertRaises(planner.AuditPlanError):
+                    planner.runtime_plan_sha(changed)
+
+    def test_attempt_manifest_binds_plan_sha_and_frozen_plan_identity(self):
+        plan = runtime_plan()
+        capability = copy.deepcopy(
+            plan["provider_capabilities"]["fake-provider"]
+        )
+        forged_sha = copy.deepcopy(plan)
+        forged_sha["plan_sha"] = "f" * 64
+        with self.assertRaises(planner.AuditPlanError) as caught:
+            planner.attempt_manifest(forged_sha, 0, 0, capability)
+        self.assertEqual(caught.exception.code, "invalid_attempt")
+
+        jointly_forged = copy.deepcopy(plan)
+        jointly_forged["provider_capabilities"]["fake-provider"][
+            "model_identity"
+        ] = "fake-forged-model"
+        supplied = copy.deepcopy(
+            jointly_forged["provider_capabilities"]["fake-provider"]
+        )
+        with self.assertRaises(planner.AuditPlanError) as caught:
+            planner.attempt_manifest(jointly_forged, 0, 0, supplied)
+        self.assertEqual(caught.exception.code, "invalid_attempt")
+
+    def test_attempt_manifest_enforces_attempt_kind_routing(self):
+        plan = runtime_plan(providers=("fake-primary", "fake-failover"))
+        primary = plan["provider_capabilities"]["fake-primary"]
+        failover = plan["provider_capabilities"]["fake-failover"]
+        retry = planner.attempt_manifest(
+            plan, 0, 1, primary, attempt_kind="retry"
+        )
+        self.assertEqual(retry["provenance"]["provider"], "fake-primary")
+        failed_over = planner.attempt_manifest(
+            plan, 0, 1, failover, attempt_kind="failover"
+        )
+        self.assertEqual(
+            failed_over["provenance"]["provider"], "fake-failover"
+        )
+        for capability, attempt_kind in (
+            (failover, "retry"),
+            (primary, "failover"),
+        ):
+            with self.subTest(attempt_kind=attempt_kind):
+                with self.assertRaises(planner.AuditPlanError) as caught:
+                    planner.attempt_manifest(
+                        plan,
+                        0,
+                        1,
+                        capability,
+                        attempt_kind=attempt_kind,
+                    )
+                self.assertEqual(caught.exception.code, "invalid_attempt")
+
+    def test_huge_semantic_policy_integer_fails_closed(self):
+        policies = {
+            name: load_policy(name)
+            for name in (
+                "capacity-profiles-v1.json", "l2-budget-v1.json",
+                "risk-policy-v1.json", "settlement-policy-v1.json",
+                "semantic-release-policy-v1.json",
+            )
+        }
+        policies["semantic-release-policy-v1.json"]["production"][
+            "aggregate"
+        ]["minimum_recall_lower_bound"] = 10**10000
+        with mock.patch.object(
+            planner,
+            "_load_host_policy",
+            side_effect=lambda name: copy.deepcopy(policies[name]),
+        ):
+            with self.assertRaises(planner.AuditPlanError) as caught:
+                planner._host_runtime_authority()
+        self.assertEqual(caught.exception.code, "invalid_host_policy")
 
     def test_negative_shard_index_is_not_python_negative_indexing(self):
         with self.assertRaises(planner.AuditPlanError) as caught:

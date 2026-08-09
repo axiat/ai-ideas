@@ -25,12 +25,13 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from lib import history_audit_cli  # noqa: E402
 from lib import history_audit_plan  # noqa: E402
 from lib import history_audit_store  # noqa: E402
 
 CLI = ROOT / "lib/history_audit_cli.py"
-TEST_INPUT_SCHEMA = "history-audit-cli-test-only-shadow-input-v1"
-TEST_PLAN_SCHEMA = "history-audit-cli-test-only-plan-v1"
+TEST_INPUT_SCHEMA = "history-audit-cli-test-only-shadow-input-v2"
+TEST_PLAN_SCHEMA = "history-audit-cli-test-only-plan-v2"
 TEST_PROVIDER_PROTOCOL = "history-audit-test-provider-stdio-v1"
 RECEIPT_FIELDS = {
     "manifest_schema_version",
@@ -230,7 +231,7 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        capacity = capacity_registry["profiles"]["fake-safe-24k-v1"]
+        capacity = capacity_registry["profiles"]["fake-safe-24k-v2"]
         binding = capacity["provider_bindings"]["codex"]
         provider_capabilities = {
             "codex": {
@@ -334,12 +335,12 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
             "snapshot": snapshot,
             "capacity_profile": capacity,
             "capacity_profile_sha256": canonical_sha(
-                "history-audit-cli-test-capacity-v1", capacity
+                "history-audit-cli-test-capacity-v2", capacity
             ),
             "provider_pools_ordered": provider_pools,
             "provider_capabilities": provider_capabilities,
             "provider_capabilities_sha256": canonical_sha(
-                "history-audit-cli-test-provider-capabilities-v1",
+                "history-audit-cli-test-provider-capabilities-v2",
                 provider_capabilities,
             ),
             "fake_executable": {
@@ -359,7 +360,7 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
             "semantic_policy_profile_id": "semantic-release-v1",
         }
         self.input_bundle = self_hashed(
-            "history-audit-cli-test-only-shadow-input-v1",
+            "history-audit-cli-test-only-shadow-input-v2",
             input_material,
             "bundle_sha256",
         )
@@ -558,7 +559,7 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
             envelope["test_only_shadow_input"], self.input_bundle
         )
         runtime_plan = envelope["runtime_plan"]
-        self.assertEqual(runtime_plan["schema_version"], "history-audit-plan-v2")
+        self.assertEqual(runtime_plan["schema_version"], "history-audit-plan-v3")
         self.assertEqual(runtime_plan["authority_scope"], "test-only-shadow")
         self.assertEqual(runtime_plan["run_id"], "run-cli-p0")
         self.assertEqual(runtime_plan["candidate"], self.candidate)
@@ -567,11 +568,78 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
         envelope_sha = material.pop("plan_envelope_sha256")
         self.assertEqual(
             envelope_sha,
-            canonical_sha("history-audit-cli-test-only-plan-v1", material),
+            canonical_sha("history-audit-cli-test-only-plan-v2", material),
         )
         self.assertFalse(self.real_launch_log.exists())
         self.assertFalse(self.fake_log.exists())
         return envelope
+
+    def _legacy_envelope(self):
+        bundle = copy.deepcopy(self.input_bundle)
+        capacity = json.loads(
+            (ROOT / "history/capacity-profiles-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )["profiles"]["fake-safe-24k-v1"]
+        binding = capacity["provider_bindings"]["codex"]
+        capabilities = {
+            "codex": {
+                field: value
+                for field, value in self.input_bundle[
+                    "provider_capabilities"
+                ]["codex"].items()
+                if field not in {
+                    "max_output_tokens", "output_token_cap_binding",
+                    "output_token_cap_semantics",
+                }
+            }
+        }
+        self.assertEqual(
+            capabilities["codex"]["capability_profile_hash"],
+            binding["capability_profile_hash"],
+        )
+        bundle.update({
+            "schema_version": "history-audit-cli-test-only-shadow-input-v1",
+            "capacity_profile": capacity,
+            "capacity_profile_sha256": canonical_sha(
+                "history-audit-cli-test-capacity-v1", capacity
+            ),
+            "provider_capabilities": capabilities,
+            "provider_capabilities_sha256": canonical_sha(
+                "history-audit-cli-test-provider-capabilities-v1",
+                capabilities,
+            ),
+        })
+        bundle_material = dict(bundle)
+        bundle_material.pop("bundle_sha256")
+        bundle["bundle_sha256"] = canonical_sha(
+            "history-audit-cli-test-only-shadow-input-v1", bundle_material
+        )
+        runtime = history_audit_cli._build_test_runtime_plan(
+            bundle, ["legacy-rule"]
+        )
+        runtime_material = history_audit_plan.build_runtime_plan_material(
+            runtime
+        )
+        public_runtime = {
+            **runtime_material,
+            "plan_sha": runtime["plan_sha"],
+        }
+        material = {
+            "schema_version": "history-audit-cli-test-only-plan-v1",
+            "authority_scope": "test-only-shadow",
+            "production_authority": False,
+            "test_only_shadow_input": bundle,
+            "runtime_plan": public_runtime,
+            "runtime_plan_sha256": runtime["plan_sha"],
+        }
+        envelope = {
+            **material,
+            "plan_envelope_sha256": canonical_sha(
+                "history-audit-cli-test-only-plan-v1", material
+            ),
+        }
+        return envelope, runtime
 
     def _execute(
         self,
@@ -772,11 +840,95 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
             route_round_sha=history_audit_store._router_round_sha(normalized),
         )
         self.input_bundle = self_hashed(
-            "history-audit-cli-test-only-shadow-input-v1",
+            "history-audit-cli-test-only-shadow-input-v2",
             bundle,
             "bundle_sha256",
         )
         self.input_path.write_bytes(canonical_bytes(self.input_bundle))
+
+    def test_legacy_plan_load_reconstruct_and_store_capability_validation(self):
+        envelope, runtime = self._legacy_envelope()
+        validated = history_audit_cli._validated_test_plan(envelope)
+        self.assertEqual(validated, envelope)
+        rebuilt = history_audit_cli._reconstruct_test_runtime_plan(envelope)
+        self.assertEqual(rebuilt["plan_sha"], runtime["plan_sha"])
+        self.assertEqual(rebuilt["schema_version"], "history-audit-plan-v2")
+        self.assertNotEqual(
+            rebuilt["authority_id"],
+            history_audit_plan.build_test_only_runtime_plan(
+                run_id=self.input_bundle["run_id"],
+                batch_id=self.input_bundle["batch_id"],
+                snapshot=self.input_bundle["snapshot"],
+                candidate=self.input_bundle["candidate"],
+                provider_pools_ordered=self.input_bundle[
+                    "provider_pools_ordered"
+                ],
+                provider_capabilities=self.input_bundle[
+                    "provider_capabilities"
+                ],
+                intent=self.input_bundle["intent"],
+                matched_router_rule_ids=["legacy-rule"],
+                semantic_policy_profile_id=self.input_bundle[
+                    "semantic_policy_profile_id"
+                ],
+                test_execution_binding={
+                    "schema_version": "history-test-execution-binding-v1",
+                    "fake_executable_sha256": self.input_bundle[
+                        "fake_executable"
+                    ]["sha256"],
+                    "protocol_revision": TEST_PROVIDER_PROTOCOL,
+                },
+                max_output_tokens=self.input_bundle["capacity_profile"][
+                    "max_output_tokens"
+                ],
+            )["authority_id"],
+        )
+        runtime_material = copy.deepcopy(envelope["runtime_plan"])
+        runtime_material.pop("plan_sha")
+        provenance = {
+            **runtime_material["provider_capabilities"]["codex"],
+            "attempt_kind": "retry",
+            "ordinal": 1,
+            "claim_token": "legacy-claim",
+            "claim_fence": 1,
+        }
+        self.assertEqual(
+            history_audit_store._l2_attempt_capability_valid(
+                canonical_bytes(runtime_material).decode("utf-8"),
+                canonical_bytes(["codex"]).decode("utf-8"),
+                canonical_bytes(provenance).decode("utf-8"),
+            ),
+            1,
+        )
+        item_ids_plan = copy.deepcopy(runtime)
+        item_ids_plan.pop("test_execution_binding")
+        for shard in item_ids_plan["shards"]:
+            raw = json.dumps(
+                {"item_ids": shard["item_ids"]}, sort_keys=True
+            ).encode("utf-8")
+            shard.update({
+                "serialized_request": raw.decode("utf-8"),
+                "request_sha256": sha256(raw),
+                "final_request_tokens": len(raw),
+            })
+        item_ids_material = history_audit_plan.build_runtime_plan_material(
+            item_ids_plan
+        )
+        item_ids_provenance = {
+            **item_ids_material["provider_capabilities"]["codex"],
+            "attempt_kind": "retry",
+            "ordinal": 1,
+            "claim_token": "legacy-item-ids-claim",
+            "claim_fence": 1,
+        }
+        self.assertEqual(
+            history_audit_store._l2_attempt_capability_valid(
+                canonical_bytes(item_ids_material).decode("utf-8"),
+                canonical_bytes(["codex"]).decode("utf-8"),
+                canonical_bytes(item_ids_provenance).decode("utf-8"),
+            ),
+            1,
+        )
 
     def test_cli_argv_contract_exposes_explicit_test_only_lifecycle(self):
         expected = {
@@ -816,7 +968,7 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
         material.pop("bundle_sha256")
         material["snapshot"]["records"].reverse()
         self.input_bundle = self_hashed(
-            "history-audit-cli-test-only-shadow-input-v1",
+            "history-audit-cli-test-only-shadow-input-v2",
             material,
             "bundle_sha256",
         )
@@ -1010,7 +1162,7 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
                 material.pop("bundle_sha256")
                 material[field] = value
                 attack = self_hashed(
-                    "history-audit-cli-test-only-shadow-input-v1",
+                    "history-audit-cli-test-only-shadow-input-v2",
                     material,
                     "bundle_sha256",
                 )
@@ -1087,7 +1239,7 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
             "protocol_revision": TEST_PROVIDER_PROTOCOL,
         }
         attack = self_hashed(
-            "history-audit-cli-test-only-shadow-input-v1",
+            "history-audit-cli-test-only-shadow-input-v2",
             bundle,
             "bundle_sha256",
         )
@@ -1137,13 +1289,13 @@ class HistoryAuditCliP0LifecycleSmoke(unittest.TestCase):
         runtime_material = copy.deepcopy(tampered["runtime_plan"])
         runtime_material.pop("plan_sha")
         runtime_sha = canonical_sha(
-            "history-audit-plan-v2", runtime_material
+            "history-audit-plan-v3", runtime_material
         )
         tampered["runtime_plan"]["plan_sha"] = runtime_sha
         tampered["runtime_plan_sha256"] = runtime_sha
         tampered.pop("plan_envelope_sha256")
         tampered = self_hashed(
-            "history-audit-cli-test-only-plan-v1",
+            "history-audit-cli-test-only-plan-v2",
             tampered,
             "plan_envelope_sha256",
         )

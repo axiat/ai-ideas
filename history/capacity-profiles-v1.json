@@ -43,6 +43,57 @@
         "sha256": "3d54d3b6376b8f6a85ca302411a588a9632b21fbb1e8898c8c3fb2481eeec7a8",
         "text": "schema-v1"
       },
+      "serializer_revision": "history-audit-request-v1",
+      "usage_source": "fake-usage-v1",
+      "expires_at": "2099-01-01T00:00:00+00:00",
+      "provider_bindings": {
+        "codex": {
+          "state": "hard-complete",
+          "capability_profile_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "model_identity": "fake-model-v1",
+          "reasoning_identity": "high",
+          "model_default": false,
+          "reasoning_default": false,
+          "executable": "codex",
+          "cli_revision": "fake-cli-v1",
+          "capability_serializer_revision": "portable-agent-command-v1",
+          "request_serializer_revision": "history-audit-request-v1",
+          "immutable_capacity_identity": "fake-capacity-v1",
+          "prompt_sha256": "fc9eb607c91880dc0f55b213fda2a4ce801e8fda2c2239bc2d4020d6e697a87c",
+          "schema_sha256": "3d54d3b6376b8f6a85ca302411a588a9632b21fbb1e8898c8c3fb2481eeec7a8",
+          "evidence_limit_tokens": 12288
+        },
+        "kimi": {"state": "unbudgetable"},
+        "grok": {"state": "unbudgetable"},
+        "opencode": {"state": "unbudgetable"},
+        "agy": {"state": "unbudgetable"}
+      }
+    },
+    "fake-safe-24k-v2": {
+      "profile_id": "fake-safe-24k-v2",
+      "base_profile_id": "safe-24k-v1",
+      "status": "hard-complete-test-only",
+      "counter": {
+        "kind": "exact",
+        "revision": "fake-utf8-byte-counter-v1"
+      },
+      "context_tokens": 24576,
+      "max_input_tokens": 21504,
+      "evidence_limit_tokens": 12288,
+      "evidence_max_bytes": 12288,
+      "max_output_tokens": 3072,
+      "item_cap": 12,
+      "utilization_ppm": 1000000,
+      "prompt": {
+        "id": "map-prompt-v1",
+        "sha256": "fc9eb607c91880dc0f55b213fda2a4ce801e8fda2c2239bc2d4020d6e697a87c",
+        "text": "prompt-v1"
+      },
+      "schema": {
+        "id": "map-output-v1",
+        "sha256": "3d54d3b6376b8f6a85ca302411a588a9632b21fbb1e8898c8c3fb2481eeec7a8",
+        "text": "schema-v1"
+      },
       "serializer_revision": "history-audit-request-v2",
       "usage_source": "fake-usage-v1",
       "expires_at": "2099-01-01T00:00:00+00:00",
@@ -58,7 +109,7 @@
           "cli_revision": "fake-cli-v1",
           "capability_serializer_revision": "portable-agent-command-v1",
           "request_serializer_revision": "history-audit-request-v2",
-          "immutable_capacity_identity": "fake-capacity-v1",
+          "immutable_capacity_identity": "fake-capacity-v2",
           "max_output_tokens": 3072,
           "output_token_cap_binding": "test-provider-native-exact",
           "output_token_cap_semantics": "reasoning-and-visible-output",
