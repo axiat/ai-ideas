@@ -1480,7 +1480,7 @@ class ActualLedgerBudgetTests(unittest.TestCase):
                 history_store.import_tsv_epoch(conn, ledger)
                 self.assertEqual(
                     conn.execute("SELECT count(*) FROM candidates").fetchone()[0],
-                    538,
+                    556,
                 )
                 policy = projection.load_policy(
                     ROOT / "history/retrieval-policy-v1.json"
@@ -1522,6 +1522,9 @@ class ActualLedgerBudgetTests(unittest.TestCase):
                             "verdict": first["verdict"],
                             "reason": first["reason"],
                             "category": first["category"],
+                            "facets": {
+                                "failure_pattern": "unrelated failure wording"
+                            },
                         },
                         "failure_pattern_search",
                     ),

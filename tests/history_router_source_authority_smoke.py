@@ -188,6 +188,53 @@ class HistoryRouterSourceAuthoritySmoke(unittest.TestCase):
                 }
             ),
         )
+        parsed_requests = [
+            history_contract_v2.parse_json_bytes(
+                shard["serialized_request"].encode("utf-8")
+            )
+            for shard in changed["shards"]
+        ]
+        if all(set(parsed) == {"item_ids"} for parsed in parsed_requests):
+            for shard in changed["shards"]:
+                raw = json.dumps(
+                    {"item_ids": shard["item_ids"]}, sort_keys=True
+                ).encode("utf-8")
+                shard["serialized_request"] = raw.decode("utf-8")
+                shard["request_sha256"] = hashlib.sha256(raw).hexdigest()
+                shard["final_request_tokens"] = len(raw)
+        else:
+            request_snapshot = copy.deepcopy(parsed_requests[0]["snapshot"])
+            for field in (
+                "snapshot_id", "snapshot_hash", "history_as_of_watermark",
+                "current_batch_id_namespace", "current_batch_ids_hash",
+                "current_batch_ids", "exclusion_policy_sha",
+                "expected_asset_ids_hash", "expected_asset_ids",
+            ):
+                if field in request_snapshot:
+                    request_snapshot[field] = copy.deepcopy(snapshot[field])
+            records = history_audit_plan.runtime_snapshot_records(
+                request_snapshot["records"]
+            )
+            items_by_id = {
+                item["item_id"]: item
+                for item in history_audit_plan._record_items(records)
+            }
+            for shard in changed["shards"]:
+                selected = [
+                    items_by_id[item_id] for item_id in shard["item_ids"]
+                ]
+                raw, byte_count = history_audit_plan._serialized_request(
+                    request_snapshot,
+                    candidate,
+                    changed["capacity_profile"],
+                    selected,
+                )
+                shard["serialized_request"] = raw.decode("utf-8")
+                shard["request_sha256"] = hashlib.sha256(raw).hexdigest()
+                shard["final_request_tokens"] = byte_count
+        changed["shard_plan_sha"] = history_audit_plan.runtime_shard_plan_sha(
+            changed["shards"]
+        )
         changed["plan_sha"] = history_audit_plan.runtime_plan_sha(changed)
         changed["logical_task_keys"] = [
             history_contract_v2.logical_task_key(
@@ -290,14 +337,22 @@ class HistoryRouterSourceAuthoritySmoke(unittest.TestCase):
         validated = history_audit_eval_v2.validate_qrels(
             rows, EVAL_FIXTURE.partitions(rows), scope="real"
         )
-        evidence = EVAL_FIXTURE.evidence(
-            dependency_overrides=dependencies
+        outputs = EVAL_FIXTURE.outputs(rows)
+        evidence = EVAL_FIXTURE.evaluation_evidence(
+            rows,
+            outputs,
+            dependency_overrides=dependencies,
         )
+        identities = history_audit_eval_v2.semantic_evaluation_identities(
+            validated, outputs, policy
+        )
+        evidence["evaluation_hash"] = identities["evaluation_hash"]
+        evidence["metric_report_hash"] = identities["metric_report_hash"]
         history_audit_store.publish_semantic_dependency_heads(
             runtime.conn, dependencies, now=self._now(6)
         )
         stored = history_audit_store.persist_semantic_qualification(
-            runtime.conn, validated, EVAL_FIXTURE.outputs(rows), policy,
+            runtime.conn, validated, outputs, policy,
             evidence, now=self._now(7),
         )
         self.assertFalse(stored["production_qualified"])
@@ -2136,8 +2191,8 @@ class HistoryRouterSourceAuthoritySmoke(unittest.TestCase):
                 ).fetchall()
                 self.assertEqual(len(plans), 2)
                 self.assertEqual(len(shards), 2)
-                self.assertEqual(plans[0][1], plans[1][1])
-                self.assertEqual(shards[0][1], shards[1][1])
+                self.assertNotEqual(plans[0][1], plans[1][1])
+                self.assertNotEqual(shards[0][1], shards[1][1])
                 self.assertNotEqual(plans[0][0], plans[1][0])
                 self.assertEqual(conn.execute(
                     "PRAGMA foreign_key_check"

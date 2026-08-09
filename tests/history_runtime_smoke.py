@@ -121,6 +121,9 @@ class RuntimeFixture(unittest.TestCase):
                 f"## {candidate_id}\n"
                 f"One-Sentence Story: {story}\n"
                 "Theme: Evaluation and Diagnostics\n"
+                "Target Failure: bounded synthetic failure\n"
+                "Form: remove-load-bearing-assumption\n"
+                "Minimal Falsification Experiment: compare bounded arms\n"
             ),
         }
         candidate["content_sha256"] = (
@@ -1712,8 +1715,7 @@ class ContainedStageContract(RuntimeFixture):
             ),
             mounted_inputs={
                 item["mirror_path"]: (
-                    pathlib.Path(prepared["manifest_path"]).parent
-                    / ("inputs-" + manifest["seat_id"])
+                    pathlib.Path(manifest["input_roots"][0])
                     / item["mirror_path"]
                 ).read_bytes()
                 for item in manifest["inputs"]
