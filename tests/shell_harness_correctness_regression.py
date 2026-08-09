@@ -187,10 +187,153 @@ class ShellHarnessCorrectnessRegression(unittest.TestCase):
             prompt = capture.read_text(encoding="utf-8")
             self.assertIn(f"Write artifacts only under {mirrors[1]}/tmp/out/", prompt)
 
+    def test_awr_wrapper_shares_worker_launch_root_without_double_gate(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            for relative in ("awr-side.sh", "agy-worker.sh", "rubric.md", "brainstorming_policy.md"):
+                target = repo / relative
+                target.write_bytes((ROOT / relative).read_bytes())
+            for relative in (
+                "lib/resolve_cmd.sh",
+                "roles/awr.md",
+                "roles/awr-priorwork.md",
+                "roles/awr-judge.md",
+                "tests/fake_agent.sh",
+            ):
+                target = repo / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((ROOT / relative).read_bytes())
+            for relative in ("awr-side.sh", "agy-worker.sh", "tests/fake_agent.sh"):
+                (repo / relative).chmod(0o755)
+            (repo / "tmp").mkdir()
+
+            ledger_lines = (ROOT / "ledger.tsv").read_text(encoding="utf-8").splitlines()
+            selected = [ledger_lines[0]]
+            for line in ledger_lines[1:]:
+                fields = line.split("\t")
+                if len(fields) > 4 and fields[1] == "hunt" and fields[4] == "accept-w-rev":
+                    selected.append(line)
+                    break
+            self.assertEqual(len(selected), 2)
+            (repo / "ledger.tsv").write_text("\n".join(selected) + "\n", encoding="utf-8")
+
+            bindir = root / "bin"
+            bindir.mkdir()
+            launch_log = root / "launches.tsv"
+            release = root / "release"
+            fake_agy = bindir / "agy"
+            fake_agy.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, sys, time\n"
+                "prompt = sys.argv[-1]\n"
+                "label = 'external' if 'external-probe' in prompt else 'wrapper'\n"
+                "with open(os.environ['LAUNCH_LOG'], 'a') as stream:\n"
+                "    stream.write(f'{label}\\t{time.time_ns()}\\n')\n"
+                "    stream.flush()\n"
+                "    os.fsync(stream.fileno())\n"
+                "if label == 'external':\n"
+                "    deadline = time.monotonic() + 15\n"
+                "    while not os.path.exists(os.environ['RELEASE_FILE']):\n"
+                "        if time.monotonic() >= deadline:\n"
+                "            raise SystemExit(124)\n"
+                "        time.sleep(0.02)\n"
+                "    raise SystemExit(0)\n"
+                "agent = os.environ['FAKE_AGENT_BIN']\n"
+                "os.execv(agent, [agent, prompt])\n",
+                encoding="utf-8",
+            )
+            fake_agy.chmod(0o755)
+            shared_root = root / "shared-launch-root"
+            shared_root.mkdir()
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": str(bindir) + os.pathsep + env.get("PATH", ""),
+                    "AGY_LAUNCH_ROOT": str(shared_root),
+                    "AGY_LAUNCH_GAP_SEC": "2",
+                    "LAUNCH_LOG": str(launch_log),
+                    "RELEASE_FILE": str(release),
+                    "FAKE_AGENT_BIN": str(repo / "tests/fake_agent.sh"),
+                    "FAKE_AGENT_MODE": "awr-ready",
+                }
+            )
+            external = None
+            awr = None
+            try:
+                external = subprocess.Popen(
+                    [str(repo / "agy-worker.sh"), "external-probe"],
+                    cwd=repo,
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                deadline = time.monotonic() + 5
+                while (
+                    (not launch_log.exists() or not launch_log.read_text(encoding="utf-8").strip())
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.02)
+                self.assertTrue(launch_log.exists(), "external worker never reached launch barrier")
+
+                awr_env = env | {
+                    "HISTORY_RUNTIME_ABI": "v1",
+                    "SIDE_CMD": "./agy-worker.sh",
+                    "SIDE_RESEARCH_CMD": "./agy-worker.sh",
+                    "SIDE_PRIORWORK_CMD": "./agy-worker.sh",
+                    "SIDE_JUDGE_CMD": "./agy-worker.sh",
+                    "SIDE_POLL_SEC": "0",
+                    "SIDE_MAX_ROUNDS": "1",
+                    "SIDE_MAX_BAD": "1",
+                    "SIDE_GAP_SEC": "2",
+                    "SIDE_GAP_MIN_SEC": "0",
+                    "SIDE_GAP_MAX_SEC": "0",
+                    "SIDE_COOLDOWN_SEC": "0",
+                }
+                awr = subprocess.Popen(
+                    ["bash", "./awr-side.sh"],
+                    cwd=repo,
+                    env=awr_env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                deadline = time.monotonic() + 6
+                while (
+                    len(launch_log.read_text(encoding="utf-8").splitlines()) < 2
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.02)
+                launches = launch_log.read_text(encoding="utf-8").splitlines()
+                self.assertGreaterEqual(len(launches), 2, "AwR wrapper never reached launch barrier")
+                first_label, first_ns = launches[0].split("\t")
+                second_label, second_ns = launches[1].split("\t")
+                self.assertEqual((first_label, second_label), ("external", "wrapper"))
+                self.assertGreaterEqual((int(second_ns) - int(first_ns)) / 1e9, 0.75)
+
+                release.touch()
+                self.assertEqual(external.wait(timeout=5), 0)
+                awr_output, _ = awr.communicate(timeout=15)
+                self.assertEqual(awr.returncode, 0, awr_output)
+                self.assertTrue((shared_root / "tmp/agy.last-launch").is_file())
+                self.assertFalse((repo / "tmp/agy.last-launch").exists())
+            finally:
+                release.touch()
+                for process in (external, awr):
+                    if process is not None and process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=3)
+
     def test_harnesses_forward_agy_output_hints(self):
         self.assertIn('AGY_OUT_HINT="$(dirname "$rel")/" $cmd', AWR)
-        self.assertIn("*agy-worker.sh) gate; is_agy_wrapper=1", AWR)
-        self.assertIn("AGY_LAUNCH_GAP_SEC=0 $cmd", AWR)
+        self.assertIn("*agy-worker.sh) is_agy_wrapper=1", AWR)
+        self.assertNotIn("*agy-worker.sh) gate;", AWR)
+        self.assertIn('AGY_LAUNCH_GAP_SEC="$gap" $cmd', AWR)
         self.assertIn("AGY_OUT_HINT=tmp/out/ GROK_DISABLE_WEB=1", CALIB)
 
 

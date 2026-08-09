@@ -612,7 +612,7 @@ run_agent() {
   read -r first _ <<<"$cmd"
   case "$first" in
     ''|agy|*/agy) gate ;;
-    *agy-worker.sh) gate; is_agy_wrapper=1 ;;
+    *agy-worker.sh) is_agy_wrapper=1 ;;
   esac
   sandbox=$(mktemp -d "$statedir/run.XXXXXX") || return 1
   rel=${target#"$repo"/}
@@ -636,10 +636,10 @@ ${prompt_in_sandbox}" < /dev/null >> "$logf" 2>&1 )
   else
     # Wrapper root overrides pin every backend's working root into the mirror; other backends ignore them.
     if [ "$is_agy_wrapper" -eq 1 ]; then
-      # SIDE_GAP_SEC was enforced above; disable the adapter's own gate so one
-      # AwR call observes exactly one repository-wide launch delay.
+      # The adapter owns the shared launch root and lock. Give it AwR's gap so
+      # wrapper and non-wrapper launches observe one gate without a double wait.
       ( cd "$sandbox" && GROK_REPO="$sandbox" CLAUDE_REPO="$sandbox" AGY_REPO="$sandbox" \
-          AGY_OUT_HINT="$(dirname "$rel")/" AGY_LAUNCH_GAP_SEC=0 $cmd "${pre}
+          AGY_OUT_HINT="$(dirname "$rel")/" AGY_LAUNCH_GAP_SEC="$gap" $cmd "${pre}
 
 ${prompt_in_sandbox}" < /dev/null >> "$logf" 2>&1 )
     else
