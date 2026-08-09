@@ -9,6 +9,7 @@ import datetime
 import hashlib
 import hmac
 import json
+import math
 import os
 import pathlib
 import re
@@ -763,7 +764,9 @@ def _synthetic_relation_heldout_counts(*, advisory=False):
     }
 
 
-def _synthetic_evaluation_evidence(*, all_gates_passed=True):
+def _synthetic_evaluation_evidence(
+    commitment, *, all_gates_passed=True
+):
     def metric_gate(minimum=0.8):
         observed = 0.9 if all_gates_passed else 0.1
         lower = 0.85 if all_gates_passed else 0.05
@@ -801,21 +804,33 @@ def _synthetic_evaluation_evidence(*, all_gates_passed=True):
     evidence = {
         "schema_version": 1,
         "primary_metrics": {
-            name: metric_gate()
+            name: metric_gate(commitment["selected_thresholds"][name])
             for name in history_eval.RELATION_GAINS
         },
         "error_budgets": {
-            "max_false_duplicate_rate": budget_gate(),
-            "max_false_internal_no_match_rate": budget_gate(),
+            "max_false_duplicate_rate": budget_gate(
+                commitment["error_budgets"]["max_false_duplicate_rate"]
+            ),
+            "max_false_internal_no_match_rate": budget_gate(
+                commitment["error_budgets"][
+                    "max_false_internal_no_match_rate"
+                ]
+            ),
         },
         "resource_limits": {
-            "latency_target_ms_p95": resource_gate(1000),
-            "token_budget": resource_gate(4096),
+            "latency_target_ms_p95": resource_gate(
+                commitment["latency_target_ms_p95"]
+            ),
+            "token_budget": resource_gate(commitment["token_budget"]),
         },
         "selected_depths": {
             name: {
-                "observed": 10 if all_gates_passed else 99,
-                "maximum": 50,
+                "observed": (
+                    max(0, commitment["selected_depths"][name] - 1)
+                    if all_gates_passed
+                    else commitment["selected_depths"][name] + 1
+                ),
+                "maximum": commitment["selected_depths"][name],
                 "passed": all_gates_passed,
             }
             for name in (
@@ -889,7 +904,7 @@ def synthetic_calibration_capability_body(
 ):
     digests = digests or {}
     return {
-        "schema_version": 1,
+        "schema_version": history_eval.CAPABILITY_SCHEMA_VERSION,
         "scope": SYNTHETIC_SCOPE,
         "trust_root_id": trust_root_id,
         "policy_commitment_sha256": sha256(
@@ -915,7 +930,11 @@ def synthetic_calibration_capability_body(
         ),
         "heldout_run_nonce": receipt["run_nonce"],
         "heldout_started_at": "2026-07-24T00:00:01Z",
-        "evaluation_evidence": _synthetic_evaluation_evidence(),
+        "heldout_completed_at": "2026-07-24T00:00:02Z",
+        "criteria_sha256": history_eval._criteria_sha(commitment),
+        "evaluation_evidence": _synthetic_evaluation_evidence(
+            commitment
+        ),
     }
 
 
@@ -928,21 +947,34 @@ def _capability_seal_material(value):
 
 def seal_test_calibration_capability(value, trust_root):
     """Seal one synthetic capability for offline contract tests."""
+    version = value.get("schema_version") if isinstance(value, dict) else None
     if (
-        not isinstance(value, dict)
-        or type(value.get("schema_version")) is not int
-        or value["schema_version"] != 1
+        type(version) is not int
+        or version not in {
+            history_eval.LEGACY_CAPABILITY_SCHEMA_VERSION,
+            history_eval.CAPABILITY_SCHEMA_VERSION,
+        }
     ):
         raise CalibrationError(
             "calibration capability schema is invalid"
         )
     result = dict(value)
+    domain_version = (
+        "v2"
+        if version == history_eval.CAPABILITY_SCHEMA_VERSION
+        else "v1"
+    )
     result["canonical_seal_sha256"] = sha256(
-        b"history-calibration-capability-v1\0"
+        ("history-calibration-capability-%s\0" % domain_version).encode(
+            "ascii"
+        )
         + canonical_bytes(_capability_seal_material(result))
     )
     result["signature"] = _test_signature(
-        b"history-calibration-capability-signature-v1\0",
+        (
+            "history-calibration-capability-signature-%s\0"
+            % domain_version
+        ).encode("ascii"),
         result,
         trust_root,
     )
@@ -1030,9 +1062,12 @@ def _validate_commitment(commitment, policy):
         )
     ):
         raise CalibrationError("selected depths are invalid")
+    latency_target = commitment["latency_target_ms_p95"]
     if (
-        type(commitment["latency_target_ms_p95"]) is not int
-        or commitment["latency_target_ms_p95"] < 1
+        isinstance(latency_target, bool)
+        or not isinstance(latency_target, (int, float))
+        or not math.isfinite(float(latency_target))
+        or float(latency_target) <= 0
         or type(commitment["token_budget"]) is not int
         or commitment["token_budget"]
         != policy.get("max_retrieval_tokens")
@@ -1160,6 +1195,56 @@ def _validate_capability(
         raise CalibrationError(
             "calibration held-out counts are insufficient"
         )
+    capability_version = capability["schema_version"]
+    if capability_version == history_eval.CAPABILITY_SCHEMA_VERSION:
+        if capability["criteria_sha256"] != history_eval._criteria_sha(
+            commitment
+        ):
+            raise CalibrationError(
+                "calibration capability criteria are invalid"
+            )
+        evidence = capability["evaluation_evidence"]
+        expected_primary = commitment["selected_thresholds"]
+        expected_budgets = commitment["error_budgets"]
+        expected_resources = {
+            "latency_target_ms_p95": commitment[
+                "latency_target_ms_p95"
+            ],
+            "token_budget": commitment["token_budget"],
+        }
+        expected_depths = commitment["selected_depths"]
+        if (
+            any(
+                evidence["primary_metrics"][name]["minimum"]
+                != expected_primary[name]
+                for name in expected_primary
+            )
+            or any(
+                evidence["error_budgets"][name]["maximum"]
+                != expected_budgets[name]
+                for name in expected_budgets
+            )
+            or any(
+                evidence["resource_limits"][name]["maximum"]
+                != expected_resources[name]
+                for name in expected_resources
+            )
+            or any(
+                evidence["selected_depths"][name]["maximum"]
+                != expected_depths[name]
+                for name in expected_depths
+            )
+        ):
+            raise CalibrationError(
+                "calibration capability criteria are invalid"
+            )
+    elif required_scope == PRODUCTION_SCOPE:
+        raise CalibrationError(
+            "legacy capability cannot enable production"
+        )
+    sealed_at = _parse_utc(
+        commitment["sealed_at"], "commitment seal time"
+    )
     witness_time = _parse_utc(
         receipt["witness_time"], "witness time"
     )
@@ -1167,12 +1252,28 @@ def _validate_capability(
         capability["heldout_started_at"],
         "held-out start time",
     )
-    if witness_time >= heldout_start:
-        raise CalibrationError(
-            "pre-held-out receipt does not precede held-out start"
+    if capability_version == history_eval.CAPABILITY_SCHEMA_VERSION:
+        heldout_completed = _parse_utc(
+            capability["heldout_completed_at"],
+            "held-out completion time",
         )
+    else:
+        heldout_completed = heldout_start
+    if not (
+        sealed_at < witness_time < heldout_start <= heldout_completed
+    ):
+        raise CalibrationError(
+            "calibration capability chronology is invalid"
+        )
+    domain_version = (
+        "v2"
+        if capability_version == history_eval.CAPABILITY_SCHEMA_VERSION
+        else "v1"
+    )
     expected_seal = sha256(
-        b"history-calibration-capability-v1\0"
+        ("history-calibration-capability-%s\0" % domain_version).encode(
+            "ascii"
+        )
         + canonical_bytes(_capability_seal_material(capability))
     )
     if capability["canonical_seal_sha256"] != expected_seal:
@@ -1181,7 +1282,10 @@ def _validate_capability(
         unsigned = dict(capability)
         signature = unsigned.pop("signature")
         expected_signature = _test_signature(
-            b"history-calibration-capability-signature-v1\0",
+            (
+                "history-calibration-capability-signature-%s\0"
+                % domain_version
+            ).encode("ascii"),
             unsigned,
             trust_root,
         )
