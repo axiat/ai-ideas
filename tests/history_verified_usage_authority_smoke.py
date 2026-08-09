@@ -384,6 +384,33 @@ class HistoryVerifiedUsageAuthoritySmoke(unittest.TestCase):
         self.assertIsNone(row["currency"])
         self.assertEqual(row["authority_scope"], "test_fake")
 
+    def test_budget_settlement_currency_presence_matches_reservation(self):
+        required = {
+            "input_tokens": 3,
+            "output_tokens": 2,
+            "provider_usage_units": 5,
+        }
+        cases = (
+            (required, required, 1),
+            ({**required, "currency_micros": 9},
+             {**required, "currency_micros": 7}, 1),
+            ({**required, "currency_micros": 9}, required, 0),
+            (required, {**required, "currency_micros": 7}, 0),
+        )
+        for reserved, actual, expected in cases:
+            with self.subTest(
+                reserved_currency="currency_micros" in reserved,
+                actual_currency="currency_micros" in actual,
+            ):
+                valid = self.runtime.conn.execute(
+                    "SELECT audit_l2_budget_settlement_valid(1, ?, ?)",
+                    (
+                        history_contract_v2.canonical_bytes(actual).decode(),
+                        history_contract_v2.canonical_bytes(reserved).decode(),
+                    ),
+                ).fetchone()[0]
+                self.assertEqual(valid, expected)
+
     def test_verified_actual_overrides_reservation_but_completion_stays_empty(self):
         started = self._start()
         output = self.runtime._output()
@@ -574,7 +601,7 @@ class HistoryVerifiedUsageAuthoritySmoke(unittest.TestCase):
         self.assertNotIn("currency_micros", summary["realized"])
         self.assertEqual(summary["realized"]["unverified_usage_calls"], 0)
 
-    def test_billable_cancelled_attempt_counts_verified_actual_usage(self):
+    def test_actual_currency_requires_currency_reservation(self):
         started = self._start()
         actual = {
             "input_tokens": 4,
@@ -591,44 +618,23 @@ class HistoryVerifiedUsageAuthoritySmoke(unittest.TestCase):
             price_source="fake-price-v1",
             currency="USD",
         )
-        result = self._api("cancel_attempt")(
-            self.runtime.conn,
-            started["attempt"]["attempt_id"],
-            billing_state="billable",
-            usage=token,
-            now=started["terminal_at"],
-        )
-        self.assertEqual(result["outcome"], "cancelled")
-        row = self.runtime.conn.execute(
+        with self.assertRaises(sqlite3.IntegrityError):
+            self._api("cancel_attempt")(
+                self.runtime.conn,
+                started["attempt"]["attempt_id"],
+                billing_state="billable",
+                usage=token,
+                now=started["terminal_at"],
+            )
+        counts = self.runtime.conn.execute(
             """
-            SELECT budget.usage_verified, budget.actual_json,
-                   cost.usage_source, cost.billing_state,
-                   cost.price_source, cost.currency,
-                   completion.attempt_id AS completion_id
-            FROM audit_runtime_budget_settlements_v2 budget
-            JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
-            LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
-            WHERE budget.attempt_id=?
-            """,
-            (started["attempt"]["attempt_id"],),
+            SELECT
+              (SELECT count(*) FROM audit_runtime_budget_settlements_v2),
+              (SELECT count(*) FROM audit_attempt_cost_settlements_v2),
+              (SELECT count(*) FROM audit_attempt_completions_v2)
+            """
         ).fetchone()
-        self.assertEqual(row["usage_verified"], 1)
-        self.assertEqual(json.loads(row["actual_json"]), actual)
-        self.assertEqual(row["usage_source"], "verified_actual")
-        self.assertEqual(row["billing_state"], "billable")
-        self.assertEqual(row["price_source"], "fake-price-v1")
-        self.assertEqual(row["currency"], "USD")
-        self.assertIsNone(row["completion_id"])
-        summary = self._summary(started)
-        realized = summary["realized"]
-        self.assertEqual(realized["calls"], 1)
-        self.assertEqual(realized["billable_cancelled_calls"], 1)
-        self.assertEqual(realized["input_tokens"], actual["input_tokens"])
-        self.assertEqual(realized["provider_usage_units"], 5)
-        self.assertEqual(realized["currency_micros"], 7)
-        self.assertEqual(realized["unverified_usage_calls"], 0)
-        self.assertTrue(summary["currency_complete"])
-        self.assertTrue(summary["accounting_complete"])
+        self.assertEqual(tuple(counts), (0, 0, 0))
 
     def test_direct_sql_cannot_forge_update_or_delete_authority(self):
         plan = self._two_shard_plan()

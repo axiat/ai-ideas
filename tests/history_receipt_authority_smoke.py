@@ -486,11 +486,10 @@ class L2ReceiptAuthoritySmoke(unittest.TestCase):
                 "input_tokens": 3,
                 "output_tokens": 2,
                 "provider_usage_units": 5,
-                "currency_micros": 17,
             },
-            billing_state="billable",
-            price_source="fake-price-v1",
-            currency="USD",
+            billing_state="unknown",
+            price_source=None,
+            currency=None,
         )
         valid = runtime._api("complete_attempt")(
             runtime.conn, runtime.cas_root, task_key, attempt["attempt_id"],
@@ -548,7 +547,7 @@ class L2ReceiptAuthoritySmoke(unittest.TestCase):
         )
         self.assertTrue(verified["execution_authorized"])
 
-    def test_verified_usage_receipt_binds_exact_sidecar_and_price_authority(self):
+    def test_verified_usage_receipt_binds_exact_unpriced_sidecar(self):
         runtime = self.runtime
         plan, attempt, token, terminal_at = self._verified_completion()
         _, receipt = self._receipt_for_plan(plan)
@@ -567,9 +566,9 @@ class L2ReceiptAuthoritySmoke(unittest.TestCase):
             item["attempt_id"]: item for item in provenance["attempts"]
         }[attempt["attempt_id"]]
         self.assertEqual(bound["usage_authority_sha256"], token)
-        self.assertEqual(bound["billing_state"], "billable")
-        self.assertEqual(bound["price_source"], "fake-price-v1")
-        self.assertEqual(bound["currency"], "USD")
+        self.assertEqual(bound["billing_state"], "unknown")
+        self.assertIsNone(bound["price_source"])
+        self.assertIsNone(bound["currency"])
 
         runtime.conn.close()
         runtime.conn = sqlite3.connect(runtime.db_path)
@@ -597,14 +596,14 @@ class L2ReceiptAuthoritySmoke(unittest.TestCase):
                         "input_tokens": 30,
                         "output_tokens": 2,
                         "provider_usage_units": 32,
-                        "currency_micros": 17,
                     }).decode("utf-8"),
                 ),
             ),
             (
                 "billing",
                 "UPDATE audit_verified_usage_authorities_v2 "
-                "SET billing_state='unknown',price_source=NULL,currency=NULL",
+                "SET billing_state='billable',"
+                "price_source='fake-price-v1',currency='USD'",
                 (),
             ),
         )

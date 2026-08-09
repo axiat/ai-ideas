@@ -2165,6 +2165,86 @@ class HistoryAuditRuntimeSmoke(unittest.TestCase):
             3,
         )
 
+    def test_database_rejects_attempt_ordinals_at_or_above_limit(self):
+        plan = self._install()
+        task_key = plan["logical_task_keys"][0]
+        self._api("claim_task")(
+            self.conn, task_key, "worker", 60, 0, now=self._now()
+        )
+        first = self._api("record_attempt")(
+            self.conn, task_key, plan["provider_capabilities"]["codex"],
+            {"attempt_kind": "initial"}, cas_root=self.cas_root,
+            request_bytes=plan["shards"][0]["serialized_request"].encode(),
+        )
+        task = self._api("load_task")(self.conn, task_key)
+        reserved_json = self.conn.execute(
+            "SELECT reserved_json FROM audit_runtime_budget_reservations_v2 "
+            "WHERE attempt_id=?",
+            (first["attempt_id"],),
+        ).fetchone()[0]
+
+        cases = (
+            (history_audit_plan.MAX_ATTEMPTS, history_audit_plan.MAX_ATTEMPTS),
+            (history_audit_plan.MAX_ATTEMPTS + 1, 0),
+        )
+        for stored_ordinal, provenance_ordinal in cases:
+            with self.subTest(
+                stored_ordinal=stored_ordinal,
+                provenance_ordinal=provenance_ordinal,
+            ):
+                provenance = {
+                    **plan["provider_capabilities"]["codex"],
+                    "attempt_kind": "retry",
+                    "ordinal": provenance_ordinal,
+                    "claim_token": task["claim_token"],
+                    "claim_fence": task["fence"],
+                }
+                attempt_id = history_contract_v2.attempt_id(
+                    task_key, stored_ordinal, provenance
+                )
+                self.conn.execute("SAVEPOINT forged_attempt")
+                try:
+                    self.conn.execute(
+                        """
+                        INSERT INTO audit_runtime_budget_reservations_v2(
+                          attempt_id,task_hash,plan_sha,candidate_id,intent,
+                          attempt_kind,reserved_json,created_at
+                        ) VALUES(?,?,?,?,?,'retry',?,?)
+                        """,
+                        (
+                            attempt_id, task_key, plan["plan_sha"],
+                            plan["candidate"]["candidate_id"], plan["intent"],
+                            reserved_json, self._now(),
+                        ),
+                    )
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        self.conn.execute(
+                            """
+                            INSERT INTO audit_task_attempts(
+                              attempt_id,task_hash,ordinal,provenance_json,
+                              request_cas_object_id,output_cas_object_id,state,
+                              created_at
+                            ) VALUES(?,?,?,?,?,NULL,'started',?)
+                            """,
+                            (
+                                attempt_id, task_key, stored_ordinal,
+                                history_contract_v2.canonical_bytes(
+                                    provenance
+                                ).decode(),
+                                first["request_cas_object_id"], self._now(),
+                            ),
+                        )
+                finally:
+                    self.conn.execute("ROLLBACK TO forged_attempt")
+                    self.conn.execute("RELEASE forged_attempt")
+
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM audit_task_attempts"
+            ).fetchone()[0],
+            1,
+        )
+
     def test_durable_cost_facts_survive_reopen_without_double_counting(self):
         plan = self._install()
 

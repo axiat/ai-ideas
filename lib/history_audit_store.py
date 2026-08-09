@@ -8059,6 +8059,136 @@ END;
 """
 
 
+_L2_DURABLE_ATTEMPT_VALIDATION_SQL = f"""
+CREATE TABLE audit_l2_durable_attempt_validation_probe(
+  value INTEGER NOT NULL CHECK(value=0)
+);
+INSERT INTO audit_l2_durable_attempt_validation_probe(value)
+SELECT 1
+FROM audit_task_attempts attempt
+WHERE attempt.ordinal>={history_audit_plan.MAX_ATTEMPTS}
+   OR json_type(attempt.provenance_json,'$.ordinal')<>'integer'
+   OR json_extract(attempt.provenance_json,'$.ordinal')<>attempt.ordinal
+   OR json_extract(attempt.provenance_json,'$.ordinal')>={history_audit_plan.MAX_ATTEMPTS};
+INSERT INTO audit_l2_durable_attempt_validation_probe(value)
+SELECT 1
+FROM audit_runtime_budget_settlements_v2 settlement
+JOIN audit_runtime_budget_reservations_v2 reservation USING(attempt_id)
+WHERE settlement.usage_verified=1
+  AND (
+    (json_type(reservation.reserved_json,'$.currency_micros') IS NOT NULL)
+    <>
+    (json_type(settlement.actual_json,'$.currency_micros') IS NOT NULL)
+  );
+DROP TABLE audit_l2_durable_attempt_validation_probe;
+
+DROP TRIGGER audit_task_attempts_full_task_authority_guard;
+CREATE TRIGGER audit_task_attempts_full_task_authority_guard
+BEFORE INSERT ON audit_task_attempts
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM (
+      SELECT task_hash FROM audit_l2_valid_task_authority_v2
+      UNION
+      SELECT task_hash FROM audit_l2_valid_adjudication_task_authority_v2
+    ) valid
+    JOIN audit_task_bindings_v2 binding ON binding.task_hash=valid.task_hash
+    JOIN audit_l2_plans_v2 plan ON plan.plan_sha=binding.plan_sha
+    WHERE valid.task_hash=NEW.task_hash
+      AND audit_l2_attempt_capability_valid(
+        plan.plan_json,binding.provider_pool_json,
+        NEW.provenance_json,NEW.ordinal
+      )=1
+  ) THEN RAISE(ABORT,'attempt lacks validated task authority') END;
+END;
+
+DROP TRIGGER audit_runtime_budget_settlements_v2_owner_guard;
+CREATE TRIGGER audit_runtime_budget_settlements_v2_owner_guard
+BEFORE INSERT ON audit_runtime_budget_settlements_v2
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_task_attempts attempt
+    WHERE attempt.attempt_id=NEW.attempt_id
+  ) THEN RAISE(ABORT,'budget settlement attempt is missing') END;
+  SELECT CASE WHEN audit_l2_budget_settlement_valid(
+    NEW.usage_verified,NEW.actual_json,(
+      SELECT reservation.reserved_json
+      FROM audit_runtime_budget_reservations_v2 reservation
+      WHERE reservation.attempt_id=NEW.attempt_id
+    )
+  )<>1 THEN RAISE(ABORT,'budget settlement usage is invalid') END;
+  SELECT CASE WHEN audit_runtime_budget_settlement_insert_allowed(
+    NEW.attempt_id,NEW.usage_verified,NEW.actual_json,NEW.created_at
+  )<>1 THEN RAISE(ABORT,'budget settlement requires host authority') END;
+  SELECT CASE WHEN NOT (
+    (
+      NEW.usage_verified=1
+      AND EXISTS (
+        SELECT 1 FROM audit_verified_usage_authorities_v2 authority
+        WHERE authority.attempt_id=NEW.attempt_id
+          AND authority.actual_json=NEW.actual_json
+          AND authority.terminal_at=NEW.created_at
+          AND (
+            (
+              authority.terminal_outcome<>'cancelled'
+              AND EXISTS (
+                SELECT 1 FROM audit_attempt_completions_v2 completion
+                WHERE completion.attempt_id=NEW.attempt_id
+                  AND completion.output_cas_object_id=
+                      authority.output_cas_object_id
+                  AND completion.outcome=authority.terminal_outcome
+                  AND completion.completed_at=authority.terminal_at
+              )
+            )
+            OR
+            (
+              authority.terminal_outcome='cancelled'
+              AND NOT EXISTS (
+                SELECT 1 FROM audit_attempt_completions_v2 completion
+                WHERE completion.attempt_id=NEW.attempt_id
+              )
+            )
+          )
+      )
+    )
+    OR
+    (
+      NEW.usage_verified=0 AND NEW.actual_json IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM audit_verified_usage_authorities_v2 authority
+        WHERE authority.attempt_id=NEW.attempt_id
+      )
+      AND (
+        EXISTS (
+          SELECT 1 FROM audit_attempt_completions_v2 completion
+          WHERE completion.attempt_id=NEW.attempt_id
+            AND completion.completed_at=NEW.created_at
+            AND NOT EXISTS (
+              SELECT 1 FROM audit_attempt_cost_settlements_v2 cost
+              WHERE cost.attempt_id=NEW.attempt_id AND cost.outcome='cancelled'
+            )
+        )
+        OR
+        EXISTS (
+          SELECT 1 FROM audit_attempt_cost_settlements_v2 cost
+          WHERE cost.attempt_id=NEW.attempt_id
+            AND cost.outcome='cancelled'
+            AND cost.billing_state='unknown'
+            AND cost.usage_source='reservation'
+            AND cost.completed_at=NEW.created_at
+            AND NOT EXISTS (
+              SELECT 1 FROM audit_attempt_completions_v2 completion
+              WHERE completion.attempt_id=NEW.attempt_id
+            )
+        )
+      )
+    )
+  ) THEN RAISE(ABORT,'budget settlement lacks exact terminal authority') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("migration-ledger-guard", 1, _MIGRATION_LEDGER_GUARD_SQL),
@@ -8195,6 +8325,10 @@ MIGRATIONS = (
     ),
     Migration(
         "l2-failure-claim-transfer", 1, _L2_FAILURE_CLAIM_TRANSFER_SQL,
+    ),
+    Migration(
+        "l2-durable-attempt-validation", 1,
+        _L2_DURABLE_ATTEMPT_VALIDATION_SQL,
     ),
 )
 
@@ -9017,14 +9151,35 @@ def _l2_budget_effective(reserved_json, usage_verified, actual_json, field):
         return 2 ** 63 - 1
 
 
-def _l2_budget_settlement_valid(usage_verified, actual_json):
+def _l2_budget_settlement_valid(
+    usage_verified, actual_json, reserved_json=_INVALID_AUTHORITY_JSON
+):
+    if reserved_json is _INVALID_AUTHORITY_JSON:
+        if usage_verified == 0:
+            return 1 if actual_json is None else 0
+        if usage_verified != 1 or not isinstance(actual_json, str):
+            return 0
+        try:
+            _verified_actual_usage(_closed_json(actual_json))
+            return 1
+        except (TypeError, ValueError):
+            return 0
+    try:
+        reserved = _closed_json(reserved_json)
+    except (TypeError, ValueError):
+        return 0
+    if not isinstance(reserved, dict):
+        return 0
     if usage_verified == 0:
         return 1 if actual_json is None else 0
     if usage_verified != 1 or not isinstance(actual_json, str):
         return 0
     try:
-        _verified_actual_usage(_closed_json(actual_json))
-        return 1
+        actual = _verified_actual_usage(_closed_json(actual_json))
+        return 1 if (
+            ("currency_micros" in reserved)
+            == ("currency_micros" in actual)
+        ) else 0
     except (TypeError, ValueError):
         return 0
 
@@ -9035,7 +9190,9 @@ def _completion_usage_valid(usage_json):
     ) else 0
 
 
-def _l2_attempt_capability_valid(plan_json, provider_pool_json, provenance_json):
+def _l2_attempt_capability_valid(
+    plan_json, provider_pool_json, provenance_json, ordinal=None
+):
     try:
         plan = history_audit_plan.validate_runtime_plan_material(
             _closed_json(plan_json)
@@ -9065,6 +9222,14 @@ def _l2_attempt_capability_valid(plan_json, provider_pool_json, provenance_json)
             }
             or type(provenance["ordinal"]) is not int
             or provenance["ordinal"] < 0
+            or provenance["ordinal"] >= history_audit_plan.MAX_ATTEMPTS
+            or (
+                ordinal is not None
+                and (
+                    type(ordinal) is not int
+                    or ordinal != provenance["ordinal"]
+                )
+            )
             or not isinstance(provenance["claim_token"], str)
             or not provenance["claim_token"]
             or type(provenance["claim_fence"]) is not int
@@ -10725,7 +10890,13 @@ def _initialize_schema(conn, *, verify):
         "audit_l2_budget_settlement_valid", 2, _l2_budget_settlement_valid
     )
     conn.create_function(
+        "audit_l2_budget_settlement_valid", 3, _l2_budget_settlement_valid
+    )
+    conn.create_function(
         "audit_l2_attempt_capability_valid", 3, _l2_attempt_capability_valid
+    )
+    conn.create_function(
+        "audit_l2_attempt_capability_valid", 4, _l2_attempt_capability_valid
     )
     conn.create_function("audit_l2_root_task_valid", 6, _l2_root_task_valid)
     conn.create_function(
