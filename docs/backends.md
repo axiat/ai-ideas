@@ -111,7 +111,7 @@ The wrapper accepts only explicit `GROK_REASONING_EFFORT=high`; omission uses
 the Grok CLI default, and every other value fails before Grok starts.
 
 `claude-worker.sh` supplies the external file contract for Claude. Portable
-internal Claude stages use grammar `claude-portable-v1` directly. With no model
+internal Claude stages use grammar `claude-portable-v2` directly. With no model
 or effort override, both paths preserve the Claude CLI's current defaults:
 
 ```bash
@@ -254,7 +254,7 @@ or reformatting is rejected.
 
 ## Claude Structured JSON Transport
 
-Claude Hunt and AwR roles use grammar `claude-portable-v1`. The portable
+Claude Hunt and AwR roles use grammar `claude-portable-v2`. The portable
 command is bare non-interactive print with JSON output, an inline
 `--json-schema`, disposable `--add-dir` mirror, and unattended
 permission bypass:
@@ -265,6 +265,8 @@ claude --bare --dangerously-skip-permissions
   [--model <model>] [--effort <low|medium|high|xhigh|max>]
   --json-schema <canonical-schema-without-terminal-LF>
   -p <prompt>
+
+Environment: CLAUDE_CODE_MAX_OUTPUT_TOKENS=<exact reasoning-and-visible cap>
 ```
 
 The outer provider JSON must have `is_error=false`, `subtype=success`, and an

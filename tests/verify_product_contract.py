@@ -786,7 +786,12 @@ def verify_provider_registry():
     claude = registry["providers"]["claude"]
     if (
         claude.get("executable") != "claude"
-        or claude.get("grammar_revision") != "claude-portable-v1"
+        or claude.get("grammar_revision") != "claude-portable-v2"
+        or claude.get("output_token_limit") != {
+            "binding": "environment",
+            "name": "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+            "semantics": "reasoning-and-visible-output",
+        }
         or claude.get("reasoning_values")
         != ["low", "medium", "high", "xhigh", "max"]
     ):
@@ -826,7 +831,7 @@ def assert_structured_json_operator_contract():
     registry = json.loads((ROOT / "history/provider-adapters-v1.json").read_text())
     if registry["providers"]["agy"].get("grammar_revision") != "agy-portable-v2":
         raise AssertionError("Agy structured JSON registry revision changed")
-    if registry["providers"]["claude"].get("grammar_revision") != "claude-portable-v1":
+    if registry["providers"]["claude"].get("grammar_revision") != "claude-portable-v2":
         raise AssertionError("Claude structured JSON registry revision changed")
     required = {
         "README.md": ["Agy 1.1.8+", "docs/backends.md", "claude"],
@@ -841,7 +846,7 @@ def assert_structured_json_operator_contract():
             "minimum=maximum=1",
             "during preflight and immediately before launch",
             "at either check",
-            "claude-portable-v1",
+            "claude-portable-v2",
             "HUNT_PROVIDER=claude",
             "subtype=success",
         ],

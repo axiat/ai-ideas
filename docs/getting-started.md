@@ -7,7 +7,7 @@
 - An authenticated Codex CLI for the default Hunt v2 path
 - For Kimi, Grok, or Claude internal stages: that authenticated CLI plus either authenticated Codex for external stages or explicit compatible `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD`
 - An authenticated supported CLI for AwR v2; AwR accepts Codex, Kimi, Grok, OpenCode, agy, and Claude
-- AwR with agy requires Agy 1.1.8+ and an explicit catalog model; Claude uses grammar `claude-portable-v1`; [docs/backends.md](backends.md) defines both structured-JSON transports
+- AwR with agy requires Agy 1.1.8+ and an explicit catalog model; Claude uses grammar `claude-portable-v2`; [docs/backends.md](backends.md) defines both structured-JSON transports
 - Network access for model search, repository publication, and settlement fetches
 - `gh auth status` passing for pull-request creation
 - A writable archive root; the default is `$HOME/.ai-ideas-runs/$(basename "$PWD")`
