@@ -729,6 +729,15 @@ def materialize_adjudication_tasks(conn, cas_root, plan, *, now=None):
         )
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if _stored_adjudication_replay(
+            conn, plan["plan_sha"], generation_id, generation, specs
+        ):
+            conn.execute("COMMIT")
+            return {
+                "state": "materialized",
+                "generation_id": generation_id,
+                "detail_task_hashes": [spec["task_hash"] for spec in specs],
+            }
         with history_audit_store.l2_adjudication_materialization_guard(
             conn,
             generation=generation_values,
@@ -1030,6 +1039,12 @@ def materialize_reduce_tasks(conn, cas_root, plan, *, now=None):
         )
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if _stored_reduce_replay(conn, generation_id, specs):
+            conn.execute("COMMIT")
+            return {
+                "state": "materialized", "generation_id": generation_id,
+                "reduce_task_hashes": [spec["task_hash"] for spec in specs],
+            }
         with history_audit_store.l2_adjudication_materialization_guard(
             conn, generation=None, tasks=task_values, bindings=binding_values,
             inputs=input_values, authorities=authority_values,
@@ -2235,9 +2250,41 @@ def run_task(
         return finish_terminal(result)
     request_bytes = task["durable_request_text"].encode("utf-8")
     pool = task["provider_pool"]
+    attempts = conn.execute(
+        """
+        SELECT attempt.ordinal, attempt.attempt_id, attempt.provenance_json,
+               COALESCE(completion.outcome, cost.outcome) AS outcome
+        FROM audit_task_attempts attempt
+        LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+        LEFT JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+        WHERE attempt.task_hash=? ORDER BY attempt.ordinal
+        """,
+        (task_key,),
+    ).fetchall()
+    if attempts and attempts[-1]["outcome"] is None:
+        _cancel_unterminal_attempt(conn, attempts[-1]["attempt_id"])
+        attempts = conn.execute(
+            """
+            SELECT attempt.ordinal, attempt.attempt_id, attempt.provenance_json,
+                   COALESCE(completion.outcome, cost.outcome) AS outcome
+            FROM audit_task_attempts attempt
+            LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+            LEFT JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+            WHERE attempt.task_hash=? ORDER BY attempt.ordinal
+            """,
+            (task_key,),
+        ).fetchall()
+    start_ordinal = len(attempts)
     provider_index = 0
     prior_failure = None
-    for ordinal in range(MAX_ATTEMPTS):
+    if attempts:
+        prior_failure = attempts[-1]["outcome"]
+        prior_provider = _json(attempts[-1]["provenance_json"])["provider"]
+        if prior_failure in {"timeout", "429", "5xx"}:
+            provider_index = min(start_ordinal, len(pool) - 1)
+        else:
+            provider_index = pool.index(prior_provider)
+    for ordinal in range(start_ordinal, MAX_ATTEMPTS):
         provider_name = pool[min(provider_index, len(pool) - 1)]
         attempt_kind = "initial" if ordinal == 0 else ("failover" if prior_failure in {"timeout", "429", "5xx"} else "retry")
         reservation = {
@@ -2315,7 +2362,7 @@ def run_task(
             if kind in {"timeout", "429", "5xx"}:
                 provider_index += 1
                 prior_failure = kind
-                if provider_index < len(pool) and ordinal + 1 < MAX_ATTEMPTS:
+                if ordinal + 1 < MAX_ATTEMPTS:
                     continue
             elif kind in {"syntax", "schema"} and ordinal + 1 < MAX_ATTEMPTS:
                 prior_failure = kind
