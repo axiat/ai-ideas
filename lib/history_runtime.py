@@ -5,7 +5,9 @@ import argparse
 import contextlib
 import contextvars
 import copy
+import ctypes
 import datetime
+import errno
 import hashlib
 import hmac
 import json
@@ -14,7 +16,7 @@ import os
 import pathlib
 import re
 import secrets
-import shutil
+import sqlite3
 import stat
 import tempfile
 import weakref
@@ -650,22 +652,141 @@ def _mkdir_single_use(path):
         os.close(directory)
 
 
-def _remove_immutable_tree(path):
-    destination = pathlib.Path(path)
+def _directory_open_flags():
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    return flags
+
+
+def _remove_tree_at(directory, name):
     try:
-        state = destination.lstat()
+        child = os.open(name, _directory_open_flags(), dir_fd=directory)
     except FileNotFoundError:
         return
-    if destination.is_symlink() or not stat.S_ISDIR(state.st_mode):
-        raise RuntimeContractError(
-            "immutable artifact root cleanup target is invalid"
-        )
-    shutil.rmtree(destination)
+    try:
+        for entry in os.listdir(child):
+            state = os.stat(entry, dir_fd=child, follow_symlinks=False)
+            if stat.S_ISDIR(state.st_mode):
+                _remove_tree_at(child, entry)
+            else:
+                os.unlink(entry, dir_fd=child)
+        os.fsync(child)
+    finally:
+        os.close(child)
+    os.rmdir(name, dir_fd=directory)
+
+
+def _remove_immutable_tree(path):
+    destination = pathlib.Path(path)
     directory = _open_safe_directory(destination.parent, create=False)
     try:
+        name = _artifact_name(destination)
+        try:
+            state = os.stat(
+                name, dir_fd=directory, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(state.st_mode):
+            raise RuntimeContractError(
+                "immutable artifact root cleanup target is invalid"
+            )
+        _remove_tree_at(directory, name)
         os.fsync(directory)
     finally:
         os.close(directory)
+
+
+def _publish_immutable_at(directory, name, raw):
+    name = _artifact_name(name)
+    temporary = "." + name + "." + secrets.token_hex(12)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = None
+    try:
+        descriptor = os.open(
+            temporary, flags, 0o600, dir_fd=directory
+        )
+        _write_descriptor(descriptor, raw)
+        os.close(descriptor)
+        descriptor = None
+        try:
+            os.link(
+                temporary,
+                name,
+                src_dir_fd=directory,
+                dst_dir_fd=directory,
+                follow_symlinks=False,
+            )
+        except FileExistsError as exc:
+            raise RuntimeContractError(
+                "immutable artifact already exists"
+            ) from exc
+        os.unlink(temporary, dir_fd=directory)
+        os.fsync(directory)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+
+
+def _rename_no_replace(directory, source, destination):
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_raw = os.fsencode(source)
+    destination_raw = os.fsencode(destination)
+    if hasattr(libc, "renameatx_np"):
+        function = libc.renameatx_np
+        function.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        function.restype = ctypes.c_int
+        result = function(
+            directory,
+            source_raw,
+            directory,
+            destination_raw,
+            0x00000004,
+        )
+    elif hasattr(libc, "renameat2"):
+        function = libc.renameat2
+        function.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        function.restype = ctypes.c_int
+        result = function(
+            directory,
+            source_raw,
+            directory,
+            destination_raw,
+            0x00000001,
+        )
+    else:
+        raise RuntimeContractError(
+            "atomic no-replace publication is unavailable"
+        )
+    if result == 0:
+        return
+    error = ctypes.get_errno()
+    if error in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise RuntimeContractError(
+            "immutable artifact root already exists"
+        )
+    raise OSError(error, os.strerror(error))
 
 
 def _publish_immutable_tree(path, publications):
@@ -697,39 +818,71 @@ def _publish_immutable_tree(path, publications):
             )
         normalized.append((relative_path, raw))
     directory = _open_safe_directory(destination.parent, create=True)
+    parent_state = os.fstat(directory)
+    if (
+        parent_state.st_uid != os.getuid()
+        or parent_state.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        os.close(directory)
+        raise RuntimeContractError(
+            "immutable artifact parent is not private"
+        )
     name = _artifact_name(destination)
     temporary_name = "." + name + "." + secrets.token_hex(12)
-    temporary = destination.parent / temporary_name
+    temporary_descriptor = None
     published = False
     try:
-        try:
-            os.stat(name, dir_fd=directory, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            raise RuntimeContractError(
-                "immutable artifact root already exists"
-            )
         os.mkdir(temporary_name, mode=0o700, dir_fd=directory)
+        temporary_descriptor = os.open(
+            temporary_name,
+            _directory_open_flags(),
+            dir_fd=directory,
+        )
         for relative, raw in normalized:
-            _publish_immutable(temporary / relative, raw)
-        try:
-            os.rename(
-                temporary_name,
-                name,
-                src_dir_fd=directory,
-                dst_dir_fd=directory,
-            )
-        except FileExistsError as exc:
+            parent = os.dup(temporary_descriptor)
+            try:
+                for component in relative.parts[:-1]:
+                    try:
+                        os.mkdir(component, mode=0o700, dir_fd=parent)
+                    except FileExistsError:
+                        pass
+                    child = os.open(
+                        component,
+                        _directory_open_flags(),
+                        dir_fd=parent,
+                    )
+                    os.close(parent)
+                    parent = child
+                _publish_immutable_at(parent, relative.parts[-1], raw)
+            finally:
+                os.close(parent)
+        temporary_state = os.fstat(temporary_descriptor)
+        named_state = os.stat(
+            temporary_name,
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISDIR(named_state.st_mode)
+            or (named_state.st_dev, named_state.st_ino)
+            != (temporary_state.st_dev, temporary_state.st_ino)
+        ):
             raise RuntimeContractError(
-                "immutable artifact root already exists"
-            ) from exc
+                "immutable artifact staging root changed"
+            )
+        os.fsync(temporary_descriptor)
+        _rename_no_replace(directory, temporary_name, name)
         os.fsync(directory)
         published = True
     finally:
-        os.close(directory)
-        if not published:
-            _remove_immutable_tree(temporary)
+        try:
+            if temporary_descriptor is not None:
+                os.close(temporary_descriptor)
+            if not published:
+                _remove_tree_at(directory, temporary_name)
+                os.fsync(directory)
+        finally:
+            os.close(directory)
 
 
 def _verified_history_database(path, *, allow_missing=False):
@@ -737,30 +890,101 @@ def _verified_history_database(path, *, allow_missing=False):
         os.path.abspath(os.fspath(path))
     )
     try:
-        state = database.lstat()
+        directory = _open_safe_directory(
+            database.parent, create=False
+        )
     except FileNotFoundError:
         if allow_missing:
             return database
         raise RuntimeContractError(
             "history database is unavailable"
         )
-    except OSError as exc:
-        raise RuntimeContractError(
-            "history database is unavailable"
-        ) from exc
-    if database.is_symlink() or not stat.S_ISREG(state.st_mode):
-        raise RuntimeContractError(
-            "history database filename is invalid"
-        )
-    return database
+    try:
+        try:
+            state = os.stat(
+                _artifact_name(database),
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            if allow_missing:
+                return database
+            raise RuntimeContractError(
+                "history database is unavailable"
+            )
+        if not stat.S_ISREG(state.st_mode):
+            raise RuntimeContractError(
+                "history database filename is invalid"
+            )
+        return database
+    finally:
+        os.close(directory)
 
 
 def _connect_history_store(path, *, allow_missing=False):
-    return history_store.connect(
-        _verified_history_database(
-            path, allow_missing=allow_missing
+    database = pathlib.Path(os.path.abspath(os.fspath(path)))
+    try:
+        directory = _open_safe_directory(
+            database.parent, create=allow_missing
         )
-    )
+    except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+        raise RuntimeContractError(
+            "history database is unavailable"
+        ) from exc
+    name = _artifact_name(database)
+    flags = os.O_RDWR
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if allow_missing:
+        flags |= os.O_CREAT
+    bound = None
+    conn = None
+    try:
+        try:
+            bound = os.open(name, flags, 0o600, dir_fd=directory)
+        except OSError as exc:
+            raise RuntimeContractError(
+                "history database filename is invalid"
+            ) from exc
+        expected = os.fstat(bound)
+        if not stat.S_ISREG(expected.st_mode):
+            raise RuntimeContractError(
+                "history database filename is invalid"
+            )
+        conn = sqlite3.connect(
+            str(database), isolation_level=None
+        )
+        current = os.stat(
+            name, dir_fd=directory, follow_symlinks=False
+        )
+        lexical = os.lstat(database)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or not stat.S_ISREG(lexical.st_mode)
+            or (current.st_dev, current.st_ino)
+            != (expected.st_dev, expected.st_ino)
+            or (lexical.st_dev, lexical.st_ino)
+            != (expected.st_dev, expected.st_ino)
+        ):
+            raise RuntimeContractError(
+                "history database binding changed during open"
+            )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA recursive_triggers = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = FULL")
+        return conn
+    except Exception:
+        if conn is not None:
+            conn.close()
+        raise
+    finally:
+        if bound is not None:
+            os.close(bound)
+        os.close(directory)
 
 
 def _read_rooted_frozen_descriptor(
