@@ -367,9 +367,14 @@ def _atomic_write_jsonl(recs, out):
     """Replace out only after a complete, durable sibling-temp write."""
     target = os.path.abspath(out)
     parent = os.path.dirname(target)
-    fd, tmp = tempfile.mkstemp(prefix=".%s." % os.path.basename(target),
-                               suffix=".tmp", dir=parent)
+    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    parent_flags |= getattr(os, "O_NOFOLLOW", 0)
+    parent_fd = os.open(parent, parent_flags)
+    fd = None
+    tmp = None
     try:
+        fd, tmp = tempfile.mkstemp(prefix=".%s." % os.path.basename(target),
+                                   suffix=".tmp", dir=parent)
         fh = os.fdopen(fd, "w", encoding="utf-8")
         fd = None
         with fh:
@@ -379,6 +384,7 @@ def _atomic_write_jsonl(recs, out):
             os.fsync(fh.fileno())
         os.replace(tmp, target)
         tmp = None
+        os.fsync(parent_fd)
     finally:
         if fd is not None:
             os.close(fd)
@@ -387,6 +393,7 @@ def _atomic_write_jsonl(recs, out):
                 os.unlink(tmp)
             except FileNotFoundError:
                 pass
+        os.close(parent_fd)
 
 
 def _emit(recs, out):
