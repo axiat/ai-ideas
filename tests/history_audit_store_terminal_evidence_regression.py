@@ -148,6 +148,33 @@ class HistoryAuditStoreTerminalEvidenceRegression(unittest.TestCase):
             0,
         )
 
+    def test_recovery_transfer_rejects_nonpositive_or_noninteger_lease(self):
+        plan, task_hash, old_claim = self._install_and_claim(
+            self.fixture.records
+        )
+        attempt = self._record_failure(plan, task_hash, "overflow")
+        transfer_now = self._recover_expired_claim(
+            plan, task_hash, old_claim
+        )
+        for lease_seconds in (True, False, 0, -1, 1.0, "1", None):
+            with self.subTest(lease_seconds=lease_seconds):
+                with self.assertRaisesRegex(
+                    ValueError, "failure claim transfer lease is invalid"
+                ):
+                    history_audit_store.claim_l2_failure_recovery(
+                        self.fixture.conn, task_hash, attempt["attempt_id"],
+                        "overflow", "recovery-worker", lease_seconds,
+                        expected_fence=2, now=transfer_now,
+                    )
+        task = history_execution.load_task(self.fixture.conn, task_hash)
+        self.assertEqual((task["state"], task["fence"]), ("planned", 2))
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT count(*) FROM audit_l2_failure_claim_transfers_v3"
+            ).fetchone()[0],
+            0,
+        )
+
     def test_recovery_transfer_authorizes_only_new_claim(self):
         plan, task_hash, old_claim = self._install_and_claim(
             self.fixture.records

@@ -20587,7 +20587,7 @@ def claim_l2_failure_recovery(
         raise AuditMigrationError("failure claim transfer requires an idle connection")
     if not isinstance(worker_id, str) or not worker_id:
         raise ValueError("failure claim transfer worker is invalid")
-    if type(lease_seconds) is not int or lease_seconds < 0:
+    if type(lease_seconds) is not int or lease_seconds <= 0:
         raise ValueError("failure claim transfer lease is invalid")
     if type(expected_fence) is not int or expected_fence < 0:
         raise ValueError("failure claim transfer fence is invalid")

@@ -127,6 +127,68 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
             cas_root=self.fixture.cas_root, now=self.fixture._now(3),
         )
 
+    def _derived_task(self, stage):
+        plan = self._settle_exceptional_map()
+        adjudication = history_execution.materialize_adjudication_tasks(
+            self.fixture.conn, self.fixture.cas_root, plan,
+            now=self.fixture._now(2),
+        )
+        detail_task_hash = adjudication["detail_task_hashes"][0]
+        if stage == "detail":
+            return plan, detail_task_hash
+        self._settle_detail(plan, detail_task_hash)
+        reduced = history_execution.materialize_reduce_tasks(
+            self.fixture.conn, self.fixture.cas_root, plan,
+            now=self.fixture._now(4),
+        )
+        return plan, reduced["reduce_task_hashes"][0]
+
+    def _assert_recovered_truncation_preserves_reason(self, stage):
+        plan, task_key = self._derived_task(stage)
+        task = history_execution.load_task(self.fixture.conn, task_key)
+        output = (
+            self.fixture._detail_output(task)
+            if stage == "detail"
+            else self.fixture._reduce_output(task)
+        )
+        output["truncated"] = True
+        started_at = self.fixture._now(5)
+        with mock.patch.object(
+            history_execution, "exhaust_task",
+            side_effect=history_execution.ExecutionCrash(
+                "crash before truncated exhaustion"
+            ),
+        ) as interrupted_exhaust:
+            with self.assertRaises(history_execution.ExecutionCrash):
+                history_execution.run_task(
+                    self.fixture.conn, self.fixture.cas_root, plan, task_key,
+                    lambda *_: {"kind": "success", "output": output},
+                    now=started_at, lease_seconds=1,
+                )
+        self.assertEqual(interrupted_exhaust.call_args.args[2], "truncated")
+        self.assertEqual(
+            history_execution.recover_run(
+                self.fixture.conn, plan["plan_sha"],
+                cas_root=self.fixture.cas_root, now=self.fixture._now(6),
+            ),
+            [task_key],
+        )
+        resumed_calls = []
+        result = history_execution.run_task(
+            self.fixture.conn, self.fixture.cas_root, plan, task_key,
+            lambda *_: resumed_calls.append(True),
+            now=self.fixture._now(7), lease_seconds=60,
+        )
+        self.assertEqual(result["state"], "exhausted")
+        self.assertEqual(resumed_calls, [])
+        terminal = self.fixture.conn.execute(
+            "SELECT reason FROM audit_task_terminal_facts_v2 "
+            "WHERE task_hash=?", (task_key,),
+        ).fetchone()
+        self.assertEqual(
+            terminal["reason"], interrupted_exhaust.call_args.args[2]
+        )
+
     def _race_after_absent_replay(self, replay_name, operation):
         connections = [
             sqlite3.connect(
@@ -463,6 +525,89 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
                 (task_key,),
             ).fetchone()[0],
             2,
+        )
+
+    def test_recovered_detail_truncation_preserves_terminal_reason(self):
+        self._assert_recovered_truncation_preserves_reason("detail")
+
+    def test_recovered_reduce_truncation_preserves_terminal_reason(self):
+        self._assert_recovered_truncation_preserves_reason("reduce")
+
+    def test_recovered_overflow_claim_expires_before_terminal_transition(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        with mock.patch.object(
+            history_execution, "split_task",
+            side_effect=history_execution.ExecutionCrash(
+                "crash before overflow split"
+            ),
+        ):
+            with self.assertRaises(history_execution.ExecutionCrash):
+                history_execution.run_map_task(
+                    self.fixture.conn, self.fixture.cas_root, plan, task_key,
+                    lambda *_: {"kind": "overflow", "raw": "overflow"},
+                    now=self.fixture._now(), lease_seconds=60,
+                )
+        self.assertEqual(
+            history_execution.recover_run(
+                self.fixture.conn, plan["plan_sha"],
+                cas_root=self.fixture.cas_root, now=self.fixture._now(61),
+            ),
+            [task_key],
+        )
+        original_claim = history_audit_store.claim_l2_failure_recovery
+        original_load = history_execution.load_task
+        original_now = history_execution._now
+        resumed_at = self.fixture._now(62)
+        expired_at = original_now(resumed_at) + datetime.timedelta(seconds=2)
+        clock = [original_now(resumed_at)]
+
+        def production_load(connection, key):
+            loaded = original_load(connection, key)
+            loaded["durable_plan"]["authority_scope"] = "production"
+            return loaded
+
+        def controlled_now(value=None):
+            return original_now(value) if value is not None else clock[0]
+
+        def delayed_transfer(*args, **kwargs):
+            transferred = original_claim(*args, **kwargs)
+            clock[0] = expired_at
+            return transferred
+
+        with (
+            mock.patch.object(
+                history_execution, "load_task", side_effect=production_load
+            ),
+            mock.patch.object(
+                history_execution, "_now", side_effect=controlled_now
+            ),
+            mock.patch.object(
+                history_audit_store, "claim_l2_failure_recovery",
+                side_effect=delayed_transfer,
+            ),
+        ):
+            with self.assertRaises(history_audit_store.StaleFence):
+                history_execution.run_map_task(
+                    self.fixture.conn, self.fixture.cas_root, plan, task_key,
+                    lambda *_: self.fail("recovered failure called provider"),
+                    now=resumed_at, lease_seconds=1,
+                )
+        transferred = history_execution.load_task(self.fixture.conn, task_key)
+        self.assertEqual(transferred["state"], "claimed")
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT count(*) FROM audit_l2_failure_claim_transfers_v3 "
+                "WHERE task_hash=?", (task_key,),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT count(*) FROM audit_task_edges_v2 "
+                "WHERE parent_task_hash=?", (task_key,),
+            ).fetchone()[0],
+            0,
         )
 
     def test_expired_overflow_claim_transfers_and_replays_after_recovery_crash(self):

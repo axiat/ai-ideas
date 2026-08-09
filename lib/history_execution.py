@@ -2452,7 +2452,7 @@ def run_task(
                 )
             return finish_terminal(
                 exhaust_task(
-                    conn, task_key, "overflow", **prior_transition
+                    conn, task_key, latest["outcome"], **prior_transition
                 )
             )
         if final_provider_failure:
@@ -2488,6 +2488,8 @@ def run_task(
             raise ExecutionError(
                 "split_failure_claim_authority_unavailable"
             ) from exc
+        if production_execution:
+            lifecycle_now = _now().isoformat()
         terminal_transition = {
             "expected_fence": claim["fence"],
             "claim_token": claim["claim_token"],
@@ -2499,7 +2501,7 @@ def run_task(
             )
         return finish_terminal(
             exhaust_task(
-                conn, task_key, "overflow", **terminal_transition
+                conn, task_key, latest["outcome"], **terminal_transition
             )
         )
     claim = _claim_runtime_task(
