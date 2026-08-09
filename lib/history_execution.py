@@ -2302,19 +2302,20 @@ def run_task(
         now=runtime_now,
     )
     task = load_task(conn, task_key)
+    lifecycle_now = runtime_now
     terminal_transition = {
         "expected_fence": task["fence"],
         "claim_token": task["claim_token"],
-        "now": runtime_now,
+        "now": lifecycle_now,
     }
 
     def finish_terminal(result):
         if task["stage"] == "map":
             materialize_adjudication_tasks(
-                conn, cas_root, plan, now=runtime_now
+                conn, cas_root, plan, now=lifecycle_now
             )
         elif task["stage"] == "detail":
-            materialize_reduce_tasks(conn, cas_root, plan, now=runtime_now)
+            materialize_reduce_tasks(conn, cas_root, plan, now=lifecycle_now)
         return result
 
     existing_valid = _valid_completions(conn, task_key)
@@ -2423,12 +2424,18 @@ def run_task(
                 response = {"kind": "provider_error", "raw": "invalid fake response"}
             kind = response["kind"]
             usage = response["usage"] if "usage" in response else None
+            if production_execution:
+                lifecycle_now = _now().isoformat()
+                terminal_transition["now"] = lifecycle_now
+                completion_now = lifecycle_now
+            else:
+                completion_now = None
             if kind == "success":
                 try:
                     valid = complete_attempt(
                         conn, cas_root, task_key, attempt["attempt_id"],
                         response.get("output"), plan["snapshot"], usage=usage,
-                        now=attempt_now,
+                        now=completion_now,
                     )
                 except MapValidationError as exc:
                     if (
@@ -2450,14 +2457,14 @@ def run_task(
                     raise ExecutionCrash("fault injected after durable output CAS")
                 result = settle_task(
                     conn, task_key, [valid], cas_root=cas_root,
-                    now=runtime_now,
+                    now=lifecycle_now,
                 )
                 return finish_terminal(result)
             _failed_completion(
                 conn, cas_root, task, attempt["attempt_id"], kind,
                 response.get("raw", kind), usage,
                 claim_fence=claim["fence"], claim_token=claim["claim_token"],
-                authority_now=runtime_now, now=attempt_now,
+                authority_now=lifecycle_now, now=completion_now,
             )
             if kind == "overflow":
                 if task["stage"] == "map":
@@ -2485,8 +2492,11 @@ def run_task(
         except history_audit_store.StaleFence:
             raise
         except Exception:
+            cancellation_now = (
+                _now().isoformat() if production_execution else None
+            )
             _cancel_unterminal_attempt(
-                conn, attempt["attempt_id"], now=attempt_now
+                conn, attempt["attempt_id"], now=cancellation_now
             )
             raise
     return finish_terminal(

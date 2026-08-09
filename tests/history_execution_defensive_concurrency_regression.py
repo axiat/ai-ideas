@@ -2,6 +2,7 @@
 """Defensive regressions for derived-task races and provider retries."""
 
 import copy
+import datetime
 import pathlib
 import sqlite3
 import sys
@@ -542,28 +543,42 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
         ).fetchone()
         self.assertEqual(tuple(counts), (0, 0, 0))
 
-    def test_run_task_uses_one_normalized_attempt_timestamp(self):
+    def test_run_task_refreshes_production_completion_timestamp(self):
         plan = self.fixture._install()
         task_key = plan["logical_task_keys"][0]
         task_ready_at = history_execution.load_task(
             self.fixture.conn, task_key
         )["created_at"]
         original_load = history_execution.load_task
+        original_now = history_execution._now
+        completion_at = (
+            original_now(task_ready_at) + datetime.timedelta(seconds=1)
+        ).isoformat()
+        clock = [original_now(task_ready_at)]
 
         def production_load(connection, key):
             task = original_load(connection, key)
             task["durable_plan"]["authority_scope"] = "production"
             return task
 
-        with mock.patch.object(
-            history_execution, "load_task", side_effect=production_load
+        def controlled_now(value=None):
+            return original_now(value) if value is not None else clock[0]
+
+        def provider(*_):
+            clock[0] = original_now(completion_at)
+            return {"kind": "success", "output": self.fixture._output(plan)}
+
+        with (
+            mock.patch.object(
+                history_execution, "load_task", side_effect=production_load
+            ),
+            mock.patch.object(
+                history_execution, "_now", side_effect=controlled_now
+            ),
         ):
             history_execution.run_map_task(
                 self.fixture.conn, self.fixture.cas_root, plan, task_key,
-                lambda *_: {
-                    "kind": "success", "output": self.fixture._output(plan)
-                },
-                now=task_ready_at,
+                provider, now=task_ready_at,
             )
         timestamps = self.fixture.conn.execute(
             """
@@ -578,7 +593,90 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
             """,
             (task_key,),
         ).fetchone()
-        self.assertEqual(tuple(timestamps), (task_ready_at,) * 5)
+        self.assertEqual(
+            tuple(timestamps),
+            (task_ready_at, completion_at, completion_at, completion_at,
+             completion_at),
+        )
+    def test_blocking_production_provider_cannot_complete_after_lease(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        connection = sqlite3.connect(
+            self.fixture.db_path, timeout=5, check_same_thread=False
+        )
+        connection.row_factory = sqlite3.Row
+        history_audit_store.init_schema(connection)
+        task_ready_at = history_execution.load_task(
+            connection, task_key
+        )["created_at"]
+        original_load = history_execution.load_task
+        original_now = history_execution._now
+        completion_at = (
+            original_now(task_ready_at) + datetime.timedelta(seconds=2)
+        ).isoformat()
+        clock = [original_now(task_ready_at)]
+        provider_entered = threading.Barrier(2)
+        release_provider = threading.Event()
+        failures = []
+
+        def production_load(target, key):
+            task = original_load(target, key)
+            task["durable_plan"]["authority_scope"] = "production"
+            return task
+
+        def controlled_now(value=None):
+            return original_now(value) if value is not None else clock[0]
+
+        def blocking_provider(*_):
+            provider_entered.wait(timeout=5)
+            if not release_provider.wait(5):
+                raise AssertionError("provider release timed out")
+            return {"kind": "timeout", "raw": "timed out"}
+
+        def runner():
+            try:
+                history_execution.run_map_task(
+                    connection, self.fixture.cas_root, plan, task_key,
+                    blocking_provider, now=task_ready_at, lease_seconds=1,
+                )
+            except BaseException as exc:
+                failures.append(exc)
+
+        with (
+            mock.patch.object(
+                history_execution, "load_task", side_effect=production_load
+            ),
+            mock.patch.object(
+                history_execution, "_now", side_effect=controlled_now
+            ),
+        ):
+            worker = threading.Thread(target=runner)
+            worker.start()
+            provider_entered.wait(timeout=5)
+            clock[0] = original_now(completion_at)
+            release_provider.set()
+            worker.join(10)
+        connection.close()
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], history_audit_store.StaleFence)
+        attempt_id = self.fixture.conn.execute(
+            "SELECT attempt_id FROM audit_task_attempts WHERE task_hash=?",
+            (task_key,),
+        ).fetchone()[0]
+        counts = self.fixture.conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM audit_attempt_completions_v2
+               WHERE attempt_id=?),
+              (SELECT count(*) FROM audit_runtime_budget_settlements_v2
+               WHERE attempt_id=?),
+              (SELECT count(*) FROM audit_attempt_cost_settlements_v2
+               WHERE attempt_id=?)
+            """,
+            (attempt_id,) * 3,
+        ).fetchone()
+        self.assertEqual(tuple(counts), (0, 0, 0))
 
 
 if __name__ == "__main__":
