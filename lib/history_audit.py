@@ -654,6 +654,14 @@ def record_batch_pair_results(conn, staged_batch, pair_plan, pair_results):
                     result_sha, _utc_now(),
                 ),
             )
+        history_audit_store.issue_batch_pair_result_authority(
+            conn,
+            run_id=run_id,
+            batch_id=batch_id,
+            pair_plan_sha=pair_plan["pair_plan_sha"],
+            pair_result_sha=result_sha,
+            results=normalized,
+        )
         conn.execute("COMMIT")
     except Exception:
         if conn.in_transaction:

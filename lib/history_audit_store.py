@@ -59,6 +59,7 @@ _ATTEMPT_TERMINAL_GUARDS = {}
 _ROUTER_SOURCE_GUARDS = {}
 _VERIFIED_USAGE_AUTHORITY_GUARDS = {}
 _L1_ATTEMPT_FACT_GUARDS = {}
+_PAIR_RESULT_AUTHORITY_GUARDS = {}
 _TEST_ROUTER_ROUND_AUTHORITIES = {}
 _EXPECTED_MANAGED_SCHEMA = {}
 _INVALID_AUTHORITY_JSON = object()
@@ -7561,6 +7562,147 @@ END;
 """
 
 
+_PAIR_RESULT_AUTHORITY_SQL = """
+CREATE TABLE audit_batch_pair_result_manifests_v4(
+  run_id TEXT NOT NULL,
+  batch_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL REFERENCES audit_snapshots(snapshot_id),
+  pair_plan_sha TEXT NOT NULL CHECK(length(pair_plan_sha)=64),
+  pair_result_sha TEXT NOT NULL CHECK(length(pair_result_sha)=64),
+  current_batch_ids_hash TEXT NOT NULL CHECK(length(current_batch_ids_hash)=64),
+  member_count INTEGER NOT NULL CHECK(member_count>=1),
+  results_json TEXT NOT NULL,
+  authority_sha256 TEXT NOT NULL UNIQUE CHECK(length(authority_sha256)=64),
+  issued_at TEXT NOT NULL,
+  PRIMARY KEY(run_id,batch_id),
+  FOREIGN KEY(run_id,batch_id)
+    REFERENCES audit_batch_pair_receipts(run_id,batch_id)
+);
+CREATE TABLE audit_batch_pair_receipt_quarantine_v4(
+  run_id TEXT NOT NULL,
+  batch_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  quarantined_at TEXT NOT NULL,
+  PRIMARY KEY(run_id,batch_id),
+  FOREIGN KEY(run_id,batch_id)
+    REFERENCES audit_batch_pair_receipts(run_id,batch_id)
+);
+""" + _immutable_guards(
+    "audit_batch_pair_result_manifests_v4",
+    "audit_batch_pair_receipt_quarantine_v4",
+) + """
+CREATE TRIGGER audit_batch_pair_result_manifest_guard_v4
+BEFORE INSERT ON audit_batch_pair_result_manifests_v4
+BEGIN
+  SELECT CASE WHEN audit_pair_result_manifest_insert_allowed(
+    NEW.run_id,NEW.batch_id,NEW.snapshot_id,NEW.pair_plan_sha,
+    NEW.pair_result_sha,NEW.current_batch_ids_hash,NEW.member_count,
+    NEW.results_json,NEW.authority_sha256,NEW.issued_at)<>1
+    OR audit_pair_result_manifest_valid(
+    NEW.run_id,NEW.batch_id,NEW.snapshot_id,NEW.pair_plan_sha,
+    NEW.pair_result_sha,NEW.current_batch_ids_hash,NEW.member_count,
+    NEW.results_json,NEW.authority_sha256,NEW.issued_at)<>1
+  THEN RAISE(ABORT, 'pair result manifest requires canonical issuance') END;
+END;
+CREATE TRIGGER audit_batch_pair_receipt_quarantine_capture_v4
+AFTER INSERT ON audit_batch_pair_receipts
+BEGIN
+  INSERT OR IGNORE INTO audit_batch_pair_receipt_quarantine_v4(
+    run_id,batch_id,reason,quarantined_at
+  ) VALUES(NEW.run_id,NEW.batch_id,'result_evidence_unverified',NEW.completed_at);
+END;
+
+CREATE VIEW audit_valid_batch_pair_receipt_authority_v4 AS
+SELECT receipt.*,manifest.results_json,
+       manifest.authority_sha256 AS result_authority_sha256
+FROM audit_batch_pair_receipts receipt
+JOIN audit_batch_pair_set_bindings binding
+  ON binding.run_id=receipt.run_id AND binding.batch_id=receipt.batch_id
+ AND binding.snapshot_id=receipt.snapshot_id
+ AND binding.pair_plan_sha=receipt.pair_plan_sha
+ AND binding.pair_result_sha=receipt.pair_result_sha
+JOIN audit_snapshot_batch_sets batch_set
+  ON batch_set.snapshot_id=binding.snapshot_id
+ AND batch_set.current_batch_ids_hash=binding.current_batch_ids_hash
+ AND batch_set.member_count=binding.member_count
+ AND batch_set.run_id=receipt.run_id AND batch_set.batch_id=receipt.batch_id
+JOIN audit_batch_pair_result_manifests_v4 manifest
+  ON manifest.run_id=receipt.run_id AND manifest.batch_id=receipt.batch_id
+ AND manifest.snapshot_id=binding.snapshot_id
+ AND manifest.pair_plan_sha=binding.pair_plan_sha
+ AND manifest.pair_result_sha=binding.pair_result_sha
+ AND manifest.current_batch_ids_hash=binding.current_batch_ids_hash
+ AND manifest.member_count=binding.member_count
+WHERE receipt.pair_count=(batch_set.member_count*(batch_set.member_count-1))/2
+  AND receipt.pair_plan_sha=audit_pair_plan_sha(
+        receipt.run_id,receipt.batch_id,batch_set.member_ids_json)
+  AND audit_pair_result_manifest_valid(
+        manifest.run_id,manifest.batch_id,manifest.snapshot_id,
+        manifest.pair_plan_sha,manifest.pair_result_sha,
+        manifest.current_batch_ids_hash,manifest.member_count,
+        manifest.results_json,manifest.authority_sha256,manifest.issued_at)=1
+  AND json_array_length(manifest.results_json)=receipt.pair_count
+  AND NOT EXISTS (
+    SELECT 1 FROM json_each(manifest.results_json) result
+    WHERE NOT EXISTS (
+      SELECT 1 FROM json_each(batch_set.member_ids_json) left_member
+      JOIN json_each(batch_set.member_ids_json) right_member
+        ON left_member.value<right_member.value
+      WHERE left_member.value=json_extract(
+              result.value,'$.left_staging_candidate_id')
+        AND right_member.value=json_extract(
+              result.value,'$.right_staging_candidate_id')
+    ) OR NOT EXISTS (
+      SELECT 1 FROM audit_batch_pairs pair
+      WHERE pair.run_id=receipt.run_id AND pair.batch_id=receipt.batch_id
+        AND pair.pair_plan_sha=receipt.pair_plan_sha
+        AND pair.pair_result_sha=receipt.pair_result_sha
+        AND pair.left_staging_candidate_id=json_extract(
+              result.value,'$.left_staging_candidate_id')
+        AND pair.right_staging_candidate_id=json_extract(
+              result.value,'$.right_staging_candidate_id')
+    )
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM json_each(batch_set.member_ids_json) left_member
+    JOIN json_each(batch_set.member_ids_json) right_member
+      ON left_member.value<right_member.value
+    WHERE NOT EXISTS (
+      SELECT 1 FROM json_each(manifest.results_json) result
+      WHERE json_extract(result.value,'$.left_staging_candidate_id')
+              =left_member.value
+        AND json_extract(result.value,'$.right_staging_candidate_id')
+              =right_member.value
+    )
+  );
+
+INSERT INTO audit_batch_pair_receipt_quarantine_v4(
+  run_id,batch_id,reason,quarantined_at
+)
+SELECT receipt.run_id,receipt.batch_id,'legacy_result_evidence_unverifiable',
+       receipt.completed_at
+FROM audit_batch_pair_receipts receipt
+WHERE NOT EXISTS (
+  SELECT 1 FROM audit_batch_pair_result_manifests_v4 manifest
+  WHERE manifest.run_id=receipt.run_id AND manifest.batch_id=receipt.batch_id
+);
+
+CREATE TRIGGER audit_activation_maps_pair_authority_guard_v4
+BEFORE INSERT ON audit_activation_maps
+WHEN NEW.staging_candidate_id GLOB 'stg-v2-*'
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM audit_batch_staging staging
+    JOIN audit_valid_batch_pair_receipt_authority_v4 pair
+      ON pair.run_id=staging.run_id AND pair.batch_id=staging.batch_id
+    WHERE staging.staging_candidate_id=NEW.staging_candidate_id
+      AND NEW.pair_plan_sha=pair.pair_plan_sha
+      AND NEW.pair_result_sha=pair.pair_result_sha
+  ) THEN RAISE(ABORT, 'activation map lacks canonical pair result authority') END;
+END;
+"""
+
+
 MIGRATIONS = (
     Migration("migration-ledger", 1, _LEDGER_SQL),
     Migration("migration-ledger-guard", 1, _MIGRATION_LEDGER_GUARD_SQL),
@@ -7686,6 +7828,9 @@ MIGRATIONS = (
     Migration(
         "core-authority-repair", 1, _CORE_AUTHORITY_REPAIR_SQL,
     ),
+    Migration(
+        "pair-result-authority", 1, _PAIR_RESULT_AUTHORITY_SQL,
+    ),
 )
 
 
@@ -7765,6 +7910,75 @@ def _pair_receipt_authority_sha(*values):
     return _authority_event_sha(
         "history-batch-pair-receipt-authority-v3", values
     )
+
+
+def _normalized_pair_result_evidence(results_json):
+    parsed = _authority_canonical_json_text(results_json, newline=True)
+    required = {
+        "left_staging_candidate_id", "right_staging_candidate_id",
+        "semantic_relation", "evidence_sha",
+    }
+    if (
+        not isinstance(parsed, list)
+        or any(not isinstance(item, dict) or set(item) != required for item in parsed)
+        or any(
+            re.fullmatch(r"stg-v2-[0-9a-f]{64}", item["left_staging_candidate_id"] or "")
+            is None
+            or re.fullmatch(r"stg-v2-[0-9a-f]{64}", item["right_staging_candidate_id"] or "")
+            is None
+            or item["left_staging_candidate_id"] >= item["right_staging_candidate_id"]
+            or item["semantic_relation"] not in {
+                "blocking_duplicate", "substantive_overlap", "related_only",
+                "distinct", "uncertain",
+            }
+            or re.fullmatch(r"[0-9a-f]{64}", item["evidence_sha"] or "") is None
+            for item in parsed
+        )
+    ):
+        return _INVALID_AUTHORITY_JSON
+    keys = [
+        (item["left_staging_candidate_id"], item["right_staging_candidate_id"])
+        for item in parsed
+    ]
+    if keys != sorted(keys) or len(set(keys)) != len(keys):
+        return _INVALID_AUTHORITY_JSON
+    return parsed
+
+
+def _pair_result_sha(pair_plan_sha, results_json):
+    parsed = _normalized_pair_result_evidence(results_json)
+    if parsed is _INVALID_AUTHORITY_JSON:
+        return None
+    return history_contract_v2.framed_sha256(
+        "history-batch-pair-result-v2",
+        history_contract_v2.canonical_bytes({
+            "pair_plan_sha": pair_plan_sha,
+            "results": parsed,
+        }),
+    )
+
+
+def _pair_result_manifest_authority_sha(*values):
+    return _authority_event_sha(
+        "history-batch-pair-result-authority-v4", values
+    )
+
+
+def _pair_result_manifest_valid(
+    run_id, batch_id, snapshot_id, pair_plan_sha, pair_result_sha,
+    current_batch_ids_hash, member_count, results_json, authority_sha, issued_at,
+):
+    if (
+        _pair_result_sha(pair_plan_sha, results_json) != pair_result_sha
+        or type(member_count) is not int
+        or member_count < 1
+    ):
+        return 0
+    expected = _pair_result_manifest_authority_sha(
+        run_id, batch_id, snapshot_id, pair_plan_sha, pair_result_sha,
+        current_batch_ids_hash, member_count, results_json, issued_at,
+    )
+    return 1 if authority_sha == expected else 0
 
 
 def _authority_canonical_json_text(value, *, newline=False):
@@ -9523,6 +9737,21 @@ def _migration_sql_for_state(conn, migration):
         ):
             return ""
     if (
+        migration.component == "pair-result-authority"
+        and migration.version == 1
+        and (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='audit_batch_pair_receipt_authority_v3'"
+            ).fetchone() is None
+            or conn.execute(
+                "SELECT 1 FROM audit_schema_migrations "
+                "WHERE component='core-authority-repair' AND version=1"
+            ).fetchone() is None
+        )
+    ):
+        return ""
+    if (
         migration.component != "l2-plans-per-run"
         or migration.version != 1
     ):
@@ -9588,11 +9817,17 @@ def _apply_migration(conn, migration):
                     raise AuditMigrationError(
                         f"migration SHA drift: {migration.component} v{migration.version}"
                     )
+                repair_table = {
+                    "core-authority-repair":
+                        "audit_batch_pair_receipt_authority_v3",
+                    "pair-result-authority":
+                        "audit_batch_pair_result_manifests_v4",
+                }.get(migration.component)
                 if (
-                    migration.component == "core-authority-repair"
+                    repair_table is not None
                     and conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' "
-                        "AND name='audit_batch_pair_receipt_authority_v3'"
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (repair_table,),
                     ).fetchone() is None
                 ):
                     migration_sql = _migration_sql_for_state(conn, migration)
@@ -9747,10 +9982,17 @@ def _replay_migration_probes(conn):
         "SELECT 1 FROM sqlite_master WHERE type='table' "
         "AND name='audit_verified_usage_authorities_v2'"
     ).fetchone() is not None
-    has_receipt_authority = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='view' "
-        "AND name='audit_valid_batch_pair_receipt_authority_v3'"
-    ).fetchone() is not None
+    receipt_authority_view = None
+    for candidate in (
+        "audit_valid_batch_pair_receipt_authority_v4",
+        "audit_valid_batch_pair_receipt_authority_v3",
+    ):
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='view' AND name=?",
+            (candidate,),
+        ).fetchone() is not None:
+            receipt_authority_view = candidate
+            break
     verified_usage_superseded_probes = {
         "audit_runtime_usage_authority_upgrade_probe",
         "audit_attempt_terminal_authority_upgrade_probe",
@@ -9773,10 +10015,9 @@ def _replay_migration_probes(conn):
             conn.execute("SAVEPOINT " + savepoint)
             try:
                 probe_sql = match.group(1)
-                if has_receipt_authority:
+                if receipt_authority_view is not None:
                     probe_sql = probe_sql.replace(
-                        "audit_batch_pair_receipts",
-                        "audit_valid_batch_pair_receipt_authority_v3",
+                        "audit_batch_pair_receipts", receipt_authority_view,
                     )
                 if has_derived_task_authority:
                     probe_sql = probe_sql.replace(
@@ -9848,7 +10089,17 @@ def _initialize_schema(conn, *, verify):
     _VERIFIED_USAGE_AUTHORITY_GUARDS[id(conn)] = verified_usage_guard
     l1_attempt_guard = {"expected": None, "usage": None}
     _L1_ATTEMPT_FACT_GUARDS[id(conn)] = l1_attempt_guard
+    pair_result_guard = {"expected": None}
+    _PAIR_RESULT_AUTHORITY_GUARDS[id(conn)] = pair_result_guard
     conn.create_function("audit_pair_plan_sha", 3, _pair_plan_sha)
+    conn.create_function(
+        "audit_pair_result_manifest_valid", 10,
+        _pair_result_manifest_valid,
+    )
+    conn.create_function(
+        "audit_pair_result_manifest_insert_allowed", 10,
+        lambda *values: 1 if pair_result_guard["expected"] == tuple(values) else 0,
+    )
     conn.create_function(
         "audit_pair_receipt_authority_sha", 9,
         _pair_receipt_authority_sha,
@@ -10324,6 +10575,115 @@ def _initialize_schema(conn, *, verify):
 def init_schema(conn):
     """Apply and independently verify every managed v2 audit migration."""
     return _initialize_schema(conn, verify=True)
+
+
+def issue_batch_pair_result_authority(
+    conn, *, run_id, batch_id, pair_plan_sha, pair_result_sha, results,
+):
+    """Persist canonical pair evidence after its frozen set is fully durable."""
+    if not conn.in_transaction:
+        raise AuditMigrationError("pair result authority requires a transaction")
+    schema_present = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='audit_batch_pair_result_manifests_v4'"
+    ).fetchone() is not None
+    if not schema_present:
+        return None
+    results_json = history_contract_v2.canonical_bytes(results).decode("utf-8")
+    normalized = _normalized_pair_result_evidence(results_json)
+    if normalized is _INVALID_AUTHORITY_JSON:
+        raise ValueError("pair result evidence is invalid")
+    if _pair_result_sha(pair_plan_sha, results_json) != pair_result_sha:
+        raise ValueError("pair result evidence does not match its commitment")
+    row = conn.execute(
+        """
+        SELECT receipt.snapshot_id,receipt.completed_at,receipt.pair_count,
+               binding.current_batch_ids_hash,binding.member_count,
+               batch_set.member_ids_json
+        FROM audit_batch_pair_receipts receipt
+        JOIN audit_batch_pair_set_bindings binding
+          ON binding.run_id=receipt.run_id AND binding.batch_id=receipt.batch_id
+         AND binding.snapshot_id=receipt.snapshot_id
+         AND binding.pair_plan_sha=receipt.pair_plan_sha
+         AND binding.pair_result_sha=receipt.pair_result_sha
+        JOIN audit_snapshot_batch_sets batch_set
+          ON batch_set.snapshot_id=binding.snapshot_id
+         AND batch_set.current_batch_ids_hash=binding.current_batch_ids_hash
+         AND batch_set.member_count=binding.member_count
+         AND batch_set.run_id=receipt.run_id
+         AND batch_set.batch_id=receipt.batch_id
+        WHERE receipt.run_id=? AND receipt.batch_id=?
+          AND receipt.pair_plan_sha=? AND receipt.pair_result_sha=?
+        """,
+        (run_id, batch_id, pair_plan_sha, pair_result_sha),
+    ).fetchone()
+    if row is None:
+        raise AuditMigrationError("pair result lacks frozen set binding")
+    member_ids = json.loads(row["member_ids_json"])
+    expected_pairs = {
+        (left, right)
+        for index, left in enumerate(member_ids)
+        for right in member_ids[index + 1:]
+    }
+    result_pairs = {
+        (item["left_staging_candidate_id"], item["right_staging_candidate_id"])
+        for item in normalized
+    }
+    stored_pairs = {
+        (item[0], item[1])
+        for item in conn.execute(
+            """
+            SELECT left_staging_candidate_id,right_staging_candidate_id
+            FROM audit_batch_pairs
+            WHERE run_id=? AND batch_id=? AND pair_plan_sha=?
+              AND pair_result_sha=?
+            """,
+            (run_id, batch_id, pair_plan_sha, pair_result_sha),
+        )
+    }
+    if (
+        row["pair_count"] != len(expected_pairs)
+        or row["member_count"] != len(member_ids)
+        or result_pairs != expected_pairs
+        or stored_pairs != expected_pairs
+        or len(normalized) != len(expected_pairs)
+    ):
+        raise AuditMigrationError("pair result evidence does not cover frozen set")
+    authority_sha = _pair_result_manifest_authority_sha(
+        run_id, batch_id, row["snapshot_id"], pair_plan_sha, pair_result_sha,
+        row["current_batch_ids_hash"], row["member_count"], results_json,
+        row["completed_at"],
+    )
+    values = (
+        run_id, batch_id, row["snapshot_id"], pair_plan_sha, pair_result_sha,
+        row["current_batch_ids_hash"], row["member_count"], results_json,
+        authority_sha, row["completed_at"],
+    )
+    existing = conn.execute(
+        "SELECT * FROM audit_batch_pair_result_manifests_v4 "
+        "WHERE run_id=? AND batch_id=?", (run_id, batch_id),
+    ).fetchone()
+    if existing is not None:
+        if tuple(existing) != values:
+            raise AuditMigrationError("pair result authority replay conflicts")
+        return authority_sha
+    guard = _PAIR_RESULT_AUTHORITY_GUARDS.get(id(conn))
+    if guard is None or guard["expected"] is not None:
+        raise AuditMigrationError("pair result authority guard is unavailable")
+    guard["expected"] = values
+    try:
+        conn.execute(
+            "INSERT INTO audit_batch_pair_result_manifests_v4 "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)", values,
+        )
+    finally:
+        guard["expected"] = None
+    if conn.execute(
+        "SELECT 1 FROM audit_valid_batch_pair_receipt_authority_v4 "
+        "WHERE run_id=? AND batch_id=?", (run_id, batch_id),
+    ).fetchone() is None:
+        raise AuditMigrationError("pair result authority failed durable validation")
+    return authority_sha
 
 
 def insert_authorized_batch_staging(

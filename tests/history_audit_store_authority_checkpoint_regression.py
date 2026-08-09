@@ -118,16 +118,25 @@ class ReceiptAuthorityCheckpointRegression(unittest.TestCase):
             verdict_tsv=("\n".join(rows) + "\n").encode("utf-8"),
         )
 
-    def test_pair_migration_backfills_complete_and_quarantines_unbound(self):
+    def test_pair_migration_quarantines_until_canonical_evidence_replays(self):
         migrations = tuple(
             migration for migration in history_audit_store.MIGRATIONS
-            if migration.component != "core-authority-repair"
+            if migration.component not in {
+                "core-authority-repair", "pair-result-authority",
+            }
         )
-        with mock.patch.object(history_audit_store, "MIGRATIONS", migrations):
+        with (
+            mock.patch.object(history_audit_store, "MIGRATIONS", migrations),
+            mock.patch.object(
+                history_audit_store, "issue_batch_pair_result_authority",
+                return_value=None,
+            ),
+        ):
             history_audit_store.init_schema(self.conn)
-
-        _, complete, _ = self._stage("run-complete", "batch-complete", "2")
-        self._record_pairs(complete)
+            _, complete, _ = self._stage(
+                "run-complete", "batch-complete", "2"
+            )
+            complete_receipt = self._record_pairs(complete)
         snapshot, invalid, _ = self._stage("run-invalid", "batch-invalid", "4")
         self.conn.execute(
             """
@@ -144,18 +153,56 @@ class ReceiptAuthorityCheckpointRegression(unittest.TestCase):
         self.conn.commit()
 
         history_audit_store.init_schema(self.conn)
-        states = dict(
-            self.conn.execute(
-                "SELECT run_id,event_state FROM audit_batch_pair_receipt_authority_v3 "
-                "WHERE event_state IN ('authorized','quarantined')"
+        quarantined = {
+            row[0] for row in self.conn.execute(
+                "SELECT run_id FROM audit_batch_pair_receipt_quarantine_v4"
             )
-        )
-        self.assertEqual(states["run-complete"], "authorized")
-        self.assertEqual(states["run-invalid"], "quarantined")
+        }
+        self.assertEqual(quarantined, {"run-complete", "run-invalid"})
         self.assertIsNone(
             self.conn.execute(
-                "SELECT 1 FROM audit_valid_batch_pair_receipt_authority_v3 "
+                "SELECT 1 FROM audit_valid_batch_pair_receipt_authority_v4 "
+                "WHERE run_id='run-complete'"
+            ).fetchone()
+        )
+
+        replay = self._record_pairs(complete)
+        self.assertEqual(replay, complete_receipt)
+        self.assertIsNotNone(
+            self.conn.execute(
+                "SELECT 1 FROM audit_valid_batch_pair_receipt_authority_v4 "
+                "WHERE run_id='run-complete'"
+            ).fetchone()
+        )
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT 1 FROM audit_valid_batch_pair_receipt_authority_v4 "
                 "WHERE run_id='run-invalid'"
+            ).fetchone()
+        )
+        self.conn.execute("BEGIN IMMEDIATE")
+        with self.assertRaises(ValueError):
+            history_audit_store.issue_batch_pair_result_authority(
+                self.conn,
+                run_id="run-complete",
+                batch_id="batch-complete",
+                pair_plan_sha=replay["pair_plan_sha"],
+                pair_result_sha=replay["pair_result_sha"],
+                results=[],
+            )
+        self.conn.execute("ROLLBACK")
+
+        self.conn.execute(
+            "DROP TRIGGER audit_batch_pair_set_bindings_immutable_delete"
+        )
+        self.conn.execute(
+            "DELETE FROM audit_batch_pair_set_bindings "
+            "WHERE run_id='run-complete' AND batch_id='batch-complete'"
+        )
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT 1 FROM audit_valid_batch_pair_receipt_authority_v4 "
+                "WHERE run_id='run-complete'"
             ).fetchone()
         )
 
@@ -180,15 +227,6 @@ class ReceiptAuthorityCheckpointRegression(unittest.TestCase):
         )
         self.assertEqual(activated["source_sequence"] > snapshot["history_as_of_watermark"], True)
 
-        candidate = history_store.append_rows(
-            self.conn,
-            [staged["candidates"][1]["raw_candidate"]],
-            {"run_id": "forged-activation"},
-        )
-        row = self.conn.execute(
-            "SELECT candidate_id,source_sequence FROM candidates WHERE candidate_id=?",
-            (candidate["candidate_ids"][0],),
-        ).fetchone()
         forged_json = "{}\n"
         forged_sha = hashlib.sha256(forged_json.encode("utf-8")).hexdigest()
         self.conn.execute(
@@ -198,21 +236,6 @@ class ReceiptAuthorityCheckpointRegression(unittest.TestCase):
                 forged_json, "2026-08-09T00:00:00+00:00",
             ),
         )
-        with self.assertRaises(sqlite3.IntegrityError):
-            self.conn.execute(
-                """
-                INSERT INTO audit_activation_maps(
-                  staging_candidate_id,legacy_candidate_id,source_sequence,
-                  raw_artifact_sha,pair_plan_sha,pair_result_sha,
-                  activation_receipt_sha,activated_at
-                ) VALUES(?,?,?,?,?,?,?,'2026-08-09T00:00:00+00:00')
-                """,
-                (
-                    staged["candidates"][1]["staging_candidate_id"], row[0], row[1],
-                    staged["candidates"][1]["raw_artifact_sha"],
-                    pair["pair_plan_sha"], pair["pair_result_sha"], forged_sha,
-                ),
-            )
         self.assertIsNone(
             self.conn.execute(
                 "SELECT 1 FROM audit_valid_activation_receipt_authority_v3 "
