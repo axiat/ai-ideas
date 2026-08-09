@@ -9399,6 +9399,27 @@ def commit_round(
         conn.close()
 
 
+def _expected_comparator_invocation_root(
+    candidate_root, stage_number, intent, pack, execution_boundary
+):
+    publication = pack.get("pack_publication_id")
+    identity = (
+        publication
+        if isinstance(publication, str) and publication
+        else sha256(canonical_bytes(pack))
+    )
+    stage_directory = (
+        "portable-comparisons"
+        if execution_boundary == PORTABLE_EXECUTION_BOUNDARY
+        else "contained-comparisons"
+    )
+    return (
+        pathlib.Path(candidate_root)
+        / stage_directory
+        / f"{stage_number:02d}-{intent}-{identity[:16]}"
+    )
+
+
 def _validate_resume_comparator_stages(
     *,
     candidate,
@@ -9629,12 +9650,25 @@ def _validate_resume_comparator_stages(
                 replayed = history_retrieval.replay_receipt(
                     conn, pack, receipt, policy
                 )
+                current_prompt_sha256 = sha256(
+                    _portable_serialized_prompt(
+                        "history-compare",
+                        {"retrieval_pack.json": expected_pack_path},
+                        policy,
+                    ).encode("utf-8")
+                )
+                comparison_sha256 = sha256(
+                    canonical_bytes(comparison)
+                )
+                receipt_sha256 = sha256(canonical_bytes(receipt))
                 if (
                     replayed["verified"] is not True
                     or receipt.get("pack_sha256")
                     != pack.get("pack_sha256")
                     or receipt.get("comparison_sha256")
-                    != sha256(canonical_bytes(comparison))
+                    != comparison_sha256
+                    or receipt.get("comparator_invocation_sha256")
+                    != current_prompt_sha256
                     or receipt.get("status") != attempt["status"]
                 ):
                     raise RuntimeContractError(
@@ -9642,8 +9676,14 @@ def _validate_resume_comparator_stages(
                     )
                 expected.append(
                     {
+                        "intent": intent,
+                        "pack": pack,
                         "input_sha256": sha256(pack_raw),
                         "pack_sha256": pack.get("pack_sha256"),
+                        "comparison_sha256": comparison_sha256,
+                        "receipt_sha256": receipt_sha256,
+                        "serialized_prompt_sha256":
+                            current_prompt_sha256,
                         "receipt": receipt,
                     }
                 )
@@ -9679,6 +9719,16 @@ def _validate_resume_comparator_stages(
                         else publication[
                             "comparator_preflight_sha256"
                         ]
+                    ),
+                    "comparison_sha256": (
+                        None
+                        if receipt is None
+                        else receipt["comparison_sha256"]
+                    ),
+                    "receipt_sha256": (
+                        None
+                        if receipt is None
+                        else sha256(canonical_bytes(receipt))
                     ),
                 }
         last = attempts[-1]
@@ -9716,6 +9766,13 @@ def _validate_resume_comparator_stages(
         zip(expected, stage_records), start=1
     ):
         receipt = expected_attempt["receipt"]
+        invocation_root = _expected_comparator_invocation_root(
+            candidate_root,
+            stage_number,
+            expected_attempt["intent"],
+            expected_attempt["pack"],
+            execution_boundary,
+        )
         if execution_boundary == PORTABLE_EXECUTION_BOUNDARY:
             verified = _verified_public_portable_stage(
                 record, pathlib.Path(candidate_root)
@@ -9766,8 +9823,28 @@ def _validate_resume_comparator_stages(
                 ]
                 or receipt.get("pack_sha256")
                 != expected_attempt["pack_sha256"]
+                or record.get("serialized_prompt_sha256")
+                != expected_attempt["serialized_prompt_sha256"]
                 or receipt.get("comparator_invocation_sha256")
-                != record.get("serialized_prompt_sha256")
+                != expected_attempt["serialized_prompt_sha256"]
+                or record.get("outputs", {}).get(
+                    "history-comparison.json", {}
+                ).get("sha256")
+                != expected_attempt["comparison_sha256"]
+                or pathlib.Path(
+                    verified["output_paths"][
+                        "history-comparison.json"
+                    ]
+                ).resolve()
+                != (
+                    invocation_root
+                    / "output"
+                    / "history-comparison.json"
+                ).resolve()
+                or pathlib.Path(verified["preflight_path"]).resolve()
+                != (invocation_root / "state" / "preflight.json").resolve()
+                or pathlib.Path(verified["completion_path"]).resolve()
+                != (invocation_root / "state" / "completion.json").resolve()
                 or sha256(completion_raw)
                 != record.get("completion", {}).get("sha256")
             ):
@@ -9794,6 +9871,11 @@ def _validate_resume_comparator_stages(
             prepared["manifest_path"],
             "resume contained-stage manifest",
         )
+        contained_output_raw = _read_bound_regular(
+            prepared["output_paths"]["history-comparison.json"],
+            "resume contained comparator output",
+            maximum=65536,
+        )
         inputs = manifest.get("inputs")
         if (
             prepared.get("stage") != "history-compare"
@@ -9806,9 +9888,31 @@ def _validate_resume_comparator_stages(
             or receipt.get("pack_sha256")
             != expected_attempt["pack_sha256"]
             or receipt.get("comparator_invocation_sha256")
-            != manifest.get("invocation", {}).get(
+            != expected_attempt["serialized_prompt_sha256"]
+            or manifest.get("invocation", {}).get(
                 "expected_serialized_sha256"
             )
+            != expected_attempt["serialized_prompt_sha256"]
+            or pathlib.Path(prepared.get("manifest_path", "")).resolve()
+            != (invocation_root / "manifest.json").resolve()
+            or pathlib.Path(prepared.get("output_root", "")).resolve()
+            != (invocation_root / "output").resolve()
+            or pathlib.Path(
+                prepared.get("completion_path", "")
+            ).resolve()
+            != (invocation_root / "output" / "completion.json").resolve()
+            or pathlib.Path(
+                prepared.get("output_paths", {}).get(
+                    "history-comparison.json", ""
+                )
+            ).resolve()
+            != (
+                invocation_root
+                / "output"
+                / "history-comparison.json"
+            ).resolve()
+            or sha256(contained_output_raw)
+            != expected_attempt["comparison_sha256"]
             or sha256(completion_raw)
             != record["completion_sha256"]
         ):
@@ -9830,23 +9934,20 @@ def _resume_material(
     authority=None,
 ):
     policy = history_projection.load_policy(policy_path)
-    if policy["mode"] == "enforcement":
-        authority_value = _validated_runtime_authority(
-            policy, authority, state_paths=(db_path,)
-        )
-    else:
-        authority_value = {
-            "mode": "shadow",
-            "policy_sha256": sha256(canonical_bytes(policy)),
-            "capability_sha256": None,
-            "trust_root_sha256": None,
-            "scope": None,
-        }
+    authority_value = _validated_runtime_authority(
+        policy, authority, state_paths=(db_path,)
+    )
     batch, candidates = _load_batch_candidates(batch_path)
     selection = verify_round_selection(selection_path)
     root = pathlib.Path(artifact_root)
     if (
         selection["batch_sha256"] != batch["batch_sha256"]
+        or pathlib.Path(batch_path).resolve()
+        != (
+            pathlib.Path(batch["artifact_root"]) / "batch.json"
+        ).resolve()
+        or pathlib.Path(selection["batch_path"]).resolve()
+        != pathlib.Path(batch_path).resolve()
         or pathlib.Path(
             selection["round_observation_path"]
         ).parent.resolve()
@@ -9858,6 +9959,12 @@ def _resume_material(
     index = _comparison_index(
         comparison_index_path, selection
     )
+    if pathlib.Path(comparison_index_path).resolve() != (
+        root / "comparison-index.json"
+    ).resolve():
+        raise RuntimeContractError(
+            "resume comparison index path is invalid"
+        )
     portable_comparison = index["schema_version"] == 2
     prior_descriptor, _ = _source_descriptor(
         prior_work_path, "resume prior work", maximum=1024 * 1024
@@ -9963,6 +10070,8 @@ def _resume_material(
                     != current["source_watermark"]
                     or pack["index_generation"]
                     != current["index_generation"]
+                    or pack["generation_manifest_sha256"]
+                    != current["generation_manifest_sha256"]
                 ):
                     raise RuntimeContractError(
                         "resume pack is not current"
@@ -9971,6 +10080,12 @@ def _resume_material(
                     dict(
                         candidate_id=candidate_id,
                         intent=stage_binding["intent"],
+                        comparison_sha256=stage_binding[
+                            "comparison_sha256"
+                        ],
+                        comparison_receipt_sha256=stage_binding[
+                            "receipt_sha256"
+                        ],
                         **resume_binding(
                             mode=policy["mode"],
                             policy_version=policy[
@@ -10101,12 +10216,11 @@ def seal_resume_state(*, output_path, authority=None, **values):
     policy = history_projection.load_policy(
         values["policy_path"]
     )
-    if policy["mode"] == "enforcement":
-        _validated_runtime_authority(
-            policy,
-            authority,
-            state_paths=(output_path,),
-        )
+    _validated_runtime_authority(
+        policy,
+        authority,
+        state_paths=(output_path,),
+    )
     _, prior_raw = _source_descriptor(
         values["prior_work_path"],
         "resume prior-work source",
@@ -10158,6 +10272,10 @@ def seal_resume_attempt(
         )
     resume = validate_resume_state(
         resume_path, authority=authority
+    )
+    policy = history_projection.load_policy(resume["policy_path"])
+    _validated_runtime_authority(
+        policy, authority, state_paths=(output_path,)
     )
     prior_binding = None
     if prior_archive_path is not None:
