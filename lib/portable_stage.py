@@ -5,12 +5,15 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import os
 import pathlib
 import shutil
 import stat
+import struct
 import sys
 import tempfile
+import unicodedata
 import weakref
 
 try:
@@ -36,6 +39,11 @@ BOUNDARY = "portable-mirror-v1"
 HOST_INPUT_MAX_BYTES = 256 * 1024
 MODEL_OUTPUT_MAX_BYTES = 128 * 1024
 DECLARED_INPUT_MAX_BYTES = 128 * 1024
+PREFLIGHT_MAX_BYTES = 64 * 1024
+_EXEC_SINGLE_STRING_MAX_BYTES = 128 * 1024
+_EXEC_AGGREGATE_CEILING_BYTES = 256 * 1024
+_EXEC_RESERVE_BYTES = 32 * 1024
+_EXEC_DYNAMIC_PATH_RESERVE_CHARS = 64
 _REQUEST_OVERHEAD_BYTES = 4096
 _REGISTRY = ROOT / "history" / "provider-adapters-v1.json"
 _ROLES = {
@@ -99,6 +107,7 @@ _PREFLIGHT_FIELDS = {
     "scrubbed_environment",
     "preserved_provider_config_environment",
     "byte_budget",
+    "exec_budget",
 }
 _COMPLETION_FIELDS = {
     "schema_version",
@@ -125,6 +134,15 @@ _CONTRACT_ERROR_CODES = frozenset(
         "invalid_model_envelope",
         "invalid_model_artifact",
         "invalid_history_comparison",
+        "noncanonical_history_comparison",
+        "invalid_retrieval_pack",
+        "noncanonical_retrieval_pack",
+        "invalid_review_candidate",
+        "noncanonical_review_candidate",
+        "invalid_failure_distillation",
+        "noncanonical_failure_distillation",
+        "invalid_failure_batch",
+        "noncanonical_failure_batch",
         "invalid_review_output",
         "invalid_direction_contract",
         "noncanonical_direction_contract",
@@ -145,8 +163,48 @@ _CONTRACT_ERROR_CODES = frozenset(
         "invalid_inputs",
         "duplicate_input",
         "invalid_seat_id",
+        "invalid_input_name",
+        "invalid_input_argument",
+        "invalid_provider_request",
+        "invalid_prepared_stage",
+        "noncanonical_runtime_value",
         "provider_surface_mismatch",
+        "provider_request_changed",
+        "provider_default_changed",
+        "provider_executable_changed",
         "response_schema_changed",
+        "unsafe_input",
+        "unsafe_role",
+        "unsafe_preflight",
+        "unsafe_state_root",
+        "unsafe_output_root",
+        "overlapping_state_roots",
+        "output_root_exists",
+        "state_root_exists",
+        "completion_exists",
+        "preflight_changed",
+        "input_changed",
+        "role_changed",
+        "projected_output_bound",
+        "output_projection_mismatch",
+        "preflight_too_large",
+        "exec_argument_too_large",
+        "exec_environment_too_large",
+        "exec_aggregate_too_large",
+        "exec_contract_changed",
+        "invalid_response_schema",
+        "invalid_output_contract",
+        "invalid_capability",
+        "invalid_prompt",
+        "invalid_timeout",
+        "invalid_manifest",
+        "invalid_provenance",
+        "reserved_input",
+        "source_boundary_violation",
+        "input_sha_mismatch",
+        "unexpected_artifact",
+        "provider_model_authority_changed",
+        "import_conflict",
     }
 )
 
@@ -286,27 +344,56 @@ def _canonical_bytes(value):
     return history_contract_v2.canonical_bytes(value)
 
 
-def _exact_canonical_bytes(value):
-    def validate(item):
-        if item is None or type(item) in {bool, int, str}:
-            return
-        if type(item) is list:
-            for child in item:
-                validate(child)
-            return
-        if type(item) is dict:
-            for key, child in item.items():
-                if type(key) is not str:
-                    raise PortableStageError("noncanonical_runtime_value")
-                validate(child)
-            return
-        raise PortableStageError("noncanonical_runtime_value")
+def _normalize_json_value(value, *, require_nfc=False, allow_float=True):
+    if value is None or type(value) in {bool, int}:
+        return value
+    if type(value) is float:
+        if not allow_float or not math.isfinite(value):
+            raise PortableStageError("noncanonical_runtime_value")
+        return value
+    if type(value) is str:
+        normalized = unicodedata.normalize("NFC", value)
+        if require_nfc and normalized != value:
+            raise PortableStageError("noncanonical_runtime_value")
+        return normalized
+    if type(value) is list:
+        return [
+            _normalize_json_value(
+                item,
+                require_nfc=require_nfc,
+                allow_float=allow_float,
+            )
+            for item in value
+        ]
+    if type(value) is dict:
+        normalized = {}
+        for key, item in value.items():
+            if type(key) is not str:
+                raise PortableStageError("noncanonical_runtime_value")
+            normalized_key = unicodedata.normalize("NFC", key)
+            if require_nfc and normalized_key != key:
+                raise PortableStageError("noncanonical_runtime_value")
+            if normalized_key in normalized:
+                raise PortableStageError("noncanonical_runtime_value")
+            normalized[normalized_key] = _normalize_json_value(
+                item,
+                require_nfc=require_nfc,
+                allow_float=allow_float,
+            )
+        return normalized
+    raise PortableStageError("noncanonical_runtime_value")
 
-    validate(value)
+
+def _exact_canonical_bytes(value):
+    normalized = _normalize_json_value(
+        value,
+        require_nfc=True,
+        allow_float=False,
+    )
     try:
         return (
             json.dumps(
-                value,
+                normalized,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -319,15 +406,49 @@ def _exact_canonical_bytes(value):
 
 
 def _canonical_json_bytes(value):
-    return (
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
+    normalized = _normalize_json_value(value)
+    try:
+        return (
+            json.dumps(
+                normalized,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise PortableStageError("noncanonical_runtime_value") from exc
+
+
+def _decode_json_bytes(raw, code):
+    def reject_constant(_):
+        raise ValueError("non-finite JSON number")
+
+    def closed_pairs(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON object key")
+            value[key] = item
+        return value
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=closed_pairs,
+            parse_constant=reject_constant,
         )
-        + "\n"
-    ).encode("utf-8")
+        _normalize_json_value(value, require_nfc=True)
+        return value
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        PortableStageError,
+        ValueError,
+    ) as exc:
+        raise PortableStageError(code) from exc
 
 
 def _sha(raw):
@@ -451,7 +572,7 @@ def _decode_contract_text(raw, label):
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise PortableStageError("invalid_contract_text", label) from exc
-    if "\x00" in text:
+    if "\x00" in text or unicodedata.normalize("NFC", text) != text:
         raise PortableStageError("invalid_contract_text", label)
     return text
 
@@ -718,6 +839,182 @@ def _fsync_directory(path):
         os.close(descriptor)
 
 
+def _path_identity(path):
+    info = pathlib.Path(path).lstat()
+    return (info.st_dev, info.st_ino)
+
+
+def _remove_owned_tree(path, identity):
+    path = pathlib.Path(path)
+    try:
+        if _path_identity(path) == identity:
+            shutil.rmtree(path)
+    except OSError:
+        return
+
+
+def _unlink_owned_file(path, identity):
+    path = pathlib.Path(path)
+    try:
+        if _path_identity(path) == identity:
+            path.unlink()
+    except OSError:
+        return
+
+
+def _absolute_root(path):
+    absolute = pathlib.Path(os.path.abspath(os.fspath(path)))
+    temporary = pathlib.Path(os.path.abspath(tempfile.gettempdir()))
+    try:
+        relative = absolute.relative_to(temporary)
+    except ValueError:
+        return absolute
+    try:
+        resolved_temporary = temporary.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return absolute
+    return resolved_temporary / relative
+
+
+def _validate_new_root(path, *, exists_code, unsafe_code):
+    path = pathlib.Path(path)
+    if not path.is_absolute():
+        raise PortableStageError(unsafe_code)
+    current = pathlib.Path(path.anchor)
+    for part in path.parts[1:]:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise PortableStageError(unsafe_code) from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise PortableStageError(unsafe_code)
+        if current == path:
+            raise PortableStageError(exists_code)
+        if not stat.S_ISDIR(info.st_mode):
+            raise PortableStageError(unsafe_code)
+
+
+def _system_arg_max():
+    try:
+        value = os.sysconf("SC_ARG_MAX")
+    except (AttributeError, OSError, ValueError):
+        value = _EXEC_AGGREGATE_CEILING_BYTES
+    if type(value) is not int or value <= _EXEC_RESERVE_BYTES:
+        value = _EXEC_AGGREGATE_CEILING_BYTES
+    return value
+
+
+def _rendered_exec_budget(intent, provider_request, response_schema, state_root):
+    projected_mirror = (
+        pathlib.Path(state_root)
+        / (".portable-attempt-" + "x" * _EXEC_DYNAMIC_PATH_RESERVE_CHARS)
+        / "mirror"
+    )
+    try:
+        with tempfile.TemporaryDirectory(prefix="portable-exec-preflight-") as directory:
+            mirror = pathlib.Path(directory) / "mirror"
+            mirror.mkdir(mode=0o700)
+            mirror = mirror.resolve(strict=True)
+            schema_path = None
+            final_path = None
+            if intent.provider == "codex":
+                temporary = mirror / ".tmp"
+                temporary.mkdir(mode=0o700)
+                schema_path = temporary / "response-schema.json"
+                _write_owner_file(schema_path, _canonical_json_bytes(response_schema))
+                final_path = temporary / "model-final.json"
+            argv, environment_delta = provider_adapters.render_command(
+                intent,
+                mirror,
+                provider_request,
+                schema_path,
+                response_schema=response_schema,
+                output_last_message_path=final_path,
+            )
+            rendered_prefix = str(mirror)
+    except provider_adapters.ProviderResolutionError as exc:
+        raise PortableStageError("invalid_provider_request", str(exc)) from exc
+    except OSError as exc:
+        raise PortableStageError("exec_preflight_failed") from exc
+
+    if type(argv) is not list or type(environment_delta) is not dict:
+        raise PortableStageError("invalid_provider_request")
+    projected_prefix = str(projected_mirror)
+    projected_argv = []
+    for argument in argv:
+        if type(argument) is not str or "\x00" in argument:
+            raise PortableStageError("invalid_provider_request")
+        projected_argv.append(
+            argument.replace(rendered_prefix, projected_prefix)
+        )
+    projected_delta = {}
+    for name, value in environment_delta.items():
+        if (
+            type(name) is not str
+            or not name
+            or "=" in name
+            or "\x00" in name
+            or type(value) is not str
+            or "\x00" in value
+        ):
+            raise PortableStageError("invalid_provider_request")
+        projected_delta[name] = value.replace(
+            rendered_prefix, projected_prefix
+        )
+
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not portable_agent._environment_is_scrubbed(name)
+    }
+    environment.update(projected_delta)
+    environment["TMPDIR"] = str(projected_mirror / ".tmp")
+
+    argv_sizes = [len(item.encode("utf-8")) + 1 for item in projected_argv]
+    environment_sizes = [
+        len(f"{name}={value}".encode("utf-8")) + 1
+        for name, value in environment.items()
+    ]
+    if any(size > _EXEC_SINGLE_STRING_MAX_BYTES for size in argv_sizes):
+        raise PortableStageError("exec_argument_too_large")
+    if any(size > _EXEC_SINGLE_STRING_MAX_BYTES for size in environment_sizes):
+        raise PortableStageError("exec_environment_too_large")
+    pointer_bytes = (
+        len(projected_argv) + len(environment) + 2
+    ) * struct.calcsize("P")
+    system_arg_max = _system_arg_max()
+    aggregate_cap = min(system_arg_max, _EXEC_AGGREGATE_CEILING_BYTES)
+    conservative_total = (
+        sum(argv_sizes)
+        + sum(environment_sizes)
+        + pointer_bytes
+        + _EXEC_RESERVE_BYTES
+    )
+    if conservative_total > aggregate_cap:
+        raise PortableStageError(
+            "exec_aggregate_too_large",
+            f"conservative_total_bytes={conservative_total}",
+        )
+    return {
+        "schema_version": "portable-stage-exec-budget-v1",
+        "single_string_cap_bytes": _EXEC_SINGLE_STRING_MAX_BYTES,
+        "system_arg_max_bytes": system_arg_max,
+        "aggregate_cap_bytes": aggregate_cap,
+        "reserve_bytes": _EXEC_RESERVE_BYTES,
+        "argv_bytes": sum(argv_sizes),
+        "environment_bytes": sum(environment_sizes),
+        "pointer_bytes": pointer_bytes,
+        "conservative_total_bytes": conservative_total,
+        "rendered_argv_sha256": _sha(_exact_canonical_bytes(projected_argv)),
+        "environment_delta_sha256": _sha(
+            _exact_canonical_bytes(projected_delta)
+        ),
+    }
+
+
 def prepare_stage(
     intent_or_capability,
     *,
@@ -790,14 +1087,20 @@ def prepare_stage(
             f"conservative_total_bytes={conservative_total}",
         )
 
-    output = pathlib.Path(os.path.abspath(os.fspath(output_root)))
-    state = pathlib.Path(os.path.abspath(os.fspath(state_root)))
+    output = _absolute_root(output_root)
+    state = _absolute_root(state_root)
+    _validate_new_root(
+        output,
+        exists_code="output_root_exists",
+        unsafe_code="unsafe_output_root",
+    )
+    _validate_new_root(
+        state,
+        exists_code="state_root_exists",
+        unsafe_code="unsafe_state_root",
+    )
     if output == state or output in state.parents or state in output.parents:
         raise PortableStageError("overlapping_state_roots")
-    if output.exists() or output.is_symlink():
-        raise PortableStageError("output_root_exists")
-    if state.exists() or state.is_symlink():
-        raise PortableStageError("state_root_exists")
 
     provider_validation = launch_intent.provider_validation
     authority = launch_intent.authority
@@ -811,6 +1114,12 @@ def prepare_stage(
     }
     provider_command = provider_adapters.command_intent_record(
         launch_intent
+    )
+    exec_budget = _rendered_exec_budget(
+        launch_intent,
+        provider_request,
+        schema,
+        state,
     )
     preflight = {
         "schema_version": "portable-stage-preflight-v1",
@@ -843,17 +1152,40 @@ def prepare_stage(
             "provider_request_bytes": len(provider_request_raw),
             "conservative_total_bytes": conservative_total,
         },
+        "exec_budget": exec_budget,
     }
     preflight_raw = _canonical_bytes(preflight)
+    if len(preflight_raw) > PREFLIGHT_MAX_BYTES:
+        raise PortableStageError(
+            "preflight_too_large",
+            f"preflight_bytes={len(preflight_raw)}",
+        )
+    state_identity = None
     try:
         state.mkdir(parents=True, mode=0o700)
-        os.chmod(state, 0o700)
+        _validate_new_root(
+            state / ".preflight-sentinel",
+            exists_code="unsafe_state_root",
+            unsafe_code="unsafe_state_root",
+        )
+        state_info = state.lstat()
+        if not stat.S_ISDIR(state_info.st_mode) or state_info.st_mode & 0o077:
+            raise PortableStageError("unsafe_state_root")
+        state_identity = (state_info.st_dev, state_info.st_ino)
         preflight_path = state / "preflight.json"
         _write_owner_file(preflight_path, preflight_raw)
         _fsync_directory(state)
-    except OSError as exc:
-        if state.exists() and not any(state.iterdir()):
-            state.rmdir()
+    except (OSError, PortableStageError) as exc:
+        if state_identity is not None:
+            try:
+                if _path_identity(state) == state_identity and not any(
+                    state.iterdir()
+                ):
+                    state.rmdir()
+            except OSError:
+                pass
+        if isinstance(exc, PortableStageError):
+            raise
         raise PortableStageError("preflight_publish_failed") from exc
 
     output_paths = {
@@ -889,6 +1221,7 @@ def prepare_stage(
         "preflight_sha256": _sha(preflight_raw),
         "completion_path": str(state / "completion.json"),
         "output_contract": output_contract,
+        "exec_budget": exec_budget,
     }
     return _issue_prepared(
         public,
@@ -953,10 +1286,7 @@ def _projected_prompt_attestation(prepared, response_attestation):
 
 
 def _response_envelope(prepared, raw):
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PortableStageError("invalid_model_envelope") from exc
+    value = _decode_json_bytes(raw, "invalid_model_envelope")
     if type(value) is not dict:
         raise PortableStageError("invalid_model_envelope")
     attestation = value.pop("request_attestation", None)
@@ -979,20 +1309,18 @@ def _response_envelope(prepared, raw):
 
 
 def _parse_json_artifact(raw, label):
+    value = _decode_json_bytes(raw, "invalid_" + label)
     try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        canonical = _canonical_json_bytes(value)
+    except PortableStageError as exc:
         raise PortableStageError("invalid_" + label) from exc
-    if raw != _canonical_json_bytes(value):
+    if raw != canonical:
         raise PortableStageError("noncanonical_" + label)
     return value
 
 
 def _parse_awr_output(stage, raw):
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PortableStageError("invalid_model_envelope") from exc
+    value = _decode_json_bytes(raw, "invalid_model_envelope")
     expected_kind, output_name = _AWR_ARTIFACTS[stage]
     if (
         not isinstance(value, dict)
@@ -1126,14 +1454,28 @@ def _publish_outputs(prepared, outputs):
     if set(outputs) != set(profile):
         raise PortableStageError("output_projection_mismatch")
     output_root = pathlib.Path(prepared["output_root"])
-    if output_root.exists() or output_root.is_symlink():
-        raise PortableStageError("output_root_exists")
+    _validate_new_root(
+        output_root,
+        exists_code="output_root_exists",
+        unsafe_code="unsafe_output_root",
+    )
     parent = output_root.parent
+    _validate_new_root(
+        parent / ".portable-parent-sentinel",
+        exists_code="unsafe_output_root",
+        unsafe_code="unsafe_output_root",
+    )
     parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _validate_new_root(
+        parent / ".portable-parent-sentinel",
+        exists_code="unsafe_output_root",
+        unsafe_code="unsafe_output_root",
+    )
     staging = pathlib.Path(
         tempfile.mkdtemp(prefix=".portable-publish-", dir=parent)
     )
     os.chmod(staging, 0o700)
+    staging_identity = _path_identity(staging)
     descriptors = {}
     renamed = False
     try:
@@ -1154,12 +1496,12 @@ def _publish_outputs(prepared, outputs):
         renamed = True
         _fsync_directory(parent)
     except Exception:
-        shutil.rmtree(
+        _remove_owned_tree(
             output_root if renamed else staging,
-            ignore_errors=True,
+            staging_identity,
         )
         raise
-    return descriptors
+    return descriptors, staging_identity
 
 
 def _completion_id(material):
@@ -1182,7 +1524,7 @@ def run_stage(prepared, timeout_seconds=600):
     input_raws = _load_prepared_inputs(prepared)
     preflight_raw = _capture_regular(
         prepared["preflight_path"],
-        64 * 1024,
+        PREFLIGHT_MAX_BYTES,
         "unsafe_preflight",
     )
     if (
@@ -1192,6 +1534,22 @@ def run_stage(prepared, timeout_seconds=600):
         raise PortableStageError("preflight_changed")
     response_schema = _frozen_response_schema(prepared, private)
     intent = _load_launch_intent(prepared, private)
+    current_exec_budget = _rendered_exec_budget(
+        intent,
+        prepared["provider_request"],
+        response_schema,
+        prepared["state_root"],
+    )
+    for name in (
+        "schema_version",
+        "single_string_cap_bytes",
+        "aggregate_cap_bytes",
+        "reserve_bytes",
+        "rendered_argv_sha256",
+        "environment_delta_sha256",
+    ):
+        if current_exec_budget.get(name) != prepared["exec_budget"].get(name):
+            raise PortableStageError("exec_contract_changed")
     try:
         attempt = portable_agent.run_portable_stdout_attempt(
             intent,
@@ -1221,8 +1579,10 @@ def run_stage(prepared, timeout_seconds=600):
         raise PortableStageError("provider_request_changed")
     outputs = _project_outputs(prepared, attempt["raw"], input_raws)
     published = False
+    output_identity = None
+    completion_identity = None
     try:
-        descriptors = _publish_outputs(prepared, outputs)
+        descriptors, output_identity = _publish_outputs(prepared, outputs)
         published = True
         material = {
             "schema_version": "portable-stage-completion-v1",
@@ -1243,22 +1603,25 @@ def run_stage(prepared, timeout_seconds=600):
         completion["completion_id"] = _completion_id(material)
         completion_raw = _canonical_bytes(completion)
         _write_owner_file(completion_path, completion_raw)
+        completion_identity = _path_identity(completion_path)
         _fsync_directory(completion_path.parent)
         return completion
     except Exception:
-        if published:
-            shutil.rmtree(prepared["output_root"], ignore_errors=True)
-        completion_path.unlink(missing_ok=True)
+        if published and output_identity is not None:
+            _remove_owned_tree(prepared["output_root"], output_identity)
+        if completion_identity is not None:
+            _unlink_owned_file(completion_path, completion_identity)
         raise
 
 
 def _load_canonical_file(path, maximum, code):
     raw = _capture_regular(path, maximum, code)
+    value = _decode_json_bytes(raw, code)
     try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        canonical = _canonical_bytes(value)
+    except (history_contract_v2.ContractV2Error, PortableStageError) as exc:
         raise PortableStageError(code) from exc
-    if raw != _canonical_bytes(value):
+    if raw != canonical:
         raise PortableStageError(code)
     return raw, value
 
@@ -1270,7 +1633,7 @@ def verify_completion(prepared):
         raise PortableStageError("invalid_prepared_stage")
     preflight_raw, preflight = _load_canonical_file(
         prepared["preflight_path"],
-        64 * 1024,
+        PREFLIGHT_MAX_BYTES,
         "invalid_preflight",
     )
     _, completion = _load_canonical_file(
@@ -1464,6 +1827,65 @@ def _validate_public_preflight(value):
     ):
         raise PortableStageError("invalid_preflight")
 
+    exec_budget = value.get("exec_budget")
+    exec_fields = {
+        "schema_version",
+        "single_string_cap_bytes",
+        "system_arg_max_bytes",
+        "aggregate_cap_bytes",
+        "reserve_bytes",
+        "argv_bytes",
+        "environment_bytes",
+        "pointer_bytes",
+        "conservative_total_bytes",
+        "rendered_argv_sha256",
+        "environment_delta_sha256",
+    }
+    if (
+        type(exec_budget) is not dict
+        or set(exec_budget) != exec_fields
+        or exec_budget.get("schema_version")
+        != "portable-stage-exec-budget-v1"
+        or exec_budget.get("single_string_cap_bytes")
+        != _EXEC_SINGLE_STRING_MAX_BYTES
+        or type(exec_budget.get("system_arg_max_bytes")) is not int
+        or type(exec_budget.get("aggregate_cap_bytes")) is not int
+        or exec_budget.get("aggregate_cap_bytes")
+        != min(
+            exec_budget["system_arg_max_bytes"],
+            _EXEC_AGGREGATE_CEILING_BYTES,
+        )
+        or exec_budget.get("reserve_bytes") != _EXEC_RESERVE_BYTES
+        or any(
+            type(exec_budget.get(name)) is not int
+            or exec_budget[name] <= 0
+            for name in (
+                "system_arg_max_bytes",
+                "aggregate_cap_bytes",
+                "argv_bytes",
+                "environment_bytes",
+                "pointer_bytes",
+                "conservative_total_bytes",
+            )
+        )
+        or exec_budget["conservative_total_bytes"]
+        != (
+            exec_budget["argv_bytes"]
+            + exec_budget["environment_bytes"]
+            + exec_budget["pointer_bytes"]
+            + exec_budget["reserve_bytes"]
+        )
+        or exec_budget["conservative_total_bytes"]
+        > exec_budget["aggregate_cap_bytes"]
+    ):
+        raise PortableStageError("invalid_preflight")
+    _require_sha256(
+        exec_budget.get("rendered_argv_sha256"), "invalid_preflight"
+    )
+    _require_sha256(
+        exec_budget.get("environment_delta_sha256"), "invalid_preflight"
+    )
+
 
 def _validate_public_completion(value):
     if (
@@ -1545,7 +1967,7 @@ def public_descriptor(prepared, reference_root):
     verify_completion(prepared)
     runtime, _ = _private_prepared(prepared)
     preflight_raw, preflight = _load_canonical_file(
-        runtime["preflight_path"], 64 * 1024, "invalid_preflight"
+        runtime["preflight_path"], PREFLIGHT_MAX_BYTES, "invalid_preflight"
     )
     completion_raw, completion = _load_canonical_file(
         runtime["completion_path"], 64 * 1024, "invalid_completion"
@@ -1701,7 +2123,7 @@ def verify_public_descriptor(descriptor, reference_root):
         reference_root, completion_ref.get("model_envelope_path")
     )
     preflight_raw, preflight = _load_canonical_file(
-        preflight_path, 64 * 1024, "invalid_preflight"
+        preflight_path, PREFLIGHT_MAX_BYTES, "invalid_preflight"
     )
     completion_raw, completion = _load_canonical_file(
         completion_path, 64 * 1024, "invalid_completion"
@@ -1899,7 +2321,13 @@ def main(argv=None):
         if code is None:
             code = str(exc)
         detail = getattr(exc, "detail", None)
-        error_class = getattr(exc, "error_class", "execution")
+        error_class = getattr(exc, "error_class", None)
+        if error_class is None:
+            error_class = (
+                "contract"
+                if isinstance(exc, provider_adapters.ProviderResolutionError)
+                else "execution"
+            )
         if detail:
             print(
                 f"portable-stage: {code} [{error_class}] ({detail})",
