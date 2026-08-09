@@ -2311,6 +2311,72 @@ def _valid_completions(conn, task_key):
     ]
 
 
+def _claim_runtime_task(
+    conn, task_key, worker_id, lease_seconds, *, now=None
+):
+    """Claim once while atomically refusing every live existing claim."""
+    current = _now(now)
+    lease_until = (
+        current + datetime.timedelta(seconds=lease_seconds)
+    ).isoformat()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        task = load_task(conn, task_key)
+        if task["state"] in TERMINAL_STATES:
+            raise ExecutionError("terminal_task")
+        if task["state"] == "settling":
+            raise ExecutionError("task_is_settling")
+        if (
+            task["state"] == "claimed"
+            and task["lease_until"] is not None
+            and _now(task["lease_until"]) > current
+        ):
+            raise history_audit_store.StaleFence("logical task lease is live")
+        history_audit_store.compare_and_set_logical_task(
+            conn, task_key,
+            expected_state=task["state"], expected_fence=task["fence"],
+            new_state="claimed", new_fence=task["fence"] + 1,
+            claim_token=worker_id, lease_until=lease_until,
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    return {
+        "task_hash": task_key,
+        "fence": task["fence"] + 1,
+        "claim_token": worker_id,
+        "lease_until": lease_until,
+    }
+
+
+def _release_runtime_claim(conn, task_key, claim):
+    """Release this invocation's live claim after a durable cancellation."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        task = load_task(conn, task_key)
+        if (
+            task["state"] == "claimed"
+            and task["fence"] == claim["fence"]
+            and task["claim_token"] == claim["claim_token"]
+        ):
+            history_audit_store.compare_and_set_logical_task(
+                conn, task_key,
+                expected_state="claimed", expected_fence=task["fence"],
+                new_state="planned", new_fence=task["fence"] + 1,
+                claim_token=None, lease_until=None,
+            )
+        conn.execute("COMMIT")
+    except history_audit_store.StaleFence:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 def run_task(
     conn, cas_root, plan, task_key, provider, *, now=None, lease_seconds=60,
     fault_after_cas=False
@@ -2324,34 +2390,7 @@ def run_task(
         task["durable_plan"].get("authority_scope") == "production"
     )
     attempt_now = runtime_now if production_execution else None
-    if (
-        task["state"] == "claimed"
-        and task["lease_until"] is not None
-        and _now(task["lease_until"]) > _now(runtime_now)
-    ):
-        latest = conn.execute(
-            """
-            SELECT COALESCE(completion.outcome, cost.outcome) AS outcome
-            FROM audit_task_attempts attempt
-            LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
-            LEFT JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
-            WHERE attempt.task_hash=? ORDER BY attempt.ordinal DESC LIMIT 1
-            """,
-            (task_key,),
-        ).fetchone()
-        if latest is None or latest["outcome"] is None:
-            raise history_audit_store.StaleFence("logical task lease is live")
-    claim = claim_task(
-        conn, task_key, "runtime-worker", lease_seconds, task["fence"],
-        now=runtime_now,
-    )
-    task = load_task(conn, task_key)
     lifecycle_now = runtime_now
-    terminal_transition = {
-        "expected_fence": task["fence"],
-        "claim_token": task["claim_token"],
-        "now": lifecycle_now,
-    }
 
     def finish_terminal(result):
         if task["stage"] == "map":
@@ -2361,6 +2400,89 @@ def run_task(
         elif task["stage"] == "detail":
             materialize_reduce_tasks(conn, cas_root, plan, now=lifecycle_now)
         return result
+
+    latest = conn.execute(
+        """
+        SELECT attempt.ordinal,
+               COALESCE(completion.outcome, cost.outcome) AS outcome
+        FROM audit_task_attempts attempt
+        LEFT JOIN audit_attempt_completions_v2 completion USING(attempt_id)
+        LEFT JOIN audit_attempt_cost_settlements_v2 cost USING(attempt_id)
+        WHERE attempt.task_hash=? ORDER BY attempt.ordinal DESC LIMIT 1
+        """,
+        (task_key,),
+    ).fetchone()
+    split_failure = (
+        latest is not None
+        and latest["outcome"] in {"overflow", "item_set", "truncated"}
+    )
+    final_provider_failure = latest is not None and (
+        latest["outcome"] == "provider_error"
+        or (
+            latest["ordinal"] + 1 >= MAX_ATTEMPTS
+            and latest["outcome"] in {
+                "timeout", "429", "5xx", "syntax", "schema",
+            }
+        )
+    )
+    claim_live = (
+        task["state"] == "claimed"
+        and task["lease_until"] is not None
+        and _now(task["lease_until"]) > _now(runtime_now)
+    )
+    existing_valid = _valid_completions(conn, task_key)
+    if claim_live and existing_valid:
+        result = settle_task(
+            conn, task_key, existing_valid, cas_root=cas_root,
+            now=runtime_now,
+        )
+        return finish_terminal(result)
+    if claim_live:
+        if latest is None or latest["outcome"] is None:
+            raise history_audit_store.StaleFence("logical task lease is live")
+        if split_failure:
+            prior_transition = {
+                "expected_fence": task["fence"],
+                "claim_token": task["claim_token"],
+                "now": lifecycle_now,
+            }
+            if task["stage"] == "map":
+                return finish_terminal(
+                    split_task(conn, task_key, **prior_transition)
+                )
+            return finish_terminal(
+                exhaust_task(
+                    conn, task_key, "overflow", **prior_transition
+                )
+            )
+        if final_provider_failure:
+            prior_transition = {
+                "expected_fence": task["fence"],
+                "claim_token": task["claim_token"],
+                "now": lifecycle_now,
+            }
+            return finish_terminal(
+                exhaust_task(
+                    conn, task_key, "provider_exhausted",
+                    **prior_transition,
+                )
+            )
+    elif split_failure:
+        code = (
+            "expired_split_failure_claim"
+            if task["state"] == "claimed"
+            else "split_failure_claim_authority_unavailable"
+        )
+        raise ExecutionError(code)
+    claim = _claim_runtime_task(
+        conn, task_key, "runtime-worker", lease_seconds, now=runtime_now
+    )
+    task = load_task(conn, task_key)
+    terminal_transition = {
+        "expected_fence": task["fence"],
+        "claim_token": task["claim_token"],
+        "now": lifecycle_now,
+    }
 
     existing_valid = _valid_completions(conn, task_key)
     if existing_valid:
@@ -2421,7 +2543,9 @@ def run_task(
             )
         if prior_failure == "provider_error" or (
             start_ordinal >= MAX_ATTEMPTS
-            and prior_failure in {"timeout", "429", "5xx"}
+            and prior_failure in {
+                "timeout", "429", "5xx", "syntax", "schema",
+            }
         ):
             return finish_terminal(
                 exhaust_task(
@@ -2533,6 +2657,14 @@ def run_task(
                     conn, task_key, "provider_exhausted", **terminal_transition
                 )
             )
+        except ExecutionCrash:
+            cancellation_now = (
+                _now().isoformat() if production_execution else None
+            )
+            _cancel_unterminal_attempt(
+                conn, attempt["attempt_id"], now=cancellation_now
+            )
+            raise
         except history_audit_store.StaleFence:
             raise
         except Exception:
@@ -2542,6 +2674,7 @@ def run_task(
             _cancel_unterminal_attempt(
                 conn, attempt["attempt_id"], now=cancellation_now
             )
+            _release_runtime_claim(conn, task_key, claim)
             raise
     return finish_terminal(
         exhaust_task(conn, task_key, "attempt_limit", **terminal_transition)

@@ -254,6 +254,71 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
             [("codex", "initial"), ("codex", "failover")],
         )
 
+    def test_terminal_prior_retry_window_refuses_concurrent_claim(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        connections = [
+            sqlite3.connect(
+                self.fixture.db_path, timeout=5, check_same_thread=False
+            )
+            for _ in range(2)
+        ]
+        for connection in connections:
+            connection.row_factory = sqlite3.Row
+            history_audit_store.init_schema(connection)
+        retry_window = threading.Barrier(2)
+        release_retry = threading.Event()
+        original_record = history_execution.record_attempt
+        first_calls = [0]
+        first_results = []
+        first_errors = []
+
+        def blocking_record(connection, *args, **kwargs):
+            if connection is connections[0]:
+                first_calls[0] += 1
+                if first_calls[0] == 2:
+                    retry_window.wait(timeout=5)
+                    if not release_retry.wait(5):
+                        raise AssertionError("retry release timed out")
+            return original_record(connection, *args, **kwargs)
+
+        def provider(_task, _provider, ordinal, _request):
+            if ordinal == 0:
+                return {"kind": "syntax", "raw": "syntax"}
+            return {"kind": "success", "output": self.fixture._output(plan)}
+
+        def first_runner():
+            try:
+                first_results.append(history_execution.run_map_task(
+                    connections[0], self.fixture.cas_root, plan, task_key,
+                    provider, now=self.fixture._now(),
+                ))
+            except BaseException as exc:
+                first_errors.append(exc)
+
+        with mock.patch.object(
+            history_execution, "record_attempt", side_effect=blocking_record
+        ):
+            worker = threading.Thread(target=first_runner)
+            worker.start()
+            retry_window.wait(timeout=5)
+            second_calls = []
+            with self.assertRaises(history_audit_store.StaleFence):
+                history_execution.run_map_task(
+                    connections[1], self.fixture.cas_root, plan, task_key,
+                    lambda *_: second_calls.append(True),
+                    now=self.fixture._now(),
+                )
+            self.assertEqual(second_calls, [])
+            release_retry.set()
+            worker.join(10)
+        for connection in connections:
+            connection.close()
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(first_errors, [])
+        self.assertEqual(first_results[0]["settlement_kind"], "equal")
+        self.assertEqual(first_calls, [2])
+
     def test_provider_exception_resume_uses_next_durable_ordinal(self):
         plan = self.fixture._install()
         task_key = plan["logical_task_keys"][0]
@@ -395,6 +460,94 @@ class HistoryExecutionDefensiveConcurrencyRegression(unittest.TestCase):
             self.fixture.conn.execute(
                 "SELECT count(*) FROM audit_task_edges_v2 "
                 "WHERE parent_task_hash=?",
+                (task_key,),
+            ).fetchone()[0],
+            2,
+        )
+
+    def test_expired_overflow_claim_recovers_without_rebinding_failure(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        with mock.patch.object(
+            history_execution, "split_task",
+            side_effect=history_execution.ExecutionCrash(
+                "crash before overflow split"
+            ),
+        ):
+            with self.assertRaises(history_execution.ExecutionCrash):
+                history_execution.run_map_task(
+                    self.fixture.conn, self.fixture.cas_root, plan, task_key,
+                    lambda *_: {"kind": "overflow", "raw": "overflow"},
+                    now=self.fixture._now(), lease_seconds=60,
+                )
+        with self.assertRaises(history_execution.ExecutionError) as expired:
+            history_execution.run_map_task(
+                self.fixture.conn, self.fixture.cas_root, plan, task_key,
+                lambda *_: self.fail("expired failure called provider"),
+                now=self.fixture._now(61),
+            )
+        self.assertEqual(expired.exception.code, "expired_split_failure_claim")
+        self.assertEqual(
+            history_execution.recover_run(
+                self.fixture.conn, plan["plan_sha"],
+                cas_root=self.fixture.cas_root, now=self.fixture._now(61),
+            ),
+            [task_key],
+        )
+        with self.assertRaises(history_execution.ExecutionError) as recovered:
+            history_execution.run_map_task(
+                self.fixture.conn, self.fixture.cas_root, plan, task_key,
+                lambda *_: self.fail("recovered failure called provider"),
+                now=self.fixture._now(62),
+            )
+        self.assertEqual(
+            recovered.exception.code,
+            "split_failure_claim_authority_unavailable",
+        )
+        task = history_execution.load_task(self.fixture.conn, task_key)
+        self.assertEqual(task["state"], "planned")
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT count(*) FROM audit_task_edges_v2 "
+                "WHERE parent_task_hash=?",
+                (task_key,),
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_resume_replays_final_syntax_exhaustion_without_third_attempt(self):
+        plan = self.fixture._install()
+        task_key = plan["logical_task_keys"][0]
+        with mock.patch.object(
+            history_execution, "exhaust_task",
+            side_effect=history_execution.ExecutionCrash(
+                "crash after final syntax completion"
+            ),
+        ):
+            with self.assertRaises(history_execution.ExecutionCrash):
+                history_execution.run_map_task(
+                    self.fixture.conn, self.fixture.cas_root, plan, task_key,
+                    lambda *_: {"kind": "syntax", "raw": "syntax"},
+                    now=self.fixture._now(),
+                )
+        resumed_calls = []
+        result = history_execution.run_map_task(
+            self.fixture.conn, self.fixture.cas_root, plan, task_key,
+            lambda *_: resumed_calls.append(True), now=self.fixture._now(1),
+        )
+        self.assertEqual(result["state"], "exhausted")
+        self.assertEqual(resumed_calls, [])
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT reason FROM audit_task_terminal_facts_v2 "
+                "WHERE task_hash=?",
+                (task_key,),
+            ).fetchone()[0],
+            "provider_exhausted",
+        )
+        self.assertEqual(
+            self.fixture.conn.execute(
+                "SELECT count(*) FROM audit_task_attempts WHERE task_hash=?",
                 (task_key,),
             ).fetchone()[0],
             2,
