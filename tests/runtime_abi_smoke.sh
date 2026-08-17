@@ -202,21 +202,184 @@ write_awr_alias_fixture() {
 }
 
 run_awr_legacy_terminal_case() {
+  local outcome old stable status decision before after candidate
+  for outcome in ready not-ready; do
+    old="$REPO/tmp/awr-side/awr/abc123def456.md"
+    stable="$REPO/tmp/awr-side/awr/r000002.md"
+    case "$outcome" in
+      ready)
+        status='达标(裁判判 SA-可能,第 2 轮)'
+        decision='SA-可能'
+        ;;
+      not-ready)
+        status='未达标(3 轮反馈用尽;末节裁判意见针对修订前草稿,缺陷已回灌并修订)'
+        decision='还不行'
+        ;;
+    esac
+    prepare_awr_case
+    write_awr_alias_fixture
+    mkdir -p "$(dirname "$old")"
+    printf '%s\n' \
+      '# AwR 复活成品 abc123def456' \
+      "- 状态: $status" \
+      '- 原始 idea: 兼容迁移必须保留完整历史成品。' \
+      '- 过程档: abc123def456.task.md(含历轮反馈)' \
+      '' \
+      '## 修订版 idea' \
+      '保留旧成品，同时为 stable row 写入可信 terminal 标记。' \
+      '## 检索记录' \
+      '- https://example.com/legacy-one' \
+      '- https://example.com/legacy-two' \
+      '- https://example.com/legacy-three' \
+      '## 回应' \
+      '迁移不应重新调用 agent。' \
+      'AGY-DONE' \
+      '' \
+      '---' \
+      '## 最后裁判意见' \
+      "判定: $decision" \
+      'AGY-DONE' > "$old"
+    before=$(shasum -a 256 "$old")
+    for candidate in first second; do
+      (
+        cd "$REPO"
+        SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=1 \
+        SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+        bash ./awr-side.sh
+      )
+      [ "$(grep -cve '^[[:space:]]*$' "$stable")" -eq 1 ]
+      grep -qxF '# Historical terminal result' "$stable"
+      [ ! -e "$REPO/tmp/awr-side/awr/r000002.final.bad1" ]
+      [ ! -e "$REPO/tmp/awr-side/awr/r000002.task.md" ]
+    done
+    after=$(shasum -a 256 "$old")
+    [ "$before" = "$after" ]
+  done
+  printf 'ok: AwR canonicalizes complete legacy terminals without agent calls\n'
+}
+
+run_awr_truncated_legacy_terminal_case() {
   local old="$REPO/tmp/awr-side/awr/abc123def456.md"
   local stable="$REPO/tmp/awr-side/awr/r000002.md"
+  local before
   prepare_awr_case
   write_awr_alias_fixture
   mkdir -p "$(dirname "$old")"
-  printf '%s\n' '# Historical terminal result' > "$old"
+  printf '%s\n' \
+    '# AwR 复活成品 abc123def456' \
+    '- 状态: 达标(裁判判 SA-可能,第 1 轮)' > "$old"
+  before=$(shasum -a 256 "$old")
   (
     cd "$REPO"
-    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=1 \
+    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=0 \
     SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
     bash ./awr-side.sh
   )
-  [ -s "$stable" ]
-  [ -s "$old" ]
-  printf 'ok: AwR preserves terminal state across stable-key migration\n'
+  [ ! -e "$stable" ]
+  [ ! -e "$REPO/tmp/awr-side/awr/r000002.final.bad1" ]
+  [ ! -e "$REPO/tmp/awr-side/awr/r000002.task.md" ]
+  [ "$before" = "$(shasum -a 256 "$old")" ]
+  printf '%s\n' '# malformed legacy terminal' 'partial bytes' > "$old"
+  before=$(shasum -a 256 "$old")
+  (
+    cd "$REPO"
+    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=0 \
+    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    bash ./awr-side.sh
+  )
+  [ ! -e "$stable" ]
+  [ ! -e "$REPO/tmp/awr-side/awr/r000002.final.bad1" ]
+  [ "$before" = "$(shasum -a 256 "$old")" ]
+  printf '%s\n' \
+    '# AwR 复活成品 abc123def456' \
+    '- 状态: 达标(裁判判 SA-可能,第 1 轮)' \
+    '- 原始 idea: 伪造的分隔顺序不能成为 terminal。' \
+    '- 过程档: abc123def456.task.md(含历轮反馈)' \
+    '## 修订版 idea' '内容' \
+    '## 检索记录' \
+    '- https://example.com/one' '- https://example.com/two' '- https://example.com/three' \
+    '## 回应' '内容' 'AGY-DONE' '---' '---' \
+    '## 最后裁判意见' '判定: SA-可能' 'AGY-DONE' 'AGY-DONE' > "$old"
+  (
+    cd "$REPO"
+    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=0 \
+    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    bash ./awr-side.sh
+  )
+  [ ! -e "$stable" ]
+  printf '%s\n' \
+    '# AwR 复活成品 abc123def456' \
+    '- 状态: 达标(裁判判 SA-可能,第 1 轮)' \
+    '- 原始 idea: 裁判结论必须来自裁判小节。' \
+    '- 过程档: abc123def456.task.md(含历轮反馈)' \
+    '## 修订版 idea' '内容' \
+    '## 检索记录' \
+    '- https://example.com/one' '- https://example.com/two' '- https://example.com/three' \
+    '## 回应' '判定: SA-可能' 'AGY-DONE' '---' \
+    '## 最后裁判意见' '判定: 还不行' 'AGY-DONE' > "$old"
+  (
+    cd "$REPO"
+    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=0 \
+    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    bash ./awr-side.sh
+  )
+  [ ! -e "$stable" ]
+  printf 'ok: AwR rejects truncated legacy terminals\n'
+}
+
+run_awr_newer_stable_work_case() {
+  local out="$REPO/tmp/awr-side/awr"
+  local old="$out/abc123def456.md"
+  local stable="$out/r000002.md"
+  local draft="$out/r000002.draft.md"
+  local before
+  prepare_awr_case
+  write_awr_alias_fixture
+  mkdir -p "$out"
+  printf '%s\n' \
+    '# AwR 复活成品 abc123def456' \
+    '- 状态: 达标(裁判判 SA-可能,第 1 轮)' \
+    '- 原始 idea: 旧裁判认为可接受。' \
+    '- 过程档: abc123def456.task.md(含历轮反馈)' \
+    '## 修订版 idea' \
+    '旧修订内容。' \
+    '## 检索记录' \
+    '- https://example.com/legacy-one' \
+    '- https://example.com/legacy-two' \
+    '- https://example.com/legacy-three' \
+    '## 回应' \
+    '旧回应。' \
+    'AGY-DONE' \
+    '---' \
+    '## 最后裁判意见' \
+    '判定: SA-可能' \
+    'AGY-DONE' > "$old"
+  printf '%s\n' \
+    '## Revised Idea' \
+    'A newer stable revision must remain resumable.' \
+    '## Search Record' \
+    '- https://example.com/current-one' \
+    '- https://example.com/current-two' \
+    '- https://example.com/current-three' \
+    'AGY-DONE' > "$draft"
+  python3 - "$old" "$draft" <<'PY'
+import os
+import sys
+
+os.utime(sys.argv[1], ns=(1_700_000_000_000_000_000,) * 2)
+os.utime(sys.argv[2], ns=(1_700_000_001_000_000_000,) * 2)
+PY
+  before=$(shasum -a 256 "$old")
+  (
+    cd "$REPO"
+    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=0 \
+    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    bash ./awr-side.sh
+  )
+  [ ! -e "$stable" ]
+  grep -qxF '## Revised Idea' "$draft"
+  [ "$before" = "$(shasum -a 256 "$old")" ]
+  printf 'ok: AwR preserves newer stable work without a judge\n'
 }
 
 run_awr_legacy_partial_case() {
@@ -407,11 +570,18 @@ if [ "$MODE" = default ]; then
   run_awr_reject_case awr-api-bare-host prior-work-query-endpoint
   run_awr_reject_case awr-query-in-neighbors prior-work-query-neighbor-separation
   run_awr_reject_case awr-reversed-sections prior-work-section-order
+  run_awr_reject_case awr-empty-counterexample prior-work-empty-counterexample
   run_awr_reject_case awr-invalid-verification prior-work
   run_awr_reject_case awr-mixed-verification prior-work-mixed-token
+  run_awr_reject_case awr-verification-missing-url prior-work-verification-url
+  run_awr_reject_case awr-verification-missing-description prior-work-verification-description
+  run_awr_reject_case awr-duplicate-verification-heading prior-work-verification-heading
+  run_awr_reject_case awr-verification-without-heading prior-work-verification-section
   run_awr_reject_case awr-mixed-decision judge
   run_awr_agy_case
   run_awr_legacy_terminal_case
+  run_awr_truncated_legacy_terminal_case
+  run_awr_newer_stable_work_case
   run_awr_legacy_partial_case
 else
   run_nondefault_mode_case
