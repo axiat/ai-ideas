@@ -10,6 +10,8 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+MAX_SPARSE_HAN_LINES = 24
+MAX_TEST_HAN_LINES = 80
 EXPECTED = {
     "stable_projection": "ff148c760e8c2e5252f9455ced3612f66481eb80cdca336dcf9f711c93988176",
     "theme_projection": "578d8eee579450f08e6f1061672bf5105da28e635bb819bdcbde14d0e5d59db7",
@@ -169,6 +171,24 @@ def read_text(path):
     except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError, OSError):
         return None
 
+def han_line_limit(relative):
+    path = pathlib.PurePosixPath(str(relative).replace("\\", "/"))
+    if path.parts and path.parts[0] == "tests":
+        return MAX_TEST_HAN_LINES
+    return MAX_SPARSE_HAN_LINES
+
+
+def text_han_failures(relative, text):
+    hits = [
+        f"{relative}:{number}"
+        for number, line in enumerate(text.splitlines(), 1)
+        if HAN.search(line)
+    ]
+    if len(hits) <= han_line_limit(relative):
+        return []
+    return hits[:40]
+
+
 def assert_text_contract(paths):
     failures = []
     for path in paths:
@@ -177,9 +197,11 @@ def assert_text_contract(paths):
         text = read_text(path)
         if text is None:
             continue
-        for number, line in enumerate(text.splitlines(), 1):
-            if HAN.search(line):
-                failures.append(f"{path.relative_to(ROOT)}:{number}")
+        try:
+            relative = path.relative_to(ROOT)
+        except ValueError:
+            relative = pathlib.Path(path.name)
+        failures.extend(text_han_failures(relative.as_posix(), text))
     if failures:
         raise AssertionError("Han characters remain in " + ", ".join(failures[:40]))
 

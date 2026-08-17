@@ -355,6 +355,14 @@ case "$prompt" in
       verification_one='- https://example.com/crack-one | Verification: maybe — The outcome token is intentionally invalid.'
     elif [ "$FAKE_AGENT_MODE" = "awr-mixed-verification" ]; then
       verification_one='- https://example.com/crack-one | Verification: maybe; Verification: supports — The second token must not mask the first.'
+    elif [ "$FAKE_AGENT_MODE" = "awr-verification-missing-url" ]; then
+      verification_one='- crack-one | Verification: supports — The direct URL is intentionally absent.'
+    elif [ "$FAKE_AGENT_MODE" = "awr-verification-missing-description" ]; then
+      verification_one='- https://example.com/crack-one | Verification: supports'
+    elif [ "$FAKE_AGENT_MODE" = "awr-duplicate-verification-heading" ]; then
+      crack_heading=$'## Crack Evidence Verification\n## Crack Evidence Verification'
+    elif [ "$FAKE_AGENT_MODE" = "awr-verification-without-heading" ]; then
+      crack_heading=
     elif [ "$FAKE_AGENT_MODE" = "awr-no-crack" ]; then
       crack_heading=
       verification_one=
@@ -377,6 +385,7 @@ case "$prompt" in
       awr-api-bare-host) query_before='- Query: https://api.semanticscholar.org' ;;
       awr-query-in-neighbors) neighbor_five=; query_before=; query_inside=$query ;;
       awr-reversed-sections) counterexample_before=$counterexample_after; counterexample_after= ;;
+      awr-empty-counterexample) counterexample_after='Strongest Counterexample:' ;;
     esac
     printf '%s\n' \
       '## Independent Prior Work' \

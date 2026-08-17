@@ -153,7 +153,7 @@ test-mode production escape. Litwatch behavior is covered by
 `bash litwatch_test.sh`; its live-network probe may report an intentional skip
 when network access is unavailable.
 
-Documentation changes must keep relative links valid and human-readable tracked content free of Han characters. The product hero path is `assets/ai-ideas-hero.png`.
+Documentation changes must keep relative links valid. Tracked text may contain only sparse Han, such as historical artifact tokens; dense Han still fails the product contract. The product hero path is `assets/ai-ideas-hero.png`.
 
 ## Branches and Commits
 

@@ -325,18 +325,121 @@ task_needs_upgrade() {
   awk '/^## / && $0 != "## Reviewer Feedback" { found=1 } END { exit !found }' "$task"
 }
 
+# Validate the complete terminal envelope emitted before stable row keys. The
+# compatibility source remains authoritative; migration publishes only a
+# one-line terminal marker under the stable key.
+check_legacy_terminal() {
+  local f=$1 expected_key=$2 first status n heading decision
+  [ -s "$f" ] || return 1
+  first=$(sed -n '1p' "$f" 2>/dev/null)
+  [ "$first" = "# AwR 复活成品 $expected_key" ] || return 1
+  n=$(grep -cE '^- 状态:[[:space:]]*(达标|未达标)\([^)]*\)[[:space:]]*$' "$f" || true)
+  [ "${n:-0}" -eq 1 ] || return 1
+  status=$(sed -nE 's/^- 状态:[[:space:]]*(达标|未达标)\([^)]*\)[[:space:]]*$/\1/p' "$f")
+  grep -qE '^- 原始 idea:[[:space:]]*[^[:space:]]' "$f" || return 1
+  grep -qxF -- "- 过程档: $expected_key.task.md(含历轮反馈)" "$f" || return 1
+  case "$status" in
+    达标) decision='判定: SA-可能' ;;
+    未达标) decision='判定: 还不行' ;;
+    *) return 1 ;;
+  esac
+  for heading in '## 修订版 idea' '## 检索记录' '## 回应' '## 最后裁判意见'; do
+    n=$(grep -cxF "$heading" "$f" || true)
+    [ "${n:-0}" -eq 1 ] || return 1
+  done
+  awk -v expected_decision="$decision" '
+    /^## 修订版 idea$/ { revised=NR; phase=1; next }
+    /^## 检索记录$/ { search=NR; phase=2; next }
+    /^## 回应$/ { response=NR; phase=3; next }
+    /^## 最后裁判意见$/ { reviewer=NR; phase=4; next }
+    /^AGY-DONE$/ { done_count++; done_line[done_count]=NR; next }
+    /^---$/ { separator_count++; separator_line[separator_count]=NR; next }
+    phase == 2 && /^- / && /https?:\/\// { links++ }
+    phase == 4 && /^判定:/ {
+      decisions++
+      if ($0 == expected_decision) matching_decisions++
+    }
+    phase > 0 && $0 !~ /^[[:space:]]*$/ && $0 !~ /^## / { content[phase]++ }
+    END {
+      if (!(revised < search && search < response && response < reviewer)) exit 1
+      for (i=1; i<=4; i++) if (content[i] < 1) exit 1
+      if (links < 3 || done_count < 2 || done_count > 3) exit 1
+      if (separator_count != done_count - 1) exit 1
+      for (i=1; i<=separator_count; i++) {
+        if (!(done_line[i] < separator_line[i] \
+              && separator_line[i] < done_line[i+1])) exit 1
+      }
+      if (!(response < done_line[1] && done_line[1] < separator_line[1])) exit 1
+      if (!(separator_line[separator_count] < reviewer && reviewer < done_line[done_count])) exit 1
+      if (decisions != 1 || matching_decisions != 1) exit 1
+    }
+  ' "$f" || return 1
+  [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = 'AGY-DONE' ]
+}
+
+write_historical_terminal_marker() {
+  local target=$1 staged
+  staged="$target.migrating.$$"
+  if ! printf '%s\n' '# Historical terminal result' > "$staged" \
+     || ! chmod 600 "$staged" \
+     || ! mv -f "$staged" "$target"; then
+    rm -f "$staged"
+    return 1
+  fi
+}
+
 # Copy compatibility-keyed state onto the stable row key. Some duplicate source
 # ideas intentionally share one compatibility key, so the source remains
 # available for every matching physical row. An existing stable artifact always
-# wins instead of being overwritten.
+# wins unless it is a byte-identical interrupted copy of a validated legacy
+# terminal; that copy is replaced by the canonical compatibility marker.
 migrate_legacy_state() {
-  local key=$1 legacy=$2 d=$3 theme=$4 idea=$5 reason=$6 old suffix target staged migrated_task=0
+  local key=$1 legacy=$2 d=$3 theme=$4 idea=$5 reason=$6
+  local old suffix target staged first legacy_final current_artifact prefer_current=0 migrated_task=0
   [ -n "$legacy" ] && [ "$legacy" != "$key" ] || return 0
+  legacy_final="$outdir/$legacy.md"
+  if [ -f "$legacy_final" ] && [ ! -L "$legacy_final" ]; then
+    for current_artifact in \
+      "$outdir/$key.task.md" "$outdir/$key.draft.md" \
+      "$outdir/$key.priorwork.md" "$outdir/$key.judge.md"; do
+      if [ -f "$current_artifact" ] && [ ! -L "$current_artifact" ] \
+         && [ "$current_artifact" -nt "$legacy_final" ]; then
+        prefer_current=1
+        break
+      fi
+    done
+  fi
   for old in "$outdir/$legacy".*; do
     [ -e "$old" ] || continue
     suffix=${old#"$outdir/$legacy"}
     target="$outdir/$key$suffix"
-    if [ -e "$target" ]; then
+    if [ "$suffix" = '.md' ]; then
+      [ -f "$old" ] && [ ! -L "$old" ] || continue
+      first=$(sed -n '1p' "$old" 2>/dev/null || true)
+      case "$first" in
+        "# AwR 复活成品 $legacy")
+          # Never recopy a rejected compatibility final. Newer stable work
+          # resumes under the current protocol; otherwise preserve the complete
+          # historical terminal through its marker.
+          [ "$prefer_current" -eq 0 ] || continue
+          check_legacy_terminal "$old" "$legacy" || continue
+          if [ -e "$target" ] || [ -L "$target" ]; then
+            if [ -f "$target" ] && [ ! -L "$target" ] \
+               && cmp -s "$old" "$target"; then
+              write_historical_terminal_marker "$target" || return 1
+            fi
+            continue
+          fi
+          write_historical_terminal_marker "$target" || return 1
+          continue
+          ;;
+        '# Historical terminal result')
+          [ "$(grep -cve '^[[:space:]]*$' "$old" || true)" -eq 1 ] || continue
+          ;;
+        *) continue ;;
+      esac
+    fi
+    if [ -e "$target" ] || [ -L "$target" ]; then
       if [ "$suffix" = ".task.md" ] && task_needs_upgrade "$key" "$target"; then
         migrated_task=1
       fi
@@ -692,6 +795,8 @@ check_draft() {
   grep -qxE '## Revised Idea[[:space:]]*' "$f" || { echo "missing ## Revised Idea"; return 1; }
   n=$(grep -cE '^- .*https?://' "$f" || true)
   [ "${n:-0}" -ge 3 ] || { echo "insufficient linked search records (${n:-0}<3)"; return 1; }
+  n=$(grep -cxE 'AGY-DONE[[:space:]]*' "$f" || true)
+  [ "${n:-0}" -eq 1 ] || { echo "expected exactly one AGY-DONE sentinel"; return 1; }
   [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "AGY-DONE" ] || { echo "missing final AGY-DONE sentinel"; return 1; }
 }
 
@@ -701,51 +806,91 @@ check_priorwork() {
   [ -s "$f" ] || { echo "empty artifact"; return 1; }
   if ! n=$(awk '
     BEGIN {valid=1}
+    /^- Query:/ {
+      queries++
+      if (phase != 0) valid=0
+      next
+    }
     /^Nearest Work:/ {
       nearest++
+      nearest_line=NR
       if (phase != 0) valid=0
       phase=1
       next
     }
     /^Strongest Counterexample:/ {
       strongest++
+      strongest_line=NR
       if (phase != 1) valid=0
       phase=2
       next
     }
-    phase == 1 && /^- / && $0 !~ /^- Query:/ && /https?:\/\// {n++}
+    /^Overlap:/ { overlap++; overlap_line=NR }
+    /^Papers Read:/ { papers++; papers_line=NR }
+    /^arXiv ID Check:/ { arxiv++; arxiv_line=NR }
+    phase == 1 && /^- / && /https?:\/\// {n++}
     END {
-      if (nearest != 1 || strongest != 1 || valid == 0) exit 2
+      if (queries < 1 || nearest != 1 || strongest != 1 \
+          || overlap != 1 || papers != 1 || arxiv != 1 || valid == 0) exit 2
+      if (!(nearest_line < strongest_line && strongest_line < overlap_line \
+            && overlap_line < papers_line && papers_line < arxiv_line)) exit 2
       print n+0
     }
   ' "$f"); then
-    echo "invalid Nearest Work to Strongest Counterexample section order"
+    echo "invalid prior-work section order or field multiplicity"
     return 1
   fi
   [ "${n:-0}" -ge 5 ] || { echo "insufficient linked neighbors (${n:-0}<5)"; return 1; }
   grep -qE "$structured_api_re" "$f" || { echo "missing reproducible API query URL"; return 1; }
+  grep -qE '^Strongest Counterexample:[[:space:]]*[^[:space:]]' "$f" || { echo "empty Strongest Counterexample"; return 1; }
   grep -qE '^Overlap:[[:space:]]*(high|medium|low)([[:space:]]|$)' "$f" || { echo "missing or invalid Overlap"; return 1; }
-  grep -qE '^Papers Read:[[:space:]]*[0-9]+[[:space:]]*$' "$f" || { echo "missing or invalid Papers Read"; return 1; }
-  grep -qE '^arXiv ID Check:' "$f" || { echo "missing arXiv ID Check"; return 1; }
-  if grep -qxE '## Crack Evidence Verification[[:space:]]*' "$f"; then
-    if ! awk '
-      /Verification:/ {
-        line = $0
-        labels = gsub(/Verification:/, "&", line)
-        if (labels != 1) exit 1
-        sub(/^.*Verification:[[:space:]]*/, "", line)
-        if (line !~ /^(supports|partial|contradicts|unreachable)([[:space:]]|$)/) exit 1
-        outcomes++
-      }
-      END { if (outcomes < 1) exit 1 }
-    ' "$f"; then
-      echo "invalid crack-evidence verification outcome"
-      return 1
-    fi
-  elif grep -qE 'Verification:' "$f"; then
-    echo "verification outcome appears without ## Crack Evidence Verification"
+  grep -qE '^Papers Read:[[:space:]]*[1-9][0-9]*[[:space:]]*$' "$f" || { echo "missing or invalid Papers Read"; return 1; }
+  grep -qE '^arXiv ID Check:[[:space:]]*[^[:space:]]' "$f" || { echo "missing arXiv ID Check"; return 1; }
+  # Crack outcomes are role-local. When validating a composite final, ignore all
+  # text before the embedded prior-work payload so draft prose cannot be parsed
+  # as evidence.
+  if ! awk '
+    NR == 1 && /^# AwR Result / { embedded=1; scope=0; next }
+    NR == 1 { scope=1 }
+    embedded && /^## Independent Prior-Work Evidence[[:space:]]*$/ { wrapper=1; next }
+    embedded && wrapper && /^## Independent Prior Work[[:space:]]*$/ {
+      if (scope_seen) exit 1
+      scope=1
+      scope_seen=1
+    }
+    scope && /^AGY-DONE[[:space:]]*$/ { scope=0; next }
+    !scope { next }
+    /^## Crack Evidence Verification[[:space:]]*$/ {
+      if (crack_seen) exit 1
+      crack_seen=1
+      in_crack=1
+      next
+    }
+    in_crack && /^## / { in_crack=0 }
+    in_crack && /^[[:space:]]*$/ { next }
+    in_crack {
+      line=$0
+      if (line !~ /^- https?:\/\/[^[:space:]]+[[:space:]]+\|[[:space:]]+Verification:[[:space:]]*/) exit 1
+      labels=gsub(/Verification:/, "&", line)
+      if (labels != 1) exit 1
+      sub(/^.*Verification:[[:space:]]*/, "", line)
+      if (line !~ /^(supports|partial|contradicts|unreachable)([[:space:]]|$)/) exit 1
+      sub(/^(supports|partial|contradicts|unreachable)/, "", line)
+      if (line !~ /^[[:space:]]+(—|-)[[:space:]]+[^[:space:]]/) exit 1
+      outcomes++
+      next
+    }
+    /^- https?:\/\/[^[:space:]]+[[:space:]]+\|[[:space:]]+Verification:/ { exit 1 }
+    END {
+      if (embedded && scope_seen != 1) exit 1
+      if (crack_seen && outcomes < 1) exit 1
+    }
+  ' "$f"; then
+    echo "invalid crack-evidence verification section"
     return 1
   fi
+  n=$(grep -cxE 'AGY-DONE[[:space:]]*' "$f" || true)
+  [ "${n:-0}" -eq 1 ] || { echo "expected exactly one AGY-DONE sentinel"; return 1; }
   [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "AGY-DONE" ] || { echo "missing final AGY-DONE sentinel"; return 1; }
 }
 
@@ -761,18 +906,95 @@ check_judge() {
     not-ready) grep -qE '^- Defect:' "$f" || { echo "not-ready decision has no defect"; return 1; } ;;
     *) echo "missing or invalid decision"; return 1 ;;
   esac
+  n=$(grep -cxE 'AGY-DONE[[:space:]]*' "$f" || true)
+  [ "${n:-0}" -eq 1 ] || { echo "expected exactly one AGY-DONE sentinel"; return 1; }
   [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "AGY-DONE" ] || { echo "missing final AGY-DONE sentinel"; return 1; }
+}
+
+# Split a current final into the exact role payloads delimited by the host-owned
+# wrapper headings. This helper only separates bytes; the role validators remain
+# the source of truth for each payload grammar.
+split_final_components() {
+  local source=$1 destination=$2 expected_key=$3
+  python3 - "$source" "$destination" "$expected_key" <<'PY'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1])
+destination = pathlib.Path(sys.argv[2])
+expected_key = sys.argv[3].encode("ascii")
+lines = source.read_bytes().splitlines(keepends=True)
+plain = [line.rstrip(b"\r\n") for line in lines]
+prior_marker = b"## Independent Prior-Work Evidence"
+judge_marker = b"## Final Reviewer Decision"
+
+
+def reject():
+    raise SystemExit(1)
+
+
+def has_value(line, prefix):
+    return line.startswith(prefix) and bool(line[len(prefix) :].strip())
+
+
+if (
+    len(lines) < 7
+    or any(b"\r" in line for line in lines)
+    or plain[0] != b"# AwR Result " + expected_key
+    or plain[1] not in (b"Status: ready", b"Status: not-ready")
+    or not has_value(plain[2], b"Outcome: ")
+    or not has_value(plain[3], b"Original Idea: ")
+    or plain[4] != b"Process Record: " + expected_key + b".task.md"
+    or plain[5] != b""
+):
+    reject()
+prior = [index for index, line in enumerate(plain) if line == prior_marker]
+judge = [index for index, line in enumerate(plain) if line == judge_marker]
+if len(prior) > 1 or len(judge) > 1:
+    reject()
+if prior and judge and prior[0] > judge[0]:
+    reject()
+
+
+def payload_end(marker_index, start):
+    separator = marker_index - 1
+    while separator >= start and plain[separator] == b"":
+        separator -= 1
+    if separator < start or plain[separator] != b"---":
+        reject()
+    end = separator
+    while end > start and plain[end - 1] == b"":
+        end -= 1
+    return end
+
+
+first_marker = prior[0] if prior else (judge[0] if judge else len(lines))
+draft_end = payload_end(first_marker, 6) if first_marker < len(lines) else len(lines)
+parts = {"draft.md": b"".join(lines[6:draft_end])}
+if prior:
+    start = prior[0] + 1
+    end = payload_end(judge[0], start) if judge else len(lines)
+    parts["priorwork.md"] = b"".join(lines[start:end])
+else:
+    parts["priorwork.md"] = b""
+if judge:
+    parts["judge.md"] = b"".join(lines[judge[0] + 1 :])
+else:
+    parts["judge.md"] = b""
+for name, payload in parts.items():
+    (destination / name).write_bytes(payload)
+PY
 }
 
 # A terminal artifact must contain a validated draft plus every role section
 # required by its status. This prevents a nonempty prefix left by an interrupted
 # legacy in-place write from suppressing the task forever.
-check_final() {
-  local f=$1 expected_key=$2 n first status prior_sections judge_sections
+check_final() (
+  local f=$1 expected_key=$2 n first status prior_sections judge_sections parts
   [ -s "$f" ] || { echo "empty final artifact"; return 1; }
   first=$(sed -n '1p' "$f")
-  # Pre-stable-key terminal state used this complete one-line compatibility
-  # marker and has no reconstructable product sections to validate.
+  # Pre-stable-key terminal state uses this complete one-line compatibility
+  # marker; the full compatibility source remains under its hash key.
   if [ "$first" = "# Historical terminal result" ]; then
     [ "$(grep -cve '^[[:space:]]*$' "$f" || true)" -eq 1 ] \
       || { echo "invalid historical terminal artifact"; return 1; }
@@ -795,13 +1017,21 @@ check_final() {
     || { echo "duplicate independent prior-work evidence"; return 1; }
   [ "$judge_sections" -le 1 ] \
     || { echo "duplicate final reviewer decision"; return 1; }
-  check_draft "$f" >/dev/null 2>&1 || { echo "invalid embedded draft"; return 1; }
+  parts=$(mktemp -d "$outdir/.final-check.XXXXXX") \
+    || { echo "cannot create final validation temporary"; return 1; }
+  trap 'rm -rf "$parts"' EXIT HUP INT TERM
+  chmod 700 "$parts" \
+    || { echo "cannot protect final validation temporary"; return 1; }
+  split_final_components "$f" "$parts" "$expected_key" \
+    || { echo "invalid final component layout"; return 1; }
+  check_draft "$parts/draft.md" >/dev/null 2>&1 \
+    || { echo "invalid embedded draft"; return 1; }
   if [ "$prior_sections" -eq 1 ]; then
-    check_priorwork "$f" >/dev/null 2>&1 \
+    check_priorwork "$parts/priorwork.md" >/dev/null 2>&1 \
       || { echo "invalid embedded prior work"; return 1; }
   fi
   if [ "$judge_sections" -eq 1 ]; then
-    check_judge "$f" >/dev/null 2>&1 \
+    check_judge "$parts/judge.md" >/dev/null 2>&1 \
       || { echo "invalid embedded reviewer decision"; return 1; }
   fi
   if [ "$status" = ready ]; then
@@ -809,10 +1039,13 @@ check_final() {
       || { echo "ready artifact lacks independent prior-work evidence"; return 1; }
     [ "$judge_sections" -eq 1 ] \
       || { echo "ready artifact lacks final reviewer decision"; return 1; }
-    grep -qxE 'Decision:[[:space:]]*SA-possible' "$f" \
+    grep -qxE 'Decision:[[:space:]]*SA-possible' "$parts/judge.md" \
       || { echo "ready artifact lacks SA-possible decision"; return 1; }
+  elif [ "$judge_sections" -eq 1 ]; then
+    grep -qxE 'Decision:[[:space:]]*not-ready' "$parts/judge.md" \
+      || { echo "not-ready artifact has inconsistent reviewer decision"; return 1; }
   fi
-}
+)
 
 # Build and validate a complete sibling temporary before atomically publishing
 # it. A crash can leave only an ignored hidden temporary, never a terminal
@@ -861,10 +1094,18 @@ while :; do
     migrate_legacy_state "$key" "$legacy_key" "$d" "$theme" "$idea" "$reason" \
       || { log "Failed to migrate compatibility state for $key"; exit 2; }
     out="$outdir/$key.md"
-    nbad=0
+    nbad=0; bad_seq=0
     for badf in "$outdir/$key".*.bad*; do
       [ -e "$badf" ] || [ -L "$badf" ] || continue
-      nbad=$((nbad + 1))
+      bad_index=${badf##*.bad}
+      case "$bad_index" in
+        ''|*[!0-9]*) ;;
+        *) [ "$bad_index" -le "$bad_seq" ] || bad_seq=$bad_index ;;
+      esac
+      case "$badf" in
+        "$outdir/$key.final.bad"*) ;;
+        *) nbad=$((nbad + 1)) ;;
+      esac
     done
     if [ -e "$out" ] || [ -L "$out" ]; then
       existing_snapshot="$outdir/.${key}.existing.$$"
@@ -878,12 +1119,12 @@ while :; do
         why="unsafe final artifact"
       fi
       rm -f "$existing_snapshot"
-      bad_target="$outdir/$key.final.bad$((nbad + 1))"
+      bad_target="$outdir/$key.final.bad$((bad_seq + 1))"
       if ! mv -f "$out" "$bad_target"; then
         log "Cannot quarantine invalid final artifact for $key"
         exit 2
       fi
-      nbad=$((nbad + 1))
+      bad_seq=$((bad_seq + 1))
       log "Rejected [final:$key]: ${why}; quarantined as $(basename "$bad_target")"
     fi
     if [ "$nbad" -ge "$max_bad" ]; then continue; fi
@@ -913,7 +1154,7 @@ while :; do
       if why=$(check_draft "$new"); then
         mv -f "$new" "$draft"
       else
-        mv -f "$new" "$outdir/$key.research.bad$((nbad + 1))" 2>/dev/null || true
+        mv -f "$new" "$outdir/$key.research.bad$((bad_seq + 1))" 2>/dev/null || true
         log "Rejected [research:$key] (backend rc=$rc): ${why}$([ $((nbad + 1)) -ge "$max_bad" ] && printf '; reached %s bad artifacts, blacklisted' "$max_bad")"
         continue
       fi
@@ -938,7 +1179,7 @@ while :; do
       if why=$(check_priorwork "$pworknew"); then
         mv -f "$pworknew" "$pwork"
       else
-        mv -f "$pworknew" "$outdir/$key.priorwork.bad$((nbad + 1))" 2>/dev/null || true
+        mv -f "$pworknew" "$outdir/$key.priorwork.bad$((bad_seq + 1))" 2>/dev/null || true
         log "Rejected [priorwork:$key] (backend rc=$rc): ${why}$([ $((nbad + 1)) -ge "$max_bad" ] && printf '; reached %s bad artifacts, blacklisted' "$max_bad")"
         continue
       fi
@@ -953,7 +1194,7 @@ while :; do
       "rubric.md=$repo/rubric.md" \
       "brainstorming_policy.md=$repo/brainstorming_policy.md"; rc=$?
     if ! why=$(check_judge "$judgef"); then
-      mv -f "$judgef" "$outdir/$key.judge.bad$((nbad + 1))" 2>/dev/null || true
+      mv -f "$judgef" "$outdir/$key.judge.bad$((bad_seq + 1))" 2>/dev/null || true
       log "Rejected [review:$key] (backend rc=$rc): ${why}$([ $((nbad + 1)) -ge "$max_bad" ] && printf '; reached %s bad artifacts, blacklisted' "$max_bad")"
       continue
     fi
