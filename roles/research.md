@@ -41,7 +41,7 @@ Find the **5–8 closest works** and read their abstracts and method sections, n
 
 **Crack evidence verification:** Only for `Form: remove-load-bearing-assumption`, open every URL supplied in a `Crack Evidence:` line. Record whether the URL is reachable, whether the content supports the claimed fact, and whether it specifically shows the assumption weakening rather than being merely related. State facts only. Use exactly `supports`, `partial`, `contradicts`, or `unreachable`.
 
-The orchestrator mechanically requires at least five linked close works and one query record in every idea block. An assumption-removal block also requires `## Crack Evidence Verification` with at least two verification lines. Missing or undersized blocks invalidate and rerun the round.
+The orchestrator mechanically requires at least five linked close works and one query record in every idea block. An assumption-removal block also requires `## Crack Evidence Verification` with at least two verification lines. Field lines are matched strictly: `- Query:` takes the URL alone and `Papers Read:` takes the integer alone — put every breakdown, caveat, and parenthetical on a separate line. Missing, undersized, or annotated-field blocks invalidate and rerun the round.
 
 ## Write
 
@@ -56,7 +56,7 @@ Nearest Work:
 - ... <5–8 works total>
 Strongest Counterexample: <single closest work> — <1–2 sentences stating what it achieves and the concrete difference from the idea's headline. Report the difference as a fact; reviewers determine whether it reaches clear accept.>
 Overlap: low|medium|high — <one sentence stating whether a work above covers the headline finding>
-Papers Read: N
+Papers Read: <integer only, no breakdowns or parentheticals>
 arXiv ID Check: <yes|no; if no, list every uncertain id>
 ## Crack Evidence Verification
 - <URL> | Verification: supports|partial|contradicts|unreachable — <fact established by reading the source>
