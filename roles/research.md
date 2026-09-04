@@ -31,7 +31,7 @@ For a proposition-style idea, whose headline is a claim about the world rather t
 
 Any such hit requires `Overlap: high` and the exact location of the occupying statement.
 
-Run at least one **structured API query** and record the actual query URL with `- Query:` so recall is reproducible and auditable. Use arXiv (`http://export.arxiv.org/api/query?search_query=...`) or Semantic Scholar (`https://api.semanticscholar.org/graph/v1/paper/search?query=...`) through WebFetch. APIs provide recall only. Read abstracts and methods before judging overlap; metadata alone is insufficient.
+Run at least one **structured API query** and record the actual query URL with `- Query:` so recall is reproducible and auditable. Use arXiv (`http://export.arxiv.org/api/query?search_query=...`) or Semantic Scholar (`https://api.semanticscholar.org/graph/v1/paper/search?query=...`) through WebFetch. Each `- Query:` line must contain the URL and nothing else: put HTTP status, error outcomes, and purpose notes on a separate line, because the orchestrator matches the `- Query:` line strictly and rejects any trailing annotation. APIs provide recall only. Read abstracts and methods before judging overlap; metadata alone is insufficient.
 
 `tmp/litwatch/index.jsonl` is an optional seed. If it contains entries for the idea's theme, scan their cached abstracts to accelerate discovery. The cache replaces no hard requirement: record at least one live API query, read at least five close works, and complete every proposition and assumption-removal check. A cached item counts only after its abstract is read, and every cached arXiv id still requires the live title check below. When the cache is absent or empty, follow the same process without it.
 
@@ -50,7 +50,7 @@ Write only under `tmp/`. Create `tmp/round/priorwork.md` with one block per idea
 ```
 ## I1
 Search Terms: <queries used from all three categories>
-- Query: <actual arXiv or Semantic Scholar query URL; at least one>
+- Query: <actual arXiv or Semantic Scholar query URL; at least one; URL only, no trailing notes>
 Nearest Work:
 - <title> | <arXiv URL> | <what it covers> | <specific overlap with this idea>
 - ... <5–8 works total>
