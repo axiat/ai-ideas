@@ -1,26 +1,26 @@
 # Research Context
 
-Last updated: 2026-07-03. This file is optional inspiration, not a constraint. `brainstorming_policy.md` defines divergence: at most 1–2 ideas per round may directly concern this stack; the rest must range beyond it.
+Last updated: 2026-09-04. This file is optional inspiration, not a constraint. `brainstorming_policy.md` defines divergence: at most 1–2 ideas per round may directly concern the stack described here; the rest must range beyond it.
 
-## Core Direction
+## Available Platform
 
-DSRL-style post-training or steering for a frozen VLA: freeze the π0.5 backbone and use SAC-family RL in latent-noise or action space for control. The focus is inference-time control and frozen-backbone modulation, not full fine-tuning.
-
-## Current Stack and Workstreams
-
-- Base model: π0.5, a VLA with a flow-matching action head; `openpi` + `jaxrl2`; simulated manipulation tasks.
-- Reward design: VLM-based reward shaping with subgoal-completion rewards, ProcVLM-style procedure-grounded progress rewards, and VLLR-style generalizable dense rewards plus policy self-certainty intrinsic rewards.
-- Validated uses of VLM signals: reward shaping, state augmentation for the SAC critic, and static task decomposition at episode granularity.
-
-## Validated Findings
-
-- π0.5 responds unreliably to subgoal-level text prompts. V1 and V1-extra experiments showed low SNR and closed-loop counterexamples, so the path that feeds VLM-generated subgoal text into the VLA was dropped. The VLA always receives the full task text.
-- The VLM judge retains perception failures such as simulated visual penetration artifacts. Reward signals require auditing, multi-frame evidence, and temporal validation.
-
-## Interest Keywords
-
-World models (latent dynamics, interactive world models, model-based RL for robotics), VLA post-training (RL post-training, noise-space steering, adaptive chunk replanning), inference dynamics, frozen-backbone modulation, VLM-as-judge rewards, and long-horizon manipulation.
+- Humanoid robots in the group: EngineAI PM01-EDU and T800, with an existing layered controller. Locomotion and whole-body control are available as execution infrastructure, not research targets by default.
+- VLA foundation model available locally: GR00T N1.6 (~3B). Backbone freezing is a design choice, not a constraint — LoRA/adapters and full fine-tuning are both in scope on the budget below; from-scratch pretraining is not.
 
 ## Resource Assumptions
 
-One researcher, approximately 40 effective hours per week, H100-class multi-GPU access, strong engineering ability, and an applied research preference.
+One researcher, 1×H100 80G, direct access to the humanoid platform for real-robot experiments. The feasibility baseline in `brainstorming_policy.md` still applies to every candidate's minimal falsification experiment.
+
+## Inspiration Sparks
+
+Starting points only — candidates may depart freely, and most of the batch should range beyond these:
+
+- Execution failure detection and recovery for VLA on humanoids: monitor visual/proprioceptive mismatch during long-horizon execution and trigger retry, re-grasp, or replan; compare external recovery modules against recovery-internalized fine-tuning.
+- Proprioception/force injection into a vision-dominant VLA for contact-rich manipulation (insertion, door opening, carrying), measuring the marginal gain curve of the new modality.
+- Loco-manipulation and whole-body VLA: operating while the base moves, coordinating a frozen locomotion controller with the manipulation policy, or unifying navigation and manipulation in one action space.
+- Sample-efficient real-robot post-training: residual RL, offline-to-online fine-tuning, or human preference feedback on the real platform.
+- Continual learning for deployed VLA: acquiring new tasks without catastrophic forgetting of pretrained skills.
+
+## Interest Keywords
+
+Humanoid loco-manipulation, VLA post-training (RL, residual, preference-based), multimodal state injection (proprioception, force, tactile), failure detection and recovery, continual learning, sim-to-real data efficiency, long-horizon mobile manipulation.
