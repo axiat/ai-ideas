@@ -205,7 +205,6 @@ run_awr_rejection() {
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
       SIDE_POLL_SEC=0 \
-      SIDE_GAP_SEC=0 \
       SIDE_GAP_MIN_SEC=0 \
       SIDE_GAP_MAX_SEC=0 \
       "$@" bash ./awr-side.sh
@@ -225,15 +224,15 @@ run_awr_rejection() {
   fi
 }
 
-run_hunt_unset_regression() {
+run_hunt_v1_removed_regression() {
   local repo status log marker
-  repo=$(make_repo "hunt-unset-v1") || {
-    record_failure "hunt unset v1 fixture setup"
+  repo=$(make_repo "hunt-v1-removed") || {
+    record_failure "hunt v1 removed fixture setup"
     return
   }
   install_fake_providers "$repo"
-  log="$SANDBOX_ROOT/hunt-unset-v1.log"
-  marker="$SANDBOX_ROOT/hunt-unset-v1.provider-launched"
+  log="$SANDBOX_ROOT/hunt-v1-removed.log"
+  marker="$SANDBOX_ROOT/hunt-v1-removed.provider-launched"
   run_bounded "$repo" "$log" \
     env \
       -u HUNT_PROVIDER -u HUNT_MODEL -u HUNT_REASONING_EFFORT \
@@ -242,12 +241,13 @@ run_hunt_unset_regression() {
       HISTORY_RUNTIME_ABI=v1 MAX_FAILS=bad \
       bash ./hunt.sh
   status=$?
-  if [ "$status" -ne 2 ] || ! grep -q 'MAX_FAILS must' "$log"; then
-    record_failure "unset v2 controls changed the default v1 validation path"
+  if [ "$status" -ne 2 ] \
+    || ! grep -q 'HISTORY_RUNTIME_ABI=v1 was removed' "$log"; then
+    record_failure "hunt did not reject HISTORY_RUNTIME_ABI=v1 clearly"
   elif [ -e "$marker" ]; then
-    record_failure "default v1 validation launched a provider"
+    record_failure "v1 rejection launched a provider"
   else
-    printf 'ok: unset v2 controls preserve default v1 validation\n'
+    printf 'ok: hunt rejects HISTORY_RUNTIME_ABI=v1 with a clear error\n'
   fi
 }
 
@@ -458,8 +458,8 @@ run_awr_agy_catalog_dedup_case() {
   fi
 }
 
-# Setness is intentional: even an explicitly empty v2 control is migration
-# intent and cannot be silently treated as unset by v1.
+# Setness is intentional: even an explicitly empty control is a removed-v1
+# or unknown-control signal and cannot be silently treated as unset.
 run_hunt_rejection v1-set-empty-provider \
   HISTORY_RUNTIME_ABI=v1 HUNT_PROVIDER=
 run_hunt_rejection v2-mixed-empty-contained \
@@ -468,7 +468,7 @@ run_hunt_rejection v2-ineligible-provider \
   HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=opencode
 run_hunt_rejection unknown-abi \
   HISTORY_RUNTIME_ABI=v3
-run_hunt_unset_regression
+run_hunt_v1_removed_regression
 run_hunt_external_legacy_regression
 run_hunt_review_isolation
 run_hunt_review_index_bound

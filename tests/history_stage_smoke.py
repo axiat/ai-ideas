@@ -508,8 +508,9 @@ class HistoryStageSmoke(unittest.TestCase):
 
     def test_bounded_roles_are_canonical_after_hunt_cutover(self):
         hunt = (ROOT / "hunt.sh").read_text(encoding="utf-8")
-        self.assertIn("run_contained_stage", hunt)
-        self.assertIn("history_runtime_authorized run-stage", hunt)
+        self.assertIn("run_portable_generate_stage", hunt)
+        self.assertIn("--executor portable-v2", hunt)
+        self.assertNotIn("run-stage", hunt)
         compare_shortlist = hunt[
             hunt.index("history_compare_shortlist() {"):
             hunt.index("history_compare_targets() {")

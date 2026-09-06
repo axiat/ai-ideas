@@ -17,7 +17,6 @@
 #     AGENT_CMD='./claude-worker.sh' ./hunt.sh
 #   FRONT_CMD='./agy-worker.sh' BACK_CMD='./claude-worker.sh' ./hunt.sh
 #   PANEL_CMD='./claude-worker.sh' ./calib/run_panel.sh calib/cases/pos-meanflow
-#   SIDE_CMD='./claude-worker.sh' ./awr-side.sh
 # Configuration:
 #   CLAUDE_REPO          Absolute work root; defaults to this script's directory.
 #   CLAUDE_MODEL         Optional model passed with `--model`; omission preserves

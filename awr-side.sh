@@ -20,7 +20,9 @@
 # Usage:
 #   caffeinate -is ./awr-side.sh
 #
-# `HISTORY_RUNTIME_ABI=v2` uses portable provider IDs. Codex is the default.
+# Portable-v2 is the only runtime and uses portable provider IDs. Codex is the
+# default. `HISTORY_RUNTIME_ABI=v2` is accepted for compatibility and is
+# equivalent to unset; v1 fails.
 # Omitted reasoning preserves the selected CLI's current default.
 # Codex, Kimi, and Grok model omission preserves the selected CLI default.
 # OpenCode model omission uses a safe host configuration probe and pins the
@@ -31,29 +33,16 @@
 #   AWR_PRIORWORK_PROVIDER / MODEL / REASONING_EFFORT
 #   AWR_JUDGE_PROVIDER / MODEL / REASONING_EFFORT
 #
-# V1 command strings are split on whitespace and receive the prompt as their
-# final argument:
-#   SIDE_CMD             all three roles
-#   SIDE_RESEARCH_CMD    researcher only; falls back to SIDE_CMD
-#   SIDE_JUDGE_CMD       reviewer only; falls back to SIDE_CMD
-#   SIDE_PRIORWORK_CMD   prior work only; falls back to SIDE_JUDGE_CMD
-#
 # Examples:
 #   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode ./awr-side.sh
 #   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high \
 #     AWR_REASONING_EFFORT=high ./awr-side.sh
-#   HISTORY_RUNTIME_ABI=v1 SIDE_CMD=agy ./awr-side.sh
 #
-# `SIDE_CMD=agy` selects the mirror-local built-in adapter with AGY_MODEL and
-# AGY_PRINT_TIMEOUT. Relative custom commands are resolved against the source
-# repository before entering the mirror. Every backend receives the same
-# artifact validation, random launch throttle, bad-artifact accounting, and
-# circuit breaker. `AGY-DONE` remains the required final nonempty line.
+# Every backend receives the same artifact validation, random launch throttle,
+# bad-artifact accounting, and circuit breaker. `AGY-DONE` remains the
+# required final nonempty line.
 #
 # Tuning:
-#   AGY_MODEL                         default: gemini-3.6-flash-high
-#   AGY_PRINT_TIMEOUT                 default: 10m
-#   SIDE_GAP_SEC                      default: 0; built-in agy gate, opt-in
 #   SIDE_GAP_MIN_SEC/MAX_SEC          default: 0/0; all-backend throttle, opt-in
 #   SIDE_POLL_SEC                     default: 9000; 0 exits after a terminal scan
 #   SIDE_MAX_BAD / SIDE_MAX_ROUNDS    default: 3 / 3
@@ -133,43 +122,31 @@ awr_write_role_profile() {
 }
 
 awr_runtime_preflight() {
-  local abi=v1 name role diagnostic provider model reasoning index duplicate
+  local name role diagnostic provider model reasoning index duplicate
   local base_provider base_model base_reasoning provider_changed
   local provider_name model_name reasoning_name
   local -a successful_providers successful_models successful_reasonings
   if runtime_variable_is_set HISTORY_RUNTIME_ABI; then
-    abi=$HISTORY_RUNTIME_ABI
+    case "$HISTORY_RUNTIME_ABI" in
+      v1)
+        printf 'awr-side: HISTORY_RUNTIME_ABI=v1 was removed; portable-v2 is the only runtime\n' >&2
+        return 2
+        ;;
+      v2) ;;
+      *)
+        printf 'awr-side: HISTORY_RUNTIME_ABI must be v2 when set: %s\n' \
+          "$HISTORY_RUNTIME_ABI" >&2
+        return 2
+        ;;
+    esac
   fi
-  case "$abi" in
-    v1)
-      AWR_RUNTIME_ABI=v1
-      for name in \
-        AWR_PROVIDER AWR_MODEL AWR_REASONING_EFFORT \
-        AWR_RESEARCH_PROVIDER AWR_RESEARCH_MODEL AWR_RESEARCH_REASONING_EFFORT \
-        AWR_PRIORWORK_PROVIDER AWR_PRIORWORK_MODEL AWR_PRIORWORK_REASONING_EFFORT \
-        AWR_JUDGE_PROVIDER AWR_JUDGE_MODEL AWR_JUDGE_REASONING_EFFORT
-      do
-        if runtime_variable_is_set "$name"; then
-          printf 'awr-side: %s is valid only with HISTORY_RUNTIME_ABI=v2\n' \
-            "$name" >&2
-          return 2
-        fi
-      done
-      return 0
-      ;;
-    v2) ;;
-    *)
-      printf 'awr-side: HISTORY_RUNTIME_ABI must be v1 or v2: %s\n' "$abi" >&2
-      return 2
-      ;;
-  esac
 
   for name in \
     SIDE_CMD SIDE_RESEARCH_CMD SIDE_PRIORWORK_CMD SIDE_JUDGE_CMD \
-    AGY_MODEL AGY_PRINT_TIMEOUT
+    SIDE_GAP_SEC AGY_MODEL AGY_PRINT_TIMEOUT
   do
     if runtime_variable_is_set "$name"; then
-      printf 'awr-side: %s cannot be mixed with v2 provider controls\n' \
+      printf 'awr-side: %s was removed with the v1 runtime\n' \
         "$name" >&2
       return 2
     fi
@@ -227,7 +204,6 @@ awr_runtime_preflight() {
     successful_reasonings+=("$reasoning")
   done
 
-  AWR_RUNTIME_ABI=v2
   return 0
 }
 
@@ -241,14 +217,6 @@ print(value)
 ' "$repo/history/retrieval-policy-v1.json") || exit 2
 awr_runtime_preflight || exit 2
 
-model=${AGY_MODEL:-gemini-3.6-flash-high}
-ptimeout=${AGY_PRINT_TIMEOUT:-10m}
-SIDE_CMD=${SIDE_CMD:-codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral}
-side_cmd=$SIDE_CMD
-research_cmd=${SIDE_RESEARCH_CMD:-$side_cmd}
-judge_cmd=${SIDE_JUDGE_CMD:-$side_cmd}
-priorwork_cmd=${SIDE_PRIORWORK_CMD:-$judge_cmd}   # Prior work follows the reviewer's trust level.
-gap=${SIDE_GAP_SEC:-0}
 gap_min=${SIDE_GAP_MIN_SEC:-0}
 gap_max=${SIDE_GAP_MAX_SEC:-0}
 poll=${SIDE_POLL_SEC:-9000}
@@ -259,11 +227,9 @@ statedir="$repo/tmp/awr-side"
 outdir="$statedir/awr"
 alias_file="$repo/awr-state-aliases.tsv"
 sidelock="$repo/tmp/awr-side.lock"
-gate_stamp="$repo/tmp/agy.last-launch"
-gate_lock="$repo/tmp/agy.launch.lock"
 structured_api_re='^- Query:[[:space:]]*https?://(export\.arxiv\.org/api/query\?[^[:space:]]+|api\.semanticscholar\.org/graph/v1/[A-Za-z0-9._~%/:+-]+\?[^[:space:]]+)[[:space:]]*$'
-for v in "$gap" "$gap_min" "$gap_max" "$poll" "$max_bad" "$max_rounds" "$cooldown"; do
-  case "$v" in ''|*[!0-9]*) echo "awr-side: GAP/GAP_MIN/GAP_MAX/POLL/MAX_BAD/MAX_ROUNDS/COOLDOWN must be nonnegative integers: $v" >&2; exit 2 ;; esac
+for v in "$gap_min" "$gap_max" "$poll" "$max_bad" "$max_rounds" "$cooldown"; do
+  case "$v" in ''|*[!0-9]*) echo "awr-side: GAP_MIN/GAP_MAX/POLL/MAX_BAD/MAX_ROUNDS/COOLDOWN must be nonnegative integers: $v" >&2; exit 2 ;; esac
 done
 [ "$gap_max" -eq 0 ] || [ "$gap_min" -le "$gap_max" ] || { echo "awr-side: SIDE_GAP_MIN_SEC($gap_min) exceeds SIDE_GAP_MAX_SEC($gap_max)" >&2; exit 2; }
 
@@ -466,31 +432,8 @@ while ! mkdir "$sidelock" 2>/dev/null; do
   echo "awr-side: another instance is running (PID ${holder:-unknown}); remove $sidelock only after verifying no instance remains" >&2; exit 1
 done
 echo $$ > "$sidelock/pid"
-trap 'rm -rf "$sidelock"; [ "$(cat "$gate_lock/pid" 2>/dev/null)" = "$$" ] && rm -rf "$gate_lock"' EXIT
+trap 'rm -rf "$sidelock"' EXIT
 rm -rf "$statedir"/run.* 2>/dev/null || true   # Mirrors left by an interrupted invocation.
-
-# Built-in agy uses this repository-wide launch gate. agy-worker.sh owns the
-# same policy at its adapter root, so wrapper calls must not be gated twice.
-gate() {
-  [ "$gap" -gt 0 ] || return 0
-  local holder lock_m now last wait_s
-  while ! mkdir "$gate_lock" 2>/dev/null; do
-    holder=$(cat "$gate_lock/pid" 2>/dev/null || echo "")
-    lock_m=$(stat -f %m "$gate_lock" 2>/dev/null || echo "")
-    if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } \
-       || { [ -n "$lock_m" ] && [ $(( $(date +%s) - lock_m )) -gt $((gap + 60)) ]; }; then
-      log "Removing stale agy launch lock (holder=${holder:-none})"; rm -rf "$gate_lock"; continue
-    fi
-    sleep 1
-  done
-  echo $$ > "$gate_lock/pid"
-  now=$(date +%s); last=$(cat "$gate_stamp" 2>/dev/null || echo 0)
-  case "$last" in ''|*[!0-9]*) last=0 ;; esac
-  wait_s=$(( last + gap - now ))
-  if [ "$wait_s" -gt 0 ]; then log "Waiting ${wait_s}s to preserve the ${gap}s agy launch gap"; sleep "$wait_s"; fi
-  date +%s > "$gate_stamp"
-  rm -rf "$gate_lock"
-}
 
 # Random throttling prevents back-to-back calls across all backends. The first
 # call after startup or an idle scan is immediate. A zero maximum disables it.
@@ -508,28 +451,15 @@ throttle() {
 # Count consecutive calls that produce no file, separately from bad content.
 nofile=0
 
-# Resolve command heads once at startup. Configuration errors must fail before
+# Resolve role profiles once at startup. Configuration errors must fail before
 # the queue loop or they can bypass both bad-artifact and no-file accounting.
-if [ "$AWR_RUNTIME_ABI" = v2 ]; then
-  profile_root="$statedir/provider-profiles"
-  research_cmd="$profile_root/research.json"
-  priorwork_cmd="$profile_root/priorwork.json"
-  judge_cmd="$profile_root/judge.json"
-  awr_write_role_profile RESEARCH "$research_cmd" || exit 2
-  awr_write_role_profile PRIORWORK "$priorwork_cmd" || exit 2
-  awr_write_role_profile JUDGE "$judge_cmd" || exit 2
-else
-  . "$repo/lib/resolve_cmd.sh"
-  . "$repo/lib/mirror_pre.sh"
-  # Attribute resolution errors to the variable that supplied the command.
-  research_label="awr-side: SIDE_CMD"; [ -n "${SIDE_RESEARCH_CMD:-}" ] && research_label="awr-side: SIDE_RESEARCH_CMD"
-  judge_label="awr-side: SIDE_CMD"; [ -n "${SIDE_JUDGE_CMD:-}" ] && judge_label="awr-side: SIDE_JUDGE_CMD"
-  # Prior-work attribution follows its PRIORWORK -> JUDGE -> CMD fallback chain.
-  priorwork_label="awr-side: SIDE_CMD"; [ -n "${SIDE_JUDGE_CMD:-}" ] && priorwork_label="awr-side: SIDE_JUDGE_CMD"; [ -n "${SIDE_PRIORWORK_CMD:-}" ] && priorwork_label="awr-side: SIDE_PRIORWORK_CMD"
-  research_cmd=$(resolve_cmd "$repo" "$research_label" "$research_cmd") || exit 2
-  judge_cmd=$(resolve_cmd "$repo" "$judge_label" "$judge_cmd") || exit 2
-  priorwork_cmd=$(resolve_cmd "$repo" "$priorwork_label" "$priorwork_cmd") || exit 2
-fi
+profile_root="$statedir/provider-profiles"
+research_cmd="$profile_root/research.json"
+priorwork_cmd="$profile_root/priorwork.json"
+judge_cmd="$profile_root/judge.json"
+awr_write_role_profile RESEARCH "$research_cmd" || exit 2
+awr_write_role_profile PRIORWORK "$priorwork_cmd" || exit 2
+awr_write_role_profile JUDGE "$judge_cmd" || exit 2
 
 portable_attempt_counter=0
 
@@ -710,82 +640,14 @@ run_portable_agent() {
   return "$rc"
 }
 
-# $1=command/profile, $2=only writable artifact, $3=prompt, $4=raw backend
-# log. v1 receives a disposable legacy mirror. v2 receives only the declared
-# role inputs through portable-mirror-v1.
+# $1=profile, $2=only writable artifact, $3=prompt (unused by portable
+# stages), $4=raw backend log. Each role receives only the declared inputs
+# through portable-mirror-v1.
 run_agent() {
-  local cmd=$1 target=$2 prompt=$3 logf=$4 stage=${5:-} output_name=${6:-}
-  local first sandbox rel target_in_sandbox prompt_in_sandbox pre rc capture_status is_agy_wrapper=0
-  if [ "$AWR_RUNTIME_ABI" = v2 ]; then
-    shift 6
-    run_portable_agent \
-      "$cmd" "$target" "$logf" "$stage" "$output_name" "$@"
-    return $?
-  fi
-  throttle
-  read -r first _ <<<"$cmd"
-  case "$first" in
-    ''|agy|*/agy) gate ;;
-    *agy-worker.sh) is_agy_wrapper=1 ;;
-  esac
-  sandbox=$(mktemp -d "$statedir/run.XXXXXX") || return 1
-  rel=${target#"$repo"/}
-  target_in_sandbox="$sandbox/$rel"
-  mkdir -p "$sandbox/roles" "$sandbox/tmp/awr-side/awr" "$(dirname "$target_in_sandbox")"
-  cp "$repo/roles/awr.md" "$sandbox/roles/awr.md"
-  cp "$repo/roles/awr-priorwork.md" "$sandbox/roles/awr-priorwork.md"
-  cp "$repo/roles/awr-judge.md" "$sandbox/roles/awr-judge.md"
-  cp "$repo/rubric.md" "$sandbox/rubric.md"
-  cp "$repo/brainstorming_policy.md" "$sandbox/brainstorming_policy.md"
-  cp -R "$repo/.claude" "$sandbox/.claude" 2>/dev/null || true   # Explicit Claude opt-in uses the mirror allowlist.
-  cp "$outdir"/*.md "$sandbox/tmp/awr-side/awr/" 2>/dev/null || true
-  rm -f "$target" "$target_in_sandbox"
-  prompt_in_sandbox=${prompt//$repo/$sandbox}
-  pre=$(mirror_pre "$sandbox" "$target_in_sandbox" "tmp/round/, ideas/, or ledger.tsv")
-  if [ "$cmd" = "agy" ]; then
-    ( cd "$sandbox" && agy --model "$model" --add-dir "$sandbox" --print-timeout "$ptimeout" \
-        -p "${pre}
-
-${prompt_in_sandbox}" < /dev/null >> "$logf" 2>&1 )
-  else
-    # Wrapper root overrides pin every backend's working root into the mirror; other backends ignore them.
-    if [ "$is_agy_wrapper" -eq 1 ]; then
-      # The adapter owns the shared launch root and lock. Give it AwR's gap so
-      # wrapper and non-wrapper launches observe one gate without a double wait.
-      ( cd "$sandbox" && GROK_REPO="$sandbox" CLAUDE_REPO="$sandbox" AGY_REPO="$sandbox" \
-          AGY_OUT_HINT="$(dirname "$rel")/" AGY_LAUNCH_GAP_SEC="$gap" $cmd "${pre}
-
-${prompt_in_sandbox}" < /dev/null >> "$logf" 2>&1 )
-    else
-      ( cd "$sandbox" && GROK_REPO="$sandbox" CLAUDE_REPO="$sandbox" AGY_REPO="$sandbox" \
-          AGY_OUT_HINT="$(dirname "$rel")/" $cmd "${pre}
-
-${prompt_in_sandbox}" < /dev/null >> "$logf" 2>&1 )
-    fi
-  fi
-  rc=$?
-  if capture_declared_output "$target_in_sandbox" "$target" "legacy/$rel"; then
-    :
-  else
-    capture_status=$?
-    [ "$capture_status" -eq 3 ] || rc=1
-  fi
-  rm -rf "$sandbox"
-  if [ -e "$target" ]; then
-    nofile=0
-  else
-    nofile=$((nofile + 1))
-    if [ "$nofile" -ge 3 ]; then
-      if [ "$cooldown" -gt 0 ]; then
-        log "Circuit open: ${nofile} consecutive calls produced no artifact (rc=$rc); retrying after ${cooldown}s"
-        sleep "$cooldown"; nofile=0
-      else
-        log "Circuit open: ${nofile} consecutive calls produced no artifact (rc=$rc); exiting"
-        exit 3
-      fi
-    fi
-  fi
-  return "$rc"
+  local cmd=$1 target=$2 logf=$4 stage=${5:-} output_name=${6:-}
+  shift 6
+  run_portable_agent \
+    "$cmd" "$target" "$logf" "$stage" "$output_name" "$@"
 }
 
 # Reject incomplete drafts before replacing the last valid revision.
@@ -1078,7 +940,7 @@ finalize() {
 }
 
 cd "$repo" || { echo "awr-side: cannot enter repository root $repo" >&2; exit 1; }
-log "awr-side started: research=$research_cmd priorwork=$priorwork_cmd reviewer=$judge_cmd throttle=${gap_min}-${gap_max}s agy_gap=${gap}s poll=${poll}s max_bad=$max_bad max_rounds=$max_rounds cooldown=${cooldown}s"
+log "awr-side started: research=$research_cmd priorwork=$priorwork_cmd reviewer=$judge_cmd throttle=${gap_min}-${gap_max}s poll=${poll}s max_bad=$max_bad max_rounds=$max_rounds cooldown=${cooldown}s"
 
 while :; do
   # Prefer the shell-approved ledger snapshot, then freeze the input for this scan.

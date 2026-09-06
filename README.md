@@ -132,7 +132,7 @@ CLAUDE_REASONING_EFFORT=high \
 ```
 
 Exact model/reasoning spelling for every provider, role-specific overrides,
-the external Hunt stage boundary, and v1 compatibility are in
+the external Hunt stage boundary, and the v1 removal are in
 [`docs/backends.md`](docs/backends.md).
 
 ## Calibration

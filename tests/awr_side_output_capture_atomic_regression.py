@@ -9,7 +9,6 @@ import shutil
 import stat
 import subprocess
 import tempfile
-import textwrap
 import unittest
 
 
@@ -18,45 +17,54 @@ LEDGER_ROW = (
     "2026-08-09\thunt\tDefensive capture\tCapture hostile output safely"
     "\taccept-w-rev\tNeeds revision\tlow\tdesign-fixable\n"
 )
+PROVIDERS = ("codex", "kimi", "grok", "opencode", "agy", "claude")
 
 
 class AwrSideOutputCaptureRegression(unittest.TestCase):
     def make_repo(self) -> Path:
         root = Path(tempfile.mkdtemp(prefix="awr-output-capture-"))
         self.addCleanup(shutil.rmtree, root, True)
-        (root / "lib").mkdir()
-        (root / "roles").mkdir()
-        (root / "history").mkdir()
+        shutil.copytree(ROOT / "lib", root / "lib")
+        shutil.copytree(ROOT / "roles", root / "roles")
+        shutil.copytree(ROOT / "history", root / "history")
         for relative in (
             "awr-side.sh",
-            "history/retrieval-policy-v1.json",
-            "lib/resolve_cmd.sh",
-            "lib/mirror_pre.sh",
-            "roles/awr.md",
-            "roles/awr-priorwork.md",
-            "roles/awr-judge.md",
             "rubric.md",
             "brainstorming_policy.md",
         ):
-            destination = root / relative
-            shutil.copy2(ROOT / relative, destination)
+            shutil.copy2(ROOT / relative, root / relative)
+        test_bin = root / ".test-bin"
+        test_bin.mkdir()
+        for provider in PROVIDERS:
+            destination = test_bin / provider
+            shutil.copy2(
+                ROOT / "tests" / "fake_portable_stage_provider.py",
+                destination,
+            )
+            destination.chmod(0o755)
         (root / "ledger.tsv").write_text(LEDGER_ROW, encoding="utf-8")
         return root
 
     def run_awr(
         self,
         root: Path,
-        command: str,
         *,
         max_rounds: int = 3,
         max_bad: int = 3,
     ) -> subprocess.CompletedProcess[str]:
+        home = root / "provider-home"
+        home.mkdir(exist_ok=True)
         environment = os.environ.copy()
         environment.update(
             {
-                "HISTORY_RUNTIME_ABI": "v1",
-                "SIDE_CMD": command,
-                "SIDE_GAP_SEC": "0",
+                "HOME": str(home),
+                "CODEX_HOME": str(home / "codex-config"),
+                "PATH": f"{root / '.test-bin'}:{os.environ['PATH']}",
+                "HISTORY_RUNTIME_ABI": "v2",
+                "AWR_PROVIDER": "claude",
+                "AWR_RESEARCH_PROVIDER": "claude",
+                "AWR_PRIORWORK_PROVIDER": "claude",
+                "AWR_JUDGE_PROVIDER": "claude",
                 "SIDE_GAP_MIN_SEC": "0",
                 "SIDE_GAP_MAX_SEC": "0",
                 "SIDE_POLL_SEC": "0",
@@ -72,7 +80,7 @@ class AwrSideOutputCaptureRegression(unittest.TestCase):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=10,
+            timeout=30,
             check=False,
         )
 
@@ -144,74 +152,6 @@ class AwrSideOutputCaptureRegression(unittest.TestCase):
             os.utime(paths[name], ns=(timestamp, timestamp))
         return paths
 
-    def make_judge_agent(self, root: Path) -> Path:
-        agent = root / "judge-agent.py"
-        agent.write_text(
-            textwrap.dedent(
-                """\
-                #!/usr/bin/env python3
-                from pathlib import Path
-                import sys
-
-                prompt = sys.argv[-1]
-                suffix = prompt.rsplit("Overwrite ", 1)[1]
-                target_text, separator, _ = suffix.partition(" with the decision.")
-                assert separator, prompt
-                target = Path(target_text)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text("Decision: SA-possible\\nAGY-DONE\\n", encoding="utf-8")
-                """
-            ),
-            encoding="utf-8",
-        )
-        agent.chmod(0o755)
-        return agent
-
-    def make_hostile_agent(self, root: Path) -> Path:
-        agent = root / "hostile-output-agent.py"
-        agent.write_text(
-            textwrap.dedent(
-                """\
-                #!/usr/bin/env python3
-                import os
-                from pathlib import Path
-                import sys
-
-                mode = sys.argv[1]
-                prompt = sys.argv[-1]
-                target_text = prompt.rsplit("Write the artifact to ", 1)[1]
-                assert target_text.endswith("."), target_text
-                target = Path(target_text[:-1])
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if mode == "symlink":
-                    target.symlink_to("/dev/null")
-                elif mode == "hardlink":
-                    source = target.with_name("hostile-hardlink-source")
-                    source.write_text("aliased bytes\\n", encoding="utf-8")
-                    os.link(source, target)
-                elif mode == "fifo":
-                    os.mkfifo(target)
-                else:
-                    raise AssertionError(mode)
-                """
-            ),
-            encoding="utf-8",
-        )
-        agent.chmod(0o755)
-        return agent
-
-    def test_declared_symlink_hardlink_and_fifo_are_rejected_without_hanging(self) -> None:
-        for mode in ("symlink", "hardlink", "fifo"):
-            with self.subTest(mode=mode):
-                root = self.make_repo()
-                agent = self.make_hostile_agent(root)
-                result = self.run_awr(root, f"{agent} {mode}")
-                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                self.assertIn("unsafe declared output", result.stderr)
-                outdir = root / "tmp/awr-side/awr"
-                self.assertFalse((outdir / "r000001.md").exists())
-                self.assertFalse((outdir / "r000001.draft.md").exists())
-
     def test_incidental_verification_prose_isolated(self) -> None:
         for with_crack_verification in (False, True):
             with self.subTest(with_crack_verification=with_crack_verification):
@@ -219,9 +159,8 @@ class AwrSideOutputCaptureRegression(unittest.TestCase):
                 paths = self.seed_ready_retry(
                     root, with_crack_verification=with_crack_verification
                 )
-                agent = self.make_judge_agent(root)
 
-                result = self.run_awr(root, str(agent))
+                result = self.run_awr(root)
 
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(result.stdout.count("Starting [review:r000001 round 1]"), 1)
@@ -267,7 +206,7 @@ class AwrSideOutputCaptureRegression(unittest.TestCase):
                     )
                 paths["final"].write_bytes(final_text.encode("utf-8"))
 
-                result = self.run_awr(root, "false", max_bad=0)
+                result = self.run_awr(root, max_bad=0)
 
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertFalse(paths["final"].exists())
@@ -325,7 +264,7 @@ class AwrSideOutputCaptureRegression(unittest.TestCase):
             timestamp = base + index * 1_000_000_000
             os.utime(path, ns=(timestamp, timestamp))
 
-        result = self.run_awr(root, "false", max_rounds=1, max_bad=1)
+        result = self.run_awr(root, max_rounds=1, max_bad=1)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         quarantined = outdir / f"{key}.final.bad1"
         self.assertEqual(

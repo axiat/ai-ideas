@@ -1,6 +1,7 @@
 # Backends
 
-`HISTORY_RUNTIME_ABI=v2` is the provider-neutral runtime. Internal stages use
+Portable-v2 is the only runtime; `HISTORY_RUNTIME_ABI=v2` is accepted for
+compatibility and is equivalent to leaving it unset. Internal stages use
 registered provider IDs and portable mirrors. Omitted reasoning preserves the
 selected CLI's current configuration. Omitted models preserve the Codex, Kimi,
 Grok, and Claude defaults; OpenCode requires a safe host probe and is launched
@@ -318,8 +319,9 @@ SIDE_POLL_SEC=0 \
 ./awr-side.sh
 ```
 
-V2 rejects `SIDE_CMD`, `SIDE_RESEARCH_CMD`, `SIDE_PRIORWORK_CMD`, and
-`SIDE_JUDGE_CMD`. V1 retains those compatibility controls.
+`SIDE_CMD`, `SIDE_RESEARCH_CMD`, `SIDE_PRIORWORK_CMD`, and
+`SIDE_JUDGE_CMD` were removed with the v1 runtime; setting any of them fails
+preflight.
 
 ## Portable Boundary
 
@@ -410,17 +412,18 @@ outside the mirror.
 Provider authentication and current CLI defaults remain available through the
 provider's normal host configuration.
 
-## V1 Compatibility
+## V1 Removal
 
-With `HISTORY_RUNTIME_ABI=v1`, Hunt retains `CONTAINED_AGENT_CMD_JSON` and
-`CONTAINED_REV_CMD_<N>_JSON`; AwR retains `SIDE_*`. V2 rejects those internal
-overrides before state mutation. Hunt v2 continues to allow
+The v1 contained runtime was removed. `HISTORY_RUNTIME_ABI=v1` fails with a
+clear error; `v2` or an unset variable selects the only runtime. The v1
+controls `CONTAINED_AGENT_CMD_JSON`, `CONTAINED_REV_CMD_<N>_JSON`, and
+`SIDE_*` fail preflight before state mutation. Hunt continues to allow
 `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` only for its four external stages.
 
 Operational AwR defaults remain `SIDE_POLL_SEC=9000`, `SIDE_MAX_BAD=3`,
 `SIDE_MAX_ROUNDS=3`, and `SIDE_COOLDOWN_SEC=3600`. Backend launch
-throttling is opt-in: `SIDE_GAP_SEC`, `SIDE_GAP_MIN_SEC`,
-`SIDE_GAP_MAX_SEC`, and `AGY_LAUNCH_GAP_SEC` default to `0`.
+throttling is opt-in: `SIDE_GAP_MIN_SEC` and `SIDE_GAP_MAX_SEC`
+default to `0`.
 
 A failed final bounded Hunt round exits without `FAIL_SLEEP_MIN`; failed rounds
 with another bounded attempt remaining retain the configured cooldown. Contract

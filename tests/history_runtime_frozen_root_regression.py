@@ -4,14 +4,12 @@ import json
 import pathlib
 import sys
 import unittest
-from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import history_runtime_smoke as smoke  # noqa: E402
-from lib import history_stage  # noqa: E402
 
 history_runtime = smoke.history_runtime
 canonical = smoke.canonical
@@ -63,79 +61,11 @@ class FrozenRootIntegrityRegression(smoke.RuntimeFixture):
             history_runtime.verify_frozen_batch(forged)
 
 
-class AtomicInputRootRegression(smoke.RuntimeFixture):
-    def _stage_values(self, host, output):
-        startup = self.startup()
-        output.mkdir()
-        return {
-            "test_authority": self.shadow_test_authority(),
-            "test_state_root": self.root,
-            "stage": "generate",
-            "seat_id": "same/seat",
-            "db_path": self.database,
-            "policy_path": self.policy_path,
-            "input_paths": {
-                "generation_brief.json": pathlib.Path(startup["brief_path"]),
-                "generation_policy.md": self.generation_policy_path,
-            },
-            "output_root": output,
-            "manifest_path": host,
-            "command_json": json.dumps([str(smoke.FAKE_STAGE_AGENT)]),
-        }
-
-    def test_manifest_failure_cleans_atomic_input_tree_and_retry_succeeds(self):
-        manifest = self.root / "host" / "stage.json"
-        manifest.parent.mkdir()
-        manifest.write_text("occupied\n", encoding="utf-8")
-        values = self._stage_values(manifest, self.root / "output-one")
-
-        with self.assertRaises(history_runtime.RuntimeContractError):
-            history_runtime._build_stage_manifest_for_test(**values)
-
-        input_root = manifest.parent / "stage.json-inputs"
-        self.assertFalse(input_root.exists())
-        self.assertEqual(list(manifest.parent.glob(".stage.json-inputs.*")), [])
-
-        manifest.unlink()
-        prepared = history_runtime._build_stage_manifest_for_test(**values)
-        self.assertEqual(prepared["manifest_path"], str(manifest))
-        self.assertTrue(input_root.is_dir())
-
-    def test_full_manifest_names_get_distinct_sibling_input_roots(self):
-        first = self.root / "hosts" / "stage.json"
-        first.parent.mkdir()
-        first_values = self._stage_values(first, self.root / "output-a")
-        second = first.with_suffix(".yaml")
-        second_values = dict(first_values)
-        second_values["manifest_path"] = second
-        second_values["output_root"] = self.root / "output-b"
-        second_values["output_root"].mkdir()
-
-        history_runtime._build_stage_manifest_for_test(**first_values)
-        history_runtime._build_stage_manifest_for_test(**second_values)
-
-        self.assertTrue((first.parent / "stage.json-inputs").is_dir())
-        self.assertTrue((first.parent / "stage.yaml-inputs").is_dir())
-
-
 class ReviewFrozenDescriptorRegression(smoke.RuntimeFixture):
     _sealed_round = smoke.RoundCoordinatorContract._sealed_round
     _compared_round = smoke.RoundCoordinatorContract._compared_round
     _seal_review_plan = smoke.RoundCoordinatorContract._seal_review_plan
     _signed_capability = smoke.CapabilityContract._signed_capability
-
-    def setUp(self):
-        super().setUp()
-        patcher = mock.patch.object(
-            history_stage,
-            "build_darwin_launch",
-            side_effect=lambda _profile, _mirror, command, *args, **kwargs: (
-                command,
-                "(version 1)",
-            ),
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     @staticmethod
     def _rewrite(path, value):

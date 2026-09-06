@@ -767,7 +767,9 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
         self.assertIn("portable_request_profile", compare_parameters)
         self.assertIn("executor", review_parameters)
         self.assertIn("reviewer_stage_runner", review_parameters)
-        self.assertIn("execution_boundary", resume_parameters)
+        self.assertNotIn("command_json", compare_parameters)
+        self.assertNotIn("reviewer_commands", review_parameters)
+        self.assertNotIn("execution_boundary", resume_parameters)
 
         launch_log = pathlib.Path(tempfile.gettempdir()) / (
             "portable-stage-mixing-" + os.urandom(8).hex()
@@ -787,7 +789,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 ):
                     with self.assertRaisesRegex(
                         history_runtime.RuntimeContractError,
-                        "^portable-v2 cannot mix command_json$",
+                        "^comparison executor is invalid$",
                     ):
                         history_runtime._compare_frozen_targets(
                             db_path="missing.db",
@@ -795,20 +797,21 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                             batch_path="missing-batch.json",
                             artifact_root="missing-artifacts",
                             selection_path="missing-selection.json",
-                            command_json=json.dumps([str(FAKE)]),
-                            executor="portable-v2",
+                            executor="contained-v1",
                             portable_request_profile=self._intent(),
                         )
                     with self.assertRaisesRegex(
                         history_runtime.RuntimeContractError,
-                        "^contained-v1 cannot use reviewer_stage_runner$",
+                        "^review executor is invalid$",
                     ):
                         history_runtime._run_review_matrix(
                             db_path="missing.db",
                             policy_path="missing-policy.json",
                             batch_path="missing-batch.json",
                             review_plan_path="missing-plan.json",
-                            reviewer_commands={"1": json.dumps([str(FAKE)])},
+                            reviewer_request_profiles={
+                                "1": self._intent()
+                            },
                             reviewer_stage_runner=lambda **_: None,
                             executor="contained-v1",
                             stage_root="missing-stages",

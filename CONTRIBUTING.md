@@ -120,11 +120,10 @@ are untrusted without the completion receipt, and the completion receipt is
 published only after every declared output passes no-follow, type, size,
 schema, and prompt-attestation checks.
 
-`hunt.sh` consumes the same five-argument registered Codex prefix through
-`CONTAINED_AGENT_CMD_JSON`. The stage adapter owns the fixed noninteractive
-`exec` tail, network-disabled mirror, response schema, output paths, and
-completion receipt. Per-seat overrides use
-`CONTAINED_REV_CMD_<N>_JSON`. Selector, prescreen, external prior-work
+`hunt.sh` runs generation, internal comparison, and every review seat
+through the portable-v2 runtime: registered provider request profiles built
+by `lib/history_audit_cli.py provider-command` and executed by
+`lib/portable_stage.py`. Selector, prescreen, external prior-work
 research, and report assembly run from disposable mirrors and return only
 their declared bounded artifacts.
 

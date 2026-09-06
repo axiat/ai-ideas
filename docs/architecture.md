@@ -7,14 +7,14 @@
 ```text
 optional canonical direction snapshot
   -> policy + SQLite history + generation brief
-  -> internal generation (v1 contained or v2 portable)
+  -> internal generation (portable)
   -> immutable candidate batch
   -> directed selector classification and all-in-scope gate, when configured
   -> model-free history retrieval
   -> undirected selector ranking or reuse of directed ranking, then prescreen
-  -> internal history comparison (v1 contained or v2 portable)
+  -> internal history comparison (portable)
   -> eligible external prior-work research
-  -> independent reviews (v1 contained or v2 portable)
+  -> independent reviews (portable)
   -> atomic DB commit
   -> replayable TSV projection
   -> decision archive
@@ -32,14 +32,14 @@ Startup imports an operator TSV baseline only when the durable bootstrap marker 
 | Stage | Backend responsibility | Host responsibility | Primary artifacts |
 | --- | --- | --- | --- |
 | Startup | None | Canonicalize optional direction first; check policy mode and calibration; bootstrap or reconcile SQLite; recover search and ledger projections; build generation brief | direction identity, `.ai-ideas/history.sqlite3`, `generation-brief.json` |
-| Generation | Propose candidates under the selected divergence lens | V1 contained or v2 portable stage with sealed brief, policy, optional direction/context; validate structure | `ideas.tsv`, `ideas.md` |
+| Generation | Propose candidates under the selected divergence lens | Portable stage with sealed brief, policy, optional direction/context; validate structure | `ideas.tsv`, `ideas.md` |
 | Freeze | None | Freeze candidate bytes and direction identity | batch |
 | Directed gate | Rank and classify every candidate when a direction is active | Reject the complete batch unless every ordered row is valid and `in-scope`; run before history observation | `select.tsv`, `direction.tsv` |
 | Observe | None | Run model-free duplicate, failure, and optional evolution retrieval | packs, traces |
 | Selection and prescreen | Rank undirected candidates; kill only a single-paper direct hit | Reuse directed ranking or seal undirected ranking; seal prescreen bytes; enforce `SHORT_MAX`; materialize views | `selection.json`, shortlist views |
-| History comparison | Bounded comparator over a sealed pack | V1 contained or v2 portable stage for complete packs only; archive every status | comparisons, receipts |
+| History comparison | Bounded comparator over a sealed pack | Portable stage for complete packs only; archive every status | comparisons, receipts |
 | Prior-work research | Produce adversarial neighbors, API queries, overlap, and crack verification | Eligible candidates only; enforcement may mount a receipt-bound history summary | `priorwork.md` |
-| Review | Emit one compact verdict and review | Fresh v1 contained or v2 portable mirror per candidate × seat | review plan, matrix, ballots |
+| Review | Emit one compact verdict and review | Fresh portable mirror per candidate × seat | review plan, matrix, ballots |
 | Aggregation and commit | None | Lowest vote, MAJOR and SA gates, one DB transaction, outbox work | commit receipt |
 | Projection | None | Publish one immutable snapshot to `ledger.tsv` and `tmp/ledger.good` | target receipts |
 | Report and publish | Assemble a report from accepted artifacts | Permit report writes only under `ideas/`; invoke `publish.sh` | `ideas/YYYY-MM-DD_hunt*.md`, daily branch, PR |
@@ -54,7 +54,7 @@ snapshot for the process lifetime.
 
 ```text
 canonical direction snapshot
--> v1 contained or v2 portable generation with direction_constraint.json
+-> portable generation with direction_constraint.json
 -> Direction Axis, Target Failure, Direction Evidence validation
 -> schema-v2 frozen batch with direction identity
 -> selector advisory ranking and direction.tsv classification
@@ -79,13 +79,11 @@ resume compares it through `expected-direction`. Direction mode sets
 runs retain broad generation, selector fallback, theme quota, schema-v1 batch
 compatibility, and existing resume behavior.
 
-## Portable V2 Boundary
+## Portable Boundary
 
-V1 invokes its internal stages through `sandbox-exec` on Darwin or `bwrap` on
-Linux and fails closed when that containment is unavailable. V2 does not enter
-that OS containment layer.
+The v1 contained runtime was removed; portable-v2 is the only runtime.
 
-V2 selects a registered provider command intent independently of history and
+The runtime selects a registered provider command intent independently of history and
 candidate identity. Each attempt runs directly on the host in a disposable
 mirror containing `role.md` plus declared `input/*` files. The full ledger,
 SQLite database, Git metadata, unrelated round state, and `.claude` are absent.
@@ -120,7 +118,7 @@ Each round receives a stable `run_id`. Resume mints a distinct run ID and seals 
 
 ## Auxiliary Loops
 
-`awr-side.sh` revises `accept-w-rev` ledger entries through independent researcher, prior-work, and reviewer roles. Each queue item uses an append-only physical-row key such as `r000123`; `awr-state-aliases.tsv` maps content-derived compatibility keys onto those row keys, including shared state for duplicate ideas. Cached drafts and prior-work evidence must pass the current artifact ABI before reuse. V1 uses its compatibility mirrors; v2 uses the same portable boundary as Hunt and accepts Codex, Kimi, Grok, OpenCode, or agy per role. Final revision artifacts stay under `tmp/awr-side/awr/`. The sidecar does not change verdicts, the SQLite history authority, `ideas/`, or the main loop's `tmp/round/` state.
+`awr-side.sh` revises `accept-w-rev` ledger entries through independent researcher, prior-work, and reviewer roles. Each queue item uses an append-only physical-row key such as `r000123`; `awr-state-aliases.tsv` maps content-derived compatibility keys onto those row keys, including shared state for duplicate ideas. Cached drafts and prior-work evidence must pass the current artifact ABI before reuse. It uses the same portable boundary as Hunt and accepts Codex, Kimi, Grok, OpenCode, or agy per role. Final revision artifacts stay under `tmp/awr-side/awr/`. The sidecar does not change verdicts, the SQLite history authority, `ideas/`, or the main loop's `tmp/round/` state.
 
 `litwatch.sh` harvests recent records into trusted staging, optionally annotates a copy, and deterministically admits only annotations whose IDs exist in staging. Its index under `tmp/litwatch/` is an optional prior-work seed; failure does not block the main hunt.
 

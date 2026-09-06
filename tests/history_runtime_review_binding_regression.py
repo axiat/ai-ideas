@@ -69,7 +69,7 @@ class ReviewPlanBindingRegression(smoke.RuntimeFixture):
         plan["review_plan_sha256"] = history_runtime._review_plan_hash(plan)
 
     def test_tampered_observation_cannot_change_review_to_abstention(self):
-        state = self._enforcement_round(contained=True)
+        state = self._enforcement_round(portable=True)
         index_path = state["artifact_root"] / "comparison-index.json"
         index = json.loads(index_path.read_text(encoding="utf-8"))
         indexed = index["targets"][0]

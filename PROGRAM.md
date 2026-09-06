@@ -36,12 +36,12 @@ protocol. Only a human may modify this file or the immutable inputs.
    and Git history. One confirmed parent may occupy the shared
    evolution/recheck slot. All candidates receive fresh external research and
    review.
-7. V1 generation, comparison, and review use canonical absolute JSON argv and
-   OS-scoped containment. V2 uses registered provider command intents and
-   direct-host portable mirrors; it retains same-user host authority. Both
-   ABIs use sealed manifests, exact declared-input allowlists, fresh mirrors,
-   durable preflight receipts, and validated completion receipts. Reviewer
-   mirrors form the exact candidate × seat product and omit sibling output.
+7. Generation, comparison, and review use registered provider command
+   intents and direct-host portable mirrors; the runtime retains same-user
+   host authority. The portable ABI uses sealed manifests, exact
+   declared-input allowlists, fresh mirrors, durable preflight receipts, and
+   validated completion receipts. Reviewer mirrors form the exact
+   candidate × seat product and omit sibling output.
 8. Selector, prescreen, external prior-work research, and report assembly run
    in disposable mirrors containing only their declared roles and inputs. The
    host validates and atomically copies only their declared outputs.
@@ -87,13 +87,13 @@ The production path is:
 
 ```text
 brief
--> internal generation (v1 OS-contained or v2 direct-host portable)
+-> internal generation (direct-host portable)
 -> immutable candidate batch
 -> directed selector classification and all-in-scope gate, when configured
 -> model-free history retrieval
 -> undirected selector ranking or reuse of directed ranking, then prescreen
 -> sealed target selection
--> internal history comparison (v1 OS-contained or v2 direct-host portable)
+-> internal history comparison (direct-host portable)
 -> eligible external prior-work research
 -> sealed independent review matrix
 -> deterministic aggregation

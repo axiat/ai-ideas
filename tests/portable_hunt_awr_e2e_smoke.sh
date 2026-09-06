@@ -752,7 +752,6 @@ run_awr_v2() {
       SIDE_POLL_SEC=0 \
       SIDE_MAX_ROUNDS=1 \
       SIDE_MAX_BAD=1 \
-      SIDE_GAP_SEC=0 \
       SIDE_GAP_MIN_SEC=0 \
       SIDE_GAP_MAX_SEC=0 \
       SIDE_COOLDOWN_SEC=0 \
@@ -801,7 +800,6 @@ run_awr_v2_all_agy() {
       SIDE_POLL_SEC=0 \
       SIDE_MAX_ROUNDS=1 \
       SIDE_MAX_BAD=1 \
-      SIDE_GAP_SEC=0 \
       SIDE_GAP_MIN_SEC=0 \
       SIDE_GAP_MAX_SEC=0 \
       SIDE_COOLDOWN_SEC=0 \
@@ -819,18 +817,18 @@ run_awr_v2_all_agy() {
   printf 'ok: AwR v2 agy portable stdout override\n'
 }
 
-run_v1_regressions() {
+run_contract_regressions() {
   if ! bash "$ROOT/tests/generation_contract_smoke.sh" \
-      > "$CASE_ROOT/v1-generation.log" 2>&1; then
-    fail 'v1 generation contract changed'
+      > "$CASE_ROOT/generation-contract.log" 2>&1; then
+    fail 'generation contract changed'
   else
-    printf 'ok: v1 generation contract unchanged\n'
+    printf 'ok: generation contract unchanged\n'
   fi
   if ! bash "$ROOT/tests/runtime_abi_smoke.sh" \
-      > "$CASE_ROOT/v1-runtime.log" 2>&1; then
-    fail 'v1 runtime behavior changed'
+      > "$CASE_ROOT/runtime-abi.log" 2>&1; then
+    fail 'runtime ABI behavior changed'
   else
-    printf 'ok: v1 runtime behavior unchanged\n'
+    printf 'ok: runtime ABI behavior unchanged\n'
   fi
 }
 
@@ -839,7 +837,7 @@ run_terminal_failure_skips_cooldown
 run_retryable_failures_retain_cooldown
 run_awr_v2
 run_awr_v2_all_agy
-run_v1_regressions
+run_contract_regressions
 
 if [ "$FAILURES" -ne 0 ]; then
   printf 'failed: portable Hunt/AwR e2e smoke (%s failures)\n' \

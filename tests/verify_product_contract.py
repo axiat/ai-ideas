@@ -72,10 +72,6 @@ BACKEND_DEFAULTS = {
         "AGENT_CMD",
         "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write",
     ),
-    "awr-side.sh": (
-        "SIDE_CMD",
-        "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral",
-    ),
     "litwatch.sh": (
         "LITWATCH_CMD",
         "codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral",
@@ -281,7 +277,7 @@ def assert_backend_defaults():
                 f"default backend mismatch in {name}: expected {expected!r}, found {assignments!r}"
             )
     expected = f"model=${{AGY_MODEL:-{AGY_MODEL_DEFAULT}}}"
-    for name in ("agy-worker.sh", "awr-side.sh"):
+    for name in ("agy-worker.sh",):
         assignments = [
             line
             for line in (ROOT / name).read_text().splitlines()
@@ -896,11 +892,10 @@ def verify_runtime():
         "hunt.sh": [
             "Papers Read",
             "Overlap",
-            "CONTAINED_AGENT_CMD_JSON",
             "history_sync()",
             "history_reconcile_ledger()",
             "history_build_brief()",
-            "run_contained_stage()",
+            "run_portable_generate_stage()",
             "history_observe_round()",
             "history_compare_shortlist()",
             "history_compare_targets()",

@@ -40,7 +40,40 @@ printf '%s\n' \
   "printf '%s\\n' 'publication-no-op' >> tmp/publication.noop" > "$REPO/publish.sh"
 chmod 755 "$REPO/publish.sh"
 
+install_portable_providers() {
+  local provider
+  mkdir -p "$REPO/.test-bin"
+  for provider in codex kimi grok opencode agy claude; do
+    cp "$REPO/tests/fake_portable_stage_provider.py" \
+      "$REPO/.test-bin/$provider"
+    chmod 755 "$REPO/.test-bin/$provider"
+  done
+}
+
+awr_portable_env() {
+  # AwR runs the portable-v2 runtime; the fake providers serve every role.
+  printf '%s\n' \
+    "HOME=$SANDBOX_ROOT/home" \
+    "CODEX_HOME=$SANDBOX_ROOT/home/codex-config" \
+    "EXPECTED_PROVIDER_HOME=$SANDBOX_ROOT/home" \
+    "EXPECTED_PROVIDER_CODEX_HOME=$SANDBOX_ROOT/home/codex-config" \
+    "PATH=$REPO/.test-bin:$PATH" \
+    "FAKE_PORTABLE_STAGE_LOG=$SANDBOX_ROOT/awr-provider.launches" \
+    "AWR_PROVIDER=claude" \
+    "AWR_RESEARCH_PROVIDER=claude" \
+    "AWR_PRIORWORK_PROVIDER=claude" \
+    "AWR_JUDGE_PROVIDER=claude" \
+    "SIDE_POLL_SEC=0" \
+    "SIDE_MAX_ROUNDS=1" \
+    "SIDE_MAX_BAD=1" \
+    "SIDE_GAP_MIN_SEC=0" \
+    "SIDE_GAP_MAX_SEC=0" \
+    "SIDE_COOLDOWN_SEC=0"
+}
+
 prepare_awr_case() {
+  install_portable_providers
+  rm -f "$SANDBOX_ROOT/awr-provider.launches"
   awk -F'\t' '
     NR == 1 { print; next }
     !found && $2 == "hunt" && $5 == "accept-w-rev" {
@@ -59,17 +92,7 @@ run_awr_case() {
   prepare_awr_case
   (
     cd "$REPO"
-    SIDE_CMD=tests/fake_agent.sh \
-    SIDE_RESEARCH_CMD=tests/fake_agent.sh \
-    SIDE_PRIORWORK_CMD=tests/fake_agent.sh \
-    SIDE_JUDGE_CMD=tests/fake_agent.sh \
-    SIDE_POLL_SEC=0 \
-    SIDE_MAX_ROUNDS=1 \
-    SIDE_MAX_BAD=1 \
-    SIDE_GAP_SEC=0 \
-    SIDE_GAP_MIN_SEC=0 \
-    SIDE_GAP_MAX_SEC=0 \
-    SIDE_COOLDOWN_SEC=0 \
+    env $(awr_portable_env) \
     FAKE_AGENT_MODE="$mode" \
     bash ./awr-side.sh
   )
@@ -108,17 +131,7 @@ run_awr_reject_case() {
   prepare_awr_case
   if (
     cd "$REPO"
-    SIDE_CMD=tests/fake_agent.sh \
-    SIDE_RESEARCH_CMD=tests/fake_agent.sh \
-    SIDE_PRIORWORK_CMD=tests/fake_agent.sh \
-    SIDE_JUDGE_CMD=tests/fake_agent.sh \
-    SIDE_POLL_SEC=0 \
-    SIDE_MAX_ROUNDS=1 \
-    SIDE_MAX_BAD=1 \
-    SIDE_GAP_SEC=0 \
-    SIDE_GAP_MIN_SEC=0 \
-    SIDE_GAP_MAX_SEC=0 \
-    SIDE_COOLDOWN_SEC=0 \
+    env $(awr_portable_env) \
     FAKE_AGENT_MODE="$mode" \
     bash ./awr-side.sh
   ); then
@@ -135,66 +148,6 @@ run_awr_reject_case() {
     return 1
   done
   printf 'ok: AwR rejects %s ABI violation\n' "$phase"
-}
-
-run_awr_agy_case() {
-  local stub="$SANDBOX_ROOT/bin/agy" log="$SANDBOX_ROOT/agy.args" candidate final=""
-  mkdir -p "$SANDBOX_ROOT/bin"
-  printf '%s\n' \
-    '#!/usr/bin/env bash' \
-    'set -eu' \
-    ': "${AGY_STUB_LOG:?}" "${FAKE_AGENT_BIN:?}"' \
-    'expected_repo=$PWD' \
-    '[ "$#" -eq 8 ]' \
-    '[ "$1" = "--model" ]' \
-    '[ "$2" = "gemini-3.6-flash-high" ]' \
-    '[ "$3" = "--add-dir" ]' \
-    '[ "$4" = "$expected_repo" ]' \
-    '[ "$5" = "--print-timeout" ]' \
-    '[ "$6" = "10m" ]' \
-    '[ "$7" = "-p" ]' \
-    'prompt=$8' \
-    'printf "%s\\n" "$@" >> "$AGY_STUB_LOG"' \
-    'case "$prompt" in' \
-    '  "Repository root (absolute path): $expected_repo."*) ;;' \
-    '  *) exit 1 ;;' \
-    'esac' \
-    'exec "$FAKE_AGENT_BIN" "$prompt"' > "$stub"
-  chmod 755 "$stub"
-
-  prepare_awr_case
-  (
-    cd "$REPO"
-    PATH="$SANDBOX_ROOT/bin:$PATH" \
-    AGY_STUB_LOG="$log" \
-    FAKE_AGENT_BIN="$REPO/tests/fake_agent.sh" \
-    SIDE_CMD=agy \
-    SIDE_POLL_SEC=0 \
-    SIDE_MAX_ROUNDS=1 \
-    SIDE_MAX_BAD=1 \
-    SIDE_GAP_SEC=0 \
-    SIDE_GAP_MIN_SEC=0 \
-    SIDE_GAP_MAX_SEC=0 \
-    SIDE_COOLDOWN_SEC=0 \
-    FAKE_AGENT_MODE=awr-ready \
-    bash ./awr-side.sh
-  )
-
-  for candidate in "$REPO/tmp/awr-side/awr/"*.md; do
-    [ -e "$candidate" ] || continue
-    case "$candidate" in
-      *.task.md|*.draft.md|*.priorwork.md|*.judge.md) continue ;;
-    esac
-    [ -z "$final" ] || return 1
-    final=$candidate
-  done
-  [ -n "$final" ]
-  grep -qxF 'Status: ready' "$final"
-  [ "$(grep -cxF -- '--model' "$log")" -eq 3 ]
-  [ "$(grep -cxF -- '--add-dir' "$log")" -eq 3 ]
-  [ "$(grep -cxF -- '--print-timeout' "$log")" -eq 3 ]
-  [ "$(grep -cxF -- '-p' "$log")" -eq 3 ]
-  printf 'ok: explicit SIDE_CMD=agy built-in ABI smoke\n'
 }
 
 write_awr_alias_fixture() {
@@ -243,10 +196,10 @@ run_awr_legacy_terminal_case() {
     for candidate in first second; do
       (
         cd "$REPO"
-        SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=1 \
-        SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+        env $(awr_portable_env) \
         bash ./awr-side.sh
       )
+      [ ! -e "$SANDBOX_ROOT/awr-provider.launches" ]
       [ "$(grep -cve '^[[:space:]]*$' "$stable")" -eq 1 ]
       grep -qxF '# Historical terminal result' "$stable"
       [ ! -e "$REPO/tmp/awr-side/awr/r000002.final.bad1" ]
@@ -271,10 +224,11 @@ run_awr_truncated_legacy_terminal_case() {
   before=$(shasum -a 256 "$old")
   (
     cd "$REPO"
-    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=0 \
-    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    env $(awr_portable_env) \
+    SIDE_MAX_BAD=0 \
     bash ./awr-side.sh
   )
+  [ ! -e "$SANDBOX_ROOT/awr-provider.launches" ]
   [ ! -e "$stable" ]
   [ ! -e "$REPO/tmp/awr-side/awr/r000002.final.bad1" ]
   [ ! -e "$REPO/tmp/awr-side/awr/r000002.task.md" ]
@@ -283,10 +237,11 @@ run_awr_truncated_legacy_terminal_case() {
   before=$(shasum -a 256 "$old")
   (
     cd "$REPO"
-    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=0 \
-    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    env $(awr_portable_env) \
+    SIDE_MAX_BAD=0 \
     bash ./awr-side.sh
   )
+  [ ! -e "$SANDBOX_ROOT/awr-provider.launches" ]
   [ ! -e "$stable" ]
   [ ! -e "$REPO/tmp/awr-side/awr/r000002.final.bad1" ]
   [ "$before" = "$(shasum -a 256 "$old")" ]
@@ -302,10 +257,11 @@ run_awr_truncated_legacy_terminal_case() {
     '## 最后裁判意见' '判定: SA-可能' 'AGY-DONE' 'AGY-DONE' > "$old"
   (
     cd "$REPO"
-    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=0 \
-    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    env $(awr_portable_env) \
+    SIDE_MAX_BAD=0 \
     bash ./awr-side.sh
   )
+  [ ! -e "$SANDBOX_ROOT/awr-provider.launches" ]
   [ ! -e "$stable" ]
   printf '%s\n' \
     '# AwR 复活成品 abc123def456' \
@@ -319,10 +275,11 @@ run_awr_truncated_legacy_terminal_case() {
     '## 最后裁判意见' '判定: 还不行' 'AGY-DONE' > "$old"
   (
     cd "$REPO"
-    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=0 \
-    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    env $(awr_portable_env) \
+    SIDE_MAX_BAD=0 \
     bash ./awr-side.sh
   )
+  [ ! -e "$SANDBOX_ROOT/awr-provider.launches" ]
   [ ! -e "$stable" ]
   printf 'ok: AwR rejects truncated legacy terminals\n'
 }
@@ -372,10 +329,11 @@ PY
   before=$(shasum -a 256 "$old")
   (
     cd "$REPO"
-    SIDE_CMD=false SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=0 \
-    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    env $(awr_portable_env) \
+    SIDE_MAX_BAD=0 \
     bash ./awr-side.sh
   )
+  [ ! -e "$SANDBOX_ROOT/awr-provider.launches" ]
   [ ! -e "$stable" ]
   grep -qxF '## Revised Idea' "$draft"
   [ "$before" = "$(shasum -a 256 "$old")" ]
@@ -398,12 +356,7 @@ run_awr_legacy_partial_case() {
   cp "$base.task.md" "$stable.task.md"  # Simulate interruption after the compatibility copy.
   (
     cd "$REPO"
-    SIDE_CMD=tests/fake_agent.sh \
-    SIDE_RESEARCH_CMD=tests/fake_agent.sh \
-    SIDE_PRIORWORK_CMD=tests/fake_agent.sh \
-    SIDE_JUDGE_CMD=tests/fake_agent.sh \
-    SIDE_POLL_SEC=0 SIDE_MAX_ROUNDS=1 SIDE_MAX_BAD=1 \
-    SIDE_GAP_SEC=0 SIDE_GAP_MIN_SEC=0 SIDE_GAP_MAX_SEC=0 SIDE_COOLDOWN_SEC=0 \
+    env $(awr_portable_env) \
     FAKE_AGENT_MODE=awr-ready \
     bash ./awr-side.sh
   )
@@ -534,7 +487,15 @@ PY
 
 assert_history_cutover_surface() {
   grep -q '^history_sync()' "$REPO/hunt.sh"
-  grep -q '^run_contained_stage()' "$REPO/hunt.sh"
+  grep -q '^run_portable_generate_stage()' "$REPO/hunt.sh"
+  if grep -Eq 'HUNT_RUNTIME_ABI|CONTAINED_AGENT_CMD_JSON is|CONTAINED_REV_CMD_[0-9]' "$REPO/hunt.sh"; then
+    printf 'contained-v1 runtime path remains in hunt.sh\n' >&2
+    return 1
+  fi
+  if grep -Eq 'AWR_RUNTIME_ABI|SIDE_CMD=' "$REPO/awr-side.sh"; then
+    printf 'contained-v1 command path remains in awr-side.sh\n' >&2
+    return 1
+  fi
   grep -q '^history_compare_targets()' "$REPO/hunt.sh"
   grep -q '^history_seal_resume_attempt()' "$REPO/hunt.sh"
   grep -q '^history_materialize_ledger()' "$REPO/hunt.sh"
@@ -555,9 +516,9 @@ cp "$REPO/ledger.tsv" "$BEFORE_LEDGER"
 run_compact_review_contract_case
 assert_history_cutover_surface
 
-# Full contained hunt path with fake backends lives in
-# tests/history_runtime_smoke.sh. This smoke keeps AwR ABI coverage and the
-# compact review/cutover surface checks above.
+# The portable full-round path with fake providers lives in
+# tests/portable_hunt_awr_e2e_smoke.sh. This smoke keeps AwR ABI coverage and
+# the compact review/cutover surface checks above.
 if [ "$MODE" = default ]; then
   run_awr_case ready
   run_awr_case ready awr-no-crack
@@ -578,7 +539,6 @@ if [ "$MODE" = default ]; then
   run_awr_reject_case awr-duplicate-verification-heading prior-work-verification-heading
   run_awr_reject_case awr-verification-without-heading prior-work-verification-section
   run_awr_reject_case awr-mixed-decision judge
-  run_awr_agy_case
   run_awr_legacy_terminal_case
   run_awr_truncated_legacy_terminal_case
   run_awr_newer_stable_work_case

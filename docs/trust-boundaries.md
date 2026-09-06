@@ -2,12 +2,11 @@
 
 ## Filesystem
 
-`hunt.sh` owns the repository host process. Under `HISTORY_RUNTIME_ABI=v1`,
-generation, history comparison, and every review seat run in OS-scoped
-temporary mirrors with sealed input allowlists. Darwin uses `sandbox-exec`;
-Linux uses `bwrap`. Missing v1 containment fails closed.
+`hunt.sh` owns the repository host process. The v1 contained runtime
+(`HISTORY_RUNTIME_ABI=v1`) was removed; portable-v2 is the only runtime and
+setting `HISTORY_RUNTIME_ABI=v2` is equivalent to leaving it unset.
 
-Under `HISTORY_RUNTIME_ABI=v2`, each internal stage runs as a normal same-user
+Each internal stage runs as a normal same-user
 host process in a disposable portable mirror. The mounted surface contains one
 role and declared inputs; it omits `ledger.tsv`, the SQLite database, search
 indexes, `.git`, run archives, and unrelated round state. The process retains
@@ -24,7 +23,7 @@ Per-run archives default to `$HOME/.ai-ideas-runs/$(basename "$PWD")`, outside t
 
 ## Network
 
-The default hunt external commands enable search and workspace network access for selector, prescreen, research, and report. V1 contained stages use closed JSON argv and deny network access. V2 portable stages use registered command-intent argv but inherit ordinary host network authority. Litwatch fetches OAI records by default and may call its annotation backend. `publish.sh` and `settle.sh` access the Git remote; `publish.sh` also calls GitHub through `gh`.
+The default hunt external commands enable search and workspace network access for selector, prescreen, research, and report. Portable stages use registered command-intent argv and inherit ordinary host network authority. Litwatch fetches OAI records by default and may call its annotation backend. `publish.sh` and `settle.sh` access the Git remote; `publish.sh` also calls GitHub through `gh`.
 
 The frozen-panel default omits retrieval flags; the runner also applies provider-specific controls where available and tells reviewers to use only the supplied evidence. End-to-end calibration enables search and network access. A custom backend remains responsible for enforcing either policy; artifact validation cannot prove network behavior.
 
@@ -32,7 +31,7 @@ The frozen-panel default omits retrieval flags; the runner also applies provider
 
 `tmp/hunt.lock` prevents concurrent main loops in one checkout. `tmp/awr-side.lock` performs the same role for the AwR sidecar. Stale locks are cleared only after the recorded process is absent. These locks do not coordinate other checkouts or isolate subprocesses, credentials, environment variables, network sockets, or same-user processes.
 
-Backend commands execute as local child processes. V1 contained commands require absolute executables and sealed manifests before entering the OS containment layer. V2 resolves a registered executable and closed argv, then launches it directly on the host; the mirror does not restrict same-user process authority. `approval_policy=never` prevents the default Codex commands from pausing for approval; it does not constrain Bash, other providers, or operating-system capabilities.
+Backend commands execute as local child processes. The runtime resolves a registered executable and closed argv, then launches it directly on the host; the mirror does not restrict same-user process authority. `approval_policy=never` prevents the default Codex commands from pausing for approval; it does not constrain Bash, other providers, or operating-system capabilities.
 
 ## Decision and Publication
 

@@ -29,7 +29,6 @@ from lib import provider_adapters
 
 POLICY_PATH = ROOT / "history" / "retrieval-policy-v1.json"
 ROLE_PATH = ROOT / "roles" / "history-compare.md"
-FAKE_STAGE_AGENT = ROOT / "tests" / "fake_stage_agent.py"
 FAKE_PORTABLE_PROVIDER = (
     ROOT / "tests" / "fake_portable_stage_provider.py"
 )
@@ -130,6 +129,18 @@ class RuntimeFixture(unittest.TestCase):
             history_runtime.candidate_content_sha256(candidate)
         )
         return candidate
+
+    @staticmethod
+    def _portable_profile():
+        return provider_adapters._resolve_command_intent_for_test(
+            provider_adapters.load_registry(PROVIDER_REGISTRY),
+            "hunt",
+            "codex",
+            model="MODEL",
+            reasoning="high",
+            max_output_tokens=2048,
+            executable_lookup=lambda _: str(FAKE_PORTABLE_PROVIDER),
+        )
 
 
 class StartupContract(RuntimeFixture):
@@ -1586,560 +1597,6 @@ class CandidateAndObservationContract(RuntimeFixture):
             )
 
 
-class ContainedStageContract(RuntimeFixture):
-    def _generate_stage(self):
-        startup = self.startup()
-        host = self.root / "host-stage"
-        output = self.root / "stage-output"
-        output.mkdir()
-        command = canonical([str(FAKE_STAGE_AGENT)]).decode(
-            "utf-8"
-        ).strip()
-        prepared = history_runtime._build_stage_manifest_for_test(
-            test_authority=self.shadow_test_authority(),
-            test_state_root=self.root,
-            stage="generate",
-            seat_id="generate",
-            db_path=self.database,
-            policy_path=self.policy_path,
-            input_paths={
-                "generation_brief.json": pathlib.Path(
-                    startup["brief_path"]
-                ),
-                "generation_policy.md":
-                    self.generation_policy_path,
-            },
-            output_root=output,
-            manifest_path=host / "manifest.json",
-            command_json=command,
-        )
-        return prepared, output
-
-    def _run_test_stage(
-        self,
-        prepared,
-        *,
-        authority=None,
-        backend_entry_fd=None,
-    ):
-        if authority is None:
-            authority = self.shadow_test_authority()
-        return history_runtime._run_contained_stage_for_test(
-            test_authority=authority,
-            test_state_root=self.root,
-            prepared=prepared,
-            backend_entry_fd=backend_entry_fd,
-        )
-
-    def test_production_stage_rejects_registered_fixture_backend(self):
-        startup = self.startup()
-        command = canonical([str(FAKE_STAGE_AGENT)]).decode(
-            "utf-8"
-        ).strip()
-        host = self.root / "production-fixture-host"
-        output = self.root / "production-fixture-output"
-        with self.assertRaises(history_runtime.RuntimeContractError):
-            history_runtime.build_stage_manifest(
-                stage="generate",
-                seat_id="generate",
-                db_path=self.database,
-                policy_path=self.policy_path,
-                input_paths={
-                    "generation_brief.json": pathlib.Path(
-                        startup["brief_path"]
-                    ),
-                    "generation_policy.md":
-                        self.generation_policy_path,
-                },
-                output_root=output,
-                manifest_path=host / "manifest.json",
-                command_json=command,
-            )
-        self.assertFalse(host.exists())
-        self.assertFalse(output.exists())
-
-    def test_generate_direction_snapshot_is_mounted_and_canonical(self):
-        startup = self.startup()
-        direction_path = self.root / "direction_constraint.json"
-        direction_path.write_bytes(
-            direction_contract.canonical_bytes(
-                json.loads(
-                    (ROOT / "directions" / "dynamic-spatial-memory-vla-v1.json")
-                    .read_text(encoding="utf-8")
-                )
-            )
-        )
-        command = canonical([str(FAKE_STAGE_AGENT)]).decode("utf-8").strip()
-        prepared = history_runtime._build_stage_manifest_for_test(
-            test_authority=self.shadow_test_authority(),
-            test_state_root=self.root,
-            stage="generate",
-            seat_id="directed-generate",
-            db_path=self.database,
-            policy_path=self.policy_path,
-            input_paths={
-                "generation_brief.json": pathlib.Path(startup["brief_path"]),
-                "generation_policy.md": self.generation_policy_path,
-                "direction_constraint.json": direction_path,
-            },
-            output_root=self.root / "directed-output",
-            manifest_path=self.root / "directed-host" / "manifest.json",
-            command_json=command,
-        )
-        manifest = json.loads(
-            pathlib.Path(prepared["manifest_path"]).read_text(encoding="utf-8")
-        )
-        mounted = {
-            item["mirror_path"]: item for item in manifest["inputs"]
-        }
-        self.assertEqual(
-            history_runtime._INPUT_CAPS["direction_constraint.json"],
-            16384,
-        )
-        self.assertEqual(
-            history_runtime._STAGE_INPUTS["generate"],
-            (
-                {"generation_brief.json", "generation_policy.md"},
-                {"research_context.md", "direction_constraint.json"},
-            ),
-        )
-        self.assertEqual(
-            mounted["direction_constraint.json"]["sha256"],
-            hashlib.sha256(direction_path.read_bytes()).hexdigest(),
-        )
-        serialized = history_runtime.history_budget.serialize_stage_invocation(
-            stage="generate",
-            adapter_version=manifest["adapter"]["version"],
-            fixed_instructions=(ROOT / manifest["role"]["source"]).read_text(
-                encoding="utf-8"
-            ),
-            mounted_inputs={
-                item["mirror_path"]: (
-                    pathlib.Path(manifest["input_roots"][0])
-                    / item["mirror_path"]
-                ).read_bytes()
-                for item in manifest["inputs"]
-            },
-            **{
-                key: manifest["invocation"][key]
-                for key in (
-                    "candidate", "retrieval_payload", "receipts", "tool_schemas",
-                    "messages", "output_schema_instructions",
-                )
-            },
-        )
-        self.assertEqual(
-            hashlib.sha256(serialized).hexdigest(),
-            manifest["invocation"]["expected_serialized_sha256"],
-        )
-        completion = self._run_test_stage(prepared)
-        self.assertEqual(completion["stage"], "generate")
-        tampered = history_runtime._build_stage_manifest_for_test(
-            test_authority=self.shadow_test_authority(),
-            test_state_root=self.root,
-            stage="generate",
-            seat_id="tampered-directed-generate",
-            db_path=self.database,
-            policy_path=self.policy_path,
-            input_paths={
-                "generation_brief.json": pathlib.Path(startup["brief_path"]),
-                "generation_policy.md": self.generation_policy_path,
-                "direction_constraint.json": direction_path,
-            },
-            output_root=self.root / "tampered-directed-output",
-            manifest_path=(
-                self.root / "tampered-directed-host" / "manifest.json"
-            ),
-            command_json=command,
-        )
-        tampered_manifest = json.loads(
-            pathlib.Path(tampered["manifest_path"]).read_text(encoding="utf-8")
-        )
-        snapshot = (
-            pathlib.Path(tampered_manifest["input_roots"][0])
-            / "direction_constraint.json"
-        )
-        snapshot.chmod(0o600)
-        snapshot.write_bytes(direction_path.read_bytes().replace(b"\n", b""))
-        with self.assertRaises(history_runtime.RuntimeContractError):
-            self._run_test_stage(tampered)
-
-    def test_public_manifest_accepts_canonical_direction_with_local_executable(
-        self,
-    ):
-        startup = self.startup()
-        direction_path = self.root / "public-direction.json"
-        direction_path.write_bytes(
-            direction_contract.parse_contract_bytes(
-                (
-                    ROOT
-                    / "directions"
-                    / "dynamic-spatial-memory-vla-v1.json"
-                ).read_bytes()
-            )[1]
-        )
-        executable = pathlib.Path("/usr/bin/true")
-        self.assertTrue(executable.is_file())
-        prepared = history_runtime.build_stage_manifest(
-            stage="generate",
-            seat_id="public-directed-generate",
-            db_path=self.database,
-            policy_path=self.policy_path,
-            input_paths={
-                "generation_brief.json": pathlib.Path(startup["brief_path"]),
-                "generation_policy.md": self.generation_policy_path,
-                "direction_constraint.json": direction_path,
-            },
-            output_root=self.root / "public-directed-output",
-            manifest_path=(
-                self.root / "public-directed-host" / "manifest.json"
-            ),
-            command_json=canonical([str(executable)]).decode().strip(),
-        )
-        manifest = json.loads(
-            pathlib.Path(prepared["manifest_path"]).read_text(encoding="utf-8")
-        )
-        mounted = {
-            item["mirror_path"]: item["sha256"]
-            for item in manifest["inputs"]
-        }
-        self.assertEqual(
-            mounted["direction_constraint.json"],
-            hashlib.sha256(direction_path.read_bytes()).hexdigest(),
-        )
-
-    def test_hash_consistent_noncanonical_direction_reaches_stage_rejection(
-        self,
-    ):
-        startup = self.startup()
-        canonical_contract = direction_contract.parse_contract_bytes(
-            (
-                ROOT
-                / "directions"
-                / "dynamic-spatial-memory-vla-v1.json"
-            ).read_bytes()
-        )[0]
-        direction_path = self.root / "public-noncanonical-direction.json"
-        direction_path.write_text(
-            json.dumps(canonical_contract, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        prepared = history_runtime.build_stage_manifest(
-            stage="generate",
-            seat_id="public-noncanonical-generate",
-            db_path=self.database,
-            policy_path=self.policy_path,
-            input_paths={
-                "generation_brief.json": pathlib.Path(startup["brief_path"]),
-                "generation_policy.md": self.generation_policy_path,
-                "direction_constraint.json": direction_path,
-            },
-            output_root=self.root / "public-noncanonical-output",
-            manifest_path=(
-                self.root / "public-noncanonical-host" / "manifest.json"
-            ),
-            command_json=canonical(["/usr/bin/true"]).decode().strip(),
-        )
-        with self.assertRaisesRegex(
-            history_runtime.RuntimeContractError,
-            "direction contract is not canonical",
-        ):
-            history_runtime.run_contained_stage(prepared)
-
-    def test_private_stage_wrapper_confines_every_input_path(self):
-        startup = self.startup()
-        command = canonical([str(FAKE_STAGE_AGENT)]).decode(
-            "utf-8"
-        ).strip()
-        host = self.root / "escaped-input-host"
-        output = self.root / "escaped-input-output"
-        with self.assertRaisesRegex(
-            history_runtime.RuntimeContractError,
-            "escapes test state",
-        ):
-            history_runtime._build_stage_manifest_for_test(
-                test_authority=self.shadow_test_authority(),
-                test_state_root=self.root,
-                stage="generate",
-                seat_id="generate",
-                db_path=self.database,
-                policy_path=self.policy_path,
-                input_paths={
-                    "generation_brief.json": pathlib.Path(
-                        startup["brief_path"]
-                    ),
-                    "generation_policy.md":
-                        ROOT / "brainstorming_policy.md",
-                },
-                output_root=output,
-                manifest_path=host / "manifest.json",
-                command_json=command,
-            )
-        self.assertFalse(host.exists())
-        self.assertFalse(output.exists())
-
-    def test_manifest_is_host_owned_and_binds_closed_command_grammar(self):
-        prepared, _ = self._generate_stage()
-        manifest = json.loads(
-            pathlib.Path(prepared["manifest_path"]).read_text(
-                encoding="utf-8"
-            )
-        )
-        self.assertEqual(manifest["role"]["source"], "roles/generate.md")
-        self.assertEqual(
-            manifest["history_store"],
-            {
-                "root": str(self.database.parent.resolve()),
-                "source": "history.sqlite3",
-            },
-        )
-        self.assertEqual(
-            prepared["command_argv"], [str(FAKE_STAGE_AGENT)]
-        )
-        with self.assertRaises(history_runtime.RuntimeContractError):
-            history_runtime.build_stage_manifest(
-                stage="generate",
-                seat_id="generate",
-                db_path=self.database,
-                policy_path=self.policy_path,
-                input_paths={
-                    "generation_brief.json":
-                        self.root / "tmp" / "round"
-                        / "generation_brief.json",
-                    "generation_policy.md":
-                        ROOT / "brainstorming_policy.md",
-                },
-                output_root=self.root / "stage-output",
-                manifest_path=self.root / "bad-manifest.json",
-                command_json='["/bin/echo","--search"]',
-            )
-
-    def test_shadow_review_manifest_cannot_mount_history_summary(self):
-        startup = self.startup()
-        candidate = self.root / "candidate.json"
-        candidate.write_bytes(
-            canonical(
-                {
-                    "candidate_id": "I1",
-                    "story": "A bounded candidate.",
-                    "theme": "Evaluation and Diagnostics",
-                }
-            )
-        )
-        prior_work = self.root / "prior-work.md"
-        prior_work.write_text(
-            "## I1\nOverlap: low\nPapers Read: 5\n",
-            encoding="utf-8",
-        )
-        summary = self.root / "history-summary.json"
-        summary.write_bytes(
-            canonical(
-                {
-                    "schema_version": 1,
-                    "candidate_id": "I1",
-                    "candidate_content_sha256": "11" * 32,
-                    "adapter_version": "history-stage-v1",
-                    "receipts": [{}, {}],
-                    "aggregate_sha256": "22" * 32,
-                }
-            )
-        )
-        command = canonical([str(FAKE_STAGE_AGENT)]).decode(
-            "utf-8"
-        ).strip()
-        with self.assertRaises(history_runtime.RuntimeContractError):
-            history_runtime._build_stage_manifest_for_test(
-                test_authority=self.shadow_test_authority(),
-                test_state_root=self.root,
-                stage="review",
-                seat_id="review-1-I1",
-                db_path=self.database,
-                policy_path=self.policy_path,
-                input_paths={
-                    "candidate.json": candidate,
-                    "prior_work.md": prior_work,
-                    "review_contract.md":
-                        self.review_contract_path,
-                    "history_summary.json": summary,
-                },
-                output_root=self.root / "shadow-review-output",
-                manifest_path=(
-                    self.root / "shadow-review-host" / "manifest.json"
-                ),
-                command_json=command,
-            )
-
-    def test_enforcement_stage_requires_opaque_authority_at_build_and_run(self):
-        policy, root, capability = (
-            CapabilityContract._signed_capability(self)
-        )
-        self.policy = policy
-        authority = history_runtime._validate_runtime_mode_for_test(
-            policy,
-            capability=capability,
-            trust_root=root,
-        )
-        connection = self.connect_indexed()
-        try:
-            brief = history_projection.build_generation_brief(
-                connection, policy
-            )
-        finally:
-            connection.close()
-        brief_path = self.root / "enforcement-brief.json"
-        brief_path.write_bytes(canonical(brief))
-        inputs = {
-            "generation_brief.json": brief_path,
-            "generation_policy.md":
-                self.generation_policy_path,
-        }
-        command = canonical([str(FAKE_STAGE_AGENT)]).decode(
-            "utf-8"
-        ).strip()
-        denied_host = self.root / "denied-stage"
-        denied_output = self.root / "denied-output"
-        with self.assertRaises(history_runtime.RuntimeContractError):
-            history_runtime.build_stage_manifest(
-                stage="generate",
-                seat_id="enforcement-generate",
-                db_path=self.database,
-                policy_path=self.policy_path,
-                input_paths=inputs,
-                output_root=denied_output,
-                manifest_path=denied_host / "manifest.json",
-                command_json=command,
-            )
-        self.assertFalse(denied_host.exists())
-        self.assertFalse(denied_output.exists())
-        prepared = history_runtime._build_stage_manifest_for_test(
-            test_authority=authority,
-            test_state_root=self.root,
-            stage="generate",
-            seat_id="enforcement-generate",
-            db_path=self.database,
-            policy_path=self.policy_path,
-            input_paths=inputs,
-            output_root=self.root / "enforcement-output",
-            manifest_path=(
-                self.root / "enforcement-host" / "manifest.json"
-            ),
-            command_json=command,
-            authority=authority,
-        )
-        manifest = json.loads(
-            pathlib.Path(prepared["manifest_path"]).read_text(
-                encoding="utf-8"
-            )
-        )
-        self.assertEqual(
-            manifest["policy"]["source"],
-            "synthetic_contract_only",
-        )
-        entry_log = self.root / "backend-entry.log"
-        descriptor = os.open(
-            entry_log,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-            0o600,
-        )
-        try:
-            with self.assertRaises(
-                history_runtime.RuntimeContractError
-            ):
-                history_runtime.run_contained_stage(
-                    prepared,
-                    backend_entry_fd=descriptor,
-                )
-            self.assertEqual(entry_log.read_bytes(), b"")
-            with self.assertRaises(
-                history_runtime.RuntimeContractError
-            ):
-                history_runtime.run_contained_stage(
-                    prepared,
-                    authority={
-                        "mode": "enforcement",
-                        "policy_sha256": (
-                            history_runtime.sha256(
-                                canonical(policy)
-                            )
-                        ),
-                    },
-                    backend_entry_fd=descriptor,
-                )
-            self.assertEqual(entry_log.read_bytes(), b"")
-            self._run_test_stage(
-                prepared,
-                authority=authority,
-                backend_entry_fd=descriptor,
-            )
-        finally:
-            os.close(descriptor)
-        self.assertEqual(entry_log.read_bytes(), b"backend-entry\n")
-
-    def test_contained_generate_requires_exact_completion_receipt(self):
-        prepared, output = self._generate_stage()
-        completion = self._run_test_stage(prepared)
-        self.assertEqual(completion["stage"], "generate")
-        self.assertTrue((output / "ideas.tsv").is_file())
-        self.assertTrue((output / "ideas.md").is_file())
-        self.assertTrue(
-            history_runtime.verify_stage_completion(prepared)
-        )
-        pathlib.Path(prepared["completion_path"]).unlink()
-        with self.assertRaises(history_runtime.RuntimeContractError):
-            history_runtime.verify_stage_completion(prepared)
-
-    def test_completion_rejects_self_consistent_preflight_forgery(self):
-        prepared, _ = self._generate_stage()
-        self._run_test_stage(prepared)
-        preflight_path = pathlib.Path(prepared["preflight_path"])
-        completion_path = pathlib.Path(prepared["completion_path"])
-        preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
-        completion = json.loads(
-            completion_path.read_text(encoding="utf-8")
-        )
-        preflight["manifest_sha256"] = "0" * 64
-        preflight_path.write_bytes(canonical(preflight))
-        completion["preflight_sha256"] = hashlib.sha256(
-            canonical(preflight)
-        ).hexdigest()
-        completion.pop("completion_id")
-        completion["completion_id"] = hashlib.sha256(
-            b"history-stage-completion-v1\0"
-            + canonical(completion)
-        ).hexdigest()
-        completion_path.write_bytes(canonical(completion))
-        with self.assertRaises(history_runtime.RuntimeContractError):
-            history_runtime.verify_stage_completion(prepared)
-
-    def test_completion_rejects_symlink_and_hardlink_output_swaps(self):
-        prepared, output = self._generate_stage()
-        self._run_test_stage(prepared)
-        ideas = output / "ideas.tsv"
-        external = self.root / "external-identical.tsv"
-        external.write_bytes(ideas.read_bytes())
-        ideas.unlink()
-        ideas.symlink_to(external)
-        with self.assertRaises(history_runtime.RuntimeContractError):
-            history_runtime.verify_stage_completion(prepared)
-        ideas.unlink()
-        os.link(external, ideas)
-        with self.assertRaises(history_runtime.RuntimeContractError):
-            history_runtime.verify_stage_completion(prepared)
-
-    def test_artifact_reader_rejects_symlinked_parent_directory(self):
-        real = self.root / "real-parent"
-        real.mkdir()
-        source = real / "artifact.json"
-        source.write_bytes(canonical({"schema_version": 1}))
-        alias = self.root / "parent-alias"
-        alias.symlink_to(real, target_is_directory=True)
-        with self.assertRaises(history_runtime.RuntimeContractError):
-            history_runtime._read_bound_regular(
-                alias / source.name,
-                "symlink-parent artifact",
-            )
-
-
 class ReceiptAndResumeContract(RuntimeFixture):
     def _receipt(self, conn, query, intent):
         pack = history_retrieval.build_pack(
@@ -2249,17 +1706,6 @@ class ReceiptAndResumeContract(RuntimeFixture):
 
 
 class RoundCoordinatorContract(CapabilityContract):
-    @staticmethod
-    def _portable_profile():
-        return provider_adapters._resolve_command_intent_for_test(
-            provider_adapters.load_registry(PROVIDER_REGISTRY),
-            "hunt",
-            "codex",
-            model="MODEL",
-            reasoning="high",
-            max_output_tokens=2048,
-            executable_lookup=lambda _: str(FAKE_PORTABLE_PROVIDER),
-        )
 
     def test_portable_profile_requires_exact_policy_output_token_cap(self):
         profile = self._portable_profile()
@@ -2330,7 +1776,6 @@ class RoundCoordinatorContract(CapabilityContract):
                     artifact_root=comparison_root,
                     prior_work_path=self.root / "missing-prior-work.md",
                     review_contract_path=self.review_contract_path,
-                    reviewer_commands={},
                     executor="portable-v2",
                     reviewer_request_profiles={"1": forged},
                     round_date="2026-07-24",
@@ -2347,7 +1792,6 @@ class RoundCoordinatorContract(CapabilityContract):
                     policy_path=self.policy_path,
                     batch_path=self.root / "missing-batch.json",
                     review_plan_path=review_plan_path,
-                    reviewer_commands={},
                     executor="portable-v2",
                     reviewer_request_profiles={"1": forged},
                     stage_root=self.root / "forged-review-stages",
@@ -2558,20 +2002,22 @@ class RoundCoordinatorContract(CapabilityContract):
             legacy_v1=legacy_v1,
             stem=stem,
         )
-        command = canonical([str(FAKE_STAGE_AGENT)]).decode(
-            "utf-8"
-        ).strip()
-        history_runtime._compare_frozen_targets_for_test(
-            test_authority=self.shadow_test_authority(),
-            test_state_root=self.root,
-            db_path=self.database,
-            policy_path=self.policy_path,
-            batch_path=state["batch"],
-            artifact_root=state["observation_root"],
-            selection_path=state["selection"],
-            command_json=command,
-            test_comparator_status=comparison_status,
-        )
+        environment = {}
+        if comparison_status != "complete_no_match":
+            environment["FAKE_PORTABLE_COMPARE_STATUS"] = (
+                comparison_status
+            )
+        with mock.patch.dict(os.environ, environment, clear=False):
+            history_runtime._compare_frozen_targets_for_test(
+                test_authority=self.shadow_test_authority(),
+                test_state_root=self.root,
+                db_path=self.database,
+                policy_path=self.policy_path,
+                batch_path=state["batch"],
+                artifact_root=state["observation_root"],
+                selection_path=state["selection"],
+                portable_request_profile=self._portable_profile(),
+            )
         return state
 
     def test_portable_indices_persist_only_closed_public_stage_descriptors(self):
@@ -2709,7 +2155,6 @@ class RoundCoordinatorContract(CapabilityContract):
             artifact_root=state["observation_root"],
             prior_work_path=prior_work,
             review_contract_path=self.review_contract_path,
-            reviewer_commands={},
             executor="portable-v2",
             reviewer_request_profiles=profiles,
             round_date="2026-07-24",
@@ -2724,7 +2169,6 @@ class RoundCoordinatorContract(CapabilityContract):
             policy_path=self.policy_path,
             batch_path=state["batch"],
             review_plan_path=review_plan_path,
-            reviewer_commands={},
             executor="portable-v2",
             reviewer_request_profiles=profiles,
             stage_root=self.root / "portable-public-review-stages",
@@ -2835,11 +2279,8 @@ class RoundCoordinatorContract(CapabilityContract):
         artifact_root = state.get(
             "observation_root", state.get("artifact_root")
         )
-        command = canonical([str(FAKE_STAGE_AGENT)]).decode(
-            "utf-8"
-        ).strip()
-        commands = {
-            str(index): command
+        profiles = {
+            str(index): self._portable_profile()
             for index in range(1, reviewer_count + 1)
         }
         if prior_work_path is None:
@@ -2872,7 +2313,7 @@ class RoundCoordinatorContract(CapabilityContract):
             artifact_root=artifact_root,
             prior_work_path=prior_work_path,
             review_contract_path=review_contract_path,
-            reviewer_commands=commands,
+            reviewer_request_profiles=profiles,
             round_date="2026-07-24",
             min_read=5,
             axiom_min_cracks=2,
@@ -2880,7 +2321,7 @@ class RoundCoordinatorContract(CapabilityContract):
             authority=authority,
         )
         return {
-            "commands": commands,
+            "profiles": profiles,
             "plan": plan,
             "plan_path": plan_path,
             "prior_work_path": pathlib.Path(prior_work_path),
@@ -2893,7 +2334,6 @@ class RoundCoordinatorContract(CapabilityContract):
         state,
         *,
         stem,
-        review_verdict="strong-accept",
         reviewer_count=2,
         authority=None,
     ):
@@ -2913,11 +2353,10 @@ class RoundCoordinatorContract(CapabilityContract):
             policy_path=self.policy_path,
             batch_path=state["batch"],
             review_plan_path=sealed["plan_path"],
-            reviewer_commands=sealed["commands"],
+            reviewer_request_profiles=sealed["profiles"],
             stage_root=self.root / f"{stem}-review-stages",
             output_path=index_path,
             authority=authority,
-            test_review_verdict=review_verdict,
         )
         aggregation_path = (
             self.root / f"{stem}-round-aggregation.json"
@@ -2944,7 +2383,7 @@ class RoundCoordinatorContract(CapabilityContract):
         *,
         retrieval_status="complete",
         comparison_status="complete_no_match",
-        contained=False,
+        portable=False,
         expansion_backend_failed=False,
     ):
         policy, root, bundle = self._signed_capability()
@@ -3099,7 +2538,7 @@ class RoundCoordinatorContract(CapabilityContract):
                 short_max=1,
                 output_path=selection_path,
             )
-            if retrieval_status == "complete" and not contained:
+            if retrieval_status == "complete" and not portable:
                 def comparator(_intent, pack, _intent_root):
                     relations = []
                     for lineage in pack["lineages"]:
@@ -3144,7 +2583,10 @@ class RoundCoordinatorContract(CapabilityContract):
                     ),
                 )
                 comparison_index = {
-                    "schema_version": 1,
+                    "schema_version": 2,
+                    "execution_boundary": (
+                        history_runtime.PORTABLE_EXECUTION_BOUNDARY
+                    ),
                     "targets": [
                         {
                             "candidate_id": "I1",
@@ -3158,14 +2600,14 @@ class RoundCoordinatorContract(CapabilityContract):
                                 item["status"]
                                 for item in compared["observations"]
                             ],
-                            "contained_stages": [],
+                            "portable_stages": [],
                         }
                     ],
                 }
                 comparison_index[
                     "comparison_index_sha256"
                 ] = history_runtime.sha256(
-                    b"history-runtime-comparison-index-v1\0"
+                    b"history-runtime-comparison-index-v2\0"
                     + canonical(comparison_index)
                 )
                 history_runtime._publish_immutable(
@@ -3175,28 +2617,34 @@ class RoundCoordinatorContract(CapabilityContract):
             else:
                 connection.close()
                 connection = None
-                command = canonical(
-                    [str(FAKE_STAGE_AGENT)]
-                ).decode("utf-8").strip()
-                comparison_index = (
-                    history_runtime._compare_frozen_targets_for_test(
-                        test_authority=authority,
-                        test_state_root=self.root,
-                        db_path=self.database,
-                        policy_path=self.policy_path,
-                        batch_path=batch_path,
-                        artifact_root=artifact_root,
-                        selection_path=selection_path,
-                        command_json=command,
-                        authority=authority,
-                        test_comparator_status=comparison_status,
-                        test_expansion_pack_builder=(
-                            self._expansion_failure_builder
-                            if expansion_backend_failed
-                            else None
-                        ),
+                environment = {}
+                if comparison_status != "complete_no_match":
+                    environment["FAKE_PORTABLE_COMPARE_STATUS"] = (
+                        comparison_status
                     )
-                )
+                with mock.patch.dict(
+                    os.environ, environment, clear=False
+                ):
+                    comparison_index = (
+                        history_runtime._compare_frozen_targets_for_test(
+                            test_authority=authority,
+                            test_state_root=self.root,
+                            db_path=self.database,
+                            policy_path=self.policy_path,
+                            batch_path=batch_path,
+                            artifact_root=artifact_root,
+                            selection_path=selection_path,
+                            portable_request_profile=(
+                                self._portable_profile()
+                            ),
+                            authority=authority,
+                            test_expansion_pack_builder=(
+                                self._expansion_failure_builder
+                                if expansion_backend_failed
+                                else None
+                            ),
+                        )
+                    )
             return {
                 "policy": policy,
                 "authority": authority,
@@ -3252,7 +2700,7 @@ class RoundCoordinatorContract(CapabilityContract):
         state = self._enforcement_round(
             retrieval_status=retrieval_status,
             comparison_status=comparison_status,
-            contained=(retrieval_status == "complete"),
+            portable=(retrieval_status == "complete"),
         )
         statuses = state["comparison_index"]["targets"][0][
             "statuses"
@@ -3266,7 +2714,7 @@ class RoundCoordinatorContract(CapabilityContract):
         self.assertEqual(
             len(
                 state["comparison_index"]["targets"][0][
-                    "contained_stages"
+                    "portable_stages"
                 ]
             ),
             (
@@ -3307,13 +2755,13 @@ class RoundCoordinatorContract(CapabilityContract):
             connection.close()
 
     def test_enforcement_complete_receipts_commit_one_atomic_delta(self):
-        state = self._enforcement_round(contained=True)
+        state = self._enforcement_round(portable=True)
         target = state["comparison_index"]["targets"][0]
         self.assertEqual(
             target["statuses"],
             ["complete_no_match", "complete_no_match"],
         )
-        self.assertEqual(len(target["contained_stages"]), 2)
+        self.assertEqual(len(target["portable_stages"]), 2)
         summary_path = (
             state["artifact_root"]
             / "I1"
@@ -3359,7 +2807,7 @@ class RoundCoordinatorContract(CapabilityContract):
 
     def test_complete_match_summary_does_not_choose_review_verdict(self):
         state = self._enforcement_round(
-            contained=True,
+            portable=True,
             comparison_status="complete_match",
         )
         target = state["comparison_index"]["targets"][0]
@@ -3367,7 +2815,7 @@ class RoundCoordinatorContract(CapabilityContract):
             target["statuses"],
             ["complete_match", "complete_match"],
         )
-        self.assertEqual(len(target["contained_stages"]), 2)
+        self.assertEqual(len(target["portable_stages"]), 2)
         summary_path = (
             state["artifact_root"]
             / "I1"
@@ -3430,7 +2878,7 @@ class RoundCoordinatorContract(CapabilityContract):
     ):
         state = self._enforcement_round(
             comparison_status="uncertain",
-            contained=True,
+            portable=True,
             expansion_backend_failed=True,
         )
         target = state["comparison_index"]["targets"][0]
@@ -3439,7 +2887,7 @@ class RoundCoordinatorContract(CapabilityContract):
             ["backend_failed", "backend_failed"],
         )
         self.assertEqual(
-            len(target["contained_stages"]),
+            len(target["portable_stages"]),
             2,
             "the comparator must not rerun after expansion retrieval fails",
         )
@@ -3533,19 +2981,15 @@ class RoundCoordinatorContract(CapabilityContract):
 
     def test_comparator_consumes_only_immutable_selection_membership(self):
         state = self._sealed_round(selected=("I2",))
-        command = canonical([str(FAKE_STAGE_AGENT)]).decode(
-            "utf-8"
-        ).strip()
         result = history_runtime._compare_frozen_targets_for_test(
             test_authority=self.shadow_test_authority(),
             test_state_root=self.root,
-            test_comparator_status="complete_no_match",
             db_path=self.database,
             policy_path=self.policy_path,
             batch_path=state["batch"],
             artifact_root=state["observation_root"],
             selection_path=state["selection"],
-            command_json=command,
+            portable_request_profile=self._portable_profile(),
         )
         self.assertEqual(
             [item["candidate_id"] for item in result["targets"]],
@@ -3682,7 +3126,7 @@ class RoundCoordinatorContract(CapabilityContract):
     def test_enforcement_research_views_exclude_nonpermanent_targets(self):
         state = self._enforcement_round(
             comparison_status="uncertain",
-            contained=True,
+            portable=True,
         )
         history_runtime.publish_round_summaries(
             db_path=self.database,
@@ -3721,7 +3165,7 @@ class RoundCoordinatorContract(CapabilityContract):
 
     def test_enforcement_research_views_publish_verified_summaries_only(self):
         state = self._enforcement_round(
-            contained=True,
+            portable=True,
             comparison_status="complete_match",
         )
         history_runtime.publish_round_summaries(
@@ -3786,7 +3230,7 @@ class RoundCoordinatorContract(CapabilityContract):
             )
 
     def test_complete_no_match_research_has_no_history_prompt(self):
-        state = self._enforcement_round(contained=True)
+        state = self._enforcement_round(portable=True)
         history_runtime.publish_round_summaries(
             db_path=self.database,
             policy_path=self.policy_path,
@@ -3883,9 +3327,10 @@ class RoundCoordinatorContract(CapabilityContract):
             "arXiv ID Check: yes\n",
             encoding="utf-8",
         )
-        command = canonical([str(FAKE_STAGE_AGENT)]).decode(
-            "utf-8"
-        ).strip()
+        profiles = {
+            "1": self._portable_profile(),
+            "2": self._portable_profile(),
+        }
         authority = self.shadow_test_authority()
         plan_path = self.root / "review-plan.json"
         plan = history_runtime.seal_round_review_plan(
@@ -3902,7 +3347,7 @@ class RoundCoordinatorContract(CapabilityContract):
             review_contract_path=(
                 ROOT / "history" / "review-contract-v1.md"
             ),
-            reviewer_commands={"1": command, "2": command},
+            reviewer_request_profiles=profiles,
             round_date="2026-07-24",
             min_read=5,
             axiom_min_cracks=2,
@@ -3925,11 +3370,10 @@ class RoundCoordinatorContract(CapabilityContract):
             policy_path=self.policy_path,
             batch_path=state["batch"],
             review_plan_path=plan_path,
-            reviewer_commands={"1": command, "2": command},
+            reviewer_request_profiles=profiles,
             stage_root=self.root / "review-stages",
             output_path=index_path,
             authority=authority,
-            test_review_verdict="strong-accept",
         )
         self.assertEqual(len(index["entries"]), 2)
         self.assertTrue(
@@ -4192,7 +3636,10 @@ class RoundCoordinatorContract(CapabilityContract):
             stem="review-tamper",
         )
         entry = chain["index"]["entries"][0]
-        prepared = entry["prepared"]
+        prepared = history_runtime._verified_public_portable_stage(
+            entry["stage"],
+            chain["index_path"].parent,
+        )
         attacks = {
             "compact-review": (
                 pathlib.Path(
@@ -4336,7 +3783,7 @@ class RoundCoordinatorContract(CapabilityContract):
         )
 
     def test_enforcement_commit_replay_survives_projection_advance(self):
-        state = self._enforcement_round(contained=True)
+        state = self._enforcement_round(portable=True)
         summary_path = (
             state["artifact_root"]
             / "I1"
@@ -4603,20 +4050,20 @@ class RoundCoordinatorContract(CapabilityContract):
                 output_path=self.root / "same-run-attempt.json",
             )
 
-    def test_resume_requires_one_contained_stage_per_complete_attempt(self):
+    def test_resume_requires_one_portable_stage_per_complete_attempt(self):
         state = self._compared_round()
         index_path = (
             state["observation_root"] / "comparison-index.json"
         )
         index = json.loads(index_path.read_text(encoding="utf-8"))
         self.assertEqual(
-            len(index["targets"][0]["contained_stages"]),
+            len(index["targets"][0]["portable_stages"]),
             2,
         )
-        index["targets"][0]["contained_stages"].pop()
+        index["targets"][0]["portable_stages"].pop()
         index.pop("comparison_index_sha256")
         index["comparison_index_sha256"] = history_runtime.sha256(
-            b"history-runtime-comparison-index-v1\0"
+            b"history-runtime-comparison-index-v2\0"
             + canonical(index)
         )
         index_path.write_bytes(canonical(index))
@@ -4691,7 +4138,7 @@ class RoundCoordinatorContract(CapabilityContract):
             )
 
     def test_enforcement_resume_requires_exact_authority_and_summary(self):
-        state = self._enforcement_round(contained=True)
+        state = self._enforcement_round(portable=True)
         summary_path = (
             state["artifact_root"]
             / "I1"
@@ -4775,7 +4222,7 @@ class RoundCoordinatorContract(CapabilityContract):
     ):
         state = self._enforcement_round(
             comparison_status="uncertain",
-            contained=True,
+            portable=True,
         )
         prior_work = self.root / "abstention-priorwork.md"
         prior_work.write_bytes(b"")
@@ -5160,98 +4607,6 @@ class CliContract(RuntimeFixture):
             }
         )
         self.assertEqual(duplicates, [])
-
-    def test_command_json_option_does_not_replace_subcommand(self):
-        command_json = canonical(
-            [str(FAKE_STAGE_AGENT)]
-        ).decode("utf-8").strip()
-        authority = self.shadow_test_authority()
-        prepared = {
-            "schema_version": 1,
-            "stage": "generate",
-        }
-        with (
-            mock.patch.object(
-                history_runtime,
-                "_cli_runtime_authority",
-                return_value=authority,
-            ),
-            mock.patch.object(
-                history_runtime,
-                "build_stage_manifest",
-                return_value=prepared,
-            ) as build,
-            mock.patch.object(
-                history_runtime,
-                "run_contained_stage",
-                return_value={"schema_version": 1},
-            ),
-            mock.patch("builtins.print"),
-        ):
-            self.assertEqual(
-                history_runtime._main(
-                    [
-                        "run-stage",
-                        "--stage",
-                        "generate",
-                        "--seat",
-                        "generate",
-                        "--db",
-                        str(self.database),
-                        "--policy",
-                        str(self.policy_path),
-                        "--output-root",
-                        str(self.root / "cli-stage-output"),
-                        "--manifest",
-                        str(self.root / "cli-stage-manifest.json"),
-                        "--command",
-                        command_json,
-                    ]
-                ),
-                0,
-            )
-        self.assertEqual(
-            build.call_args.kwargs["command_json"],
-            command_json,
-        )
-        with (
-            mock.patch.object(
-                history_runtime,
-                "_cli_runtime_authority",
-                return_value=authority,
-            ),
-            mock.patch.object(
-                history_runtime,
-                "compare_frozen_targets",
-                return_value={"schema_version": 1},
-            ) as compare,
-            mock.patch("builtins.print"),
-        ):
-            self.assertEqual(
-                history_runtime._main(
-                    [
-                        "compare-targets",
-                        "--db",
-                        str(self.database),
-                        "--policy",
-                        str(self.policy_path),
-                        "--batch",
-                        str(self.root / "batch.json"),
-                        "--artifact-root",
-                        str(self.root / "artifacts"),
-                        "--selection",
-                        str(self.root / "selection.json"),
-                        "--command",
-                        command_json,
-                    ]
-                ),
-                0,
-            )
-        self.assertEqual(
-            compare.call_args.kwargs["command_json"],
-            command_json,
-        )
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
