@@ -30,7 +30,8 @@ internal provider does not change the Codex default used by selector,
 prescreen, external research, and report stages; a host without Codex must
 configure compatible `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` values. With
 `HUNT_PROVIDER=kimi` and no Codex executable on `PATH`, those stages fall
-back to the kimi CLI automatically.
+back to the kimi CLI automatically; with a Codex binary present but
+unauthenticated, set `AGENT_CMD` explicitly instead.
 
 ```bash
 git clone git@github.com:axiat/ai-ideas.git
@@ -91,6 +92,11 @@ worker with `AGENT_CMD`. Omitting both model variables and both reasoning
 variables keeps the selected CLI's current defaults:
 
 ```bash
+HISTORY_RUNTIME_ABI=v2 \
+HUNT_PROVIDER=kimi \
+AGENT_CMD='kimi --output-format text -p' \
+./hunt.sh
+
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
 AGENT_CMD='./grok-worker.sh' \
