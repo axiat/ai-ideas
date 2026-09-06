@@ -88,7 +88,7 @@ class RuntimeFinalIntegrityRegression(smoke.RuntimeFixture):
 
     def test_report_includes_history_abstention(self):
         state = self._enforcement_round(
-            comparison_status="uncertain", contained=True
+            comparison_status="uncertain", portable=True
         )
         report, root = self._report(
             state, "report-abstain", state["authority"]
@@ -134,7 +134,7 @@ class RuntimeFinalIntegrityRegression(smoke.RuntimeFixture):
                 self.assertIsNone(candidate["declared_parent_candidate_id"])
 
     def test_summary_publication_recomputes_child_observation_hash(self):
-        state = self._enforcement_round(contained=True)
+        state = self._enforcement_round(portable=True)
         child_path = (
             state["artifact_root"]
             / "I1"

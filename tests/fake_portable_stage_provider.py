@@ -164,15 +164,31 @@ def _generation_markdown():
 
 def _comparison(inner):
     pack = inner.get("retrieval_payload", {})
+    status = os.environ.get(
+        "FAKE_PORTABLE_COMPARE_STATUS", "complete_no_match"
+    )
     relations = []
-    for lineage in pack.get("lineages", []):
+    for index, lineage in enumerate(pack.get("lineages", [])):
         matches = lineage.get("matches", [])
         if not matches:
             continue
         match = matches[0]
+        if status == "uncertain":
+            relation = "uncertain"
+        elif status in {
+            "complete_match",
+            "conflicting_evidence",
+        } and index == 0:
+            relation = {
+                "duplicate_search": "same_core_idea",
+                "evolution_search": "same_lineage_revision",
+                "failure_pattern_search": "same_failure_mechanism",
+            }[pack["intent"]]
+        else:
+            relation = "distinct"
         relations.append(
             {
-                "relation": "distinct",
+                "relation": relation,
                 "candidate_id": match["candidate_id"],
                 "lineage_id": match["lineage_id"],
                 "facet": match["facet"],
@@ -181,12 +197,26 @@ def _comparison(inner):
                 "confidence": 0.8,
             }
         )
+    lineages = pack.get("lineages", [])
+    expansion_request = None
+    if (
+        status == "uncertain"
+        and lineages
+        and lineages[0].get("matches")
+        and pack.get("expansion_round", 0)
+        < pack.get("hard_limits", {}).get("max_expansion_rounds", 0)
+    ):
+        expansion_request = {
+            "record_ids": [
+                lineages[0]["matches"][0]["candidate_id"]
+            ]
+        }
     return json.dumps(
         {
-            "status": "complete_no_match",
+            "status": status,
             "comparator_version": "history-comparator-v1",
             "relations": relations,
-            "expansion_request": None,
+            "expansion_request": expansion_request,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -233,25 +263,125 @@ def _awr_draft():
 
 
 def _awr_priorwork():
-    return (
-        "## Independent Prior Work\n"
-        "Search Terms: confidence-gated latent updates; event-triggered world models\n"
-        "- Query: https://api.semanticscholar.org/graph/v1/paper/search?query=confidence-gated-latent-updates\n"
-        "Nearest Work:\n"
-        "- Neighbor One | https://example.com/awr-paper-one | Fixed-rate updates.\n"
-        "- Neighbor Two | https://example.com/awr-paper-two | Observation gating.\n"
-        "- Neighbor Three | https://example.com/awr-paper-three | Compression.\n"
-        "- Neighbor Four | https://example.com/awr-paper-four | Adaptive compute.\n"
-        "- Neighbor Five | https://example.com/awr-paper-five | Event triggers.\n"
-        "Strongest Counterexample: Neighbor Four omits closed-loop control.\n"
-        "Overlap: low — The five works do not occupy the bounded claim.\n"
-        "Papers Read: 5\n"
-        "arXiv ID Check: yes\n"
-        "## Crack Evidence Verification\n"
-        "- https://example.com/crack-one | Verification: supports — Stable control.\n"
-        "- https://example.com/crack-two | Verification: supports — Bounded drift.\n"
-        "AGY-DONE\n"
+    mode = os.environ.get("FAKE_AGENT_MODE", "")
+    crack_heading = "## Crack Evidence Verification"
+    verification_one = (
+        "- https://example.com/crack-one | Verification: supports — "
+        "Stable control survives confidence-triggered updates."
     )
+    verification_two = (
+        "- https://example.com/crack-two | Verification: supports — "
+        "Bounded latent drift permits skipped transitions."
+    )
+    if mode == "awr-invalid-verification":
+        verification_one = (
+            "- https://example.com/crack-one | Verification: maybe — "
+            "The outcome token is intentionally invalid."
+        )
+    elif mode == "awr-mixed-verification":
+        verification_one = (
+            "- https://example.com/crack-one | Verification: maybe; "
+            "Verification: supports — The second token must not mask the "
+            "first."
+        )
+    elif mode == "awr-verification-missing-url":
+        verification_one = (
+            "- crack-one | Verification: supports — "
+            "The direct URL is intentionally absent."
+        )
+    elif mode == "awr-verification-missing-description":
+        verification_one = (
+            "- https://example.com/crack-one | Verification: supports"
+        )
+    elif mode == "awr-duplicate-verification-heading":
+        crack_heading = (
+            "## Crack Evidence Verification\n## Crack Evidence Verification"
+        )
+    elif mode == "awr-verification-without-heading":
+        crack_heading = ""
+    elif mode == "awr-no-crack":
+        crack_heading = ""
+        verification_one = ""
+        verification_two = ""
+    query = (
+        "- Query: https://api.semanticscholar.org/graph/v1/paper/search"
+        "?query=confidence-gated-latent-updates"
+    )
+    query_before = query
+    query_inside = ""
+    neighbor_three = (
+        "- Neighbor Three | https://example.com/awr-paper-three | "
+        "Compresses a dense world model."
+    )
+    neighbor_four = (
+        "- Neighbor Four | https://example.com/awr-paper-four | "
+        "Studies adaptive compute outside robot control."
+    )
+    neighbor_five = (
+        "- Neighbor Five | https://example.com/awr-paper-five | "
+        "Uses event triggers without confidence gating."
+    )
+    counterexample_before = ""
+    counterexample_after = (
+        "Strongest Counterexample: Neighbor Four is the closest "
+        "adaptive-compute result, but it omits closed-loop world-model "
+        "control."
+    )
+    if mode == "awr-four-neighbors":
+        neighbor_five = ""
+    elif mode == "awr-crack-url-count":
+        neighbor_three = ""
+        neighbor_four = ""
+        neighbor_five = ""
+    elif mode == "awr-non-api-query":
+        query_before = (
+            "- Query: https://example.com/search"
+            "?q=confidence-gated-latent-updates"
+        )
+    elif mode == "awr-api-host-prefix":
+        query_before = (
+            "- Query: https://api.semanticscholar.org.evil/graph/v1/"
+            "paper/search?query=x"
+        )
+    elif mode == "awr-api-path-prefix":
+        query_before = (
+            "- Query: https://export.arxiv.org/api/queryevil?search_query=x"
+        )
+    elif mode == "awr-api-bare-host":
+        query_before = "- Query: https://api.semanticscholar.org"
+    elif mode == "awr-query-in-neighbors":
+        neighbor_five = ""
+        query_before = ""
+        query_inside = query
+    elif mode == "awr-reversed-sections":
+        counterexample_before = counterexample_after
+        counterexample_after = ""
+    elif mode == "awr-empty-counterexample":
+        counterexample_after = "Strongest Counterexample:"
+    lines = [
+        "## Independent Prior Work",
+        "Search Terms: confidence-gated latent updates; event-triggered world models",
+        query_before,
+        counterexample_before,
+        "Nearest Work:",
+        query_inside,
+        "- Neighbor One | https://example.com/awr-paper-one | Uses fixed-rate latent updates.",
+        "- Neighbor Two | https://example.com/awr-paper-two | Gates observations instead of latent dynamics.",
+        neighbor_three,
+        neighbor_four,
+        neighbor_five,
+        counterexample_after,
+        "Overlap: low — None of the five works occupies confidence-gated latent updates for closed-loop control.",
+        "Papers Read: 5",
+        "arXiv ID Check: yes",
+        crack_heading,
+        verification_one,
+        verification_two,
+        "AGY-DONE",
+    ]
+    return "\n".join(
+        line for line in lines if line != ""
+    ) + "\n"
 
 
 def _artifact(stage, inner):
@@ -266,6 +396,21 @@ def _artifact(stage, inner):
     if stage == "awr-priorwork":
         return "awr-priorwork-markdown", _awr_priorwork()
     if stage == "awr-judge":
+        mode = os.environ.get("FAKE_AGENT_MODE", "")
+        if mode == "awr-not-ready":
+            return "awr-judge-markdown", (
+                "Decision: not-ready\n"
+                "- Defect: Add a latency control that separates gating "
+                "overhead from skipped world-model inference.\n"
+                "AGY-DONE\n"
+            )
+        if mode == "awr-mixed-decision":
+            return "awr-judge-markdown", (
+                "Decision: SA-possible\n"
+                "Decision: not-ready\n"
+                "- Defect: This mixed decision is intentionally invalid.\n"
+                "AGY-DONE\n"
+            )
         return "awr-judge-markdown", "Decision: SA-possible\nAGY-DONE\n"
     raise SystemExit(64)
 

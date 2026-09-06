@@ -3,17 +3,17 @@
 #
 # SQLite is the only history authority.  ledger.tsv and tmp/ledger.good are
 # replayable projections reconciled by the history runtime. Generation,
-# internal-history comparison, and every review seat use contained-v1 or
-# portable-v2. Selector, prescreen, external prior-work research, report
-# assembly, and publication retain their existing process boundaries.
+# internal-history comparison, and every review seat use portable-v2.
+# Selector, prescreen, external prior-work research, report assembly, and
+# publication retain their existing process boundaries.
 #
 # Usage:
 #   ./hunt.sh [failure retry delay in minutes; default: 150]
 #
 # Main controls:
-#   HISTORY_RUNTIME_ABI=v1|v2
-#       V1 is the compatibility default. V2 selects provider-neutral portable
-#       execution for generation, history comparison, and review.
+#   HISTORY_RUNTIME_ABI=v2
+#       Portable-v2 is the only runtime. Setting v2 is accepted for
+#       compatibility and equivalent to unset; v1 fails.
 #   HUNT_PROVIDER / HUNT_MODEL / HUNT_REASONING_EFFORT
 #       V2 base provider and optional exact overrides. Provider/model/reasoning
 #       values omitted from the environment preserve the CLI's current defaults.
@@ -23,10 +23,6 @@
 #       External command strings for selector, prescreen, research, and report.
 #       They are parsed as argv without eval or a shell and never enter v2
 #       internal stages.
-#   CONTAINED_AGENT_CMD_JSON
-#       V1 canonical absolute JSON argv for generation and comparison.
-#   CONTAINED_REV_CMD_<N>_JSON
-#       Optional v1 canonical absolute JSON argv override for review seat N.
 #   HISTORY_CALIBRATION_CAPABILITY / HISTORY_PRODUCTION_TRUST_ROOT
 #       Production enforcement authority.  Shadow mode needs neither.
 #   REVIEWERS, MIN_READ, SHORT_MAX, THEME_MIN_LOW, AXIOM_MIN_CRACKS
@@ -126,48 +122,32 @@ hunt_write_review_profile() {
 }
 
 hunt_runtime_preflight() {
-  local abi=v1 name index indices="" provider model reasoning diagnostic
+  local name index indices="" provider model reasoning diagnostic
   local base_provider base_model base_reasoning provider_changed reviewer_limit
   local provider_name model_name reasoning_name
   if runtime_variable_is_set HISTORY_RUNTIME_ABI; then
-    abi=$HISTORY_RUNTIME_ABI
+    case "$HISTORY_RUNTIME_ABI" in
+      v1)
+        printf 'hunt.sh: HISTORY_RUNTIME_ABI=v1 was removed; portable-v2 is the only runtime\n' >&2
+        return 2
+        ;;
+      v2) ;;
+      *)
+        printf 'hunt.sh: HISTORY_RUNTIME_ABI must be v2 when set: %s\n' \
+          "$HISTORY_RUNTIME_ABI" >&2
+        return 2
+        ;;
+    esac
   fi
-  case "$abi" in
-    v1)
-      HUNT_RUNTIME_ABI=v1
-      for name in HUNT_PROVIDER HUNT_MODEL HUNT_REASONING_EFFORT; do
-        if runtime_variable_is_set "$name"; then
-          printf 'hunt.sh: %s is valid only with HISTORY_RUNTIME_ABI=v2\n' \
-            "$name" >&2
-          return 2
-        fi
-      done
-      while IFS= read -r name; do
-        case "$name" in
-          HUNT_REVIEW_PROVIDER_*|HUNT_REVIEW_MODEL_*|HUNT_REVIEW_REASONING_EFFORT_*)
-            printf 'hunt.sh: %s is valid only with HISTORY_RUNTIME_ABI=v2\n' \
-              "$name" >&2
-            return 2
-            ;;
-        esac
-      done < <(compgen -A variable HUNT_REVIEW_)
-      return 0
-      ;;
-    v2) ;;
-    *)
-      printf 'hunt.sh: HISTORY_RUNTIME_ABI must be v1 or v2: %s\n' "$abi" >&2
-      return 2
-      ;;
-  esac
 
   if runtime_variable_is_set CONTAINED_AGENT_CMD_JSON; then
-    printf 'hunt.sh: CONTAINED_AGENT_CMD_JSON cannot be mixed with v2 provider controls\n' >&2
+    printf 'hunt.sh: CONTAINED_AGENT_CMD_JSON was removed with the v1 runtime\n' >&2
     return 2
   fi
   while IFS= read -r name; do
     case "$name" in
       CONTAINED_REV_CMD_*_JSON)
-        printf 'hunt.sh: %s cannot be mixed with v2 provider controls\n' \
+        printf 'hunt.sh: %s was removed with the v1 runtime\n' \
           "$name" >&2
         return 2
         ;;
@@ -242,7 +222,6 @@ hunt_runtime_preflight() {
       >/dev/null || return 2
   done
 
-  HUNT_RUNTIME_ABI=v2
   return 0
 }
 
@@ -593,64 +572,6 @@ sys.stdout.buffer.write(b"\0".join(item.encode() for item in argv) + b"\0")
 PY
 }
 
-# Contained commands are accepted only as closed JSON argv with an absolute
-# executable.  The normalized bytes are passed unchanged to every runtime
-# entrypoint that seals the command prefix.
-normalize_command_json() {
-  python3 - "$1" <<'PY'
-import json
-import os
-import sys
-
-try:
-    argv = json.loads(sys.argv[1])
-except ValueError as exc:
-    raise SystemExit(f"contained command is not JSON: {exc}")
-if (
-    not isinstance(argv, list)
-    or not argv
-    or any(
-        not isinstance(item, str)
-        or not item
-        or any(c in item for c in "\x00\r\n")
-        for item in argv
-    )
-):
-    raise SystemExit("contained command must be a nonempty string argv")
-if not os.path.isabs(argv[0]):
-    raise SystemExit("contained command executable must be absolute")
-resolved = os.path.realpath(argv[0])
-if not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
-    raise SystemExit("contained command executable is unavailable")
-argv[0] = resolved
-print(json.dumps(argv, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
-PY
-}
-
-default_contained_command_json() {
-  local codex_path
-  codex_path=$(command -v codex) || {
-    log "Codex executable is unavailable; set CONTAINED_AGENT_CMD_JSON"
-    return 1
-  }
-  python3 - "$codex_path" <<'PY'
-import json
-import os
-import sys
-
-print(json.dumps(
-    [
-        os.path.realpath(sys.argv[1]),
-        "-m",
-        "gpt-5.3-codex-spark",
-        "-c",
-        "model_reasoning_effort=xhigh",
-    ],
-    separators=(",", ":"),
-))
-PY
-}
-
 history_runtime_authorized() {
   local command=$1
   local -a command_line
@@ -668,7 +589,6 @@ history_runtime_authorized() {
 }
 
 history_audit_init() {
-  [ "$HUNT_RUNTIME_ABI" = v2 ] || return 0
   python3 -B lib/history_audit_cli.py init \
     --db "$HISTORY_DB" \
     --cas-root "$HISTORY_STATE_ROOT/audit-cas"
@@ -680,7 +600,6 @@ history_audit_plan_shadow_round() {
   local -a profile_args=(
     --execution-request-profile "$profile_root/base.json"
   )
-  [ "$HUNT_RUNTIME_ABI" = v2 ] || return 0
   mkdir -p "$output_root/candidates" || return 1
   for seat in $(seq 1 "$REVIEWERS"); do
     if ! hunt_write_review_profile \
@@ -805,20 +724,6 @@ print(value["policy_mode"])
 PY
 }
 
-run_contained_stage() {
-  local stage=$1 seat=$2 output_root=$3 manifest=$4 command_json=$5
-  shift 5
-  history_runtime_authorized run-stage \
-    --stage "$stage" \
-    --seat "$seat" \
-    --db "$HISTORY_DB" \
-    --policy "$HISTORY_POLICY" \
-    --output-root "$output_root" \
-    --manifest "$manifest" \
-    --command "$command_json" \
-    "$@"
-}
-
 run_portable_generate_stage() {
   local profile=$1 output_root=$2 state_root=$3 prompt_path=$4
   shift 4
@@ -905,15 +810,9 @@ history_compare_shortlist() {
     --batch "$1"
     --artifact-root "$2"
     --selection "$3"
+    --executor portable-v2
+    --provider-request-profile "$4"
   )
-  if [ "$HUNT_RUNTIME_ABI" = v2 ]; then
-    compare_args+=(
-      --executor portable-v2
-      --provider-request-profile "$4"
-    )
-  else
-    compare_args+=(--command "$4")
-  fi
   history_runtime_authorized "${compare_args[@]}"
 }
 
@@ -2266,8 +2165,7 @@ direction_active=0
 if [ -f "$startup_root/direction-constraint.json" ]; then
   direction_active=1
 fi
-if [ "$HUNT_RUNTIME_ABI" = v2 ] \
-   && ! history_audit_init > "$startup_root/audit-init.json"; then
+if ! history_audit_init > "$startup_root/audit-init.json"; then
   log "History audit-v2 initialization failed before agent invocation"
   exit 2
 fi
@@ -2429,21 +2327,10 @@ while :; do
     fi
     policy_mode=$(history_policy_mode "$RD/history/startup.json") || exit 2
 
-    contained_json=
-    internal_profile=
-    if [ "$HUNT_RUNTIME_ABI" = v2 ]; then
-      internal_profile="$RD/history/provider-profiles/base.json"
-      if ! hunt_write_base_profile "$internal_profile"; then
-        log "Portable base provider profile creation failed"
-        exit 2
-      fi
-    else
-      contained_json=${CONTAINED_AGENT_CMD_JSON:-}
-      [ -n "$contained_json" ] \
-        || contained_json=$(default_contained_command_json) \
-        || exit 2
-      contained_json=$(normalize_command_json "$contained_json") || exit 2
-      internal_profile=$contained_json
+    internal_profile="$RD/history/provider-profiles/base.json"
+    if ! hunt_write_base_profile "$internal_profile"; then
+      log "Portable base provider profile creation failed"
+      exit 2
     fi
 
     generation_inputs=(
@@ -2459,34 +2346,20 @@ while :; do
     if [ -s research_context.md ]; then
       generation_inputs+=(--input "research_context.md=research_context.md")
     fi
-    if [ "$HUNT_RUNTIME_ABI" = v2 ]; then
-      portable_err=$RD/history/generate-portable.err
-      if ! run_portable_generate_stage \
-        "$internal_profile" \
-        "$RD/history/generate-output" \
-        "$RD/history/generate-attempt" \
-        "$RD/history/generate-prompt.json" \
-        "${generation_inputs[@]}" \
-        > "$RD/history/generate-stage.json" \
-        2> "$portable_err"
-      then
-        portable_msg=$(cat "$portable_err" 2>/dev/null || true)
-        [ -n "$portable_msg" ] && log "$portable_msg"
-        fail_round generate "$(portable_error_class_from_text "$portable_msg")" || exit 1
-        continue
-      fi
-    else
-      run_contained_stage \
-        generate generate \
-        "$RD/history/generate-output" \
-        "$RD/history/generate-manifest.json" \
-        "$contained_json" \
-        "${generation_inputs[@]}" \
-        > "$RD/history/generate-stage.json"
-      if [ "$?" -ne 0 ]; then
-        fail_round generate || exit 1
-        continue
-      fi
+    portable_err=$RD/history/generate-portable.err
+    if ! run_portable_generate_stage \
+      "$internal_profile" \
+      "$RD/history/generate-output" \
+      "$RD/history/generate-attempt" \
+      "$RD/history/generate-prompt.json" \
+      "${generation_inputs[@]}" \
+      > "$RD/history/generate-stage.json" \
+      2> "$portable_err"
+    then
+      portable_msg=$(cat "$portable_err" 2>/dev/null || true)
+      [ -n "$portable_msg" ] && log "$portable_msg"
+      fail_round generate "$(portable_error_class_from_text "$portable_msg")" || exit 1
+      continue
     fi
     if [ ! -s "$RD/history/generate-output/ideas.tsv" ] \
        || [ ! -s "$RD/history/generate-output/ideas.md" ] \
@@ -2573,13 +2446,12 @@ while :; do
       fail_round selection-contract || exit 1
       continue
     fi
-    if [ "$HUNT_RUNTIME_ABI" = v2 ] \
-       && ! history_audit_plan_shadow_round \
-         "$RD/history/batch/batch.json" \
-         "$RD/history/selection.json" \
-         "$RD/history/observations" \
-         "$RD/history/audit-shadow" \
-         "$RD/history/provider-profiles"; then
+    if ! history_audit_plan_shadow_round \
+      "$RD/history/batch/batch.json" \
+      "$RD/history/selection.json" \
+      "$RD/history/observations" \
+      "$RD/history/audit-shadow" \
+      "$RD/history/provider-profiles"; then
       fail_round audit-shadow-plan || exit 1
       continue
     fi
@@ -2686,32 +2558,17 @@ while :; do
     fi
   fi
 
-  reviewer_args=()
-  if [ "$HUNT_RUNTIME_ABI" = v2 ]; then
-    reviewer_args+=(--executor portable-v2)
-    for seat in $(seq 1 "$REVIEWERS"); do
-      reviewer_profile="$RD/history/provider-profiles/review-${seat}.json"
-      if ! hunt_write_review_profile "$seat" "$reviewer_profile"; then
-        log "Portable review provider profile creation failed for seat $seat"
-        exit 2
-      fi
-      reviewer_args+=(
-        --reviewer-request-profile "${seat}=${reviewer_profile}"
-      )
-    done
-  else
-    contained_json=${CONTAINED_AGENT_CMD_JSON:-}
-    [ -n "$contained_json" ] \
-      || contained_json=$(default_contained_command_json) \
-      || exit 2
-    contained_json=$(normalize_command_json "$contained_json") || exit 2
-    for seat in $(seq 1 "$REVIEWERS"); do
-      variable="CONTAINED_REV_CMD_${seat}_JSON"
-      reviewer_json=${!variable:-$contained_json}
-      reviewer_json=$(normalize_command_json "$reviewer_json") || exit 2
-      reviewer_args+=(--reviewer-command "${seat}=${reviewer_json}")
-    done
-  fi
+  reviewer_args=(--executor portable-v2)
+  for seat in $(seq 1 "$REVIEWERS"); do
+    reviewer_profile="$RD/history/provider-profiles/review-${seat}.json"
+    if ! hunt_write_review_profile "$seat" "$reviewer_profile"; then
+      log "Portable review provider profile creation failed for seat $seat"
+      exit 2
+    fi
+    reviewer_args+=(
+      --reviewer-request-profile "${seat}=${reviewer_profile}"
+    )
+  done
 
   review_attempt_number=1
   while :; do

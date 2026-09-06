@@ -48,7 +48,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SYNTHETIC_SCOPE = "synthetic_contract_only"
 PRODUCTION_SCOPE = "production"
 PORTABLE_EXECUTION_BOUNDARY = "portable-mirror-v1"
-CONTAINED_EXECUTOR = "contained-v1"
 PORTABLE_EXECUTOR = "portable-v2"
 PROVIDER_REGISTRY_PATH = (
     ROOT / "history" / "provider-adapters-v1.json"
@@ -94,88 +93,6 @@ _INPUT_CAPS = {
     "review_contract.md": 16384,
     "history_summary.json": 16384,
     "failure_batch.json": 65536,
-}
-_STAGE_INPUTS = {
-    "generate": (
-        {"generation_brief.json", "generation_policy.md"},
-        {"research_context.md", "direction_constraint.json"},
-    ),
-    "history-compare": ({"retrieval_pack.json"}, set()),
-    "review": (
-        {"candidate.json", "prior_work.md", "review_contract.md"},
-        {"history_summary.json"},
-    ),
-    "meta": ({"failure_batch.json"}, set()),
-}
-_STAGE_OUTPUTS = {
-    "generate": (
-        (
-            "output/ideas.tsv",
-            "ideas.tsv",
-            "generation-ideas-tsv",
-            65536,
-        ),
-        (
-            "output/ideas.md",
-            "ideas.md",
-            "generation-ideas-markdown",
-            65536,
-        ),
-        (
-            "output/prompt-attestation.json",
-            "prompt-attestation.json",
-            "prompt-attestation-json",
-            4096,
-        ),
-    ),
-    "history-compare": (
-        (
-            "output/history-comparison.json",
-            "history-comparison.json",
-            "history-comparison-json",
-            65536,
-        ),
-        (
-            "output/prompt-attestation.json",
-            "prompt-attestation.json",
-            "prompt-attestation-json",
-            4096,
-        ),
-    ),
-    "review": (
-        (
-            "output/review.md",
-            "review.md",
-            "review-markdown",
-            65536,
-        ),
-        (
-            "output/verdict.tsv",
-            "verdict.tsv",
-            "review-verdict-tsv",
-            16384,
-        ),
-        (
-            "output/prompt-attestation.json",
-            "prompt-attestation.json",
-            "prompt-attestation-json",
-            4096,
-        ),
-    ),
-    "meta": (
-        (
-            "output/failure-distillation.json",
-            "failure-distillation.json",
-            "failure-distillation-json",
-            65536,
-        ),
-        (
-            "output/prompt-attestation.json",
-            "prompt-attestation.json",
-            "prompt-attestation-json",
-            4096,
-        ),
-    ),
 }
 _SHA_FIELDS = {
     "policy_sha256",
@@ -3376,19 +3293,14 @@ def materialize_research_views(
                 raise RuntimeContractError(
                     "research comparison observation changed"
                 )
-            (
-                comparison_executor,
-                comparison_stage_records,
-            ) = _comparison_stage_binding(index, indexed)
             pack_bindings = _validate_resume_comparator_stages(
                 candidate=candidate,
                 candidate_root=root / candidate_id,
                 observation=observation,
-                stage_records=comparison_stage_records,
+                stage_records=_comparison_stage_binding(index, indexed),
                 conn=conn,
                 policy=policy,
                 allow_unbindable=True,
-                execution_boundary=comparison_executor,
             )
             for binding in pack_bindings:
                 pack = binding["pack"]
@@ -4373,14 +4285,6 @@ def resume_matches(expected, observed):
     )
 
 
-def _stage_modules():
-    try:
-        from lib import history_stage
-    except ImportError:
-        import history_stage
-    return history_stage
-
-
 def _portable_stage_module():
     try:
         from lib import portable_stage
@@ -4619,467 +4523,6 @@ def _stage_invocation(stage, mounted, role_raw, policy):
     return invocation
 
 
-def _registered_test_backends():
-    return {
-        (ROOT / "tests" / "fake_stage_agent.py").resolve(),
-        (ROOT / "tests" / "malicious_history_agent.py").resolve(),
-    }
-
-
-def _build_stage_manifest(
-    *,
-    stage,
-    seat_id,
-    db_path,
-    policy_path,
-    input_paths,
-    output_root,
-    manifest_path,
-    command_json,
-    authority=None,
-    test_comparator_status=None,
-    test_review_verdict=None,
-):
-    """Build one closed host-owned stage manifest and command binding."""
-    if stage not in _STAGE_ROLES:
-        raise RuntimeContractError("contained stage is unsupported")
-    if (
-        not isinstance(seat_id, str)
-        or not seat_id
-        or any(character in seat_id for character in "\r\n\x00")
-    ):
-        raise RuntimeContractError("stage seat ID is invalid")
-    if not isinstance(input_paths, dict):
-        raise RuntimeContractError(
-            "contained stage inputs do not match its profile"
-        )
-    _require_context_test_paths(
-        (
-            db_path,
-            policy_path,
-            output_root,
-            manifest_path,
-            *input_paths.values(),
-        )
-    )
-    stage_module = _stage_modules()
-    try:
-        command = stage_module.parse_command_json(command_json)
-    except stage_module.StageError as exc:
-        raise RuntimeContractError(str(exc)) from exc
-    if not pathlib.Path(command[0]).is_absolute():
-        raise RuntimeContractError(
-            "contained command executable must be absolute"
-        )
-    try:
-        resolved_command = pathlib.Path(command[0]).resolve(strict=True)
-    except OSError as exc:
-        raise RuntimeContractError(
-            "contained command executable is unavailable"
-        ) from exc
-    test_backends = _registered_test_backends()
-    policy = history_projection.load_policy(policy_path)
-    test_runtime = _active_test_runtime(policy)
-    if (
-        resolved_command in test_backends
-        and test_runtime is None
-    ):
-        raise RuntimeContractError(
-            "registered fixture backend is unavailable in production"
-        )
-    if (
-        test_runtime is None
-        and (
-            test_comparator_status is not None
-            or test_review_verdict is not None
-        )
-    ):
-        raise RuntimeContractError(
-            "stage test controls are unavailable in production"
-        )
-    comparator_status = (
-        "complete_no_match"
-        if test_comparator_status is None
-        else test_comparator_status
-    )
-    review_verdict = (
-        "accept-w-rev"
-        if test_review_verdict is None
-        else test_review_verdict
-    )
-    if (
-        comparator_status not in {
-            "complete_match",
-            "complete_no_match",
-            "uncertain",
-            "conflicting_evidence",
-        }
-        or (
-            test_comparator_status is not None
-            and resolved_command not in test_backends
-        )
-    ):
-        raise RuntimeContractError(
-            "test comparator status is unavailable"
-        )
-    if (
-        review_verdict
-        not in {"strong-accept", "accept-w-rev", "reject"}
-        or (
-            test_review_verdict is not None
-            and resolved_command not in test_backends
-        )
-    ):
-        raise RuntimeContractError(
-            "test review verdict is unavailable"
-        )
-    required, optional = _STAGE_INPUTS[stage]
-    if (
-        not isinstance(input_paths, dict)
-        or not required.issubset(input_paths)
-        or set(input_paths) - required - optional
-    ):
-        raise RuntimeContractError(
-            "contained stage inputs do not match its profile"
-        )
-    registered_policy = history_projection.load_policy(
-        ROOT / "history" / "retrieval-policy-v1.json"
-    )
-    authority_value = None
-    if policy["mode"] == "enforcement":
-        authority_value = _validated_runtime_authority(
-            policy,
-            authority,
-            state_paths=(manifest_path, output_root),
-        )
-    synthetic_policy = dict(registered_policy)
-    synthetic_policy["mode"] = "enforcement"
-    if policy == registered_policy:
-        policy_raw = _read_regular(
-            ROOT / "history" / "retrieval-policy-v1.json",
-            1024 * 1024,
-            "stage policy",
-        )
-        policy_descriptor = {
-            "source": "history/retrieval-policy-v1.json",
-            "sha256": sha256(policy_raw),
-        }
-    elif (
-        policy == synthetic_policy
-        and resolved_command in test_backends
-        and test_runtime is not None
-        and authority_value is not None
-        and authority_value["scope"] == SYNTHETIC_SCOPE
-    ):
-        policy_raw = _read_regular(
-            policy_path, 1024 * 1024, "synthetic stage policy"
-        )
-        policy_descriptor = {
-            "source": SYNTHETIC_SCOPE,
-            "host_path": str(pathlib.Path(policy_path).resolve()),
-            "sha256": sha256(policy_raw),
-            "authority_scope": SYNTHETIC_SCOPE,
-        }
-    else:
-        raise RuntimeContractError(
-            "stage policy is not the registered repository policy"
-        )
-    if (
-        stage == "review"
-        and "history_summary.json" in input_paths
-        and policy["mode"] != "enforcement"
-    ):
-        raise RuntimeContractError(
-            "shadow review cannot mount history evidence"
-        )
-    manifest_destination = pathlib.Path(
-        os.path.abspath(os.fspath(manifest_path))
-    )
-    host_root = manifest_destination.parent
-    input_root = host_root / (
-        manifest_destination.name + "-inputs"
-    )
-    output = pathlib.Path(output_root)
-    host_descriptor = _open_safe_directory(
-        host_root, create=True
-    )
-    os.close(host_descriptor)
-    output_descriptor = _open_safe_directory(
-        output, create=True
-    )
-    try:
-        if os.listdir(output_descriptor):
-            raise RuntimeContractError(
-                "stage output root must be empty"
-            )
-    finally:
-        os.close(output_descriptor)
-    role_relative = _STAGE_ROLES[stage]
-    role_raw = _read_regular(
-        ROOT / role_relative, 1024 * 1024, "stage role"
-    )
-    mounted = {}
-    input_publications = {}
-    descriptors = []
-    for name, source in sorted(input_paths.items()):
-        raw = _read_regular(
-            source, _INPUT_CAPS[name], f"stage input {name}"
-        )
-        mounted[name] = raw
-        input_publications[name] = raw
-        descriptors.append(
-            {
-                "source": name,
-                "mirror_path": name,
-                "sha256": sha256(raw),
-                "max_bytes": _INPUT_CAPS[name],
-            }
-        )
-    invocation = _stage_invocation(
-        stage, mounted, role_raw, policy
-    )
-    adapter = _read_regular(
-        ROOT / "lib" / "history_stage_adapter.py",
-        1024 * 1024,
-        "stage adapter",
-    )
-    canonicalizer = _read_regular(
-        ROOT / "lib" / "history_stage_proxy.py",
-        1024 * 1024,
-        "stage canonicalizer",
-    )
-    outputs = []
-    output_paths = {}
-    for mirror_path, destination, kind, maximum in _STAGE_OUTPUTS[
-        stage
-    ]:
-        target = output / destination
-        if target.exists() or target.is_symlink():
-            raise RuntimeContractError(
-                "stage output destination already exists"
-            )
-        outputs.append(
-            {
-                "mirror_path": mirror_path,
-                "destination": destination,
-                "artifact_kind": kind,
-                "max_bytes": maximum,
-                "required": True,
-            }
-        )
-        output_paths[destination] = str(target)
-    if resolved_command in test_backends:
-        first_input = sorted(mounted)[0]
-        registered_environment = {
-            "HISTORY_STAGE_ATTACK_MODE": "none",
-            "HISTORY_STAGE_COMPARATOR_STATUS":
-                comparator_status,
-            "HISTORY_STAGE_REVIEW_VERDICT":
-                review_verdict,
-            "HISTORY_STAGE_INPUT_PATH": "input/" + first_input,
-            "HISTORY_STAGE_OUTSIDE_WRITE": str(
-                (host_root / "outside-write").resolve()
-            ),
-            "HISTORY_STAGE_SEAT_ID": seat_id,
-            "HISTORY_STAGE_SENTINELS_JSON": json.dumps(
-                [
-                    str((ROOT / "ledger.tsv").resolve()),
-                    str(pathlib.Path(db_path).resolve()),
-                    str((ROOT / ".git").resolve()),
-                ],
-                separators=(",", ":"),
-            ),
-            "HISTORY_STAGE_SIBLING": str(
-                (host_root / "sibling-output").resolve()
-            ),
-        }
-    else:
-        registered_environment = {}
-    needs_history = (
-        stage in {"generate", "history-compare"}
-        or (
-            stage == "review"
-            and "history_summary.json" in mounted
-        )
-    )
-    database = (
-        _verified_history_database(db_path)
-        if needs_history
-        else pathlib.Path(db_path)
-    )
-    if needs_history and database.name != "history.sqlite3":
-        raise RuntimeContractError(
-            "contained stage history authority is invalid"
-        )
-    manifest = {
-        "schema_version": 1,
-        "stage": stage,
-        "seat_id": seat_id,
-        "adapter": {
-            "version": policy["adapter_version"],
-            "fixed_wrapper": "history-stage-prompt-v1",
-            "wrapper_allowance": policy[
-                "adapter_wrapper_allowance"
-            ],
-            "executable_source": "lib/history_stage_adapter.py",
-            "executable_sha256": sha256(adapter),
-            "canonicalizer_source": "lib/history_stage_proxy.py",
-            "canonicalizer_sha256": sha256(canonicalizer),
-        },
-        "policy": policy_descriptor,
-        "role": {
-            "source": role_relative,
-            "sha256": sha256(role_raw),
-        },
-        "input_roots": [str(input_root.resolve())],
-        "inputs": descriptors,
-        "invocation": invocation,
-        "output_roots": [str(output.resolve())],
-        "outputs": outputs,
-        "preflight_receipt_destination": "preflight.json",
-        "completion_receipt_destination": "completion.json",
-        "registered_runtime_reads": [],
-        "registered_environment": registered_environment,
-        "history_store": (
-            {
-                "root": str(database.parent.resolve()),
-                "source": "history.sqlite3",
-            }
-            if needs_history
-            else None
-        ),
-    }
-    manifest_raw = canonical_bytes(manifest)
-    _publish_immutable_tree(input_root, input_publications)
-    try:
-        _publish_immutable(manifest_destination, manifest_raw)
-    except Exception:
-        _remove_immutable_tree(input_root)
-        raise
-    prepared = {
-        "schema_version": 1,
-        "stage": stage,
-        "seat_id": seat_id,
-        "manifest_path": str(manifest_destination),
-        "manifest_sha256": sha256(manifest_raw),
-        "command_argv": command,
-        "command_prefix_sha256": sha256(canonical_bytes(command)),
-        "output_root": str(output.resolve()),
-        "output_paths": output_paths,
-        "preflight_path": str(
-            (output / "preflight.json").resolve()
-        ),
-        "completion_path": str(
-            (output / "completion.json").resolve()
-        ),
-    }
-    return prepared
-
-
-def build_stage_manifest(
-    *,
-    stage,
-    seat_id,
-    db_path,
-    policy_path,
-    input_paths,
-    output_root,
-    manifest_path,
-    command_json,
-    authority=None,
-):
-    """Build one production stage manifest without test controls."""
-    return _build_stage_manifest(
-        stage=stage,
-        seat_id=seat_id,
-        db_path=db_path,
-        policy_path=policy_path,
-        input_paths=input_paths,
-        output_root=output_root,
-        manifest_path=manifest_path,
-        command_json=command_json,
-        authority=authority,
-    )
-
-
-def _build_stage_manifest_for_test(
-    *,
-    test_authority,
-    test_state_root,
-    test_comparator_status=None,
-    test_review_verdict=None,
-    **values,
-):
-    paths = (
-        values["db_path"],
-        values["policy_path"],
-        values["output_root"],
-        values["manifest_path"],
-        *values["input_paths"].values(),
-    )
-    _require_test_state_paths(test_state_root, paths)
-    policy = history_projection.load_policy(values["policy_path"])
-    call_values = dict(values)
-    supplied_authority = call_values.get("authority")
-    if (
-        supplied_authority is not None
-        and supplied_authority is not test_authority
-    ):
-        raise RuntimeContractError(
-            "test stage authority changed"
-        )
-    if policy["mode"] == "enforcement":
-        call_values["authority"] = test_authority
-    with _runtime_for_test(
-        policy,
-        test_authority,
-        test_state_root,
-        state_paths=paths,
-    ):
-        return _build_stage_manifest(
-            test_comparator_status=test_comparator_status,
-            test_review_verdict=test_review_verdict,
-            **call_values,
-        )
-
-
-def _validate_prepared_stage(prepared):
-    fields = {
-        "schema_version",
-        "stage",
-        "seat_id",
-        "manifest_path",
-        "manifest_sha256",
-        "command_argv",
-        "command_prefix_sha256",
-        "output_root",
-        "output_paths",
-        "preflight_path",
-        "completion_path",
-    }
-    if (
-        not isinstance(prepared, dict)
-        or set(prepared) != fields
-        or prepared.get("schema_version") != 1
-        or prepared.get("stage") not in _STAGE_ROLES
-        or not _valid_sha256(prepared.get("manifest_sha256"))
-        or not isinstance(prepared.get("command_argv"), list)
-        or prepared.get("command_prefix_sha256")
-        != sha256(canonical_bytes(prepared.get("command_argv")))
-    ):
-        raise RuntimeContractError(
-            "prepared stage binding is invalid"
-        )
-    manifest_raw = _read_bound_regular(
-        prepared["manifest_path"],
-        "prepared stage manifest",
-        maximum=1024 * 1024,
-    )
-    if sha256(manifest_raw) != prepared["manifest_sha256"]:
-        raise RuntimeContractError("stage manifest changed")
-    return manifest_raw
-
-
 def _read_bound_regular(
     path, label, *, maximum=None, allow_empty=False
 ):
@@ -5161,423 +4604,18 @@ def _read_bound_regular(
 
 def verify_stage_completion(prepared):
     if (
-        isinstance(prepared, dict)
-        and prepared.get("execution_boundary")
-        == PORTABLE_EXECUTION_BOUNDARY
+        not isinstance(prepared, dict)
+        or prepared.get("execution_boundary")
+        != PORTABLE_EXECUTION_BOUNDARY
     ):
-        portable_module = _portable_stage_module()
-        try:
-            return portable_module.verify_completion(prepared)
-        except portable_module.PortableStageError as exc:
-            raise _portable_stage_contract_error(exc) from exc
-    manifest_raw = _validate_prepared_stage(prepared)
+        raise RuntimeContractError(
+            "stage completion binding is invalid"
+        )
+    portable_module = _portable_stage_module()
     try:
-        preflight_raw = _read_bound_regular(
-            prepared["preflight_path"], "stage preflight"
-        )
-        completion_raw = _read_bound_regular(
-            prepared["completion_path"], "stage completion"
-        )
-        preflight = json.loads(preflight_raw.decode("utf-8"))
-        completion = json.loads(completion_raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
-        raise RuntimeContractError(
-            "stage receipts are unavailable or corrupt"
-        ) from exc
-    manifest = json.loads(manifest_raw.decode("utf-8"))
-    preflight_fields = {
-        "schema_version",
-        "stage",
-        "seat_id",
-        "manifest_sha256",
-        "policy_sha256",
-        "role_sha256",
-        "adapter_version",
-        "adapter_executable_sha256",
-        "adapter_canonicalizer_sha256",
-        "adapter_interpreter_sha256",
-        "command_argv_sha256",
-        "executable_sha256",
-        "interpreter_sha256",
-        "runtime_dependency_sha256s",
-        "runtime_executable_sha256s",
-        "backend_bootstrap_sha256s",
-        "codex_capability_id",
-        "codex_capability_profile_sha256",
-        "codex_cli_version",
-        "codex_auth_source",
-        "canonical_request_sha256",
-        "canonical_request_bytes",
-        "response_schema_sha256",
-        "history_pack_publication_id",
-        "history_pack_sha256",
-        "input_sha256s",
-        "output_contract_sha256",
-        "containment",
-        "containment_executable_sha256",
-        "serialized_byte_count",
-        "serialized_sha256",
-        "count_method",
-        "input_upper_bound",
-        "max_output_tokens",
-        "safety_margin",
-        "model_context_limit",
-        "total_upper_bound",
-        "mirror_path",
-        "home_path",
-        "tmp_path",
-    }
-    output_contract = [
-        {
-            key: output[key]
-            for key in (
-                "mirror_path",
-                "destination",
-                "artifact_kind",
-                "max_bytes",
-                "required",
-            )
-        }
-        for output in sorted(
-            manifest["outputs"],
-            key=lambda item: item["artifact_kind"],
-        )
-    ]
-    expected_inputs = {
-        item["mirror_path"]: item["sha256"]
-        for item in sorted(
-            manifest["inputs"],
-            key=lambda item: item["mirror_path"],
-        )
-    }
-    executable_raw = _read_bound_regular(
-        pathlib.Path(prepared["command_argv"][0]).resolve(),
-        "stage executable",
-    )
-    if (
-        preflight_raw != canonical_bytes(preflight)
-        or completion_raw != canonical_bytes(completion)
-        or set(preflight) != preflight_fields
-        or preflight.get("schema_version") != 1
-        or preflight.get("stage") != prepared["stage"]
-        or preflight.get("seat_id") != prepared["seat_id"]
-        or preflight.get("manifest_sha256")
-        != prepared["manifest_sha256"]
-        or preflight.get("policy_sha256")
-        != manifest["policy"]["sha256"]
-        or preflight.get("role_sha256")
-        != manifest["role"]["sha256"]
-        or preflight.get("adapter_version")
-        != manifest["adapter"]["version"]
-        or preflight.get("adapter_executable_sha256")
-        != manifest["adapter"]["executable_sha256"]
-        or preflight.get("adapter_canonicalizer_sha256")
-        != manifest["adapter"]["canonicalizer_sha256"]
-        or preflight.get("executable_sha256")
-        != sha256(executable_raw)
-        or preflight.get("input_sha256s") != expected_inputs
-        or preflight.get("output_contract_sha256")
-        != sha256(canonical_bytes(output_contract))
-        or preflight.get("serialized_sha256")
-        != manifest["invocation"]["expected_serialized_sha256"]
-        or type(preflight.get("serialized_byte_count")) is not int
-        or preflight["serialized_byte_count"] < 1
-        or preflight.get("total_upper_bound", 1)
-        > preflight.get("model_context_limit", 0)
-        or completion.get("stage") != prepared["stage"]
-        or completion.get("seat_id") != prepared["seat_id"]
-        or completion.get("preflight_sha256")
-        != sha256(preflight_raw)
-        or completion.get("serialized_sha256")
-        != preflight["serialized_sha256"]
-        or completion.get("command_argv_sha256")
-        != preflight["command_argv_sha256"]
-        or completion.get("containment") != preflight["containment"]
-        or completion.get("mirror_path")
-        != preflight["mirror_path"]
-        or completion.get("home_path") != preflight["home_path"]
-        or completion.get("tmp_path") != preflight["tmp_path"]
-    ):
-        raise RuntimeContractError(
-            "stage receipt binding is invalid"
-        )
-    material = dict(completion)
-    completion_id = material.pop("completion_id", None)
-    if completion_id != sha256(
-        b"history-stage-completion-v1\0"
-        + canonical_bytes(material)
-    ):
-        raise RuntimeContractError(
-            "stage completion ID is invalid"
-        )
-    outputs = completion.get("outputs")
-    if (
-        not isinstance(outputs, dict)
-        or set(outputs) != set(prepared["output_paths"])
-    ):
-        raise RuntimeContractError(
-            "stage completion output coverage is invalid"
-        )
-    for name, destination in prepared["output_paths"].items():
-        raw = _read_bound_regular(
-            destination, f"stage output {name}"
-        )
-        descriptor = outputs[name]
-        expected_kind = next(
-            item["artifact_kind"]
-            for item in manifest["outputs"]
-            if item["destination"] == name
-        )
-        if (
-            not isinstance(descriptor, dict)
-            or set(descriptor)
-            != {"sha256", "byte_count", "artifact_kind"}
-            or descriptor.get("sha256") != sha256(raw)
-            or descriptor.get("byte_count") != len(raw)
-            or descriptor.get("artifact_kind") != expected_kind
-        ):
-            raise RuntimeContractError(
-                "stage output differs from completion receipt"
-            )
-    return True
-
-
-def _prepared_stage_policy(prepared, manifest_raw):
-    try:
-        manifest = json.loads(manifest_raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise RuntimeContractError(
-            "stage manifest policy is invalid"
-        ) from exc
-    descriptor = manifest.get("policy")
-    if (
-        isinstance(descriptor, dict)
-        and set(descriptor) == {"source", "sha256"}
-        and descriptor.get("source")
-        == "history/retrieval-policy-v1.json"
-    ):
-        policy_path = (
-            ROOT / "history" / "retrieval-policy-v1.json"
-        )
-    elif (
-        isinstance(descriptor, dict)
-        and set(descriptor)
-        == {
-            "source",
-            "host_path",
-            "sha256",
-            "authority_scope",
-        }
-        and descriptor.get("source") == SYNTHETIC_SCOPE
-        and descriptor.get("authority_scope") == SYNTHETIC_SCOPE
-        and isinstance(descriptor.get("host_path"), str)
-        and pathlib.Path(descriptor["host_path"]).is_absolute()
-    ):
-        try:
-            backend = pathlib.Path(
-                prepared["command_argv"][0]
-            ).resolve(strict=True)
-        except (IndexError, OSError) as exc:
-            raise RuntimeContractError(
-                "synthetic stage backend is unavailable"
-            ) from exc
-        allowed = {
-            (ROOT / "tests" / "fake_stage_agent.py").resolve(),
-            (
-                ROOT / "tests" / "malicious_history_agent.py"
-            ).resolve(),
-        }
-        if len(prepared["command_argv"]) != 1 or backend not in allowed:
-            raise RuntimeContractError(
-                "synthetic stage policy requires a local fixture"
-            )
-        policy_path = pathlib.Path(descriptor["host_path"])
-    else:
-        raise RuntimeContractError(
-            "stage policy descriptor is invalid"
-        )
-    raw = _read_bound_regular(
-        policy_path, "prepared stage policy", maximum=1024 * 1024
-    )
-    if (
-        not _valid_sha256(descriptor.get("sha256"))
-        or sha256(raw) != descriptor["sha256"]
-    ):
-        raise RuntimeContractError(
-            "prepared stage policy changed"
-        )
-    policy = history_projection.load_policy(policy_path)
-    if descriptor.get("source") == SYNTHETIC_SCOPE:
-        registered = history_projection.load_policy(
-            ROOT / "history" / "retrieval-policy-v1.json"
-        )
-        expected = dict(registered)
-        expected["mode"] = "enforcement"
-        if policy != expected:
-            raise RuntimeContractError(
-                "synthetic stage policy is not registered"
-            )
-    return policy
-
-
-def run_contained_stage(
-    prepared, authority=None, *, backend_entry_fd=None
-):
-    if _TEST_RUNTIME_CONTEXT.get() is not None:
-        if (
-            not isinstance(prepared, dict)
-            or not isinstance(
-                prepared.get("output_paths"), dict
-            )
-        ):
-            raise RuntimeContractError(
-                "prepared test stage is invalid"
-            )
-        _require_context_test_paths(
-            (
-                prepared.get("manifest_path"),
-                prepared.get("output_root"),
-                prepared.get("preflight_path"),
-                prepared.get("completion_path"),
-                *prepared["output_paths"].values(),
-            )
-        )
-    manifest_raw = _validate_prepared_stage(prepared)
-    policy = _prepared_stage_policy(prepared, manifest_raw)
-    test_runtime = _active_test_runtime(policy)
-    if test_runtime is not None:
-        manifest = json.loads(manifest_raw.decode("utf-8"))
-        manifest_paths = [
-            *manifest.get("input_roots", ()),
-            *manifest.get("output_roots", ()),
-        ]
-        history_descriptor = manifest.get("history_store")
-        if isinstance(history_descriptor, dict):
-            manifest_paths.append(history_descriptor.get("root"))
-        policy_descriptor = manifest.get("policy")
-        if (
-            isinstance(policy_descriptor, dict)
-            and "host_path" in policy_descriptor
-        ):
-            manifest_paths.append(policy_descriptor["host_path"])
-        _require_context_test_paths(manifest_paths)
-    try:
-        command_path = pathlib.Path(
-            prepared["command_argv"][0]
-        ).resolve(strict=True)
-    except (KeyError, IndexError, OSError, TypeError) as exc:
-        raise RuntimeContractError(
-            "prepared stage command is unavailable"
-        ) from exc
-    if (
-        command_path in _registered_test_backends()
-        and test_runtime is None
-    ):
-        raise RuntimeContractError(
-            "registered fixture backend is unavailable in production"
-        )
-    if policy["mode"] == "enforcement":
-        _validated_runtime_authority(
-            policy,
-            authority,
-            state_paths=(
-                prepared["output_root"],
-                prepared["preflight_path"],
-                prepared["completion_path"],
-            ),
-        )
-    stage_module = _stage_modules()
-    try:
-        completion = stage_module.run_stage(
-            prepared["stage"],
-            pathlib.Path(prepared["manifest_path"]),
-            prepared["command_argv"],
-            backend_entry_fd=backend_entry_fd,
-        )
-    except stage_module.StageError as exc:
-        raise RuntimeContractError(str(exc)) from exc
-    verify_stage_completion(prepared)
-    if completion != _load_canonical_json(
-        prepared["completion_path"], "stage completion"
-    ):
-        raise RuntimeContractError(
-            "returned completion differs from durable receipt"
-        )
-    return completion
-
-
-def _run_contained_stage_for_test(
-    *,
-    test_authority,
-    test_state_root,
-    prepared,
-    backend_entry_fd=None,
-):
-    if not isinstance(prepared, dict):
-        raise RuntimeContractError(
-            "prepared test stage is invalid"
-        )
-    paths = [
-        prepared.get("manifest_path"),
-        prepared.get("output_root"),
-        prepared.get("preflight_path"),
-        prepared.get("completion_path"),
-    ]
-    output_paths = prepared.get("output_paths")
-    if not isinstance(output_paths, dict):
-        raise RuntimeContractError(
-            "prepared test stage outputs are invalid"
-        )
-    paths.extend(output_paths.values())
-    _require_test_state_paths(test_state_root, paths)
-    manifest_raw = _validate_prepared_stage(prepared)
-    try:
-        manifest = json.loads(manifest_raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise RuntimeContractError(
-            "prepared test stage manifest is invalid"
-        ) from exc
-    paths.extend(manifest.get("input_roots", ()))
-    paths.extend(manifest.get("output_roots", ()))
-    history_store_descriptor = manifest.get("history_store")
-    if isinstance(history_store_descriptor, dict):
-        paths.append(history_store_descriptor.get("root"))
-    policy_descriptor = manifest.get("policy")
-    if (
-        isinstance(policy_descriptor, dict)
-        and "host_path" in policy_descriptor
-    ):
-        paths.append(policy_descriptor["host_path"])
-    _require_test_state_paths(test_state_root, paths)
-    policy = _prepared_stage_policy(prepared, manifest_raw)
-    try:
-        command_path = pathlib.Path(
-            prepared["command_argv"][0]
-        ).resolve(strict=True)
-    except (KeyError, IndexError, OSError, TypeError) as exc:
-        raise RuntimeContractError(
-            "prepared test stage command is unavailable"
-        ) from exc
-    if command_path not in _registered_test_backends():
-        raise RuntimeContractError(
-            "test stage backend is not registered"
-        )
-    run_authority = (
-        test_authority
-        if policy["mode"] == "enforcement"
-        else None
-    )
-    with _runtime_for_test(
-        policy,
-        test_authority,
-        test_state_root,
-        state_paths=paths,
-    ):
-        return run_contained_stage(
-            prepared,
-            authority=run_authority,
-            backend_entry_fd=backend_entry_fd,
-        )
+        return portable_module.verify_completion(prepared)
+    except portable_module.PortableStageError as exc:
+        raise _portable_stage_contract_error(exc) from exc
 
 
 def _load_canonical_json(path, label):
@@ -5803,87 +4841,6 @@ def observe_frozen_batch(
         conn.close()
 
 
-def _contained_comparator_runner(
-    *,
-    db_path,
-    policy_path,
-    command_json,
-    stage_root,
-    authority=None,
-    test_comparator_status=None,
-):
-    counter = {"value": 0}
-    records = []
-
-    def run(intent, pack, intent_root):
-        counter["value"] += 1
-        publication = pack.get("pack_publication_id")
-        identity = (
-            publication
-            if isinstance(publication, str) and publication
-            else sha256(canonical_bytes(pack))
-        )
-        invocation_root = (
-            pathlib.Path(stage_root)
-            / (
-                f"{counter['value']:02d}-{intent}-"
-                f"{identity[:16]}"
-            )
-        )
-        pack_sha = sha256(canonical_bytes(pack))
-        input_path = _comparison_attempt_path(
-            intent_root,
-            "retrieval-pack",
-            pack.get("expansion_round"),
-        )
-        if (
-            not input_path.is_file()
-            or sha256(
-                _read_bound_regular(
-                    input_path,
-                    "selected comparator pack",
-                    maximum=65536,
-                )
-            )
-            != pack_sha
-        ):
-            raise RuntimeContractError(
-                "comparator pack file differs from selected pack"
-            )
-        prepared = _build_stage_manifest(
-            stage="history-compare",
-            seat_id=f"history-compare-{counter['value']}",
-            db_path=db_path,
-            policy_path=policy_path,
-            input_paths={"retrieval_pack.json": input_path},
-            output_root=invocation_root / "output",
-            manifest_path=invocation_root / "manifest.json",
-            command_json=command_json,
-            authority=authority,
-            test_comparator_status=test_comparator_status,
-        )
-        run_contained_stage(prepared, authority=authority)
-        records.append(
-            {
-                "prepared": prepared,
-                "completion_sha256": sha256(
-                    _read_bound_regular(
-                        prepared["completion_path"],
-                        "contained comparator completion",
-                        maximum=1024 * 1024,
-                    )
-                ),
-            }
-        )
-        return _load_canonical_json(
-            prepared["output_paths"]["history-comparison.json"],
-            "contained comparator output",
-        )
-
-    run.stage_records = records
-    return run
-
-
 def _portable_comparator_runner(
     *,
     request_profile,
@@ -5952,32 +4909,17 @@ def _portable_comparator_runner(
 
 
 def _validate_comparison_executor(
-    *, executor, command_json, portable_request_profile
+    *, executor, portable_request_profile
 ):
-    if executor == PORTABLE_EXECUTOR:
-        if command_json is not None:
-            raise RuntimeContractError(
-                "portable-v2 cannot mix command_json"
-            )
-        if portable_request_profile is None:
-            raise RuntimeContractError(
-                "portable-v2 requires portable_request_profile"
-            )
-        _validated_portable_request_profile(
-            portable_request_profile
+    if executor != PORTABLE_EXECUTOR:
+        raise RuntimeContractError("comparison executor is invalid")
+    if portable_request_profile is None:
+        raise RuntimeContractError(
+            "portable-v2 requires portable_request_profile"
         )
-        return
-    if executor == CONTAINED_EXECUTOR:
-        if portable_request_profile is not None:
-            raise RuntimeContractError(
-                "contained-v1 cannot use portable_request_profile"
-            )
-        if command_json is None:
-            raise RuntimeContractError(
-                "contained-v1 requires command_json"
-            )
-        return
-    raise RuntimeContractError("comparison executor is invalid")
+    _validated_portable_request_profile(
+        portable_request_profile
+    )
 
 
 def _compare_frozen_targets(
@@ -5987,16 +4929,13 @@ def _compare_frozen_targets(
     batch_path,
     artifact_root,
     selection_path,
-    command_json=None,
-    executor=CONTAINED_EXECUTOR,
+    executor=PORTABLE_EXECUTOR,
     portable_request_profile=None,
     authority=None,
-    test_comparator_status=None,
     pack_builder=history_retrieval.build_pack,
 ):
     _validate_comparison_executor(
         executor=executor,
-        command_json=command_json,
         portable_request_profile=portable_request_profile,
     )
     _require_context_test_paths(
@@ -6056,29 +4995,13 @@ def _compare_frozen_targets(
                 candidate_root / "build-observation.json",
                 "candidate build observation",
             )
-            if executor == CONTAINED_EXECUTOR:
-                runner = _contained_comparator_runner(
-                    db_path=db_path,
-                    policy_path=policy_path,
-                    command_json=command_json,
-                    stage_root=(
-                        candidate_root / "contained-comparisons"
-                    ),
-                    authority=authority,
-                    test_comparator_status=test_comparator_status,
-                )
-            else:
-                if test_comparator_status is not None:
-                    raise RuntimeContractError(
-                        "portable comparator cannot use test controls"
-                    )
-                runner = _portable_comparator_runner(
-                    request_profile=portable_request_profile,
-                    policy=policy,
-                    stage_root=(
-                        candidate_root / "portable-comparisons"
-                    ),
-                )
+            runner = _portable_comparator_runner(
+                request_profile=portable_request_profile,
+                policy=policy,
+                stage_root=(
+                    candidate_root / "portable-comparisons"
+                ),
+            )
             compared = compare_selected_candidate(
                 conn=conn,
                 candidate=candidate,
@@ -6107,23 +5030,17 @@ def _compare_frozen_targets(
                         item["status"]
                         for item in compared["observations"]
                     ],
-                    (
-                        "contained_stages"
-                        if executor == CONTAINED_EXECUTOR
-                        else "portable_stages"
-                    ): list(runner.stage_records),
+                    "portable_stages": list(runner.stage_records),
                 }
             )
-        result = {"schema_version": 1, "targets": results}
-        hash_domain = b"history-runtime-comparison-index-v1\0"
-        if executor == PORTABLE_EXECUTOR:
-            result["schema_version"] = 2
-            result["execution_boundary"] = (
-                PORTABLE_EXECUTION_BOUNDARY
-            )
-            hash_domain = b"history-runtime-comparison-index-v2\0"
+        result = {
+            "schema_version": 2,
+            "execution_boundary": PORTABLE_EXECUTION_BOUNDARY,
+            "targets": results,
+        }
         result["comparison_index_sha256"] = sha256(
-            hash_domain + canonical_bytes(result)
+            b"history-runtime-comparison-index-v2\0"
+            + canonical_bytes(result)
         )
         _publish_immutable(
             root / "comparison-index.json",
@@ -6141,8 +5058,7 @@ def compare_frozen_targets(
     batch_path,
     artifact_root,
     selection_path,
-    command_json=None,
-    executor=CONTAINED_EXECUTOR,
+    executor=PORTABLE_EXECUTOR,
     portable_request_profile=None,
     authority=None,
 ):
@@ -6153,7 +5069,6 @@ def compare_frozen_targets(
         batch_path=batch_path,
         artifact_root=artifact_root,
         selection_path=selection_path,
-        command_json=command_json,
         executor=executor,
         portable_request_profile=portable_request_profile,
         authority=authority,
@@ -6164,7 +5079,6 @@ def _compare_frozen_targets_for_test(
     *,
     test_authority,
     test_state_root,
-    test_comparator_status,
     test_expansion_pack_builder=None,
     **values,
 ):
@@ -6198,10 +5112,7 @@ def _compare_frozen_targets_for_test(
             call_values["pack_builder"] = (
                 test_expansion_pack_builder
             )
-        return _compare_frozen_targets(
-            test_comparator_status=test_comparator_status,
-            **call_values,
-        )
+        return _compare_frozen_targets(**call_values)
 
 
 def _recomputed_observation_items(candidate, observation, label):
@@ -6761,15 +5672,7 @@ def _comparison_index(path, selection):
             "comparison index schema is invalid"
         )
     schema_version = index.get("schema_version")
-    if schema_version == 1:
-        fields = {
-            "schema_version",
-            "targets",
-            "comparison_index_sha256",
-        }
-        hash_domain = b"history-runtime-comparison-index-v1\0"
-        stage_field = "contained_stages"
-    elif schema_version == 2:
+    if schema_version == 2:
         fields = {
             "schema_version",
             "execution_boundary",
@@ -6831,30 +5734,27 @@ def _comparison_index(path, selection):
         raise RuntimeContractError(
             "comparison index target coverage is invalid"
         )
-    if schema_version == 2:
-        reference_root = pathlib.Path(path).resolve().parent
-        for target in items:
-            stages = target[stage_field]
-            if not isinstance(stages, list):
+    reference_root = pathlib.Path(path).resolve().parent
+    for target in items:
+        stages = target[stage_field]
+        if not isinstance(stages, list):
+            raise RuntimeContractError(
+                "comparison portable stage coverage is invalid"
+            )
+        for stage in stages:
+            verified = _verified_public_portable_stage(
+                stage,
+                reference_root / target["candidate_id"],
+            )
+            if verified.get("stage") != "history-compare":
                 raise RuntimeContractError(
-                    "comparison portable stage coverage is invalid"
+                    "comparison portable stage is invalid"
                 )
-            for stage in stages:
-                verified = _verified_public_portable_stage(
-                    stage,
-                    reference_root / target["candidate_id"],
-                )
-                if verified.get("stage") != "history-compare":
-                    raise RuntimeContractError(
-                        "comparison portable stage is invalid"
-                    )
     return index
 
 
 def _comparison_stage_binding(index, target):
-    if index["schema_version"] == 1:
-        return CONTAINED_EXECUTOR, target["contained_stages"]
-    return PORTABLE_EXECUTION_BOUNDARY, target["portable_stages"]
+    return target["portable_stages"]
 
 
 def _validated_review_comparison(
@@ -6914,18 +5814,14 @@ def _validated_review_comparison(
         raise RuntimeContractError(
             "review-plan comparison binding is invalid"
         )
-    comparison_executor, stage_records = _comparison_stage_binding(
-        index, indexed
-    )
     _validate_resume_comparator_stages(
         candidate=candidate,
         candidate_root=candidate_root,
         observation=observation,
-        stage_records=stage_records,
+        stage_records=_comparison_stage_binding(index, indexed),
         conn=conn,
         policy=policy,
         allow_unbindable=True,
-        execution_boundary=comparison_executor,
     )
     return observation, statuses
 
@@ -6954,61 +5850,6 @@ def _validate_review_candidate_artifact(
     ):
         raise RuntimeContractError("review-plan candidate changed")
     return expected
-
-
-def _reviewer_command_descriptors(reviewer_commands):
-    if (
-        not isinstance(reviewer_commands, dict)
-        or not reviewer_commands
-        or len(reviewer_commands) > 16
-    ):
-        raise RuntimeContractError(
-            "reviewer command registry is invalid"
-        )
-    stage_module = _stage_modules()
-    parsed = {}
-    for seat_id, command_json in reviewer_commands.items():
-        if (
-            not isinstance(seat_id, str)
-            or not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", seat_id)
-        ):
-            raise RuntimeContractError(
-                "reviewer seat ID is invalid"
-            )
-        try:
-            command = stage_module.parse_command_json(command_json)
-        except stage_module.StageError as exc:
-            raise RuntimeContractError(str(exc)) from exc
-        if not pathlib.Path(command[0]).is_absolute():
-            raise RuntimeContractError(
-                "review command executable must be absolute"
-            )
-        try:
-            resolved = pathlib.Path(command[0]).resolve(strict=True)
-        except OSError as exc:
-            raise RuntimeContractError(
-                "review command executable is unavailable"
-            ) from exc
-        normalized = [str(resolved)] + command[1:]
-        parsed[seat_id] = {
-            "seat_id": seat_id,
-            "command_argv": normalized,
-            "command_prefix_sha256": sha256(
-                canonical_bytes(normalized)
-            ),
-        }
-    return [
-        parsed[seat_id]
-        for seat_id in sorted(
-            parsed,
-            key=lambda value: (
-                0,
-                int(value),
-            )
-            if value.isdigit()
-            else (1, value),
-        )
-    ]
 
 
 def _reviewer_profile_descriptors(reviewer_request_profiles):
@@ -7053,45 +5894,24 @@ def _artifact_descriptor(path, label, maximum=1024 * 1024):
 def _review_plan_hash(plan):
     material = dict(plan)
     material.pop("review_plan_sha256", None)
-    domain = b"history-runtime-review-plan-v1\0"
-    if (
-        plan.get("schema_version") == 2
-        and plan.get("execution_boundary")
-        == PORTABLE_EXECUTION_BOUNDARY
-    ):
-        domain = b"history-runtime-review-plan-v2\0"
     return sha256(
-        domain + canonical_bytes(material)
+        b"history-runtime-review-plan-v2\0"
+        + canonical_bytes(material)
     )
 
 
 def _validate_review_plan_executor(
-    *, executor, reviewer_commands, reviewer_request_profiles
+    *, executor, reviewer_request_profiles
 ):
-    if executor == PORTABLE_EXECUTOR:
-        if reviewer_commands:
-            raise RuntimeContractError(
-                "portable-v2 cannot mix reviewer_commands"
-            )
-        if reviewer_request_profiles is None:
-            raise RuntimeContractError(
-                "portable-v2 requires reviewer_request_profiles"
-            )
-        _reviewer_profile_descriptors(
-            reviewer_request_profiles
+    if executor != PORTABLE_EXECUTOR:
+        raise RuntimeContractError("review executor is invalid")
+    if reviewer_request_profiles is None:
+        raise RuntimeContractError(
+            "portable-v2 requires reviewer_request_profiles"
         )
-        return
-    if executor == CONTAINED_EXECUTOR:
-        if reviewer_request_profiles is not None:
-            raise RuntimeContractError(
-                "contained-v1 cannot use reviewer_request_profiles"
-            )
-        if not reviewer_commands:
-            raise RuntimeContractError(
-                "contained-v1 requires reviewer_commands"
-            )
-        return
-    raise RuntimeContractError("review executor is invalid")
+    _reviewer_profile_descriptors(
+        reviewer_request_profiles
+    )
 
 
 def seal_round_review_plan(
@@ -7104,8 +5924,7 @@ def seal_round_review_plan(
     artifact_root,
     prior_work_path,
     review_contract_path,
-    reviewer_commands,
-    executor=CONTAINED_EXECUTOR,
+    executor=PORTABLE_EXECUTOR,
     reviewer_request_profiles=None,
     round_date,
     min_read,
@@ -7115,7 +5934,6 @@ def seal_round_review_plan(
 ):
     _validate_review_plan_executor(
         executor=executor,
-        reviewer_commands=reviewer_commands,
         reviewer_request_profiles=reviewer_request_profiles,
     )
     if (
@@ -7151,36 +5969,9 @@ def seal_round_review_plan(
     index = _comparison_index(
         comparison_index_path, selection
     )
-    if (
-        executor == CONTAINED_EXECUTOR
-        and index["schema_version"] != 1
-    ) or (
-        executor == PORTABLE_EXECUTOR
-        and (
-            index["schema_version"] != 2
-            or index.get("execution_boundary")
-            != PORTABLE_EXECUTION_BOUNDARY
-        )
-    ):
-        raise RuntimeContractError(
-            "review plan execution boundary changed"
-        )
-    if executor == CONTAINED_EXECUTOR:
-        seats = _reviewer_command_descriptors(
-            reviewer_commands
-        )
-        public_seats = [
-            {
-                "seat_id": item["seat_id"],
-                "command_prefix_sha256":
-                    item["command_prefix_sha256"],
-            }
-            for item in seats
-        ]
-    else:
-        public_seats = _reviewer_profile_descriptors(
-            reviewer_request_profiles
-        )
+    public_seats = _reviewer_profile_descriptors(
+        reviewer_request_profiles
+    )
     review_contract_raw = _read_bound_regular(
         review_contract_path,
         "review contract",
@@ -7343,9 +6134,8 @@ def seal_round_review_plan(
         if outcome_map[candidate_id] == "review"
     ]
     result = {
-        "schema_version": (
-            1 if executor == CONTAINED_EXECUTOR else 2
-        ),
+        "schema_version": 2,
+        "execution_boundary": PORTABLE_EXECUTION_BOUNDARY,
         "batch_path": str(
             pathlib.Path(batch_path).resolve()
         ),
@@ -7377,10 +6167,6 @@ def seal_round_review_plan(
         "commit_order": commit_order,
         "targets": targets,
     }
-    if executor == PORTABLE_EXECUTOR:
-        result["execution_boundary"] = (
-            PORTABLE_EXECUTION_BOUNDARY
-        )
     result["review_plan_sha256"] = _review_plan_hash(result)
     _publish_immutable_tree(input_root, input_publications)
     try:
@@ -7428,17 +6214,12 @@ def verify_round_review_plan(
         raise RuntimeContractError(
             "round review plan schema is invalid"
         )
-    if plan.get("schema_version") == 1:
-        fields = common_fields
-        execution_boundary = CONTAINED_EXECUTOR
-        seat_identity_field = "command_prefix_sha256"
-    elif (
+    if (
         plan.get("schema_version") == 2
         and plan.get("execution_boundary")
         == PORTABLE_EXECUTION_BOUNDARY
     ):
         fields = common_fields | {"execution_boundary"}
-        execution_boundary = PORTABLE_EXECUTION_BOUNDARY
         seat_identity_field = "execution_request_profile_hash"
     else:
         raise RuntimeContractError(
@@ -7469,18 +6250,6 @@ def verify_round_review_plan(
         != selection["selection_sha256"]
         or plan["comparison_index_sha256"]
         != index["comparison_index_sha256"]
-        or (
-            execution_boundary == CONTAINED_EXECUTOR
-            and index["schema_version"] != 1
-        )
-        or (
-            execution_boundary == PORTABLE_EXECUTION_BOUNDARY
-            and (
-                index["schema_version"] != 2
-                or index.get("execution_boundary")
-                != PORTABLE_EXECUTION_BOUNDARY
-            )
-        )
         or plan["policy_mode"] != policy["mode"]
         or plan["policy_sha256"]
         != sha256(canonical_bytes(policy))
@@ -7781,60 +6550,34 @@ def verify_round_review_plan(
 def _review_index_hash(index):
     material = dict(index)
     material.pop("review_index_sha256", None)
-    domain = b"history-runtime-review-index-v1\0"
-    if (
-        index.get("schema_version") == 2
-        and index.get("execution_boundary")
-        == PORTABLE_EXECUTION_BOUNDARY
-    ):
-        domain = b"history-runtime-review-index-v2\0"
     return sha256(
-        domain + canonical_bytes(material)
+        b"history-runtime-review-index-v2\0"
+        + canonical_bytes(material)
     )
 
 
 def _validate_review_matrix_executor(
     *,
     executor,
-    reviewer_commands,
     reviewer_request_profiles,
     reviewer_stage_runner,
 ):
-    if executor == CONTAINED_EXECUTOR:
-        if reviewer_stage_runner is not None:
-            raise RuntimeContractError(
-                "contained-v1 cannot use reviewer_stage_runner"
-            )
-        if reviewer_request_profiles is not None:
-            raise RuntimeContractError(
-                "contained-v1 cannot use reviewer_request_profiles"
-            )
-        if not reviewer_commands:
-            raise RuntimeContractError(
-                "contained-v1 requires reviewer_commands"
-            )
-        return
-    if executor == PORTABLE_EXECUTOR:
-        if reviewer_commands:
-            raise RuntimeContractError(
-                "portable-v2 cannot mix reviewer_commands"
-            )
-        if reviewer_request_profiles is None:
-            raise RuntimeContractError(
-                "portable-v2 requires reviewer_request_profiles"
-            )
-        _reviewer_profile_descriptors(
-            reviewer_request_profiles
+    if executor != PORTABLE_EXECUTOR:
+        raise RuntimeContractError("review executor is invalid")
+    if reviewer_request_profiles is None:
+        raise RuntimeContractError(
+            "portable-v2 requires reviewer_request_profiles"
         )
-        if (
-            reviewer_stage_runner is not None
-            and not callable(reviewer_stage_runner)
-        ):
-            raise RuntimeContractError(
-                "portable reviewer_stage_runner is invalid"
-            )
-        return
-    raise RuntimeContractError("review executor is invalid")
+    _reviewer_profile_descriptors(
+        reviewer_request_profiles
+    )
+    if (
+        reviewer_stage_runner is not None
+        and not callable(reviewer_stage_runner)
+    ):
+        raise RuntimeContractError(
+            "portable reviewer_stage_runner is invalid"
+        )
 
 
 def _run_review_matrix(
@@ -7843,18 +6586,15 @@ def _run_review_matrix(
     policy_path,
     batch_path,
     review_plan_path,
-    reviewer_commands,
-    executor=CONTAINED_EXECUTOR,
+    executor=PORTABLE_EXECUTOR,
     reviewer_request_profiles=None,
     reviewer_stage_runner=None,
     stage_root,
     output_path,
     authority=None,
-    test_review_verdict=None,
 ):
     _validate_review_matrix_executor(
         executor=executor,
-        reviewer_commands=reviewer_commands,
         reviewer_request_profiles=reviewer_request_profiles,
         reviewer_stage_runner=reviewer_stage_runner,
     )
@@ -7868,17 +6608,15 @@ def _run_review_matrix(
             output_path,
         )
     )
-    public_reference_root = None
-    if executor == PORTABLE_EXECUTOR:
-        public_reference_root = pathlib.Path(output_path).resolve().parent
-        try:
-            pathlib.Path(stage_root).resolve().relative_to(
-                public_reference_root
-            )
-        except ValueError as exc:
-            raise RuntimeContractError(
-                "portable review stages are outside the index root"
-            ) from exc
+    public_reference_root = pathlib.Path(output_path).resolve().parent
+    try:
+        pathlib.Path(stage_root).resolve().relative_to(
+            public_reference_root
+        )
+    except ValueError as exc:
+        raise RuntimeContractError(
+            "portable review stages are outside the index root"
+        ) from exc
     policy = history_projection.load_policy(policy_path)
     if policy["mode"] == "enforcement":
         _validated_runtime_authority(
@@ -7893,49 +6631,16 @@ def _run_review_matrix(
         review_plan_path=review_plan_path,
         authority=authority,
     )
-    if executor == CONTAINED_EXECUTOR:
-        if plan["schema_version"] != 1:
-            raise RuntimeContractError(
-                "review plan execution boundary changed"
-            )
-        commands = _reviewer_command_descriptors(
-            reviewer_commands
+    profiles = _reviewer_profile_descriptors(
+        reviewer_request_profiles
+    )
+    if profiles != plan["reviewer_seats"]:
+        raise RuntimeContractError(
+            "review request profile registry changed after plan seal"
         )
-        if [
-            {
-                "seat_id": item["seat_id"],
-                "command_prefix_sha256":
-                    item["command_prefix_sha256"],
-            }
-            for item in commands
-        ] != plan["reviewer_seats"]:
-            raise RuntimeContractError(
-                "review command registry changed after plan seal"
-            )
-        command_map = {
-            item["seat_id"]: item for item in commands
-        }
-        profile_map = None
-    else:
-        if (
-            plan["schema_version"] != 2
-            or plan.get("execution_boundary")
-            != PORTABLE_EXECUTION_BOUNDARY
-        ):
-            raise RuntimeContractError(
-                "review plan execution boundary changed"
-            )
-        profiles = _reviewer_profile_descriptors(
-            reviewer_request_profiles
-        )
-        if profiles != plan["reviewer_seats"]:
-            raise RuntimeContractError(
-                "review request profile registry changed after plan seal"
-            )
-        profile_map = dict(reviewer_request_profiles)
-        command_map = None
-        if reviewer_stage_runner is None:
-            reviewer_stage_runner = _run_portable_stage
+    profile_map = dict(reviewer_request_profiles)
+    if reviewer_stage_runner is None:
+        reviewer_stage_runner = _run_portable_stage
     root = pathlib.Path(stage_root)
     _mkdir_single_use(root)
     entries = []
@@ -7965,79 +6670,30 @@ def _run_review_matrix(
             stage_seat_id = (
                 f"review-{candidate_id}-seat-{seat_id}"
             )
-            if executor == CONTAINED_EXECUTOR:
-                prepared = _build_stage_manifest(
-                    stage="review",
-                    seat_id=stage_seat_id,
-                    db_path=db_path,
-                    policy_path=policy_path,
-                    input_paths=inputs,
-                    output_root=invocation_root / "output",
-                    manifest_path=(
-                        invocation_root / "manifest.json"
+            prepared = reviewer_stage_runner(
+                request_profile=profile_map[seat_id],
+                stage="review",
+                seat_id=stage_seat_id,
+                input_paths=inputs,
+                invocation_root=invocation_root,
+                policy=policy,
+            )
+            verify_stage_completion(prepared)
+            entries.append(
+                {
+                    "candidate_id": candidate_id,
+                    "seat_id": seat_id,
+                    "stage": _public_portable_stage(
+                        prepared, public_reference_root
                     ),
-                    command_json=json.dumps(
-                        command_map[seat_id]["command_argv"],
-                        separators=(",", ":"),
-                        ensure_ascii=False,
-                    ),
-                    authority=authority,
-                    test_review_verdict=test_review_verdict,
-                )
-                run_contained_stage(
-                    prepared, authority=authority
-                )
-            else:
-                if test_review_verdict is not None:
-                    raise RuntimeContractError(
-                        "portable review cannot use test controls"
-                    )
-                prepared = reviewer_stage_runner(
-                    request_profile=profile_map[seat_id],
-                    stage="review",
-                    seat_id=stage_seat_id,
-                    input_paths=inputs,
-                    invocation_root=invocation_root,
-                    policy=policy,
-                )
-                verify_stage_completion(prepared)
-            if executor == PORTABLE_EXECUTOR:
-                entries.append(
-                    {
-                        "candidate_id": candidate_id,
-                        "seat_id": seat_id,
-                        "stage": _public_portable_stage(
-                            prepared, public_reference_root
-                        ),
-                    }
-                )
-            else:
-                completion_raw = _read_bound_regular(
-                    prepared["completion_path"],
-                    "contained review completion",
-                    maximum=1024 * 1024,
-                )
-                entries.append(
-                    {
-                        "candidate_id": candidate_id,
-                        "seat_id": seat_id,
-                        "prepared": prepared,
-                        "completion_sha256": sha256(
-                            completion_raw
-                        ),
-                    }
-                )
+                }
+            )
     result = {
-        "schema_version": (
-            1 if executor == CONTAINED_EXECUTOR else 2
-        ),
+        "schema_version": 2,
+        "execution_boundary": PORTABLE_EXECUTION_BOUNDARY,
         "review_plan_sha256": plan["review_plan_sha256"],
         "entries": entries,
     }
-    if executor == PORTABLE_EXECUTOR:
-        result["execution_boundary"] = (
-            PORTABLE_EXECUTION_BOUNDARY
-        )
     result["review_index_sha256"] = _review_index_hash(
         result
     )
@@ -8051,8 +6707,7 @@ def run_review_matrix(
     policy_path,
     batch_path,
     review_plan_path,
-    reviewer_commands,
-    executor=CONTAINED_EXECUTOR,
+    executor=PORTABLE_EXECUTOR,
     reviewer_request_profiles=None,
     stage_root,
     output_path,
@@ -8063,7 +6718,6 @@ def run_review_matrix(
         policy_path=policy_path,
         batch_path=batch_path,
         review_plan_path=review_plan_path,
-        reviewer_commands=reviewer_commands,
         executor=executor,
         reviewer_request_profiles=reviewer_request_profiles,
         stage_root=stage_root,
@@ -8076,12 +6730,8 @@ def _run_review_matrix_for_test(
     *,
     test_authority,
     test_state_root,
-    test_review_verdict,
     **values,
 ):
-    commands = _reviewer_command_descriptors(
-        values["reviewer_commands"]
-    )
     paths = (
         values["db_path"],
         values["policy_path"],
@@ -8091,18 +6741,6 @@ def _run_review_matrix_for_test(
         values["output_path"],
     )
     _require_test_state_paths(test_state_root, paths)
-    allowed = {
-        (ROOT / "tests" / "fake_stage_agent.py").resolve(),
-        (ROOT / "tests" / "malicious_history_agent.py").resolve(),
-    }
-    if any(
-        pathlib.Path(item["command_argv"][0]).resolve()
-        not in allowed
-        for item in commands
-    ):
-        raise RuntimeContractError(
-            "test review matrix backend is not registered"
-        )
     policy = history_projection.load_policy(values["policy_path"])
     call_values = dict(values)
     supplied_authority = call_values.get("authority")
@@ -8121,10 +6759,7 @@ def _run_review_matrix_for_test(
         test_state_root,
         state_paths=paths,
     ):
-        return _run_review_matrix(
-            test_review_verdict=test_review_verdict,
-            **call_values,
-        )
+        return _run_review_matrix(**call_values)
 
 
 def _parse_review_ballot(raw, candidate_id):
@@ -8250,12 +6885,10 @@ def _validated_review_outputs(prepared, candidate_id):
 
 
 def _review_entry_stage(index, entry, review_index_path):
-    if index.get("schema_version") == 2:
-        return _verified_public_portable_stage(
-            entry["stage"],
-            pathlib.Path(review_index_path).resolve().parent,
-        )
-    return entry["prepared"]
+    return _verified_public_portable_stage(
+        entry["stage"],
+        pathlib.Path(review_index_path).resolve().parent,
+    )
 
 
 def verify_review_matrix(
@@ -8279,27 +6912,19 @@ def verify_review_matrix(
     index = _load_canonical_json(
         review_index_path, "round review index"
     )
-    portable = plan["schema_version"] == 2
     index_fields = {
         "schema_version",
+        "execution_boundary",
         "review_plan_sha256",
         "entries",
         "review_index_sha256",
     }
-    expected_index_version = 1
-    if portable:
-        index_fields.add("execution_boundary")
-        expected_index_version = 2
     if (
         not isinstance(index, dict)
         or set(index) != index_fields
-        or index.get("schema_version")
-        != expected_index_version
-        or (
-            portable
-            and index.get("execution_boundary")
-            != PORTABLE_EXECUTION_BOUNDARY
-        )
+        or index.get("schema_version") != 2
+        or index.get("execution_boundary")
+        != PORTABLE_EXECUTION_BOUNDARY
         or index.get("review_plan_sha256")
         != plan["review_plan_sha256"]
         or index.get("review_index_sha256")
@@ -8338,16 +6963,7 @@ def verify_review_matrix(
         item["seat_id"]: item
         for item in plan["reviewer_seats"]
     }
-    entry_fields = (
-        {"candidate_id", "seat_id", "stage"}
-        if portable
-        else {
-            "candidate_id",
-            "seat_id",
-            "prepared",
-            "completion_sha256",
-        }
-    )
+    entry_fields = {"candidate_id", "seat_id", "stage"}
     public_reference_root = pathlib.Path(
         review_index_path
     ).resolve().parent
@@ -8355,16 +6971,10 @@ def verify_review_matrix(
         if (
             not isinstance(entry, dict)
             or set(entry) != entry_fields
-            or (
-                not portable
-                and not _valid_sha256(
-                    entry.get("completion_sha256")
-                )
-            )
         ):
             raise RuntimeContractError(
                 "review matrix entry is invalid"
-        )
+            )
         target = target_map[entry["candidate_id"]]
         seat = seat_map[entry["seat_id"]]
         expected_inputs = {
@@ -8379,99 +6989,58 @@ def verify_review_matrix(
             expected_inputs["history_summary.json"] = (
                 summary["sha256"]
             )
-        if portable:
-            stage = entry["stage"]
-            prepared = _verified_public_portable_stage(
-                stage, public_reference_root
-            )
-            completion_raw = _read_bound_regular(
-                prepared["completion_path"],
-                "portable review completion",
-                maximum=1024 * 1024,
-            )
-            preflight_raw = _read_bound_regular(
-                prepared["preflight_path"],
-                "portable review preflight",
-                maximum=1024 * 1024,
-            )
-            try:
-                preflight = json.loads(
-                    preflight_raw.decode("utf-8")
-                )
-            except (UnicodeDecodeError, ValueError) as exc:
-                raise RuntimeContractError(
-                    "portable review preflight is invalid"
-                ) from exc
-            if (
-                preflight_raw != canonical_bytes(preflight)
-                or stage.get("execution_boundary")
-                != PORTABLE_EXECUTION_BOUNDARY
-                or stage.get("stage") != "review"
-                or stage.get("seat_id")
-                != (
-                    f"review-{entry['candidate_id']}-"
-                    f"seat-{entry['seat_id']}"
-                )
-                or preflight.get("stage") != "review"
-                or preflight.get("seat_id")
-                != stage.get("seat_id")
-                or stage.get(
-                    "execution_request_profile_hash"
-                )
-                != seat["execution_request_profile_hash"]
-                or preflight.get(
-                    "execution_request_profile_hash"
-                )
-                != seat["execution_request_profile_hash"]
-                or preflight.get("input_sha256s")
-                != expected_inputs
-                or stage.get("input_sha256s")
-                != expected_inputs
-                or sha256(completion_raw)
-                != stage.get("completion", {}).get("sha256")
-            ):
-                raise RuntimeContractError(
-                    "portable review stage binding changed"
-                )
-            _validated_review_outputs(
-                prepared, entry["candidate_id"]
-            )
-            continue
-        prepared = entry["prepared"]
-        verify_stage_completion(prepared)
+        stage = entry["stage"]
+        prepared = _verified_public_portable_stage(
+            stage, public_reference_root
+        )
         completion_raw = _read_bound_regular(
             prepared["completion_path"],
-            "review matrix completion",
+            "portable review completion",
             maximum=1024 * 1024,
         )
-        manifest = _load_canonical_json(
-            prepared["manifest_path"],
-            "review matrix manifest",
+        preflight_raw = _read_bound_regular(
+            prepared["preflight_path"],
+            "portable review preflight",
+            maximum=1024 * 1024,
         )
-        actual_inputs = {
-            item.get("source"): item.get("sha256")
-            for item in manifest.get("inputs", [])
-            if isinstance(item, dict)
-        }
+        try:
+            preflight = json.loads(
+                preflight_raw.decode("utf-8")
+            )
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RuntimeContractError(
+                "portable review preflight is invalid"
+            ) from exc
         if (
-            prepared.get("stage") != "review"
-            or prepared.get("seat_id")
+            preflight_raw != canonical_bytes(preflight)
+            or stage.get("execution_boundary")
+            != PORTABLE_EXECUTION_BOUNDARY
+            or stage.get("stage") != "review"
+            or stage.get("seat_id")
             != (
                 f"review-{entry['candidate_id']}-"
                 f"seat-{entry['seat_id']}"
             )
-            or manifest.get("stage") != "review"
-            or manifest.get("seat_id") != prepared["seat_id"]
-            or prepared.get("command_prefix_sha256")
-            != seat["command_prefix_sha256"]
-            or actual_inputs != expected_inputs
-            or len(manifest.get("inputs", []))
-            != len(expected_inputs)
+            or preflight.get("stage") != "review"
+            or preflight.get("seat_id")
+            != stage.get("seat_id")
+            or stage.get(
+                "execution_request_profile_hash"
+            )
+            != seat["execution_request_profile_hash"]
+            or preflight.get(
+                "execution_request_profile_hash"
+            )
+            != seat["execution_request_profile_hash"]
+            or preflight.get("input_sha256s")
+            != expected_inputs
+            or stage.get("input_sha256s")
+            != expected_inputs
             or sha256(completion_raw)
-            != entry["completion_sha256"]
+            != stage.get("completion", {}).get("sha256")
         ):
             raise RuntimeContractError(
-                "review matrix stage binding changed"
+                "portable review stage binding changed"
             )
         _validated_review_outputs(
             prepared, entry["candidate_id"]
@@ -9502,7 +8071,7 @@ def commit_round(
 
 
 def _expected_comparator_invocation_root(
-    candidate_root, stage_number, intent, pack, execution_boundary
+    candidate_root, stage_number, intent, pack
 ):
     publication = pack.get("pack_publication_id")
     identity = (
@@ -9510,14 +8079,9 @@ def _expected_comparator_invocation_root(
         if isinstance(publication, str) and publication
         else sha256(canonical_bytes(pack))
     )
-    stage_directory = (
-        "portable-comparisons"
-        if execution_boundary == PORTABLE_EXECUTION_BOUNDARY
-        else "contained-comparisons"
-    )
     return (
         pathlib.Path(candidate_root)
-        / stage_directory
+        / "portable-comparisons"
         / f"{stage_number:02d}-{intent}-{identity[:16]}"
     )
 
@@ -9531,15 +8095,7 @@ def _validate_resume_comparator_stages(
     conn,
     policy,
     allow_unbindable=False,
-    execution_boundary=CONTAINED_EXECUTOR,
 ):
-    if execution_boundary not in {
-        CONTAINED_EXECUTOR,
-        PORTABLE_EXECUTION_BOUNDARY,
-    }:
-        raise RuntimeContractError(
-            "resume comparison execution boundary is invalid"
-        )
     expected = []
     resume_bindings = []
     build_items = {}
@@ -9856,13 +8412,8 @@ def _validate_resume_comparator_stages(
         not isinstance(stage_records, list)
         or len(stage_records) != len(expected)
     ):
-        label = (
-            "contained-stage"
-            if execution_boundary == CONTAINED_EXECUTOR
-            else "portable-stage"
-        )
         raise RuntimeContractError(
-            f"resume {label} coverage is invalid"
+            "resume portable-stage coverage is invalid"
         )
     for stage_number, (expected_attempt, record) in enumerate(
         zip(expected, stage_records), start=1
@@ -9873,153 +8424,83 @@ def _validate_resume_comparator_stages(
             stage_number,
             expected_attempt["intent"],
             expected_attempt["pack"],
-            execution_boundary,
         )
-        if execution_boundary == PORTABLE_EXECUTION_BOUNDARY:
-            verified = _verified_public_portable_stage(
-                record, pathlib.Path(candidate_root)
-            )
-            completion_raw = _read_bound_regular(
-                verified["completion_path"],
-                "resume portable-stage completion",
-                maximum=1024 * 1024,
-            )
-            preflight_raw = _read_bound_regular(
-                verified["preflight_path"],
-                "resume portable-stage preflight",
-                maximum=1024 * 1024,
-            )
-            try:
-                preflight = json.loads(
-                    preflight_raw.decode("utf-8")
-                )
-            except (UnicodeDecodeError, ValueError) as exc:
-                raise RuntimeContractError(
-                    "resume portable-stage preflight is invalid"
-                ) from exc
-            if (
-                preflight_raw != canonical_bytes(preflight)
-                or record.get("execution_boundary")
-                != PORTABLE_EXECUTION_BOUNDARY
-                or record.get("stage") != "history-compare"
-                or record.get("seat_id")
-                != f"history-compare-{stage_number}"
-                or preflight.get("stage") != "history-compare"
-                or preflight.get("input_sha256s")
-                != {
-                    "retrieval_pack.json":
-                        expected_attempt["input_sha256"]
-                }
-                or record.get("input_sha256s")
-                != preflight.get("input_sha256s")
-                or not _valid_sha256(
-                    record.get(
-                        "execution_request_profile_hash"
-                    )
-                )
-                or preflight.get(
-                    "execution_request_profile_hash"
-                )
-                != record[
-                    "execution_request_profile_hash"
-                ]
-                or receipt.get("pack_sha256")
-                != expected_attempt["pack_sha256"]
-                or record.get("serialized_prompt_sha256")
-                != expected_attempt["serialized_prompt_sha256"]
-                or receipt.get("comparator_invocation_sha256")
-                != expected_attempt["serialized_prompt_sha256"]
-                or record.get("outputs", {}).get(
-                    "history-comparison.json", {}
-                ).get("sha256")
-                != expected_attempt["comparison_sha256"]
-                or pathlib.Path(
-                    verified["output_paths"][
-                        "history-comparison.json"
-                    ]
-                ).resolve()
-                != (
-                    invocation_root
-                    / "output"
-                    / "history-comparison.json"
-                ).resolve()
-                or pathlib.Path(verified["preflight_path"]).resolve()
-                != (invocation_root / "state" / "preflight.json").resolve()
-                or pathlib.Path(verified["completion_path"]).resolve()
-                != (invocation_root / "state" / "completion.json").resolve()
-                or sha256(completion_raw)
-                != record.get("completion", {}).get("sha256")
-            ):
-                raise RuntimeContractError(
-                    "resume portable-stage binding changed"
-                )
-            continue
-        if (
-            not isinstance(record, dict)
-            or set(record) != {"prepared", "completion_sha256"}
-            or not _valid_sha256(record["completion_sha256"])
-        ):
-            raise RuntimeContractError(
-                "resume contained-stage record is invalid"
-            )
-        prepared = record["prepared"]
-        verify_stage_completion(prepared)
+        verified = _verified_public_portable_stage(
+            record, pathlib.Path(candidate_root)
+        )
         completion_raw = _read_bound_regular(
-            prepared["completion_path"],
-            "resume contained-stage completion",
+            verified["completion_path"],
+            "resume portable-stage completion",
             maximum=1024 * 1024,
         )
-        manifest = _load_canonical_json(
-            prepared["manifest_path"],
-            "resume contained-stage manifest",
+        preflight_raw = _read_bound_regular(
+            verified["preflight_path"],
+            "resume portable-stage preflight",
+            maximum=1024 * 1024,
         )
-        contained_output_raw = _read_bound_regular(
-            prepared["output_paths"]["history-comparison.json"],
-            "resume contained comparator output",
-            maximum=65536,
-        )
-        inputs = manifest.get("inputs")
+        try:
+            preflight = json.loads(
+                preflight_raw.decode("utf-8")
+            )
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RuntimeContractError(
+                "resume portable-stage preflight is invalid"
+            ) from exc
         if (
-            prepared.get("stage") != "history-compare"
-            or manifest.get("stage") != "history-compare"
-            or not isinstance(inputs, list)
-            or len(inputs) != 1
-            or inputs[0].get("source") != "retrieval_pack.json"
-            or inputs[0].get("sha256")
-            != expected_attempt["input_sha256"]
+            preflight_raw != canonical_bytes(preflight)
+            or record.get("execution_boundary")
+            != PORTABLE_EXECUTION_BOUNDARY
+            or record.get("stage") != "history-compare"
+            or record.get("seat_id")
+            != f"history-compare-{stage_number}"
+            or preflight.get("stage") != "history-compare"
+            or preflight.get("input_sha256s")
+            != {
+                "retrieval_pack.json":
+                    expected_attempt["input_sha256"]
+            }
+            or record.get("input_sha256s")
+            != preflight.get("input_sha256s")
+            or not _valid_sha256(
+                record.get(
+                    "execution_request_profile_hash"
+                )
+            )
+            or preflight.get(
+                "execution_request_profile_hash"
+            )
+            != record[
+                "execution_request_profile_hash"
+            ]
             or receipt.get("pack_sha256")
             != expected_attempt["pack_sha256"]
+            or record.get("serialized_prompt_sha256")
+            != expected_attempt["serialized_prompt_sha256"]
             or receipt.get("comparator_invocation_sha256")
             != expected_attempt["serialized_prompt_sha256"]
-            or manifest.get("invocation", {}).get(
-                "expected_serialized_sha256"
-            )
-            != expected_attempt["serialized_prompt_sha256"]
-            or pathlib.Path(prepared.get("manifest_path", "")).resolve()
-            != (invocation_root / "manifest.json").resolve()
-            or pathlib.Path(prepared.get("output_root", "")).resolve()
-            != (invocation_root / "output").resolve()
+            or record.get("outputs", {}).get(
+                "history-comparison.json", {}
+            ).get("sha256")
+            != expected_attempt["comparison_sha256"]
             or pathlib.Path(
-                prepared.get("completion_path", "")
-            ).resolve()
-            != (invocation_root / "output" / "completion.json").resolve()
-            or pathlib.Path(
-                prepared.get("output_paths", {}).get(
-                    "history-comparison.json", ""
-                )
+                verified["output_paths"][
+                    "history-comparison.json"
+                ]
             ).resolve()
             != (
                 invocation_root
                 / "output"
                 / "history-comparison.json"
             ).resolve()
-            or sha256(contained_output_raw)
-            != expected_attempt["comparison_sha256"]
+            or pathlib.Path(verified["preflight_path"]).resolve()
+            != (invocation_root / "state" / "preflight.json").resolve()
+            or pathlib.Path(verified["completion_path"]).resolve()
+            != (invocation_root / "state" / "completion.json").resolve()
             or sha256(completion_raw)
-            != record["completion_sha256"]
+            != record.get("completion", {}).get("sha256")
         ):
             raise RuntimeContractError(
-                "resume contained-stage binding changed"
+                "resume portable-stage binding changed"
             )
     return resume_bindings
 
@@ -10067,7 +8548,6 @@ def _resume_material(
         raise RuntimeContractError(
             "resume comparison index path is invalid"
         )
-    portable_comparison = index["schema_version"] == 2
     prior_descriptor, _ = _source_descriptor(
         prior_work_path, "resume prior work", maximum=1024 * 1024
     )
@@ -10146,19 +8626,14 @@ def _resume_material(
                         "statuses": statuses,
                     }
                 )
-            (
-                comparison_executor,
-                comparison_stage_records,
-            ) = _comparison_stage_binding(index, indexed)
             stage_bindings = _validate_resume_comparator_stages(
                 candidate=candidate,
                 candidate_root=root / candidate_id,
                 observation=observation,
-                stage_records=comparison_stage_records,
+                stage_records=_comparison_stage_binding(index, indexed),
                 conn=conn,
                 policy=policy,
                 allow_unbindable=True,
-                execution_boundary=comparison_executor,
             )
             for stage_binding in stage_bindings:
                 pack = stage_binding["pack"]
@@ -10239,9 +8714,8 @@ def _resume_material(
                     }
                 )
         result = {
-            "schema_version": (
-                2 if portable_comparison else 1
-            ),
+            "schema_version": 2,
+            "execution_boundary": PORTABLE_EXECUTION_BOUNDARY,
             "runtime_authority": {
                 field: authority_value[field]
                 for field in (
@@ -10294,10 +8768,6 @@ def _resume_material(
                 nonpermanent_observations,
             "bindings": bindings,
         }
-        if portable_comparison:
-            result["execution_boundary"] = (
-                PORTABLE_EXECUTION_BOUNDARY
-            )
         return result
     finally:
         conn.close()
@@ -10342,11 +8812,8 @@ def seal_resume_state(*, output_path, authority=None, **values):
         result = _resume_material(
             authority=authority, **material_values
         )
-        resume_domain = b"history-runtime-resume-v1\0"
-        if result["schema_version"] == 2:
-            resume_domain = b"history-runtime-resume-v2\0"
         result["resume_sha256"] = sha256(
-            resume_domain + canonical_bytes(result)
+            b"history-runtime-resume-v2\0" + canonical_bytes(result)
         )
         _publish_immutable(output, canonical_bytes(result))
     except Exception:
@@ -10448,15 +8915,12 @@ def validate_resume_state(
         raise RuntimeContractError(
             "resume state schema is invalid"
         )
-    if resume.get("schema_version") == 1:
-        resume_domain = b"history-runtime-resume-v1\0"
-    elif (
+    if (
         resume.get("schema_version") == 2
         and resume.get("execution_boundary")
         == PORTABLE_EXECUTION_BOUNDARY
     ):
         fields.add("execution_boundary")
-        resume_domain = b"history-runtime-resume-v2\0"
     else:
         raise RuntimeContractError(
             "resume state schema is invalid"
@@ -10468,7 +8932,7 @@ def validate_resume_state(
     material = dict(resume)
     resume_sha = material.pop("resume_sha256")
     if resume_sha != sha256(
-        resume_domain + canonical_bytes(material)
+        b"history-runtime-resume-v2\0" + canonical_bytes(material)
     ):
         raise RuntimeContractError(
             "resume state ID is invalid"
@@ -10501,38 +8965,6 @@ def validate_resume_state(
                 "resume direction identity changed"
             )
     return resume
-
-
-def _parse_input_bindings(values):
-    result = {}
-    for value in values:
-        if "=" not in value:
-            raise RuntimeContractError(
-                "stage input must use name=path"
-            )
-        name, path = value.split("=", 1)
-        if not name or not path or name in result:
-            raise RuntimeContractError(
-                "stage input binding is invalid"
-            )
-        result[name] = pathlib.Path(path)
-    return result
-
-
-def _parse_reviewer_commands(values):
-    result = {}
-    for value in values:
-        if "=" not in value:
-            raise RuntimeContractError(
-                "reviewer command must use seat=argv-json"
-            )
-        seat, command_json = value.split("=", 1)
-        if not seat or not command_json or seat in result:
-            raise RuntimeContractError(
-                "reviewer command binding is invalid"
-            )
-        result[seat] = command_json
-    return result
 
 
 def _parse_reviewer_request_profiles(values):
@@ -10583,18 +9015,6 @@ def _main(argv=None):
     startup.add_argument("--near-sa")
     startup.add_argument("--calibration-capability")
     startup.add_argument("--production-trust-root")
-    stage = subparsers.add_parser("run-stage")
-    stage.add_argument("--stage", required=True)
-    stage.add_argument("--seat", required=True)
-    stage.add_argument("--db", required=True)
-    stage.add_argument("--policy", required=True)
-    stage.add_argument("--input", action="append", default=[])
-    stage.add_argument("--output-root", required=True)
-    stage.add_argument("--manifest", required=True)
-    stage.add_argument(
-        "--command", dest="command_json", required=True
-    )
-    _add_cli_authority_arguments(stage)
     freeze = subparsers.add_parser("freeze-batch")
     freeze.add_argument("--tsv", required=True)
     freeze.add_argument("--markdown", required=True)
@@ -10627,14 +9047,11 @@ def _main(argv=None):
     compare.add_argument("--artifact-root", required=True)
     compare.add_argument("--selection", required=True)
     compare.add_argument(
-        "--command", dest="command_json"
-    )
-    compare.add_argument(
         "--executor",
-        choices=(CONTAINED_EXECUTOR, PORTABLE_EXECUTOR),
-        default=CONTAINED_EXECUTOR,
+        choices=(PORTABLE_EXECUTOR,),
+        default=PORTABLE_EXECUTOR,
     )
-    compare.add_argument("--provider-request-profile")
+    compare.add_argument("--provider-request-profile", required=True)
     _add_cli_authority_arguments(compare)
     seal_selection = subparsers.add_parser("seal-selection")
     seal_selection.add_argument("--batch", required=True)
@@ -10738,15 +9155,12 @@ def _main(argv=None):
     review_plan.add_argument("--prior-work", required=True)
     review_plan.add_argument("--review-contract", required=True)
     review_plan.add_argument(
-        "--reviewer-command", action="append", default=[]
-    )
-    review_plan.add_argument(
         "--reviewer-request-profile", action="append", default=[]
     )
     review_plan.add_argument(
         "--executor",
-        choices=(CONTAINED_EXECUTOR, PORTABLE_EXECUTOR),
-        default=CONTAINED_EXECUTOR,
+        choices=(PORTABLE_EXECUTOR,),
+        default=PORTABLE_EXECUTOR,
     )
     review_plan.add_argument("--round-date", required=True)
     review_plan.add_argument(
@@ -10767,15 +9181,12 @@ def _main(argv=None):
         "--review-plan", required=True
     )
     review_matrix.add_argument(
-        "--reviewer-command", action="append", default=[]
-    )
-    review_matrix.add_argument(
         "--reviewer-request-profile", action="append", default=[]
     )
     review_matrix.add_argument(
         "--executor",
-        choices=(CONTAINED_EXECUTOR, PORTABLE_EXECUTOR),
-        default=CONTAINED_EXECUTOR,
+        choices=(PORTABLE_EXECUTOR,),
+        default=PORTABLE_EXECUTOR,
     )
     review_matrix.add_argument("--stage-root", required=True)
     review_matrix.add_argument("--output", required=True)
@@ -10841,27 +9252,6 @@ def _main(argv=None):
             production_trust_root_path=
                 args.production_trust_root,
         )
-    elif args.operation == "run-stage":
-        authority = _cli_runtime_authority(args)
-        prepared = build_stage_manifest(
-            stage=args.stage,
-            seat_id=args.seat,
-            db_path=args.db,
-            policy_path=args.policy,
-            input_paths=_parse_input_bindings(args.input),
-            output_root=args.output_root,
-            manifest_path=args.manifest,
-            command_json=args.command_json,
-            authority=authority,
-        )
-        completion = run_contained_stage(
-            prepared, authority=authority
-        )
-        result = {
-            "schema_version": 1,
-            "prepared": prepared,
-            "completion": completion,
-        }
     elif args.operation == "freeze-batch":
         brief = _load_canonical_json(
             args.brief, "generation brief"
@@ -10929,27 +9319,8 @@ def _main(argv=None):
             authority=authority,
         )
     elif args.operation == "compare-targets":
-        if (
-            args.executor == PORTABLE_EXECUTOR
-            and args.command_json is not None
-        ):
-            raise RuntimeContractError(
-                "portable-v2 cannot mix command_json"
-            )
-        if (
-            args.executor == CONTAINED_EXECUTOR
-            and args.provider_request_profile is not None
-        ):
-            raise RuntimeContractError(
-                "contained-v1 cannot use portable_request_profile"
-            )
-        portable_request_profile = (
-            _load_portable_request_profile(
-                args.provider_request_profile
-            )
-            if args.executor == PORTABLE_EXECUTOR
-            and args.provider_request_profile is not None
-            else None
+        portable_request_profile = _load_portable_request_profile(
+            args.provider_request_profile
         )
         authority = _cli_runtime_authority(args)
         result = compare_frozen_targets(
@@ -10958,7 +9329,6 @@ def _main(argv=None):
             batch_path=args.batch,
             artifact_root=args.artifact_root,
             selection_path=args.selection,
-            command_json=args.command_json,
             executor=args.executor,
             portable_request_profile=portable_request_profile,
             authority=authority,
@@ -11062,26 +9432,8 @@ def _main(argv=None):
             authority=authority,
         )
     elif args.operation == "seal-review-plan":
-        if (
-            args.executor == PORTABLE_EXECUTOR
-            and args.reviewer_command
-        ):
-            raise RuntimeContractError(
-                "portable-v2 cannot mix reviewer_commands"
-            )
-        if (
-            args.executor == CONTAINED_EXECUTOR
-            and args.reviewer_request_profile
-        ):
-            raise RuntimeContractError(
-                "contained-v1 cannot use reviewer_request_profiles"
-            )
-        reviewer_profiles = (
-            _parse_reviewer_request_profiles(
-                args.reviewer_request_profile
-            )
-            if args.executor == PORTABLE_EXECUTOR
-            else None
+        reviewer_profiles = _parse_reviewer_request_profiles(
+            args.reviewer_request_profile
         )
         authority = _cli_runtime_authority(args)
         result = seal_round_review_plan(
@@ -11093,9 +9445,6 @@ def _main(argv=None):
             artifact_root=args.artifact_root,
             prior_work_path=args.prior_work,
             review_contract_path=args.review_contract,
-            reviewer_commands=_parse_reviewer_commands(
-                args.reviewer_command
-            ),
             executor=args.executor,
             reviewer_request_profiles=reviewer_profiles,
             round_date=args.round_date,
@@ -11105,26 +9454,8 @@ def _main(argv=None):
             authority=authority,
         )
     elif args.operation == "run-review-matrix":
-        if (
-            args.executor == PORTABLE_EXECUTOR
-            and args.reviewer_command
-        ):
-            raise RuntimeContractError(
-                "portable-v2 cannot mix reviewer_commands"
-            )
-        if (
-            args.executor == CONTAINED_EXECUTOR
-            and args.reviewer_request_profile
-        ):
-            raise RuntimeContractError(
-                "contained-v1 cannot use reviewer_request_profiles"
-            )
-        reviewer_profiles = (
-            _parse_reviewer_request_profiles(
-                args.reviewer_request_profile
-            )
-            if args.executor == PORTABLE_EXECUTOR
-            else None
+        reviewer_profiles = _parse_reviewer_request_profiles(
+            args.reviewer_request_profile
         )
         authority = _cli_runtime_authority(args)
         result = run_review_matrix(
@@ -11132,9 +9463,6 @@ def _main(argv=None):
             policy_path=args.policy,
             batch_path=args.batch,
             review_plan_path=args.review_plan,
-            reviewer_commands=_parse_reviewer_commands(
-                args.reviewer_command
-            ),
             executor=args.executor,
             reviewer_request_profiles=reviewer_profiles,
             stage_root=args.stage_root,

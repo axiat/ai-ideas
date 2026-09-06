@@ -22,7 +22,6 @@
 #     AGENT_CMD='./grok-worker.sh' ./hunt.sh
 #   FRONT_CMD='./agy-worker.sh' BACK_CMD='./grok-worker.sh' ./hunt.sh
 #   PANEL_CMD='./grok-worker.sh' ./calib/run_panel.sh calib/cases/pos-meanflow
-#   SIDE_CMD='./grok-worker.sh' ./awr-side.sh
 # Configuration:
 #   GROK_REPO          Absolute work root; defaults to this script's directory.
 #   GROK_MODEL         Optional model passed with `-m`; omission preserves the
