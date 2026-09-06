@@ -229,7 +229,7 @@ class ProviderCommandCliSmoke(unittest.TestCase):
                 "kimi-code/k3",
                 None,
                 [
-                    "<EXECUTABLE>", "--auto", "--output-format", "text", "-m",
+                    "<EXECUTABLE>", "--output-format", "text", "-m",
                     "kimi-code/k3", "-p", "<PROMPT>",
                 ],
             ),

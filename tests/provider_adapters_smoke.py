@@ -328,7 +328,7 @@ class ProviderAdaptersSmoke(unittest.TestCase):
                 "--ephemeral", "PROMPT",
             ],
             "kimi": [
-                str(FAKE), "--auto", "--output-format", "text", "-m",
+                str(FAKE), "--output-format", "text", "-m",
                 "MODEL", "-p", "PROMPT",
             ],
             "grok": [

@@ -2178,7 +2178,9 @@ def _render_command_fields(
     elif provider == "kimi":
         if reasoning is not None:
             raise ProviderResolutionError("Kimi reasoning override is unsupported")
-        argv += ["--auto", "--output-format", "text"]
+        # kimi CLI 0.40+ rejects --auto in prompt mode; prompt mode already
+        # runs unattended, so --auto is intentionally omitted.
+        argv += ["--output-format", "text"]
         if model is not None:
             argv += ["-m", model]
         argv += ["-p", prompt]

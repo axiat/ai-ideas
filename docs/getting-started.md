@@ -5,7 +5,7 @@
 - Bash with arrays, process substitution, `PIPESTATUS`, and indirect variable expansion
 - Git with a writable checkout and a configured `origin`
 - An authenticated Codex CLI for the default Hunt v2 path
-- For Kimi, Grok, or Claude internal stages: that authenticated CLI plus either authenticated Codex for external stages or explicit compatible `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD`
+- For Kimi, Grok, or Claude internal stages: that authenticated CLI plus either authenticated Codex for external stages or explicit compatible `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD`; with `HUNT_PROVIDER=kimi` and no Codex on `PATH`, external stages fall back to the kimi CLI
 - An authenticated supported CLI for AwR v2; AwR accepts Codex, Kimi, Grok, OpenCode, agy, and Claude
 - AwR with agy requires Agy 1.1.8+ and an explicit catalog model; Claude uses grammar `claude-portable-v2`; [docs/backends.md](backends.md) defines both structured-JSON transports
 - Network access for model search, repository publication, and settlement fetches

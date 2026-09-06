@@ -2668,6 +2668,100 @@ class LegacyPortableFileOutputHardeningSmoke(unittest.TestCase):
             real_rmtree(attempts[0])
 
 
+class KimiStdoutParsingSmoke(unittest.TestCase):
+    BULLET = "• ".encode("utf-8")
+    SCHEMA = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "artifacts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "artifact_kind": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["artifact_kind", "content"],
+                },
+            },
+            "stage": {"type": "string"},
+        },
+        "required": ["artifacts", "stage"],
+    }
+
+    def _parse(self, raw):
+        return portable_agent._parse_kimi_stdout(raw, self.SCHEMA)
+
+    def test_undecorated_canonical_stdout_is_accepted_unchanged(self):
+        raw = b'{"artifacts":[],"stage":"review"}\n'
+        value, envelope = self._parse(raw)
+        self.assertEqual(value, {"artifacts": [], "stage": "review"})
+        self.assertEqual(envelope, raw)
+
+    def test_bullet_decoration_is_undone(self):
+        raw = self.BULLET + b'{"artifacts":[],"stage":"review"}\n\n'
+        value, envelope = self._parse(raw)
+        self.assertEqual(value["stage"], "review")
+        self.assertEqual(envelope, b'{"artifacts":[],"stage":"review"}\n')
+
+    def test_whole_message_json_fence_is_unwrapped(self):
+        raw = (
+            self.BULLET
+            + b'```json\n{"artifacts":[],"stage":"review"}\n```\n\n'
+        )
+        value, envelope = self._parse(raw)
+        self.assertEqual(value["stage"], "review")
+        self.assertEqual(envelope, b'{"artifacts":[],"stage":"review"}\n')
+
+    def test_double_fence_is_not_unwrapped(self):
+        raw = self.BULLET + b'```json\n{"stage":"x"}\n```\n```\n\n'
+        with self.assertRaises(portable_agent.PortableAgentError) as caught:
+            self._parse(raw)
+        self.assertEqual(caught.exception.code, "malformed_output")
+
+    def test_last_parseable_block_wins_after_narration(self):
+        raw = (
+            self.BULLET
+            + "先看看资料。\n".encode("utf-8")
+            + b"\n\n"
+            + self.BULLET
+            + b'{"artifacts":[],"stage":"review"}\n\n'
+        )
+        value, envelope = self._parse(raw)
+        self.assertEqual(value["stage"], "review")
+
+    def test_schema_forbidden_extra_keys_are_stripped(self):
+        raw = (
+            self.BULLET
+            + b'{"artifacts":[{"artifact_kind":"review-markdown",'
+            + b'"content":"# I1","content_unused":"junk"}],'
+            + b'"stage":"review"}\n\n'
+        )
+        value, envelope = self._parse(raw)
+        self.assertEqual(
+            value["artifacts"][0],
+            {"artifact_kind": "review-markdown", "content": "# I1"},
+        )
+        self.assertEqual(
+            envelope,
+            portable_agent._canonical_json_bytes(value),
+        )
+
+    def test_truncated_json_is_never_repaired(self):
+        raw = self.BULLET + b'{"artifacts":['
+        with self.assertRaises(portable_agent.PortableAgentError) as caught:
+            self._parse(raw)
+        self.assertEqual(caught.exception.code, "malformed_output")
+
+    def test_narration_only_output_is_rejected(self):
+        raw = self.BULLET + "没有 JSON。\n\n".encode("utf-8")
+        with self.assertRaises(portable_agent.PortableAgentError) as caught:
+            self._parse(raw)
+        self.assertEqual(caught.exception.code, "malformed_output")
+
+
 
 
 

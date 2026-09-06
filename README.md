@@ -28,7 +28,9 @@ access, and an authenticated `gh` session for publication. Hunt v2 supports
 Codex, Kimi, Grok, and Claude for its internal stages. Selecting a non-Codex
 internal provider does not change the Codex default used by selector,
 prescreen, external research, and report stages; a host without Codex must
-configure compatible `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` values.
+configure compatible `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` values. With
+`HUNT_PROVIDER=kimi` and no Codex executable on `PATH`, those stages fall
+back to the kimi CLI automatically.
 
 ```bash
 git clone git@github.com:axiat/ai-ideas.git
