@@ -1179,11 +1179,101 @@ def _parse_codex_final_message(path, maximum):
     return value, _canonical_json_bytes(value)
 
 
+_KIMI_RENDERER_BULLET = "• ".encode("utf-8")
+
+
+def _strip_schema_extra_keys(value, schema):
+    """Remove object keys forbidden by additionalProperties:false.
+
+    Only extra keys are dropped; required content is never added or
+    altered, and the caller still validates the value against the closed
+    response contract and the request attestation.
+    """
+    if not isinstance(schema, dict):
+        return value
+    if isinstance(value, dict):
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            if schema.get("additionalProperties") is False:
+                value = {k: v for k, v in value.items() if k in props}
+            return {
+                k: _strip_schema_extra_keys(v, props.get(k, {}))
+                for k, v in value.items()
+            }
+        return value
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, dict):
+            return [_strip_schema_extra_keys(item, items) for item in value]
+    return value
+
+
+def _kimi_unwrap_fence(data):
+    """Unwrap one whole-message ```json fence, if present.
+
+    Models sometimes wrap the response in a single Markdown fence despite
+    the raw-stdout instruction. Only a fence spanning the entire message
+    is unwrapped; anything else is left untouched.
+    """
+    body = data[:-1] if data.endswith(b"\n") else data
+    if not (body.startswith(b"```json\n") and body.endswith(b"```")):
+        return data
+    inner = body[len(b"```json\n"):-len(b"```")]
+    if b"```" in inner:
+        return data
+    if not inner.endswith(b"\n"):
+        inner += b"\n"
+    return inner
+
+
+def _parse_kimi_stdout(raw, response_schema):
+    """Parse kimi CLI stdout tolerating 0.40+ text-renderer decoration.
+
+    The 0.40+ renderer prefixes the first line of each assistant message
+    with U+2022 + space, indents continuation lines by two spaces, appends
+    one extra trailing LF, and separates multiple messages with a blank
+    line plus the bullet. The stage contract still requires one canonical
+    JSON object, so decoration is undone byte-exactly and the LAST message
+    block that parses as strict model JSON wins; narration-only blocks are
+    skipped. Extra keys forbidden by the closed response schema are
+    stripped. The returned bytes are always the canonical serialization of
+    the accepted value. Nothing parseable raises malformed_output, and
+    truncated or corrupted JSON is never repaired.
+    """
+    if raw.startswith(_KIMI_RENDERER_BULLET):
+        blocks = raw.split(b"\n\n" + _KIMI_RENDERER_BULLET)
+    else:
+        blocks = [raw]
+    for block in reversed(blocks):
+        candidate = _kimi_undecorate(block)
+        if candidate.endswith(b"\n\n"):
+            candidate = candidate[:-1]
+        candidate = _kimi_unwrap_fence(candidate)
+        try:
+            value = _parse_strict_model_json(candidate)
+        except PortableAgentError:
+            continue
+        value = _strip_schema_extra_keys(value, response_schema)
+        return value, _canonical_json_bytes(value)
+    raise PortableAgentError("malformed_output")
+
+
+def _kimi_undecorate(block):
+    if block.startswith(_KIMI_RENDERER_BULLET):
+        block = block[len(_KIMI_RENDERER_BULLET):]
+    # Undo the two-space continuation indent. Raw newlines cannot occur
+    # inside compact canonical JSON, so this only touches renderer
+    # indentation in the compliant case.
+    return block.replace(b"\n  ", b"\n")
+
+
 def _parse_provider_stdout(provider, raw, response_schema):
     if provider == "agy":
         return _parse_agy_transport(raw, response_schema)
     if provider == "claude":
         return _parse_claude_transport(raw, response_schema)
+    if provider == "kimi":
+        return _parse_kimi_stdout(raw, response_schema)
     if provider != "grok":
         value = _parse_canonical_stdout(raw)
         return value, raw

@@ -71,14 +71,24 @@ the existing `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` process interface. These
 variables never enter v2 internal stages, and `HUNT_PROVIDER` does not change
 their Codex default. A host without Codex must set `AGENT_CMD` or both
 `FRONT_CMD` and `BACK_CMD` to a prompt-taking command that satisfies the
-external stage's file contract. A Kimi command shape is:
+external stage's file contract; with `HUNT_PROVIDER=kimi` and no Codex
+executable on `PATH`, Hunt defaults `AGENT_CMD` to the kimi CLI. A Kimi
+command shape is:
 
 ```bash
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=kimi \
-AGENT_CMD='kimi --auto --output-format text -p' \
+AGENT_CMD='kimi --output-format text -p' \
 ./hunt.sh
 ```
+
+kimi CLI 0.40+ rejects `--auto` in prompt mode and decorates text stdout
+(message bullets, continuation indentation, an extra trailing LF); the
+portable argv omits `--auto` and the kimi stdout parser tolerates the
+renderer decoration, a single whole-message Markdown fence, narration
+blocks before the final JSON message, and schema-forbidden extra keys.
+Required content, the closed response schema, and the request attestation
+remain strictly validated.
 
 `grok-worker.sh` supplies the external file contract and disables all six
 Grok compatibility sources for Claude skills, rules, agents, MCPs, hooks, and

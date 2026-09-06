@@ -257,6 +257,12 @@ print(value)
 hunt_runtime_preflight || exit 2
 git config core.hooksPath .githooks
 
+if [ -z "${AGENT_CMD+x}" ] && [ "${HUNT_PROVIDER:-codex}" = kimi ] \
+  && ! command -v codex >/dev/null 2>&1; then
+  # Kimi-only host: route the external stages through the kimi CLI too.
+  # Prompt mode runs unattended on kimi 0.40+; --auto is rejected there.
+  AGENT_CMD='kimi --output-format text -p'
+fi
 AGENT_CMD=${AGENT_CMD:-codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write}
 FRONT_CMD=${FRONT_CMD:-$AGENT_CMD}
 BACK_CMD=${BACK_CMD:-$AGENT_CMD}
