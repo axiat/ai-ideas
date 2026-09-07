@@ -1,0 +1,9 @@
+[2026-09-07 10:26:58] History runtime ready in shadow mode
+[2026-09-07 10:30:00] Assumption-removal incomplete exempt: I1 (0 real Crack Evidence URL rows)
+[2026-09-07 10:30:03] Starting external stage [select] in a disposable mirror
+[2026-09-07 10:32:01] Starting external stage [prescreen] in a disposable mirror
+[2026-09-07 10:47:20] Starting external stage [research] in a disposable mirror
+[2026-09-07 11:45:54] Crack verification incomplete exempt: I1 (0 real Crack Evidence URL rows)
+[2026-09-07 11:53:00] Round complete without reaching the daily target
+[2026-09-07 11:53:00] Retrying in 7 minutes
+./hunt.sh: line 375: 19731 Terminated: 15          sleep "$((minutes * 60))"
