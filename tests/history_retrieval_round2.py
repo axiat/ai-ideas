@@ -1480,7 +1480,7 @@ class ActualLedgerBudgetTests(unittest.TestCase):
                 history_store.import_tsv_epoch(conn, ledger)
                 self.assertEqual(
                     conn.execute("SELECT count(*) FROM candidates").fetchone()[0],
-                    556,
+                    589,
                 )
                 policy = projection.load_policy(
                     ROOT / "history/retrieval-policy-v1.json"

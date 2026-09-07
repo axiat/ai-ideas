@@ -13,15 +13,15 @@ HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 MAX_SPARSE_HAN_LINES = 24
 MAX_TEST_HAN_LINES = 80
 EXPECTED = {
-    "stable_projection": "ff148c760e8c2e5252f9455ced3612f66481eb80cdca336dcf9f711c93988176",
-    "theme_projection": "578d8eee579450f08e6f1061672bf5105da28e635bb819bdcbde14d0e5d59db7",
-    "row_urls": "0ec19624e604eb7a2d3d0c2eb760858160ae2d60a8096e27eddbaad49c94519a",
-    "row_technical_tokens": "9d7c3fe8568ceb7c7bb0b8c9bab45ab3093205ad57d9364bb4c3c1f0169f4740",
-    "row_count_units": "9eac31b945b12918e85dd330fee5ceae0b7738d39b485122cfc4f8210662ff5f",
-    "row_labeled_quantities": "b3fc9c6291218498973292464faf68b7f1c30d7468fffd7a282049b5a61266a2",
-    "row_numeric_operators": "2b41a59af3ed6234a0c8bd6c121b198b2e2dde77121ae1a75b295220b89591bc",
-    "row_code_spans": "a298862e98d1ce8a90780b54c8c7b5a91961b40d096ecc83a0ecfbf9592f850a",
-    "row_symbols": "7373e7b5c685af15b2c2b6a346bda7be43e826f739ccab1fafca2a338ac16286",
+    "stable_projection": "922ef1b1b72554cb85691ee430afa22d7c852bff3206d8afe083e6f88a4c5518",
+    "theme_projection": "3943f32b7983f17e3d6d1bcc93428e09bf8dd3cc40d27e574d99e0ab193e003e",
+    "row_urls": "7d817f7aeed960a0d877ee3303141f2b58be2bb33407e6a5dc2a13c64ca50910",
+    "row_technical_tokens": "de04556fee16b40f99138522f501db8f6cdd86275ccf07dbc84e174a937915e2",
+    "row_count_units": "d951c781cf51f62d91df4031452ff8c69350a98b0be92314c695cb1b519f911f",
+    "row_labeled_quantities": "ee407309fb1cd9378e35531890024cf651b4bd409a01d732b1e780a5cb9d4428",
+    "row_numeric_operators": "44374c50b5a8fd3b0f14d8478a73ffd791b16e90371214d1eb7534334d825a06",
+    "row_code_spans": "5959879f88836c372558b72c48d6c620392f4048144ea434b84f3a3441fba37f",
+    "row_symbols": "aac439254035e286bd921e3e6e25c29cdaadfcf9ef52024587cd93da1301bd02",
     "case_ids": "f60b9cad357cf1bbf3a8e591e17251ef388f0ed6fbac01fa3fda9477419a14b6",
     "assertions": "5f12400d936aa208097077d680eefa74babb0ef6f0090984cc264a42031c7da0",
     "calibration_evidence": "ed86ecc2dcd80b2d248a931e87d47357c15586d4250b240b494cf2ccc3a4495e",
@@ -71,22 +71,28 @@ BACKEND_DEFAULTS = {
     "hunt.sh": (
         "AGENT_CMD",
         "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write",
+        # Kimi-only hosts get the kimi CLI routed in ahead of the codex default.
+        ("  AGENT_CMD='kimi --output-format text -p'",),
     ),
     "litwatch.sh": (
         "LITWATCH_CMD",
         "codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral",
+        (),
     ),
     "calib/run_panel.sh": (
         "PANEL_CMD",
         "codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral",
+        (),
     ),
     "calib/run_all.sh": (
         "PANEL_CMD",
         "codex -c approval_policy=never exec -s workspace-write --skip-git-repo-check --ephemeral",
+        (),
     ),
     "calib/run_e2e.sh": (
         "E2E_CMD",
         "codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write --skip-git-repo-check --ephemeral",
+        (),
     ),
 }
 AGY_MODEL_DEFAULT = "gemini-3.6-flash-high"
@@ -265,16 +271,16 @@ def workflow_shell_text(text):
     return "\n".join(commands)
 
 def assert_backend_defaults():
-    for name, (variable, command) in BACKEND_DEFAULTS.items():
+    for name, (variable, command, extra) in BACKEND_DEFAULTS.items():
         expected = f"{variable}=${{{variable}:-{command}}}"
         assignments = [
             line
             for line in (ROOT / name).read_text().splitlines()
             if re.match(rf"^\s*{re.escape(variable)}=", line)
         ]
-        if assignments != [expected]:
+        if assignments != [*extra, expected]:
             raise AssertionError(
-                f"default backend mismatch in {name}: expected {expected!r}, found {assignments!r}"
+                f"default backend mismatch in {name}: expected {[*extra, expected]!r}, found {assignments!r}"
             )
     expected = f"model=${{AGY_MODEL:-{AGY_MODEL_DEFAULT}}}"
     for name in ("agy-worker.sh",):
@@ -1274,11 +1280,11 @@ def verify_ledger_evidence(data=None, header=None):
         data = rows[1:]
     if header is not None and header != LEDGER_HEADER:
         raise AssertionError(f"ledger header changed: {header}")
-    if len(data) != 556:
+    if len(data) != 589:
         raise AssertionError(f"ledger row count changed: {len(data)}")
     nf7 = sum(len(row) == 7 for row in data)
     nf8 = sum(len(row) == 8 for row in data)
-    if (nf7, nf8) != (216, 340):
+    if (nf7, nf8) != (216, 373):
         raise AssertionError(f"ledger shape changed: nf7={nf7}, nf8={nf8}")
     actual = ledger_evidence(data)
     for key, value in actual.items():
