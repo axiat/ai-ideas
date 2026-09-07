@@ -119,9 +119,8 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
                     prompt="{}",
                     response_schema={"type": "object"},
                     expected_response_attestation={
-                        "schema_version": "portable-stage-response-attestation-v1",
-                        "provider_request_binding_sha256": "a" * 64,
-                        "serialized_prompt_sha256": "b" * 64,
+                        "schema_version": "portable-stage-response-attestation-v2",
+                        "response_echo_sha256": "a" * 64,
                     },
                     state_root=pathlib.Path(directory) / "drift-state",
                     timeout_seconds=1,
@@ -241,9 +240,8 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
             "schema_version": 1,
             "stage": "generate",
             "request_attestation": {
-                "schema_version": "portable-stage-response-attestation-v1",
-                "provider_request_binding_sha256": "a" * 64,
-                "serialized_prompt_sha256": "b" * 64,
+                "schema_version": "portable-stage-response-attestation-v2",
+                "response_echo_sha256": "a" * 64,
             },
             "artifacts": [
                 {"artifact_kind": "generation-ideas-markdown", "content": ""}

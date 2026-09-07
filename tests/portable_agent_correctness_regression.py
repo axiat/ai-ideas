@@ -314,16 +314,14 @@ class PortableNoFollowRootRegression(unittest.TestCase):
                     "additionalProperties": False,
                     "properties": {
                         "schema_version": {
-                            "enum": ["portable-stage-response-attestation-v1"],
+                            "enum": ["portable-stage-response-attestation-v2"],
                             "type": "string",
                         },
-                        "provider_request_binding_sha256": {"type": "string"},
-                        "serialized_prompt_sha256": {"type": "string"},
+                        "response_echo_sha256": {"type": "string"},
                     },
                     "required": [
                         "schema_version",
-                        "provider_request_binding_sha256",
-                        "serialized_prompt_sha256",
+                        "response_echo_sha256",
                     ],
                     "type": "object",
                 },

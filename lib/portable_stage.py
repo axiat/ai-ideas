@@ -500,20 +500,26 @@ def _request_attestation_schema():
     return {
         "additionalProperties": False,
         "properties": {
-            "provider_request_binding_sha256": {"type": "string"},
+            "response_echo_sha256": {"type": "string"},
             "schema_version": {
-                "enum": ["portable-stage-response-attestation-v1"],
+                "enum": ["portable-stage-response-attestation-v2"],
                 "type": "string",
             },
-            "serialized_prompt_sha256": {"type": "string"},
         },
         "required": [
             "schema_version",
-            "provider_request_binding_sha256",
-            "serialized_prompt_sha256",
+            "response_echo_sha256",
         ],
         "type": "object",
     }
+
+
+def _response_echo_sha256(binding_sha256, prompt_sha256):
+    return history_contract_v2.framed_sha256(
+        "portable-stage-response-echo-v1",
+        binding_sha256.encode("ascii"),
+        prompt_sha256.encode("ascii"),
+    )
 
 
 def _response_schema(stage):
@@ -763,8 +769,7 @@ def _provider_request(
             ),
             "stdout": stdout_instruction,
             "request_attestation": (
-                "Copy request_binding.provider_request_binding_sha256 and "
-                "request_binding.serialized_prompt_sha256 exactly into "
+                "Copy request_binding.response_echo_sha256 exactly into "
                 "request_attestation."
             ),
         },
@@ -773,11 +778,15 @@ def _provider_request(
         "portable-stage-request-base-v1",
         _canonical_json_bytes(base),
     )
+    prompt_sha256 = _sha(serialized_prompt.encode("utf-8"))
     request = dict(base)
     request["request_binding"] = {
         "schema_version": "portable-stage-request-binding-v1",
         "provider_request_binding_sha256": binding_sha256,
-        "serialized_prompt_sha256": _sha(serialized_prompt.encode("utf-8")),
+        "response_echo_sha256": _response_echo_sha256(
+            binding_sha256, prompt_sha256
+        ),
+        "serialized_prompt_sha256": prompt_sha256,
     }
     return _canonical_json_bytes(request).decode("utf-8"), binding_sha256
 
@@ -1340,17 +1349,25 @@ def _load_prepared_inputs(prepared):
     return result
 
 
-def _projected_prompt_attestation(prepared, response_attestation):
+def _projected_prompt_attestation(prepared):
     return _canonical_bytes(
         {
             "schema_version": 1,
             "stage": prepared["stage"],
             "seat_id": prepared["seat_id"],
-            "prompt_sha256": response_attestation[
-                "serialized_prompt_sha256"
-            ],
+            "prompt_sha256": prepared["serialized_prompt_sha256"],
         }
     )
+
+
+def _expected_response_attestation(prepared):
+    return {
+        "schema_version": "portable-stage-response-attestation-v2",
+        "response_echo_sha256": _response_echo_sha256(
+            prepared["provider_request_binding_sha256"],
+            prepared["serialized_prompt_sha256"],
+        ),
+    }
 
 
 def _response_envelope(prepared, raw):
@@ -1358,15 +1375,7 @@ def _response_envelope(prepared, raw):
     if type(value) is not dict:
         raise PortableStageError("invalid_model_envelope")
     attestation = value.pop("request_attestation", None)
-    expected = {
-        "schema_version": "portable-stage-response-attestation-v1",
-        "provider_request_binding_sha256": prepared[
-            "provider_request_binding_sha256"
-        ],
-        "serialized_prompt_sha256": prepared[
-            "serialized_prompt_sha256"
-        ],
-    }
+    expected = _expected_response_attestation(prepared)
     if (
         type(attestation) is not dict
         or _exact_canonical_bytes(attestation)
@@ -1411,18 +1420,14 @@ def _parse_awr_output(stage, raw):
 
 def _project_outputs(prepared, envelope_raw, input_raws):
     stage = prepared["stage"]
-    envelope_raw, response_attestation = _response_envelope(
-        prepared, envelope_raw
-    )
+    envelope_raw, _ = _response_envelope(prepared, envelope_raw)
     if stage in _AWR_ARTIFACTS:
         return _parse_awr_output(stage, envelope_raw)
     try:
         artifacts = history_stage_adapter.parse_model_output(stage, envelope_raw)
     except ValueError as exc:
         raise PortableStageError("invalid_model_envelope") from exc
-    attestation = _projected_prompt_attestation(
-        prepared, response_attestation
-    )
+    attestation = _projected_prompt_attestation(prepared)
     if stage == "generate":
         markdown = artifacts["output/ideas.md"]
         try:
@@ -1633,15 +1638,9 @@ def run_stage(prepared, timeout_seconds=600):
             max_stdout_bytes=prepared["output_contract"]["max_bytes"],
             max_output_tokens=prepared["max_output_tokens"],
             response_schema=response_schema,
-            expected_response_attestation={
-                "schema_version": "portable-stage-response-attestation-v1",
-                "provider_request_binding_sha256": prepared[
-                    "provider_request_binding_sha256"
-                ],
-                "serialized_prompt_sha256": prepared[
-                    "serialized_prompt_sha256"
-                ],
-            },
+            expected_response_attestation=_expected_response_attestation(
+                prepared
+            ),
         )
     except portable_agent.PortableAgentError as exc:
         raise PortableStageError(exc.code, exc.detail) from exc

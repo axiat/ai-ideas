@@ -31,8 +31,7 @@ EXPECTED_TRANSPORT_INSTRUCTIONS = {
         "Do not emit Markdown fences, narration, or any other bytes."
     ),
     "request_attestation": (
-        "Copy request_binding.provider_request_binding_sha256 and "
-        "request_binding.serialized_prompt_sha256 exactly into "
+        "Copy request_binding.response_echo_sha256 exactly into "
         "request_attestation."
     ),
 }
@@ -922,13 +921,10 @@ def main():
                 "stage": request["stage"],
                 "request_attestation": {
                     "schema_version": (
-                        "portable-stage-response-attestation-v1"
+                        "portable-stage-response-attestation-v2"
                     ),
-                    "provider_request_binding_sha256": binding.get(
-                        "provider_request_binding_sha256", "0" * 64
-                    ),
-                    "serialized_prompt_sha256": binding.get(
-                        "serialized_prompt_sha256", "0" * 64
+                    "response_echo_sha256": binding.get(
+                        "response_echo_sha256", "0" * 64
                     ),
                 },
                 "artifacts": [
@@ -955,12 +951,7 @@ def main():
         ).encode("utf-8")
     if mode in {"wrong-request-attestation", "wrong-prompt-attestation"}:
         value = json.loads(raw)
-        field = (
-            "provider_request_binding_sha256"
-            if mode == "wrong-request-attestation"
-            else "serialized_prompt_sha256"
-        )
-        value["request_attestation"][field] = "f" * 64
+        value["request_attestation"]["response_echo_sha256"] = "f" * 64
         raw = (
             json.dumps(
                 value,

@@ -616,8 +616,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 "or narration inside the structured value."
             ),
             "request_attestation": (
-                "Copy request_binding.provider_request_binding_sha256 and "
-                "request_binding.serialized_prompt_sha256 exactly into "
+                "Copy request_binding.response_echo_sha256 exactly into "
                 "request_attestation."
             ),
         }
@@ -677,6 +676,14 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             prepared["provider_request_binding_sha256"], expected_binding
         )
         self.assertEqual(
+            binding["response_echo_sha256"],
+            history_contract_v2.framed_sha256(
+                "portable-stage-response-echo-v1",
+                binding["provider_request_binding_sha256"].encode("ascii"),
+                binding["serialized_prompt_sha256"].encode("ascii"),
+            ),
+        )
+        self.assertEqual(
             prepared["provider_request_sha256"],
             hashlib.sha256(self._canonical(request)).hexdigest(),
         )
@@ -733,8 +740,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 "in any earlier assistant response."
             ),
             "request_attestation": (
-                "Copy request_binding.provider_request_binding_sha256 and "
-                "request_binding.serialized_prompt_sha256 exactly into "
+                "Copy request_binding.response_echo_sha256 exactly into "
                 "request_attestation."
             ),
         }
@@ -922,11 +928,10 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 }
             ],
             "request_attestation": {
-                "provider_request_binding_sha256": "a" * 64,
+                "response_echo_sha256": "a" * 64,
                 "schema_version": (
-                    "portable-stage-response-attestation-v1"
+                    "portable-stage-response-attestation-v2"
                 ),
-                "serialized_prompt_sha256": "b" * 64,
             },
             "schema_version": 1,
             "stage": "awr-research",
