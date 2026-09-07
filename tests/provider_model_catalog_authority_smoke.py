@@ -238,9 +238,8 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
                         "awr-research"
                     ),
                     expected_response_attestation={
-                        "schema_version": "portable-stage-response-attestation-v1",
-                        "provider_request_binding_sha256": "0" * 64,
-                        "serialized_prompt_sha256": "0" * 64,
+                        "schema_version": "portable-stage-response-attestation-v2",
+                        "response_echo_sha256": "0" * 64,
                     },
                     state_root=pathlib.Path(directory) / "state",
                     timeout_seconds=1,
@@ -284,9 +283,8 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
                         "awr-research"
                     ),
                     expected_response_attestation={
-                        "schema_version": "portable-stage-response-attestation-v1",
-                        "provider_request_binding_sha256": "0" * 64,
-                        "serialized_prompt_sha256": "0" * 64,
+                        "schema_version": "portable-stage-response-attestation-v2",
+                        "response_echo_sha256": "0" * 64,
                     },
                     state_root=pathlib.Path(directory) / "state",
                     timeout_seconds=1,
@@ -343,9 +341,8 @@ class ModelCatalogAuthoritySmoke(unittest.TestCase):
                         "awr-research"
                     ),
                     expected_response_attestation={
-                        "schema_version": "portable-stage-response-attestation-v1",
-                        "provider_request_binding_sha256": "0" * 64,
-                        "serialized_prompt_sha256": "0" * 64,
+                        "schema_version": "portable-stage-response-attestation-v2",
+                        "response_echo_sha256": "0" * 64,
                     },
                     state_root=pathlib.Path(directory) / "state",
                     timeout_seconds=1,

@@ -69,7 +69,7 @@ Every portable provider attempt SHALL run in a disposable mirror containing only
 - **AND THEN** this check closes the observed path set and file type/link identity without adding content or mode immutability for ordinary declared inputs
 
 ### Requirement: Provider responses attest to the host request
-Every portable request SHALL carry a host-computed base-request binding over its stage, seat, serialized prompt, role SHA, declared-input names and SHAs, and response schema, plus a separate serialized-prompt SHA. The response SHALL echo both values exactly in its closed envelope. The runtime SHALL record the full wire-request SHA separately and SHALL NOT derive provider attestation from host state after the response.
+Every portable request SHALL carry a host-computed base-request binding over its stage, seat, serialized prompt, role SHA, declared-input names and SHAs, and response schema, plus a separate serialized-prompt SHA. The host SHALL derive a single framed response-echo SHA from those two values, and the response SHALL echo that one value exactly in its closed envelope. The runtime SHALL record the full wire-request SHA separately and SHALL NOT derive provider attestation from host state after the response.
 
 An adapter MAY unwrap provider-owned machine transport before model-envelope validation. The extracted model envelope SHALL still satisfy the strict JSON, closed-schema, request-attestation, and host-canonicalization requirements before import or publication.
 

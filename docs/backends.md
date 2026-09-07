@@ -337,8 +337,9 @@ is never an output fallback.
 
 The host injects a base-request binding over the stage, seat, prompt, role SHA,
 declared-input names and SHAs, and response schema, plus a separate prompt SHA.
-The response must echo both values exactly. Missing or wrong attestation fails
-before any artifact is projected or completion is published.
+From those two values the host derives a single framed `response_echo_sha256`;
+the response must echo that one value exactly. Missing or wrong attestation
+fails before any artifact is projected or completion is published.
 
 Portable Grok stages use the `grok-portable-v3` command grammar and request
 `--output-format json`. The rendered command environment forces all six

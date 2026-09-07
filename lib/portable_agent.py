@@ -781,15 +781,13 @@ def _validate_response_schema_contract(schema):
         or attestation.get("required")
         != [
             "schema_version",
-            "provider_request_binding_sha256",
-            "serialized_prompt_sha256",
+            "response_echo_sha256",
         ]
         or type(attestation.get("properties")) is not dict
         or set(attestation["properties"])
         != {
             "schema_version",
-            "provider_request_binding_sha256",
-            "serialized_prompt_sha256",
+            "response_echo_sha256",
         }
         or type(artifacts) is not dict
         or set(artifacts) != {"items", "maxItems", "minItems", "type"}
@@ -807,16 +805,9 @@ def _validate_response_schema_contract(schema):
         or set(attestation_version) != {"enum", "type"}
         or attestation_version.get("type") != "string"
         or attestation_version.get("enum")
-        != ["portable-stage-response-attestation-v1"]
-        or any(
-            value != {"type": "string"}
-            for value in (
-                attestation_properties[
-                    "provider_request_binding_sha256"
-                ],
-                attestation_properties["serialized_prompt_sha256"],
-            )
-        )
+        != ["portable-stage-response-attestation-v2"]
+        or attestation_properties["response_echo_sha256"]
+        != {"type": "string"}
     ):
         raise PortableAgentError("invalid_response_schema")
     item = artifacts["items"]
@@ -886,22 +877,15 @@ def _validate_response_value(value, contract):
         or set(attestation)
         != {
             "schema_version",
-            "provider_request_binding_sha256",
-            "serialized_prompt_sha256",
+            "response_echo_sha256",
         }
         or attestation.get("schema_version")
-        != "portable-stage-response-attestation-v1"
+        != "portable-stage-response-attestation-v2"
+        or type(attestation.get("response_echo_sha256")) is not str
+        or len(attestation["response_echo_sha256"]) != 64
         or any(
-            type(attestation.get(name)) is not str
-            or len(attestation[name]) != 64
-            or any(
-                character not in "0123456789abcdef"
-                for character in attestation[name]
-            )
-            for name in (
-                "provider_request_binding_sha256",
-                "serialized_prompt_sha256",
-            )
+            character not in "0123456789abcdef"
+            for character in attestation["response_echo_sha256"]
         )
     ):
         raise PortableAgentError("schema_mismatch")
@@ -923,22 +907,18 @@ def _validate_response_value(value, contract):
 def _validate_expected_response_attestation(value):
     fields = {
         "schema_version",
-        "provider_request_binding_sha256",
-        "serialized_prompt_sha256",
+        "response_echo_sha256",
     }
     if (
         type(value) is not dict
         or set(value) != fields
         or value.get("schema_version")
-        != "portable-stage-response-attestation-v1"
+        != "portable-stage-response-attestation-v2"
+        or type(value.get("response_echo_sha256")) is not str
+        or len(value["response_echo_sha256"]) != 64
         or any(
-            type(value.get(name)) is not str
-            or len(value[name]) != 64
-            or any(character not in "0123456789abcdef" for character in value[name])
-            for name in (
-                "provider_request_binding_sha256",
-                "serialized_prompt_sha256",
-            )
+            character not in "0123456789abcdef"
+            for character in value["response_echo_sha256"]
         )
     ):
         raise PortableAgentError("invalid_response_schema")

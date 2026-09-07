@@ -17,6 +17,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from lib import history_contract_v2
 from lib import history_runtime
 from lib import portable_agent
 from lib import provider_adapters
@@ -570,6 +571,62 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                         for path in prepared["output_paths"].values()
                     )
                 )
+
+    def test_wrong_response_echo_sha256_raises_attestation_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared, _, _ = self._prepare(root)
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "wrong-request-attestation"},
+                clear=False,
+            ):
+                with self.assertRaises(self._error()) as caught:
+                    self._api(portable_stage, "run_stage")(
+                        prepared,
+                        timeout_seconds=2,
+                    )
+            self.assertEqual(
+                caught.exception.code,
+                "provider_request_attestation_mismatch",
+            )
+            self.assertFalse(
+                pathlib.Path(prepared["completion_path"]).exists()
+            )
+
+    def test_single_response_echo_attestation_round_trips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared, _, _ = self._prepare(root)
+            completion = self._api(portable_stage, "run_stage")(
+                prepared, timeout_seconds=2
+            )
+            binding = json.loads(prepared["provider_request"])[
+                "request_binding"
+            ]
+            expected_echo = history_contract_v2.framed_sha256(
+                "portable-stage-response-echo-v1",
+                binding["provider_request_binding_sha256"].encode("ascii"),
+                binding["serialized_prompt_sha256"].encode("ascii"),
+            )
+            self.assertEqual(
+                binding["response_echo_sha256"], expected_echo
+            )
+            imported = (
+                pathlib.Path(prepared["state_root"])
+                / "imports"
+                / (completion["model_envelope_sha256"] + ".json")
+            )
+            envelope = json.loads(imported.read_text(encoding="utf-8"))
+            self.assertEqual(
+                envelope["request_attestation"],
+                {
+                    "schema_version": (
+                        "portable-stage-response-attestation-v2"
+                    ),
+                    "response_echo_sha256": expected_echo,
+                },
+            )
 
     def test_mirror_has_only_declared_inputs_and_scrubs_runtime_pointers(self):
         with tempfile.TemporaryDirectory() as directory:
