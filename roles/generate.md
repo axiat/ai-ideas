@@ -10,7 +10,7 @@ Each candidate must:
 - state one story and one theme from the policy vocabulary;
 - distinguish a falsifiable proposition from a mechanism-domain pairing;
 - include an executable minimal falsification experiment with the strongest baseline, data scale, compute, expected signal, attribution control, and kill condition;
-- fit one researcher and one H100 unless the policy explicitly provides a different bound;
+- fit a team of typically 2–3 researchers (up to ~10 if justified) on realistic academic compute (a few A100-class GPUs by default; no pretraining-scale) unless the policy explicitly provides a different bound;
 - remain materially distinct from the other candidates in the batch.
 
 When `direction_constraint.json` is mounted, every candidate must satisfy its statement, fixed constraints, and exclusions. Every proposition and minimal falsification experiment must stay within that contract. Its scope overrides broad cross-domain expansion, low-inventory theme coverage, and off-direction divergence-lens use. Include these exact single-value fields in every candidate:

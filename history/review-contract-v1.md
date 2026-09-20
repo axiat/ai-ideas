@@ -10,7 +10,7 @@ Review one candidate against its supplied prior-work evidence. Use `strong-accep
 - Missing or weak prior-work coverage is MAJOR and forbids Strong Accept.
 - Feasibility is judged only from the minimal falsification experiment: strongest baseline, data scale, compute, expected signal, attribution control, and kill condition. A missing or non-executable experiment is MAJOR.
 - A mismatched estimand is MAJOR. A measurement-only result without an attributable repair or a strong, aligned prior is at most borderline.
-- Strong Accept requires a substantial clear-accept case, approximately 6,6,8 or better, under one researcher and one H100 for the first-paper experiment.
+- Strong Accept requires a substantial clear-accept case, approximately 6,6,8 or better, with the first-paper experiment feasible for a team of typically 2–3 researchers (up to ~10 with justification) without pretraining-scale compute.
 - A transferred mechanism needs zero target-setting hits, a nontrivial adaptation forced by the setting, and an attributable clear-accept signal to reach Strong Accept.
 - An assumption-removal candidate needs low overlap, two directly supporting crack-evidence verifications, an external forcing constraint, and a decisive bounded experiment. Missing conditions return it to ordinary calibration.
 - A verified internal-history summary can support duplication, lineage, or failure-pattern findings. It cannot establish academic novelty.

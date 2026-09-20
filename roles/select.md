@@ -15,7 +15,7 @@ Write one sentence per criterion for every candidate, then assign a strict total
 1. **Proposition strength:** Prefer a proposition that explains a recognized phenomenon, removes a load-bearing assumption, or names a new problem and forces a falsifiable discriminator. Rank an enumerable M×D pairing lower: it is usually a near transfer whose ceiling is Accept with Revisions. The discriminator must appear in the signal of the `Minimal Falsification Experiment:`.
 2. **Clear-accept ceiling:** A measurement-only or probe-only candidate without a repair arm or strong prior for a surprising finding is capped at borderline and ranks lower. Prefer candidates with an actionable repair or gain if the proposition holds, or with a strong prior for a surprising result.
 3. **Minimal falsification experiment quality:** Prefer experiments that name the strongest baseline, state sample size and expected effect, and isolate the novel component from the nearest method. Rank weak or fixed baselines, and signals that do not measure the claim, lower.
-4. **Executability:** Assess whether one researcher with 1×H100 80G can complete the minimal falsification experiment and a reasonable first-paper scope. Rank work above that budget lower.
+4. **Executability:** Assess whether a team of 2–3 researchers can complete the minimal falsification experiment and a reasonable first-paper scope, assuming a few A100-class GPUs by default (no fixed GPU cap, but no pretraining-scale compute). Teams up to ~10 are possible; rank work needing larger teams or pretraining-scale compute lower.
 
 When criteria conflict, proposition strength and the clear-accept ceiling take precedence.
 

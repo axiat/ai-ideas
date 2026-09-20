@@ -9,7 +9,7 @@ Last updated: 2026-09-04. This file is optional inspiration, not a constraint. `
 
 ## Resource Assumptions
 
-One researcher, 1×H100 80G, direct access to the humanoid platform for real-robot experiments. The feasibility baseline in `brainstorming_policy.md` still applies to every candidate's minimal falsification experiment.
+A research team of typically 2–3 people (up to ~10 is possible, but small, easily mobilized teams are preferred) with direct access to the humanoid platform for real-robot experiments. Compute carries no fixed GPU cap: assume a few A100-class GPUs by default, enterprise collaboration may provide more, but pretraining-scale compute is not available. The feasibility rules in `brainstorming_policy.md` apply to every candidate's minimal falsification experiment.
 
 ## Inspiration Sparks
 
