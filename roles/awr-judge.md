@@ -7,7 +7,7 @@ Novelty depends only on `priorwork.md`, never on the draft's `## Search Record`.
 `Decision: SA-possible` requires all of the following:
 
 - Five to eight linked close works, `Strongest Counterexample:`, at least one reproducible API `- Query:` URL, and an `Overlap:` result that leaves a clear-accept-level difference.
-- A `Minimal Falsification Experiment:` naming data, compute, expected signal, and a kill condition executable by one researcher on one H100.
+- A `Minimal Falsification Experiment:` naming data, compute, expected signal, and a kill condition executable by a team of typically 2–3 researchers (up to ~10 if justified) without pretraining-scale compute.
 - For an assumption-removal idea, at least two `supports` results under `## Crack Evidence Verification`.
 - Every gap and earlier reviewer defect is resolved without introducing a new occupied claim.
 
