@@ -10,7 +10,6 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import history_runtime_smoke as smoke  # noqa: E402
-from lib import history_stage  # noqa: E402
 from lib import portable_agent  # noqa: E402
 
 history_runtime = smoke.history_runtime
@@ -26,16 +25,6 @@ class ResumeBindingRegression(smoke.RuntimeFixture):
 
     def setUp(self):
         super().setUp()
-        patcher = mock.patch.object(
-            history_stage,
-            "build_darwin_launch",
-            side_effect=lambda _profile, _mirror, command, *args, **kwargs: (
-                command,
-                "(version 1)",
-            ),
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
         reserved = portable_agent._reserved
         reserved_patcher = mock.patch.object(
             portable_agent,

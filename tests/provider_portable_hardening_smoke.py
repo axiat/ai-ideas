@@ -21,10 +21,10 @@ sys.path.insert(0, str(ROOT))
 
 from lib import direction_contract
 from lib import history_contract_v2
-from lib import history_stage_adapter
 from lib import portable_agent
 from lib import portable_stage
 from lib import provider_adapters
+from lib import stage_contract
 
 
 REGISTRY = ROOT / "history/provider-adapters-v1.json"
@@ -848,7 +848,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         for stage in ("generate", "history-compare", "review", "meta"):
             with self.subTest(legacy_stage=stage):
                 self.assertEqual(
-                    history_stage_adapter.stage_response_schema(stage)[
+                    stage_contract.stage_response_schema(stage)[
                         "properties"
                     ]["schema_version"],
                     {"enum": [1], "type": "integer"},

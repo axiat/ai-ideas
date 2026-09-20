@@ -77,49 +77,6 @@ python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 replay-receipt \
   --pack tmp/retrieval_pack.json --receipt tmp/history_receipt.json
 ```
 
-Generation, internal comparison, review, and bounded failure distillation use
-the same contained stage ABI:
-
-```bash
-python3 lib/history_stage.py run \
-  --stage generate \
-  --manifest /absolute/run/generate-manifest.json \
-  --command '["/absolute/path/to/codex","-m","gpt-5.3-codex-spark","-c","model_reasoning_effort=xhigh"]'
-```
-
-The `xhigh` command is the registered target configuration, not an online
-availability check. It runs only when the local platform, Codex `0.146.x`
-CLI version family, model, reasoning setting, adapter, canonicalizer, response
-schemas, policy bounds, owner-only authentication file, and Darwin
-`sandbox-exec` profile match the audited capability. Any drift fails before
-backend launch. Linux fixture containment requires `bwrap`; Codex fails closed
-there until a loopback-only network namespace is registered.
-
-Upgrading the contained Codex CLI: adapt
-`lib/history_stage_proxy.py` to the new wire shape (normalize volatile
-CLI-assigned fields such as message `id`s rather than loosening the exact
-preflight comparison), bump `CODEX_CLI_VERSION` in `lib/history_stage.py`,
-then re-register the capability in
-`history/codex-adapter-capabilities-v2.json` by recomputing
-`_codex_profile_bytes` per stage identity with the new version family and
-appending the entry. Finish by running the installed-binary loopback tests
-in `tests/history_stage_proxy_smoke.py`. Version detection that succeeds
-never falls back to the static pin; an unregistered minor family fails
-closed.
-
-The command is a closed JSON argv array. The host captures and hashes the
-registered role, policy, mounted inputs, executable, fixed argv, and canonical
-prompt before launch. The adapter applies fixed CPU, address-space, file-size,
-descriptor, process, and core-dump limits before backend `exec`. The pinned
-proxy disables tools, exposes one declared loopback port, enforces one absolute
-upstream deadline, and cancels active sockets on shutdown. The host broker
-reads the canonical Codex authentication file without modifying it; an expired
-session fails with `auth_refresh_required` and requires a normal operator login
-before retry. A preflight receipt is durable before launch, copied artifacts
-are untrusted without the completion receipt, and the completion receipt is
-published only after every declared output passes no-follow, type, size,
-schema, and prompt-attestation checks.
-
 `hunt.sh` runs generation, internal comparison, and every review seat
 through the portable-v2 runtime: registered provider request profiles built
 by `lib/history_audit_cli.py provider-command` and executed by
@@ -127,7 +84,7 @@ by `lib/history_audit_cli.py provider-command` and executed by
 research, and report assembly run from disposable mirrors and return only
 their declared bounded artifacts.
 
-The canonical contained roles are `roles/generate.md`, `roles/meta.md`, and
+The canonical stage roles are `roles/generate.md`, `roles/meta.md`, and
 `roles/review.md`. Routine hunt rounds do not invoke the optional meta stage;
 structured failure counts enter generation through the database-backed brief.
 

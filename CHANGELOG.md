@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-09-20 Harness: v1 contained-runtime code stack removed
+
+- Deleted the unreachable v1 contained-runtime implementation: `lib/history_stage.py` (sandbox-exec/bwrap containment, `_run_contained`, `run_stage` CLI), `lib/history_stage_proxy.py` (Codex loopback canonicalizer), and `lib/history_stage_adapter.py` (contained adapter CLI). No live entry point referenced them after the 2026-09-07 runtime removal.
+- The projection helpers the portable-v2 runtime still uses moved to `lib/stage_contract.py` with public names: `build_generation_tsv_from_markdown`, `build_review_verdict_from_markdown`, `validate_failure_distillation`, `stage_response_schema`, `parse_model_output`, and `StageError`. `lib/portable_stage.py` now imports only `stage_contract`.
+- Removed the dedicated v1 test suites and fixtures (`tests/history_stage_*`, `tests/history_mirror_smoke.sh`, `tests/malicious_history_agent.*`, `tests/fake_stage_agent.py`), the dead `fake_stage_agent.py` dispatch branch in `tests/fake_agent.sh`, and vestigial `build_darwin_launch` mocks in the three runtime binding regressions (they intercepted nothing). The generation crack-evidence regression cases now live in `tests/stage_contract_regression.py`.
+- Removed stale tracked artifacts: `history/codex-adapter-capabilities-v2.json` (consumed only by the deleted runtime), the 0-byte `history/history.sqlite3` placeholder (the live database is the gitignored `.ai-ideas/history.sqlite3`), `hunt-validate-0907.log`, the superseded drafts `AWR-REBUILD-DRAFT.md` and `LITWATCH-DRAFT.md`, and the July milestone copy `s1_report_20260720.md` (the product contract scans it only while present). CONTRIBUTING.md now documents only the portable-v2 workflow, and the completed `scalable-history-runtime` and `claude-first-class-provider` openspec changes moved to `openspec/changes/archive/`.
+- Re-pinned the ledger product contract to the current baseline: 601 rows (216 seven-column, 385 eight-column) with refreshed evidence digests. The 2026-09-07 ledger commits had grown the ledger without re-pinning, leaving `verify_product_contract.py all` red at HEAD.
+- Record-keeping: the 2026-09-07 removal of the v1 runtime entry points (commit 440aab5, PR #55) was never changelogged; this entry covers both that removal and today's cleanup of its leftover implementation.
+- Validation: full offline suite passes (history store/projection/budget/retrieval smokes, runtime ABI and portable e2e smokes, product-contract checks).
+
 ## 2026-07-29 Harness: contained Codex integration upgraded to CLI 0.146.0
 
 - Codex 0.146.0 changed the wire shape: the final user message carries a CLI-assigned `id` (`msg_...`), and developer/user context items are injected ahead of the prompt. The exact preflight comparison in `lib/history_stage_proxy.py` rejected the request and every contained stage failed with `canonicalizer_rejected: Codex prompt does not match preflight`. `validate_client_request` now strips a volatile `msg_` id from the last message before the same exact comparison; any other drift, forged id, or extra key still fails closed.

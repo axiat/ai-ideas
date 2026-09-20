@@ -69,7 +69,7 @@ Acceptance: the share of candidates receiving at least one SA vote increases, an
 
 #### P1: AwR re-entry architecture
 
-Status: deferred. The experiment gate rejected implementation. The complete architecture and crash matrix remain in [`AWR-REBUILD-DRAFT.md`](AWR-REBUILD-DRAFT.md) pending stronger candidate evidence.
+Status: deferred. The experiment gate rejected implementation. The complete architecture and crash matrix remain in the AwR re-entry draft (removed from the tree on 2026-09-20; last present at commit f33bba9, view with `git show f33bba9:AWR-REBUILD-DRAFT.md`) pending stronger candidate evidence.
 
 Experiment gate run on 2026-07-14, with no new pipeline:
 
@@ -80,10 +80,10 @@ Conclusion: the AwR re-entry architecture, including the thin slice below, remai
 
 Thin slice, conditional on a future successful experiment gate and limited to research quality:
 
-- [ ] Connect the Strongest Counterexample, distinct-neighbor, and Papers Read evidence gates from `AWR-REBUILD-DRAFT.md` §3.5 to the existing `check_judge`.
+- [ ] Connect the Strongest Counterexample, distinct-neighbor, and Papers Read evidence gates from the archived AwR re-entry draft (§3.5) to the existing `check_judge`.
 - [ ] Use Claude or Codex as the trusted judge through the existing `--ignore-user-config`, `workspace-write`, and `--strict-mcp-config` controls; accept `asserted` independence without blocking on OS-level confinement.
 
-Deferred until evidence includes at least 1 SA candidate; full details remain in `AWR-REBUILD-DRAFT.md`: entry truth table and capability predicates, invocation bundle and provenance DAG (§3.4), atomic `ledger.good` publication receipt (§3.7), sealed-plan legacy migration (§4), exactly-once manual promotion (§3.8), and storage milestone #3 lineages/grants/requests/outbox (§5). These correctness costs become relevant only after the pipeline can produce artifacts worth committing correctly.
+Deferred until evidence includes at least 1 SA candidate; full details remain in the archived AwR re-entry draft: entry truth table and capability predicates, invocation bundle and provenance DAG (§3.4), atomic `ledger.good` publication receipt (§3.7), sealed-plan legacy migration (§4), exactly-once manual promotion (§3.8), and storage milestone #3 lineages/grants/requests/outbox (§5). These correctness costs become relevant only after the pipeline can produce artifacts worth committing correctly.
 
 Acceptance: the experiment gate produces an explicit SA/no-SA result that determines whether work proceeds. If the thin slice is activated, `SA-possible` artifacts support manual review and dormant mode retains zero side effects. Formal main-loop verdict re-entry belongs to #3.
 
@@ -122,7 +122,7 @@ Acceptance: adding or switching a research topic requires no harness changes; to
 
 Use SQLite as the canonical structured history while preserving TSV import/export and the existing ledger during migration. [`docs/superpowers/specs/2026-07-23-bounded-history-retrieval-design.md`](docs/superpowers/specs/2026-07-23-bounded-history-retrieval-design.md) is canonical for model-context isolation, search projections, retrieval packs, failure semantics, and evaluation.
 
-- [x] Define the minimal schema for ideas, runs, candidates, reviews, artifacts, invocations, and revision lineage. [`AWR-REBUILD-DRAFT.md` §5](AWR-REBUILD-DRAFT.md#5-automatic-re-entry-bridge-storage-milestone-3) remains canonical for the deferred automatic re-entry bridge; this milestone does not create those tables.
+- [x] Define the minimal schema for ideas, runs, candidates, reviews, artifacts, invocations, and revision lineage. §5 of the archived AwR re-entry draft remains canonical for the deferred automatic re-entry bridge; this milestone does not create those tables.
 - [x] Provide one-time import, dual-read validation, and stable TSV export before switching the primary write path.
 - [x] Make writes transactional and support unique constraints, idempotent resume, and schema versions.
 - [x] Add canonical typed lineage edges and a search-projection outbox without changing the AWR materialization outbox's file-effect responsibility.

@@ -3,14 +3,12 @@ import json
 import pathlib
 import sys
 import unittest
-from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import history_runtime_smoke as smoke  # noqa: E402
-from lib import history_stage  # noqa: E402
 
 history_runtime = smoke.history_runtime
 canonical = smoke.canonical
@@ -23,19 +21,6 @@ class RuntimeFinalIntegrityRegression(smoke.RuntimeFixture):
     _seal_review_plan = smoke.RoundCoordinatorContract._seal_review_plan
     _review_chain = smoke.RoundCoordinatorContract._review_chain
     _enforcement_round = smoke.RoundCoordinatorContract._enforcement_round
-
-    def setUp(self):
-        super().setUp()
-        patcher = mock.patch.object(
-            history_stage,
-            "build_darwin_launch",
-            side_effect=lambda _profile, _mirror, command, *args, **kwargs: (
-                command,
-                "(version 1)",
-            ),
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def _report(self, state, stem, authority):
         artifact_root = state.get(

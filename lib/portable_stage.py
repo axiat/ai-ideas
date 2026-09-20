@@ -20,18 +20,16 @@ try:
     from lib import direction_contract
     from lib import history_contract_v2
     from lib import history_retrieval
-    from lib import history_stage
-    from lib import history_stage_adapter
     from lib import portable_agent
     from lib import provider_adapters
+    from lib import stage_contract
 except ImportError:
     import direction_contract
     import history_contract_v2
     import history_retrieval
-    import history_stage
-    import history_stage_adapter
     import portable_agent
     import provider_adapters
+    import stage_contract
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -560,7 +558,7 @@ def _response_schema(stage):
         }
     try:
         schema = copy.deepcopy(
-            history_stage_adapter.stage_response_schema(stage)
+            stage_contract.stage_response_schema(stage)
         )
     except ValueError as exc:
         raise PortableStageError("unsupported_stage") from exc
@@ -1424,7 +1422,7 @@ def _project_outputs(prepared, envelope_raw, input_raws):
     if stage in _AWR_ARTIFACTS:
         return _parse_awr_output(stage, envelope_raw)
     try:
-        artifacts = history_stage_adapter.parse_model_output(stage, envelope_raw)
+        artifacts = stage_contract.parse_model_output(stage, envelope_raw)
     except ValueError as exc:
         raise PortableStageError("invalid_model_envelope") from exc
     attestation = _projected_prompt_attestation(prepared)
@@ -1451,11 +1449,11 @@ def _project_outputs(prepared, envelope_raw, input_raws):
             if canonical != input_raws["direction_constraint.json"]:
                 raise PortableStageError("noncanonical_direction_contract")
         try:
-            tsv = history_stage._build_generation_tsv_from_markdown(
+            tsv = stage_contract.build_generation_tsv_from_markdown(
                 text,
                 direction_contract=contract,
             ).encode("utf-8")
-        except history_stage.StageError as exc:
+        except stage_contract.StageError as exc:
             raise PortableStageError(
                 "invalid_generation_output",
                 str(exc),
@@ -1493,11 +1491,11 @@ def _project_outputs(prepared, envelope_raw, input_raws):
         if not _valid_text(candidate_id):
             raise PortableStageError("invalid_review_candidate")
         try:
-            verdict = history_stage._build_review_verdict_from_markdown(
+            verdict = stage_contract.build_review_verdict_from_markdown(
                 review.decode("utf-8"),
                 candidate_id,
             ).encode("utf-8")
-        except (UnicodeDecodeError, history_stage.StageError) as exc:
+        except (UnicodeDecodeError, stage_contract.StageError) as exc:
             raise PortableStageError("invalid_review_output") from exc
         return {
             "review.md": review,
@@ -1512,8 +1510,8 @@ def _project_outputs(prepared, envelope_raw, input_raws):
             "failure_batch",
         )
         try:
-            history_stage._validate_failure_distillation(result, batch)
-        except history_stage.StageError as exc:
+            stage_contract.validate_failure_distillation(result, batch)
+        except stage_contract.StageError as exc:
             raise PortableStageError("invalid_failure_distillation") from exc
         return {
             "failure-distillation.json": result_raw,
