@@ -53,6 +53,34 @@ The repository-relative contract is canonicalized before any agent invocation. E
 
 The semantic classifier is an independent model judgment wrapped by fail-closed orchestration; it is not a proof of natural-language meaning.
 
+## Project Mode
+
+An external topic folder can drive hunts while the master ledger stays in this checkout. Register the folder once, then name it per run:
+
+```bash
+python3 lib/history_cli.py project-add mytopic /abs/path/to/mytopic
+HUNT_PROJECT=mytopic ./hunt.sh
+```
+
+The project directory needs only a `direction.json`: copy any `directions/*.json` contract there and rename it. `project-add` requires an absolute, non-symlink directory outside the checkout and validates the contract at registration. `HUNT_PROJECT_DIR=/abs/path` runs an unregistered directory directly. Both modes stage the direction by copy, print `mode=project <name> <dir>` at startup, tag committed rows with the project name, and export each round's new ledger rows to `<project>/harvest/` (slice, manifest, and the run's report on Strong Accept).
+
+Harvest slices are read-only snapshots; re-import is unsupported because row identity is position-dependent. Query the master ledger for history. Operational rules:
+
+- `SA_TARGET` is global across projects and modes.
+- Hunts are serial: one `hunt.sh` process holds the repository lock at a time, regardless of mode.
+- Editing a project's `direction.json` changes its direction identity, and resume then refuses the run, as with `RESEARCH_DIRECTION_FILE`.
+- Moving a project folder rots the registry pointer; re-run `project-add` with the new path (the harvest mark is preserved).
+- Ad-hoc per-project lookup runs against the master ledger:
+
+```bash
+sqlite3 .ai-ideas/history.sqlite3 \
+  "SELECT date, theme, story, verdict FROM candidates
+   WHERE json_extract(provenance_json, '$.project') = 'mytopic'
+   ORDER BY source_sequence"
+```
+
+Operational detail is in [`docs/getting-started.md`](docs/getting-started.md).
+
 ## Artifacts
 
 The durable accounting surface is an eight-column TSV:

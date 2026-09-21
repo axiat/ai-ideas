@@ -35,6 +35,10 @@
 #       Reuse only a runtime-validated sealed front state.
 #   RESEARCH_DIRECTION_FILE
 #       Optional repository-relative closed research-direction contract.
+#   HUNT_PROJECT / HUNT_PROJECT_DIR
+#       Optional external project mode: stage <project>/direction.json by
+#       copy, tag committed rows with the project name, and harvest a
+#       per-round ledger slice back to <project>/harvest/.
 set -u
 
 cd "$(dirname "$0")" || exit 2
@@ -265,6 +269,8 @@ THEME_MIN_LOW=${THEME_MIN_LOW:-2}
 AXIOM_MIN_CRACKS=${AXIOM_MIN_CRACKS:-2}
 RESUME_FRONT=${RESUME_FRONT:-1}
 RESEARCH_DIRECTION_FILE=${RESEARCH_DIRECTION_FILE:-}
+HUNT_PROJECT=${HUNT_PROJECT:-}
+HUNT_PROJECT_DIR=${HUNT_PROJECT_DIR:-}
 
 LOG=hunt.log
 RD=tmp/round
@@ -279,6 +285,10 @@ RECOVERY_DATE=
 RECOVERY_REASON=
 RECOVERY_OUTCOME=
 RECOVERY_REPORT_PATH=
+PROJECT_MODE=0
+PROJECT_NAME=
+PROJECT_DIR=
+PROJECT_MARK=0
 RECOVERY_CURRENT_DECISION_COMPLETE=0
 HALT_MARK=tmp/HALTED-ARCHIVE-FAIL
 HISTORY_DB=.ai-ideas/history.sqlite3
@@ -941,15 +951,20 @@ history_materialize_report() {
 }
 
 history_append_rows() {
-  history_runtime_authorized commit-round \
-    --db "$HISTORY_DB" \
-    --policy "$HISTORY_POLICY" \
-    --batch "$1" \
-    --selection "$2" \
-    --comparison-index "$3" \
-    --review-plan "$4" \
-    --review-index "$5" \
+  local -a append_args=(
+    --db "$HISTORY_DB"
+    --policy "$HISTORY_POLICY"
+    --batch "$1"
+    --selection "$2"
+    --comparison-index "$3"
+    --review-plan "$4"
+    --review-index "$5"
     --aggregation "$6"
+  )
+  if [ "$PROJECT_MODE" = 1 ]; then
+    append_args+=(--project "$PROJECT_NAME")
+  fi
+  history_runtime_authorized commit-round "${append_args[@]}"
 }
 
 history_commit_round() {
@@ -958,6 +973,261 @@ history_commit_round() {
 
 history_materialize_ledger() {
   history_reconcile_ledger
+}
+
+project_mode_preflight() {
+  [ -n "$HUNT_PROJECT" ] || [ -n "$HUNT_PROJECT_DIR" ] || return 0
+  PROJECT_MODE=1
+  if [ -n "$HUNT_PROJECT" ] && [ -n "$HUNT_PROJECT_DIR" ]; then
+    log "Project mode refused: HUNT_PROJECT and HUNT_PROJECT_DIR are both set"
+    return 2
+  fi
+  if [ -n "$RESEARCH_DIRECTION_FILE" ]; then
+    log "Project mode refused: project mode cannot combine with RESEARCH_DIRECTION_FILE"
+    return 2
+  fi
+  local registry_info project_physical fallback_mark
+  if [ -n "$HUNT_PROJECT" ]; then
+    registry_info=$(python3 - "$HUNT_PROJECT" <<'PY'
+import json
+import subprocess
+import sys
+
+result = subprocess.run(
+    [sys.executable, "lib/history_cli.py", "project-path", sys.argv[1]],
+    capture_output=True,
+    text=True,
+)
+if result.returncode != 0:
+    sys.stderr.write(result.stderr)
+    raise SystemExit(2)
+value = json.loads(result.stdout)
+print(value["path"])
+mark = value["last_harvested_sequence"]
+print("" if mark is None else mark)
+PY
+    ) || return 2
+    PROJECT_DIR=$(printf '%s\n' "$registry_info" | sed -n 1p)
+    PROJECT_MARK=$(printf '%s\n' "$registry_info" | sed -n 2p)
+    PROJECT_NAME=$HUNT_PROJECT
+  else
+    case "$HUNT_PROJECT_DIR" in
+      /*) ;;
+      *)
+        log "Project mode refused: HUNT_PROJECT_DIR must be an absolute path: $HUNT_PROJECT_DIR"
+        return 2
+        ;;
+    esac
+    if [ -L "$HUNT_PROJECT_DIR" ]; then
+      log "Project mode refused: project directory cannot be a symlink: $HUNT_PROJECT_DIR"
+      return 2
+    fi
+    if [ ! -d "$HUNT_PROJECT_DIR" ]; then
+      log "Project mode refused: project directory does not exist: $HUNT_PROJECT_DIR"
+      return 2
+    fi
+    PROJECT_DIR=$(cd "$HUNT_PROJECT_DIR" && pwd -P) || {
+      log "Project mode refused: cannot resolve project directory: $HUNT_PROJECT_DIR"
+      return 2
+    }
+    PROJECT_NAME=$(basename "$PROJECT_DIR")
+    PROJECT_MARK=
+  fi
+  if [ -L "$PROJECT_DIR" ]; then
+    log "Project mode refused: project directory cannot be a symlink: $PROJECT_DIR"
+    return 2
+  fi
+  project_physical=$(cd "$PROJECT_DIR" && pwd -P) || {
+    log "Project mode refused: cannot resolve project directory: $PROJECT_DIR"
+    return 2
+  }
+  case "$project_physical" in
+    "$PWD"|"$PWD"/*)
+      log "Project mode refused: project directory cannot be the checkout or inside it: $project_physical"
+      return 2
+      ;;
+  esac
+  PROJECT_DIR=$project_physical
+  if [ ! -e "$PROJECT_DIR/direction.json" ]; then
+    log "Project mode refused: project direction.json is missing: $PROJECT_DIR"
+    return 2
+  fi
+  if [ -L "$PROJECT_DIR/direction.json" ]; then
+    log "Project mode refused: project direction.json cannot be a symlink: $PROJECT_DIR"
+    return 2
+  fi
+  if [ ! -f "$PROJECT_DIR/direction.json" ]; then
+    log "Project mode refused: project direction.json is not a regular file: $PROJECT_DIR"
+    return 2
+  fi
+  if [ ! -f "$HISTORY_DB" ] || [ -L "$HISTORY_DB" ]; then
+    log "Project mode refused: project mode requires an existing history database: $HISTORY_DB"
+    return 2
+  fi
+  fallback_mark=$(python3 - "$HISTORY_DB" <<'PY'
+import json
+import subprocess
+import sys
+
+result = subprocess.run(
+    [sys.executable, "lib/history_cli.py", "--db", sys.argv[1], "max-sequence"],
+    capture_output=True,
+    text=True,
+)
+if result.returncode != 0:
+    sys.stderr.write(result.stderr)
+    raise SystemExit(2)
+print(json.loads(result.stdout)["max_sequence"])
+PY
+  ) || {
+    log "Project mode refused: project harvest mark is unreadable"
+    return 2
+  }
+  if [ -z "$PROJECT_MARK" ]; then
+    PROJECT_MARK=$fallback_mark
+  fi
+  return 0
+}
+
+project_mode_harvest() {
+  local phase=$1
+  case "$phase" in
+    slice)
+      local harvest_dir slice export_json
+      harvest_dir="$PROJECT_DIR/harvest"
+      slice="$harvest_dir/ledger-slice-$run_id.tsv"
+      local -a export_args=(
+        --db "$HISTORY_DB"
+        export-slice
+        --after-sequence "$PROJECT_MARK"
+        --dest "$slice"
+      )
+      if [ -n "$HUNT_PROJECT" ]; then
+        export_args+=(--project "$PROJECT_NAME")
+      fi
+      if ! export_json=$(python3 lib/history_cli.py "${export_args[@]}"); then
+        return 1
+      fi
+      local new_mark
+      new_mark=$(python3 - "$export_json" \
+        "$startup_root/direction-identity.json" \
+        "$PROJECT_NAME" "$run_id" "$today" "$slice" "$harvest_dir" <<'PY'
+import json
+import os
+import pathlib
+import sys
+import tempfile
+
+export = json.loads(sys.argv[1])
+identity = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+project, run_id, today = sys.argv[3], sys.argv[4], sys.argv[5]
+slice_path = pathlib.Path(sys.argv[6])
+harvest_dir = pathlib.Path(sys.argv[7])
+
+verdicts = {}
+for chunk in slice_path.read_bytes().split(b"\n")[1:]:
+    if not chunk:
+        continue
+    verdict = chunk.split(b"\t")[4].rstrip(b"\r").decode("utf-8")
+    verdicts[verdict] = verdicts.get(verdict, 0) + 1
+manifest = {
+    "schema_version": 1,
+    "project": project,
+    "run_id": run_id,
+    "date": today,
+    "direction_id": identity["direction_id"],
+    "direction_sha256": identity["sha256"],
+    "after_sequence": export["after_sequence"],
+    "max_sequence": export["max_sequence"],
+    "row_count": export["row_count"],
+    "verdicts": verdicts,
+    "slice_file": slice_path.name,
+    "report_files": [],
+    "note": (
+        "Read-only snapshot; re-import is unsupported "
+        "(row identity is position-dependent)."
+    ),
+}
+data = (
+    json.dumps(manifest, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+).encode("utf-8")
+manifest_path = harvest_dir / f"manifest-{run_id}.json"
+descriptor, temporary = tempfile.mkstemp(
+    prefix=".manifest.", dir=str(harvest_dir)
+)
+try:
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, manifest_path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+readme = harvest_dir / "README.md"
+if not readme.exists():
+    readme.write_text(
+        "# Harvest snapshots\n"
+        "\n"
+        "These files are per-round read-only snapshots of the master "
+        "ledger in the ai-ideas checkout. `ledger-slice-<run_id>.tsv` "
+        "files are byte-exact copies of the ledger rows committed by one "
+        "hunt round, behind the ledger header; `manifest-<run_id>.json` "
+        "records the run id, direction identity, harvest mark, row "
+        "count, and verdict distribution.\n"
+        "\n"
+        "Re-import is unsupported: row identity (`origin_stable_id`) is "
+        "position-dependent, so a re-imported slice mints new identities "
+        "rather than rejoining the ledger. Query the master ledger in "
+        "the ai-ideas checkout for history.\n",
+        encoding="utf-8",
+    )
+print(export["max_sequence"])
+PY
+      ) || return 1
+      PROJECT_MARK=$new_mark
+      ;;
+    report)
+      [ -n "$RECOVERY_REPORT_PATH" ] || return 0
+      local base dest
+      base=$(basename "$RECOVERY_REPORT_PATH")
+      dest="$PROJECT_DIR/harvest/$base"
+      if [ -e "$dest" ] || [ -L "$dest" ]; then
+        log "Project report harvest refused existing destination: $dest"
+        return 1
+      fi
+      cp "$RECOVERY_REPORT_PATH" "$dest" || return 1
+      python3 - "$PROJECT_DIR/harvest/manifest-$run_id.json" "$base" <<'PY'
+import json
+import os
+import pathlib
+import sys
+import tempfile
+
+manifest_path = pathlib.Path(sys.argv[1])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+manifest["report_files"].append(sys.argv[2])
+data = (
+    json.dumps(manifest, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+).encode("utf-8")
+descriptor, temporary = tempfile.mkstemp(
+    prefix=".manifest.", dir=str(manifest_path.parent)
+)
+try:
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, manifest_path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+      ;;
+    *)
+      return 2
+      ;;
+  esac
 }
 
 prepare_external_mirror() {
@@ -2139,12 +2409,18 @@ mkdir -p "$RUNS_DIR" || { log "Cannot create archive directory"; exit 2; }
   log "Archive-integrity sentinel exists: $HALT_MARK"
   exit 2
 }
+project_mode_preflight || exit $?
 
 # Validate enforcement authority, migrate once, recover projections, and
 # reconcile both TSV targets before any agent process can start.
 startup_root=tmp/history-startup
 rm -rf "$startup_root"
 mkdir -p "$startup_root"
+if [ "$PROJECT_MODE" = 1 ]; then
+  cp "$PROJECT_DIR/direction.json" "$startup_root/direction-project.json" || {
+    log "Project direction staging failed"; exit 2; }
+  RESEARCH_DIRECTION_FILE="$startup_root/direction-project.json"
+fi
 direction_snapshot_args=(
   snapshot
   --repo-root "$PWD"
@@ -2164,6 +2440,11 @@ fi
 direction_active=0
 if [ -f "$startup_root/direction-constraint.json" ]; then
   direction_active=1
+fi
+if [ "$PROJECT_MODE" = 1 ]; then
+  log "mode=project $PROJECT_NAME $PROJECT_DIR"
+else
+  log "mode=default"
 fi
 if ! history_audit_init > "$startup_root/audit-init.json"; then
   log "History audit-v2 initialization failed before agent invocation"
@@ -2661,6 +2942,9 @@ PY
     log "Canonical commit succeeded but ledger projection remains pending"
     exit 2
   fi
+  if [ "$PROJECT_MODE" = 1 ]; then
+    project_mode_harvest slice || log "WARNING: project harvest failed for run $run_id; committed rows remain in the master ledger"
+  fi
   fails=0
   if ! seal_decision_outcome "$sa_count"; then
     log "Cannot seal explicit decision outcome"
@@ -2690,6 +2974,9 @@ PY
 
   if [ "$sa_count" -gt 0 ]; then
     finalize_strong_accept || exit $?
+    if [ "$PROJECT_MODE" = 1 ]; then
+      project_mode_harvest report || log "WARNING: project report harvest failed for run $run_id"
+    fi
     rm -rf "$ARCHIVE_SOURCE"
     ARCHIVE_SOURCE=
     if [ "$SA_TARGET" -gt 0 ] && [ "$(sa_today)" -ge "$SA_TARGET" ]; then

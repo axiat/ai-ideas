@@ -4167,6 +4167,44 @@ def export_tsv(conn, path):
     return {"path": str(destination), "sha256": _sha(data), "byte_count": len(data)}
 
 
+def export_slice(conn, after_sequence, dest):
+    if type(after_sequence) is not int or after_sequence < 0:
+        raise ValueError("after_sequence must be a nonnegative integer")
+    rows = conn.execute(
+        """
+        SELECT raw_row, row_terminator, source_sequence FROM candidates
+        WHERE source_sequence > ? ORDER BY source_sequence
+        """,
+        (after_sequence,),
+    ).fetchall()
+    header_b64 = _meta(conn, "ledger_header_b64")
+    header = HEADER if header_b64 is None else base64.b64decode(header_b64)
+    data = _render_projection_rows(header, rows)
+    max_exported = max((row[2] for row in rows), default=None)
+    if max_exported is None:
+        max_exported = after_sequence
+    state_value = _meta(conn, "state_root")
+    state_root = None if state_value is None else pathlib.Path(state_value)
+    destination = _validate_destination(conn, dest, state_root)
+    if destination.exists():
+        raise ValueError(f"destination already exists: {destination}")
+    _atomic_replace(destination, data, None, None, None)
+    return {
+        "path": str(destination),
+        "sha256": _sha(data),
+        "byte_count": len(data),
+        "row_count": len(rows),
+        "after_sequence": after_sequence,
+        "max_sequence": max_exported,
+    }
+
+
+def max_source_sequence(conn):
+    return conn.execute(
+        "SELECT COALESCE(MAX(source_sequence), 0) FROM candidates"
+    ).fetchone()[0]
+
+
 def _validate_complete_lineage_graph(conn):
     lineages = dict(
         conn.execute(

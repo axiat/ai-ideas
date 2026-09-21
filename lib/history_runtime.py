@@ -7876,6 +7876,7 @@ def commit_round(
     review_index_path,
     aggregation_path,
     authority,
+    project=None,
 ):
     policy = history_projection.load_policy(policy_path)
     authority_value = _validated_runtime_authority(
@@ -8052,6 +8053,8 @@ def commit_round(
                 commit_metadata["execution_boundary"] = (
                     PORTABLE_EXECUTION_BOUNDARY
                 )
+            if project is not None:
+                commit_metadata["project"] = project
             return history_store.append_rows_idempotent(
                 conn,
                 aggregation["ledger_rows"],
@@ -9235,6 +9238,7 @@ def _main(argv=None):
     commit.add_argument("--review-plan", required=True)
     commit.add_argument("--review-index", required=True)
     commit.add_argument("--aggregation", required=True)
+    commit.add_argument("--project")
     _add_cli_authority_arguments(commit)
     args = parser.parse_args(argv)
     if args.operation == "startup":
@@ -9506,6 +9510,7 @@ def _main(argv=None):
             review_index_path=args.review_index,
             aggregation_path=args.aggregation,
             authority=authority,
+            project=args.project,
         )
     else:
         raise AssertionError(args.operation)
