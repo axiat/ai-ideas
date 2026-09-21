@@ -62,7 +62,7 @@ python3 lib/history_cli.py project-add mytopic /abs/path/to/mytopic
 HUNT_PROJECT=mytopic ./hunt.sh
 ```
 
-The project directory needs only a `direction.json`: copy any `directions/*.json` contract there and rename it. `project-add` requires an absolute, non-symlink directory outside the checkout and validates the contract at registration. `HUNT_PROJECT_DIR=/abs/path` runs an unregistered directory directly. Both modes stage the direction by copy, print `mode=project <name> <dir>` at startup, tag committed rows with the project name, and export each round's new ledger rows to `<project>/harvest/` (slice, manifest, and the run's report on Strong Accept).
+The project directory needs only a `direction.json`: copy any `directions/*.json` contract there and rename it. `project-add` requires an absolute, non-symlink directory outside the checkout and validates the contract at registration. `HUNT_PROJECT_DIR=/abs/path` runs an unregistered directory directly. Both modes stage the direction by copy, print `mode=project <name> <dir>` at startup, tag committed rows with the project name, and export each round's new ledger rows to `<project>/harvest/` (slice, manifest, and the run's report on Strong Accept). Project mode requires an existing `.ai-ideas/history.sqlite3`: on a fresh clone, run one default hunt first to create the database.
 
 Harvest slices are read-only snapshots; re-import is unsupported because row identity is position-dependent. Query the master ledger for history. Operational rules:
 

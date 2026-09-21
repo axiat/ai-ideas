@@ -101,6 +101,30 @@ def write_json_artifact(conn, output, value):
 _REGISTRY_PATH = pathlib.Path(".ai-ideas") / "projects.json"
 
 
+def _has_control_chars(value):
+    return any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+
+
+def _validate_project_entry(name, entry):
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f"project registry is corrupt: entry {name!r} is not an object"
+        )
+    path = entry.get("path")
+    if not isinstance(path, str) or _has_control_chars(path):
+        raise ValueError(
+            f"project registry is corrupt: entry {name!r} has an invalid path"
+        )
+    mark = entry.get("last_harvested_sequence")
+    if mark is None:
+        entry.pop("last_harvested_sequence", None)
+    elif type(mark) is not int or mark < 0:
+        raise ValueError(
+            f"project registry is corrupt: entry {name!r} has an invalid "
+            "last_harvested_sequence"
+        )
+
+
 def _load_project_registry():
     if not _REGISTRY_PATH.exists():
         return {"version": 1, "projects": {}}
@@ -111,10 +135,12 @@ def _load_project_registry():
     if not isinstance(registry, dict):
         raise ValueError("project registry is corrupt: top level is not an object")
     version = registry.get("version")
-    if version != 1:
+    if type(version) is not int or version != 1:
         raise ValueError(f"unsupported project registry version: {version!r}")
     if not isinstance(registry.get("projects"), dict):
         raise ValueError("project registry is corrupt: projects is not an object")
+    for name, entry in registry["projects"].items():
+        _validate_project_entry(name, entry)
     return registry
 
 
@@ -155,6 +181,8 @@ def _project_add(name, raw_path):
     _validate_project_name(name)
     if not os.path.isabs(raw_path):
         raise ValueError("project path must be absolute")
+    if _has_control_chars(raw_path):
+        raise ValueError("project path contains control characters")
     candidate = pathlib.Path(raw_path)
     if candidate.is_symlink():
         raise ValueError("project directory cannot be a symlink")
@@ -283,6 +311,15 @@ def parser():
     project_path = commands.add_parser("project-path")
     project_path.add_argument("name")
     commands.add_parser("project-list")
+    project_mark = commands.add_parser(
+        "project-mark-advance",
+        help=(
+            "advance a registered project's harvest mark monotonically; "
+            "used after a harvest slice and manifest are durably written"
+        ),
+    )
+    project_mark.add_argument("name")
+    project_mark.add_argument("sequence", type=int)
     commands.add_parser("validate")
     for name in ("rebuild-projections", "recover-projections"):
         projection = commands.add_parser(name)
@@ -345,11 +382,18 @@ def main():
             }
         )
         return
-    if args.command in ("project-add", "project-path", "project-list"):
+    if args.command in (
+        "project-add", "project-path", "project-list", "project-mark-advance"
+    ):
         try:
             if args.command == "project-add":
                 value = _project_add(args.name, args.path)
             elif args.command == "project-path":
+                value = _project_path(args.name)
+            elif args.command == "project-mark-advance":
+                if args.sequence < 0:
+                    raise ValueError("sequence must be nonnegative")
+                _advance_project_mark(args.name, args.sequence)
                 value = _project_path(args.name)
             else:
                 value = _project_list()

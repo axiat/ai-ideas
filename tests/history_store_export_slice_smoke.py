@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import base64
 import hashlib
+import os
 import pathlib
+import shutil
 import tempfile
 import unittest
 
@@ -131,15 +133,37 @@ class HistoryStoreExportSliceSmoke(unittest.TestCase):
 
     def test_slice_refuses_canonical_targets(self):
         self._import()
-        targets = [
-            pathlib.Path.cwd() / "ledger.tsv",
-            pathlib.Path.cwd() / "tmp" / "ledger.good",
-            self.state_root / "x.tsv",
-        ]
-        for target in targets:
-            with self.assertRaises(ValueError):
-                history_store.export_slice(self.conn, 0, target)
-        self.assertFalse((self.state_root / "x.tsv").exists())
+        scratch = pathlib.Path(tempfile.mkdtemp())
+        previous = os.getcwd()
+        try:
+            os.chdir(scratch)
+            try:
+                for target in (
+                    scratch / "ledger.tsv",
+                    scratch / "tmp" / "ledger.good",
+                ):
+                    with self.assertRaises(ValueError):
+                        history_store.export_slice(self.conn, 0, target)
+            finally:
+                os.chdir(previous)
+            self.assertFalse((scratch / "ledger.tsv").exists())
+            self.assertFalse((scratch / "tmp" / "ledger.good").exists())
+        finally:
+            shutil.rmtree(scratch, True)
+        state_target = self.state_root / "x.tsv"
+        with self.assertRaises(ValueError):
+            history_store.export_slice(self.conn, 0, state_target)
+        self.assertFalse(state_target.exists())
+
+    def test_slice_refuses_symlinked_destination(self):
+        self._import()
+        target = self.root / "slice-target.tsv"
+        link = self.root / "slice-link.tsv"
+        os.symlink(str(target), link)
+        with self.assertRaises(ValueError):
+            history_store.export_slice(self.conn, 0, link)
+        self.assertFalse(target.exists())
+        self.assertTrue(link.is_symlink())
 
     def test_slice_allows_outside_checkout_and_creates_parent(self):
         self._import()

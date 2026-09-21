@@ -962,7 +962,7 @@ history_append_rows() {
     --aggregation "$6"
   )
   if [ "$PROJECT_MODE" = 1 ]; then
-    append_args+=(--project "$PROJECT_NAME")
+    append_args+=(--project="$PROJECT_NAME")
   fi
   history_runtime_authorized commit-round "${append_args[@]}"
 }
@@ -986,7 +986,7 @@ project_mode_preflight() {
     log "Project mode refused: project mode cannot combine with RESEARCH_DIRECTION_FILE"
     return 2
   fi
-  local registry_info project_physical fallback_mark
+  local registry_info project_physical checkout_physical fallback_mark
   if [ -n "$HUNT_PROJECT" ]; then
     registry_info=$(python3 - "$HUNT_PROJECT" <<'PY'
 import json
@@ -1041,8 +1041,12 @@ PY
     log "Project mode refused: cannot resolve project directory: $PROJECT_DIR"
     return 2
   }
+  checkout_physical=$(pwd -P) || {
+    log "Project mode refused: cannot resolve the checkout directory"
+    return 2
+  }
   case "$project_physical" in
-    "$PWD"|"$PWD"/*)
+    "$checkout_physical"|"$checkout_physical"/*)
       log "Project mode refused: project directory cannot be the checkout or inside it: $project_physical"
       return 2
       ;;
@@ -1094,6 +1098,10 @@ project_mode_harvest() {
   case "$phase" in
     slice)
       local harvest_dir slice export_json
+      if [ ! -f "$PROJECT_DIR/direction.json" ]; then
+        log "WARNING: project direction.json vanished mid-run; harvest skipped"
+        return 1
+      fi
       harvest_dir="$PROJECT_DIR/harvest"
       slice="$harvest_dir/ledger-slice-$run_id.tsv"
       local -a export_args=(
@@ -1102,9 +1110,6 @@ project_mode_harvest() {
         --after-sequence "$PROJECT_MARK"
         --dest "$slice"
       )
-      if [ -n "$HUNT_PROJECT" ]; then
-        export_args+=(--project "$PROJECT_NAME")
-      fi
       if ! export_json=$(python3 lib/history_cli.py "${export_args[@]}"); then
         return 1
       fi
@@ -1166,38 +1171,59 @@ finally:
         os.unlink(temporary)
 readme = harvest_dir / "README.md"
 if not readme.exists():
-    readme.write_text(
+    readme_data = (
         "# Harvest snapshots\n"
         "\n"
         "These files are per-round read-only snapshots of the master "
         "ledger in the ai-ideas checkout. `ledger-slice-<run_id>.tsv` "
-        "files are byte-exact copies of the ledger rows committed by one "
-        "hunt round, behind the ledger header; `manifest-<run_id>.json` "
-        "records the run id, direction identity, harvest mark, row "
-        "count, and verdict distribution.\n"
+        "files are byte-exact copies of the rows appended to the master "
+        "ledger since the previous harvest mark, behind the ledger "
+        "header; `manifest-<run_id>.json` records the run id, direction "
+        "identity, harvest mark, row count, and verdict distribution.\n"
         "\n"
         "Re-import is unsupported: row identity (`origin_stable_id`) is "
         "position-dependent, so a re-imported slice mints new identities "
         "rather than rejoining the ledger. Query the master ledger in "
-        "the ai-ideas checkout for history.\n",
-        encoding="utf-8",
+        "the ai-ideas checkout for history.\n"
+    ).encode("utf-8")
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".readme.", dir=str(harvest_dir)
     )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(readme_data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, readme)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 print(export["max_sequence"])
 PY
       ) || return 1
+      if [ -n "$HUNT_PROJECT" ]; then
+        python3 lib/history_cli.py project-mark-advance \
+          "$PROJECT_NAME" "$new_mark" > /dev/null || {
+          log "WARNING: project registry mark advance failed for run $run_id; the next harvest re-exports this slice"
+          return 1
+        }
+      fi
       PROJECT_MARK=$new_mark
       ;;
     report)
       [ -n "$RECOVERY_REPORT_PATH" ] || return 0
-      local base dest
+      local base dest manifest_path
       base=$(basename "$RECOVERY_REPORT_PATH")
       dest="$PROJECT_DIR/harvest/$base"
-      if [ -e "$dest" ] || [ -L "$dest" ]; then
-        log "Project report harvest refused existing destination: $dest"
+      manifest_path="$PROJECT_DIR/harvest/manifest-$run_id.json"
+      if [ ! -f "$manifest_path" ]; then
+        log "Project report harvest found no manifest for run $run_id; report not copied"
         return 1
       fi
-      cp "$RECOVERY_REPORT_PATH" "$dest" || return 1
-      python3 - "$PROJECT_DIR/harvest/manifest-$run_id.json" "$base" <<'PY'
+      if [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+        cp "$RECOVERY_REPORT_PATH" "$dest" || return 1
+      fi
+      python3 - "$manifest_path" "$base" <<'PY'
 import json
 import os
 import pathlib
@@ -1206,7 +1232,8 @@ import tempfile
 
 manifest_path = pathlib.Path(sys.argv[1])
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-manifest["report_files"].append(sys.argv[2])
+if sys.argv[2] not in manifest["report_files"]:
+    manifest["report_files"].append(sys.argv[2])
 data = (
     json.dumps(manifest, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
 ).encode("utf-8")
@@ -2488,6 +2515,9 @@ while :; do
       log "Pending Strong Accept report binding is invalid: $run_id"
       exit 2
     fi
+  fi
+  if [ "$PROJECT_MODE" = 1 ]; then
+    project_mode_harvest report || log "WARNING: project report harvest failed for recovered run $run_id"
   fi
   recovered_report=1
 done

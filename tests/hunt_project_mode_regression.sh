@@ -221,6 +221,7 @@ check_slices_python() {
 import json
 import pathlib
 import sqlite3
+import stat
 import sys
 
 repo = pathlib.Path(sys.argv[1])
@@ -244,6 +245,12 @@ identity = json.loads(
 )
 if identity["direction_id"] != "dynamic-spatial-memory-vla-v1":
     raise SystemExit(f"staged direction identity changed: {identity}")
+staged = repo / "tmp" / "history-startup" / "direction-project.json"
+staged_stat = staged.lstat()
+if not stat.S_ISREG(staged_stat.st_mode) or stat.S_ISLNK(
+    staged_stat.st_mode
+):
+    raise SystemExit("staged direction copy is not a regular non-symlink file")
 
 harvest = project_dir / "harvest"
 readme = harvest / "README.md"
@@ -564,6 +571,12 @@ run_refusal_matrix() {
     "HUNT_PROJECT_DIR=$project" \
     RESEARCH_DIRECTION_FILE=directions/dynamic-memory-vla-v1.json
 
+  run_project_refusal registry-direction-conflict \
+    "$CASE_ROOT/refuse-registry-direction-conflict.log" \
+    "$CASE_ROOT/refuse-registry-direction-conflict.providers.jsonl" \
+    HUNT_PROJECT=ghost \
+    RESEARCH_DIRECTION_FILE=directions/dynamic-memory-vla-v1.json
+
   run_project_refusal relative-dir \
     "$CASE_ROOT/refuse-relative-dir.log" \
     "$CASE_ROOT/refuse-relative-dir.providers.jsonl" \
@@ -830,14 +843,251 @@ run_crash_recovery() {
   printf 'ok: crash before harvest is recovered from the registry mark\n'
 }
 
+run_in_checkout_subdir_refusal() {
+  # An in-checkout subdirectory holding a valid direction.json must be
+  # refused even when the hunt's PWD is a logical (symlinked) spelling of
+  # the checkout, because the guard compares physical paths.
+  local repo link before after status
+  repo=$(prepare_hunt_repo refuse-in-subdir) || {
+    fail 'refusal in-subdir fixture'; return;
+  }
+  mkdir -p "$repo/inner-proj"
+  cp "$ROOT/directions/dynamic-spatial-memory-vla-v1.json" \
+    "$repo/inner-proj/direction.json"
+  before=$(project_state_digest "$repo")
+  run_project_hunt "$repo" \
+    "$CASE_ROOT/refuse-in-subdir.log" \
+    "$CASE_ROOT/refuse-in-subdir.providers.jsonl" \
+    "$CASE_ROOT/refuse-in-subdir.audit-cli.calls" \
+    "$CASE_ROOT/refuse-in-subdir-runs" \
+    "$CASE_ROOT/refuse-in-subdir-home" \
+    ROUND_LIMIT=1 "HUNT_PROJECT_DIR=$repo/inner-proj"
+  status=$?
+  after=$(project_state_digest "$repo")
+  if [ "$status" -ne 2 ] \
+    || [ -e "$CASE_ROOT/refuse-in-subdir.providers.jsonl" ] \
+    || [ "$after" != "$before" ]; then
+    fail "refusal in-subdir misbehaved (status $status)"
+    sed -n '1,60p' "$CASE_ROOT/refuse-in-subdir.log" >&2
+    return
+  fi
+  printf 'ok: project refusal in-checkout subdir exits before providers\n'
+
+  # Same subdir, but the hunt process runs through a symlinked spelling of
+  # the checkout so its PWD is logical; physical comparison must still
+  # refuse.
+  repo=$(prepare_hunt_repo refuse-in-subdir-logical) || {
+    fail 'refusal in-subdir-logical fixture'; return;
+  }
+  mkdir -p "$repo/inner-proj"
+  cp "$ROOT/directions/dynamic-spatial-memory-vla-v1.json" \
+    "$repo/inner-proj/direction.json"
+  link="$CASE_ROOT/refuse-in-subdir-link"
+  ln -s "$repo" "$link"
+  before=$(project_state_digest "$repo")
+  mkdir -p "$CASE_ROOT/refuse-in-subdir-logical-runs" \
+    "$CASE_ROOT/refuse-in-subdir-logical-home"
+  run_bounded "$link" "$CASE_ROOT/refuse-in-subdir-logical.log" \
+    env \
+      "HOME=$CASE_ROOT/refuse-in-subdir-logical-home" \
+      "CODEX_HOME=$CASE_ROOT/refuse-in-subdir-logical-home/codex-config" \
+      "EXPECTED_PROVIDER_HOME=$CASE_ROOT/refuse-in-subdir-logical-home" \
+      "EXPECTED_PROVIDER_CODEX_HOME=$CASE_ROOT/refuse-in-subdir-logical-home/codex-config" \
+      "PWD=$link" \
+      "PATH=$repo/.test-bin:$PATH" \
+      "FAKE_PORTABLE_STAGE_LOG=$CASE_ROOT/refuse-in-subdir-logical.providers.jsonl" \
+      "HISTORY_AUDIT_CLI_CALL_LOG=$CASE_ROOT/refuse-in-subdir-logical.audit-cli.calls" \
+      FAKE_PORTABLE_STAGE_MODE=mirror-audit \
+      HISTORY_RUNTIME_ABI=v2 \
+      HUNT_PROVIDER=claude \
+      HUNT_REVIEW_PROVIDER_1=claude \
+      HUNT_REVIEW_MODEL_1=sonnet \
+      "AGENT_CMD=$repo/tests/fake_agent.sh" \
+      HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
+      REVIEWERS=1 \
+      RESUME_FRONT=0 \
+      THEME_MIN_LOW=0 \
+      RESEARCH_RETRY=0 \
+      FAIL_SLEEP_MIN=0 \
+      NO_HIT_SLEEP_MIN_LO=0 \
+      NO_HIT_SLEEP_MIN_HI=0 \
+      ALLOW_ZERO_NO_HIT_SLEEP=1 \
+      MAX_FAILS=1 \
+      SA_TARGET=0 \
+      "RUNS_DIR=$CASE_ROOT/refuse-in-subdir-logical-runs" \
+      ROUND_LIMIT=1 "HUNT_PROJECT_DIR=$repo/inner-proj" \
+      bash ./hunt.sh
+  status=$?
+  after=$(project_state_digest "$repo")
+  if [ "$status" -ne 2 ] \
+    || [ -e "$CASE_ROOT/refuse-in-subdir-logical.providers.jsonl" ] \
+    || [ "$after" != "$before" ]; then
+    fail "refusal in-subdir-logical misbehaved (status $status)"
+    sed -n '1,60p' "$CASE_ROOT/refuse-in-subdir-logical.log" >&2
+    return
+  fi
+  if ! grep -q 'cannot be the checkout or inside it' \
+    "$CASE_ROOT/refuse-in-subdir-logical.log"; then
+    fail 'refusal in-subdir-logical omitted the in-checkout reason'
+    return
+  fi
+  printf 'ok: project refusal in-checkout subdir holds under a logical PWD\n'
+}
+
+run_dash_name_mode() {
+  local repo project physical log provider_log cli_log runs home status today
+  repo=$(prepare_hunt_repo dash-name) || { fail 'dash-name fixture'; return; }
+  project=$(make_project -x) || { fail 'dash-name project'; return; }
+  physical=$(cd "$project" && pwd -P)
+  log="$CASE_ROOT/dash-name.log"
+  provider_log="$CASE_ROOT/dash-name.providers.jsonl"
+  cli_log="$CASE_ROOT/dash-name.audit-cli.calls"
+  runs="$CASE_ROOT/dash-name-runs"
+  home="$CASE_ROOT/dash-name-home"
+  today=$(date +%F)
+  run_project_hunt "$repo" "$log" "$provider_log" "$cli_log" "$runs" "$home" \
+    "HUNT_PROJECT_DIR=$project" \
+    ROUND_LIMIT=1
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    fail "dash-name hunt exited $status"
+    sed -n '1,160p' "$log" >&2
+    return
+  fi
+  if ! check_slices_python "$repo" "$physical" "$(basename "$physical")" \
+    "$log" "$runs" dir 1 "$today" 1 '[]'; then
+    fail 'dash-name harvest shape'
+    return
+  fi
+  printf 'ok: dash-led project dir name commits and harvests\n'
+}
+
+run_harvest_failure_warns() {
+  local repo project physical runs home today log provider_log cli_log status
+  repo=$(prepare_hunt_repo harvest-fail) || { fail 'harvest-fail fixture'; return; }
+  project=$(make_project harvest-fail-project) || {
+    fail 'harvest-fail project'; return;
+  }
+  physical=$(cd "$project" && pwd -P)
+  (cd "$repo" && python3 lib/history_cli.py project-add fragile "$project" \
+    > /dev/null) || { fail 'harvest-fail project-add'; return; }
+  runs="$CASE_ROOT/harvest-fail-runs"
+  home="$CASE_ROOT/harvest-fail-home"
+  today=$(date +%F)
+  log="$CASE_ROOT/harvest-fail-1.log"
+  provider_log="$CASE_ROOT/harvest-fail-1.providers.jsonl"
+  cli_log="$CASE_ROOT/harvest-fail-1.audit-cli.calls"
+  run_project_hunt "$repo" "$log" "$provider_log" "$cli_log" "$runs" "$home" \
+    HUNT_PROJECT=fragile \
+    ROUND_LIMIT=1
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    fail "harvest-fail run 1 exited $status"
+    sed -n '1,160p' "$log" >&2
+    return
+  fi
+  # Make the harvest destination unwritable: export-slice fails, the hunt
+  # must warn, keep the committed rows, and leave the registry mark.
+  chmod -R 555 "$project"
+  log="$CASE_ROOT/harvest-fail-2.log"
+  provider_log="$CASE_ROOT/harvest-fail-2.providers.jsonl"
+  cli_log="$CASE_ROOT/harvest-fail-2.audit-cli.calls"
+  run_project_hunt "$repo" "$log" "$provider_log" "$cli_log" "$runs" "$home" \
+    HUNT_PROJECT=fragile \
+    ROUND_LIMIT=1
+  status=$?
+  chmod -R 755 "$project"
+  if [ "$status" -ne 0 ]; then
+    fail "harvest-fail run 2 exited $status instead of warning through"
+    sed -n '1,160p' "$log" >&2
+    return
+  fi
+  if ! grep -q 'WARNING: project harvest failed for run' "$log"; then
+    fail 'harvest-fail run 2 omitted the harvest warning'
+    sed -n '1,160p' "$log" >&2
+    return
+  fi
+  log="$CASE_ROOT/harvest-fail-3.log"
+  provider_log="$CASE_ROOT/harvest-fail-3.providers.jsonl"
+  cli_log="$CASE_ROOT/harvest-fail-3.audit-cli.calls"
+  run_project_hunt "$repo" "$log" "$provider_log" "$cli_log" "$runs" "$home" \
+    HUNT_PROJECT=fragile \
+    ROUND_LIMIT=1
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    fail "harvest-fail run 3 exited $status"
+    sed -n '1,160p' "$log" >&2
+    return
+  fi
+  if ! python3 - "$repo" "$physical" "$runs" <<'PY'
+import json
+import pathlib
+import sqlite3
+import sys
+
+repo = pathlib.Path(sys.argv[1])
+harvest = pathlib.Path(sys.argv[2]) / "harvest"
+runs_root = pathlib.Path(sys.argv[3])
+
+slices = sorted(harvest.glob("ledger-slice-*.tsv"))
+if len(slices) != 2:
+    raise SystemExit(f"expected slices from runs 1 and 3 only, got {slices}")
+run_ids = [
+    path.name[len("ledger-slice-"):-len(".tsv")] for path in slices
+]
+first = json.loads(
+    (harvest / f"manifest-{run_ids[0]}.json").read_text(encoding="utf-8")
+)
+last = json.loads(
+    (harvest / f"manifest-{run_ids[1]}.json").read_text(encoding="utf-8")
+)
+if last["after_sequence"] != first["max_sequence"]:
+    raise SystemExit(
+        "run 3 mark did not come from run 1: "
+        f"{last['after_sequence']} != {first['max_sequence']}"
+    )
+full = (repo / "ledger.tsv").read_bytes()
+lines = full.split(b"\n")
+if lines and lines[-1] == b"":
+    lines.pop()
+header, data = lines[0], lines[1:]
+slice_bytes = (harvest / f"ledger-slice-{run_ids[1]}.tsv").read_bytes()
+expected = header + b"\n" + b"".join(
+    line + b"\n" for line in data[first["max_sequence"]:]
+)
+if slice_bytes != expected:
+    raise SystemExit("run 3 slice does not contain the unharvested rows")
+if last["row_count"] != len(data) - first["max_sequence"]:
+    raise SystemExit("run 3 row_count mismatch")
+database = sqlite3.connect(repo / ".ai-ideas" / "history.sqlite3")
+db_max = database.execute(
+    "SELECT COALESCE(MAX(source_sequence), 0) FROM candidates"
+).fetchone()[0]
+database.close()
+registry = json.loads(
+    (repo / ".ai-ideas" / "projects.json").read_text(encoding="utf-8")
+)
+if registry["projects"]["fragile"].get("last_harvested_sequence") != db_max:
+    raise SystemExit("registry mark did not advance after recovery")
+PY
+  then
+    fail 'harvest-fail recovery shape'
+    return
+  fi
+  printf 'ok: harvest failure warns without rollback and the next run recovers\n'
+}
+
 run_default_flow_parity
 run_dir_mode_success
 run_registry_mode_success
 run_refusal_matrix
+run_in_checkout_subdir_refusal
 run_same_day_rerun
 run_second_round_mark
 run_sa_shape
 run_crash_recovery
+run_dash_name_mode
+run_harvest_failure_warns
 
 if [ "$FAILURES" -gt 0 ]; then
   printf 'FAILURES: %s\n' "$FAILURES" >&2
