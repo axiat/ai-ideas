@@ -9,6 +9,7 @@ import inspect
 import json
 import pathlib
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -3486,6 +3487,105 @@ class RoundCoordinatorContract(CapabilityContract):
         self.assertFalse(first["replayed"])
         self.assertTrue(second["replayed"])
         self.assertEqual(first["candidate_ids"], second["candidate_ids"])
+
+    def _project_commit_arguments(self, state, chain, project=None):
+        arguments = {
+            "db_path": self.database,
+            "policy_path": self.policy_path,
+            "batch_path": state["batch"],
+            "selection_path": state["selection"],
+            "comparison_index_path": (
+                state["observation_root"] / "comparison-index.json"
+            ),
+            "review_plan_path": chain["plan_path"],
+            "review_index_path": chain["index_path"],
+            "aggregation_path": chain["aggregation_path"],
+            "authority": history_runtime.validate_runtime_mode(self.policy),
+        }
+        if project is not None:
+            arguments["project"] = project
+        return arguments
+
+    def _provenance_rows(self, candidate_ids, database=None):
+        connection = history_store.connect(database or self.database)
+        try:
+            rows = connection.execute(
+                "SELECT candidate_id, provenance_json FROM candidates"
+            ).fetchall()
+        finally:
+            connection.close()
+        wanted = set(candidate_ids)
+        return [
+            json.loads(row["provenance_json"])
+            for row in rows
+            if row["candidate_id"] in wanted
+        ]
+
+    def test_commit_round_project_provenance(self):
+        state = self._compared_round()
+        chain = self._review_chain(state, stem="project-provenance")
+        sibling_db = self.root / ".ai-ideas" / "sibling.sqlite3"
+        source = history_store.connect(self.database)
+        destination = sqlite3.connect(str(sibling_db))
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+            source.close()
+        first = history_runtime.commit_round(
+            **self._project_commit_arguments(state, chain, project="mytopic")
+        )
+        self.assertFalse(first["replayed"])
+        provenance = self._provenance_rows(first["candidate_ids"])
+        self.assertEqual(len(provenance), len(first["candidate_ids"]))
+        for value in provenance:
+            self.assertEqual(value["project"], "mytopic")
+        plain_arguments = self._project_commit_arguments(state, chain)
+        plain_arguments["db_path"] = sibling_db
+        plain = history_runtime.commit_round(**plain_arguments)
+        self.assertFalse(plain["replayed"])
+        self.assertEqual(plain["candidate_ids"], first["candidate_ids"])
+        self.assertEqual(plain["request_sha256"], first["request_sha256"])
+        plain_provenance = self._provenance_rows(
+            plain["candidate_ids"], database=sibling_db
+        )
+        for value in plain_provenance:
+            self.assertNotIn("project", value)
+
+    def test_commit_round_default_omits_project(self):
+        state = self._compared_round()
+        chain = self._review_chain(state, stem="project-omitted")
+        committed = history_runtime.commit_round(
+            **self._project_commit_arguments(state, chain)
+        )
+        self.assertFalse(committed["replayed"])
+        provenance = self._provenance_rows(committed["candidate_ids"])
+        self.assertEqual(len(provenance), len(committed["candidate_ids"]))
+        for value in provenance:
+            self.assertNotIn("project", value)
+
+    def test_commit_round_replay_keeps_prior_provenance(self):
+        state = self._compared_round()
+        chain = self._review_chain(state, stem="project-replay")
+        first = history_runtime.commit_round(
+            **self._project_commit_arguments(state, chain, project="mytopic")
+        )
+        self.assertFalse(first["replayed"])
+        replayed_other = history_runtime.commit_round(
+            **self._project_commit_arguments(state, chain, project="other")
+        )
+        self.assertTrue(replayed_other["replayed"])
+        self.assertEqual(
+            replayed_other["candidate_ids"], first["candidate_ids"]
+        )
+        replayed_absent = history_runtime.commit_round(
+            **self._project_commit_arguments(state, chain)
+        )
+        self.assertTrue(replayed_absent["replayed"])
+        provenance = self._provenance_rows(first["candidate_ids"])
+        self.assertEqual(len(provenance), len(first["candidate_ids"]))
+        for value in provenance:
+            self.assertEqual(value["project"], "mytopic")
 
     def test_review_plan_uses_frozen_sources_and_rejects_snapshot_tamper(self):
         state = self._compared_round()
