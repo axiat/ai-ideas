@@ -55,21 +55,33 @@ The semantic classifier is an independent model judgment wrapped by fail-closed 
 
 ## Project Mode
 
-An external topic folder can drive hunts while the master ledger stays in this checkout. Register the folder once, then name it per run:
+Project mode points hunts at a research topic that lives in its own folder outside the checkout: the folder holds a `direction.json`, the hunt runs the standard pipeline against that direction, the master ledger and cross-project duplicate detection stay centralized here, and each round copies its yield back into the topic folder.
 
 ```bash
-python3 lib/history_cli.py project-add mytopic /abs/path/to/mytopic
+mkdir -p ~/research/mytopic
+cp directions/dynamic-spatial-memory-vla-v1.json ~/research/mytopic/direction.json
+python3 lib/history_cli.py project-add mytopic ~/research/mytopic
 HUNT_PROJECT=mytopic ./hunt.sh
 ```
 
-The project directory needs only a `direction.json`: copy any `directions/*.json` contract there and rename it. `project-add` requires an absolute, non-symlink directory outside the checkout and validates the contract at registration. `HUNT_PROJECT_DIR=/abs/path` runs an unregistered directory directly. Both modes stage the direction by copy, print `mode=project <name> <dir>` at startup, tag committed rows with the project name, and export each round's new ledger rows to `<project>/harvest/` (slice, manifest, and the run's report on Strong Accept). Project mode requires an existing `.ai-ideas/history.sqlite3`: on a fresh clone, run one default hunt first to create the database.
+Run `project-add` from the checkout root. It requires an absolute, non-symlink directory outside the checkout and validates `direction.json` at registration. `HUNT_PROJECT_DIR=/abs/path` runs an unregistered directory directly.
 
-Harvest slices are read-only snapshots; re-import is unsupported because row identity is position-dependent. Query the master ledger for history. Operational rules:
+A project-mode run stages the direction by copy, prints `mode=project <name> <dir>` at startup, and commits to the master ledger exactly as a default hunt, recording the project name in each new row's provenance. After every round it exports into `<project>/harvest/`:
 
-- `SA_TARGET` is global across projects and modes.
-- Hunts are serial: one `hunt.sh` process holds the repository lock at a time, regardless of mode.
+- `ledger-slice-<run_id>.tsv` — the round's new ledger rows, byte-exact behind the ledger header
+- `manifest-<run_id>.json` — run id, direction identity, sequence mark, row count, verdict distribution
+- the round's report, when the round produced a Strong Accept
+- `README.md` — written on first harvest, describes the harvest format
+
+Harvest is at-least-once: once the first successful export has recorded `last_harvested_sequence`, a crash between commit and harvest re-exports the orphaned rows on the next run, and a failed export overlaps but never loses rows. Slices are read-only snapshots; row identity is position-dependent, so a re-imported slice mints fresh identities. Query the master ledger for history.
+
+The registry is `.ai-ideas/projects.json`, git-ignored with the rest of `.ai-ideas/`, so project names and local paths never reach the remote. Moving a project folder rots the pointer; re-run `project-add` with the new path (the harvest mark is preserved).
+
+Operational rules:
+
+- Project mode requires an existing `.ai-ideas/history.sqlite3`: on a fresh clone, run one default hunt first to create the database.
+- `SA_TARGET` is global across projects and modes. Hunts are serial: one `hunt.sh` process holds the repository lock at a time, regardless of mode.
 - Editing a project's `direction.json` changes its direction identity, and resume then refuses the run, as with `RESEARCH_DIRECTION_FILE`.
-- Moving a project folder rots the registry pointer; re-run `project-add` with the new path (the harvest mark is preserved).
 - Ad-hoc per-project lookup runs against the master ledger:
 
 ```bash
