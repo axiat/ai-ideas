@@ -85,7 +85,7 @@ The classifier is an independent model judgment inside fail-closed orchestration
 
 Project mode lets an external topic folder drive hunts while canonical history stays in the checkout's master ledger. The folder is a direction source and harvest destination only; there are no per-project ledgers.
 
-Register the folder once (the registry lives at `.ai-ideas/projects.json`, gitignored), then hunt with one environment variable:
+Register the folder once (the registry lives at `.ai-ideas/projects.json`, gitignored), then hunt with one environment variable. Run every `project-*` command from the checkout root: the registry path is relative to the current directory, so running them elsewhere creates a stray `.ai-ideas/projects.json`:
 
 ```bash
 python3 lib/history_cli.py project-add mytopic /abs/path/to/mytopic
@@ -104,7 +104,7 @@ A project-mode run:
 - prints `mode=project <name> <dir>` at startup (`mode=default` otherwise);
 - records the project name in each committed row's `provenance_json` without altering row identity;
 - after each round, exports that round's new ledger rows byte-exactly to `<project>/harvest/ledger-slice-<run_id>.tsv` plus a `manifest-<run_id>.json` (run id, direction identity, harvest mark, row count, verdict distribution), and copies the run-bound report after a Strong Accept;
-- advances `last_harvested_sequence` per registered project, so a crash between commit and harvest re-exports the orphaned rows on the next run. Harvest is at-least-once: the worst case is a duplicated slice, never a lost row.
+- advances `last_harvested_sequence` per registered project, so a crash between commit and harvest re-exports the orphaned rows on the next run. Harvest is at-least-once: the worst case is a duplicated slice, never a lost row. The at-least-once guarantee holds once the first successful harvest has recorded a mark; on a project's first-ever run there is no recorded mark, so a crash between commit and the first harvest leaves those rows only in the master ledger — queryable there, never exported to `harvest/`.
 
 Harvest slices are read-only snapshots. Re-import is unsupported: row identity (`origin_stable_id`) is position-dependent, so a re-imported slice mints new identities rather than rejoining the ledger. Query the master ledger for history.
 

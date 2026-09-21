@@ -59,9 +59,16 @@ class HistoryProjectRegistrySmoke(unittest.TestCase):
     def _read_registry(self):
         return json.loads(self.registry_path.read_text(encoding="utf-8"))
 
+    def _write_registry(self, value):
+        self.registry_path.parent.mkdir(parents=True, exist_ok=True)
+        self.registry_path.write_text(
+            json.dumps(value, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
     def _make_project(self, name):
         path = self.external_root / name
-        path.mkdir()
+        path.mkdir(exist_ok=True)
         shutil.copyfile(DIRECTION_SOURCE, path / "direction.json")
         return path
 
@@ -233,6 +240,117 @@ class HistoryProjectRegistrySmoke(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("unknown project", result.stderr)
         self.assertFalse(dest.exists())
+
+    def test_failed_export_does_not_advance_mark(self):
+        db = self._init_db_with_rows()
+        self.assertEqual(self._add(name="p1").returncode, 0)
+        dest = self.project / "harvest" / "slice.tsv"
+        result = self.run_cli(
+            "--db", db, "export-slice",
+            "--after-sequence", 0, "--dest", dest, "--project", "p1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shown = json.loads(self.run_cli("project-path", "p1").stdout)
+        self.assertEqual(shown["last_harvested_sequence"], 2)
+        result = self.run_cli(
+            "--db", db, "export-slice",
+            "--after-sequence", 0, "--dest", dest, "--project", "p1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        shown = json.loads(self.run_cli("project-path", "p1").stdout)
+        self.assertEqual(shown["last_harvested_sequence"], 2)
+
+    def test_non_integer_version_fails_closed(self):
+        for bad in (True, 1.0):
+            self._write_registry(
+                {"version": bad, "projects": {"mytopic": {"path": "/x"}}}
+            )
+            before = self.registry_path.read_bytes()
+            self.assertEqual(
+                self._add(name="two", path=self._make_project("two")).returncode,
+                2,
+                bad,
+            )
+            self.assertEqual(self.run_cli("project-path", "mytopic").returncode, 2)
+            self.assertEqual(self.run_cli("project-list").returncode, 2)
+            self.assertEqual(self.registry_path.read_bytes(), before)
+
+    def _assert_entries_fail_closed(self, projects):
+        self._write_registry({"version": 1, "projects": projects})
+        before = self.registry_path.read_bytes()
+        self.assertEqual(
+            self._add(name="two", path=self._make_project("two")).returncode, 2
+        )
+        for name in projects:
+            self.assertEqual(self.run_cli("project-path", name).returncode, 2)
+        self.assertEqual(self.run_cli("project-list").returncode, 2)
+        self.assertEqual(self.registry_path.read_bytes(), before)
+
+    def test_non_object_entries_fail_closed(self):
+        self._assert_entries_fail_closed({"a": "x"})
+        self._assert_entries_fail_closed({"a": 7})
+
+    def test_entry_invalid_path_fails_closed(self):
+        self._assert_entries_fail_closed({"a": {"added": "2026-09-21"}})
+        self._assert_entries_fail_closed({"a": {"path": 7}})
+        self._assert_entries_fail_closed({"a": {"path": "/tmp/x\ny"}})
+
+    def test_entry_invalid_mark_fails_closed(self):
+        base = {"path": str(self.project.resolve())}
+        for bad in ("7", 7.5, -1, True):
+            entry = dict(base, last_harvested_sequence=bad)
+            self._assert_entries_fail_closed({"a": entry})
+
+    def test_null_mark_behaves_as_absent(self):
+        self._write_registry(
+            {
+                "version": 1,
+                "projects": {
+                    "p1": {
+                        "path": str(self.project.resolve()),
+                        "last_harvested_sequence": None,
+                    }
+                },
+            }
+        )
+        result = self.run_cli("project-path", "p1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(json.loads(result.stdout)["last_harvested_sequence"])
+        db = self._init_db_with_rows()
+        dest = self.project / "harvest" / "slice.tsv"
+        result = self.run_cli(
+            "--db", db, "export-slice",
+            "--after-sequence", 0, "--dest", dest, "--project", "p1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shown = json.loads(self.run_cli("project-path", "p1").stdout)
+        self.assertEqual(shown["last_harvested_sequence"], 2)
+
+    def test_add_rejects_control_char_path(self):
+        for raw in ("/tmp/nl\nproj", "/tmp/cr\rproj", "/tmp/tab\tproj"):
+            result = self._add(name="ctl", path=raw)
+            self.assertEqual(result.returncode, 2, raw)
+        self.assertFalse(self.registry_path.exists())
+
+    def test_project_mark_advance(self):
+        self.assertEqual(self._add(name="p1").returncode, 0)
+        result = self.run_cli("project-mark-advance", "p1", 5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout)
+        self.assertEqual(value["name"], "p1")
+        self.assertEqual(value["last_harvested_sequence"], 5)
+        shown = json.loads(self.run_cli("project-path", "p1").stdout)
+        self.assertEqual(shown["last_harvested_sequence"], 5)
+        result = self.run_cli("project-mark-advance", "p1", 3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["last_harvested_sequence"], 5)
+        result = self.run_cli("project-mark-advance", "ghost", 1)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unknown project", result.stderr)
+        result = self.run_cli("project-mark-advance", "p1", -1)
+        self.assertEqual(result.returncode, 2)
+        shown = json.loads(self.run_cli("project-path", "p1").stdout)
+        self.assertEqual(shown["last_harvested_sequence"], 5)
 
 
 if __name__ == "__main__":
