@@ -30,5 +30,5 @@
 
 ## 6. Independent verification
 
-- [ ] 6.1 Independent agent runs the full offline history/hunt suites plus new tests; repair every blocking failure.
-- [ ] 6.2 Independent diff audit for: default-flow parity, no symlink acceptance in the new path, no writes outside the checkout except the harvest dest, no env reads added to `lib/`, docs/code parity. Repair every blocking finding.
+- [x] 6.1 Independent agent runs the full offline history/hunt suites plus new tests; repair every blocking failure.
+- [x] 6.2 Independent diff audit for: default-flow parity, no symlink acceptance in the new path, no writes outside the checkout except the harvest dest, no env reads added to `lib/`, docs/code parity. Repair every blocking finding.
