@@ -26,6 +26,7 @@ from lib import history_store
 from lib import history_archive
 from lib import direction_contract
 from lib import provider_adapters
+from lib import stage_contract
 
 
 POLICY_PATH = ROOT / "history" / "retrieval-policy-v1.json"
@@ -1880,7 +1881,7 @@ class RoundCoordinatorContract(CapabilityContract):
         )
         ideas_md.write_text(
             "\n".join(
-                (
+                item.get("candidate_markdown") or (
                     f"## {item['candidate_id']}\n"
                     f"One-Sentence Story: {item['story']}\n"
                     f"Theme: {item['theme']}\n"
@@ -2336,6 +2337,7 @@ class RoundCoordinatorContract(CapabilityContract):
         *,
         stem,
         reviewer_count=2,
+        prior_work_path=None,
         authority=None,
     ):
         if authority is None:
@@ -2344,6 +2346,7 @@ class RoundCoordinatorContract(CapabilityContract):
             state,
             stem=stem,
             reviewer_count=reviewer_count,
+            prior_work_path=prior_work_path,
             authority=authority,
         )
         index_path = self.root / f"{stem}-review-index.json"
@@ -3785,6 +3788,76 @@ class RoundCoordinatorContract(CapabilityContract):
                         authority=self.shadow_test_authority(),
                     )
                 )
+
+    def test_incomplete_assumption_removal_requires_two_supported_cracks_for_sa(self):
+        story = "Remove dense updates with a calibrated skip rule."
+        markdown = (
+            "Assumption-Removal Attempt: incomplete — I1; blocked by: Crack Evidence\n\n"
+            "## I1\n"
+            f"One-Sentence Story: {story}\n"
+            "Theme: Evaluation and Diagnostics\n"
+            "Form: remove-load-bearing-assumption\n"
+            "Summary: Use calibrated confidence to skip unnecessary dense updates.\n"
+            "Assumption to Remove: Dense updates are required.\n"
+            "Why It Can Be Removed Now: Skip confidence is calibrated.\n"
+            "Forcing Constraint: Deployment latency limits dense updates.\n"
+            "Minimal Falsification Experiment: Compare dense and skipped "
+            "updates; reject if held-out task success falls by five points.\n"
+            "Why It May Be Novel: Prior work has not established calibrated skipping.\n"
+        )
+        self.assertEqual(
+            stage_contract.build_generation_tsv_from_markdown(markdown),
+            f"I1\t{story}\tEvaluation and Diagnostics\n",
+        )
+        state = self._compared_round(
+            selected=("I1",),
+            candidate_specs=(
+                {
+                    "candidate_id": "I1",
+                    "story": story,
+                    "theme": "Evaluation and Diagnostics",
+                    "candidate_markdown": markdown,
+                },
+            ),
+        )
+        for supports, verdict, category in (
+            (0, "reject", "evidence-incomplete"),
+            (1, "reject", "evidence-incomplete"),
+            (2, "strong-accept", "-"),
+        ):
+            with self.subTest(supports=supports):
+                stem = f"incomplete-assumption-{supports}"
+                prior_work = self.root / f"{stem}-prior-work.md"
+                prior_work.write_text(
+                    "## I1\nPapers Read: 5\nOverlap: low\n"
+                    "Crack Evidence Verification:\n"
+                    + "".join(
+                        f"- https://example.com/crack-{index} | "
+                        "Verification: supports — Skipped updates preserve task success.\n"
+                        for index in range(supports)
+                    ),
+                    encoding="utf-8",
+                )
+                chain = self._review_chain(
+                    state,
+                    stem=stem,
+                    reviewer_count=3,
+                    prior_work_path=prior_work,
+                )
+                self.assertEqual(len(chain["index"]["entries"]), 3)
+                for entry in chain["index"]["entries"]:
+                    prepared = history_runtime._verified_public_portable_stage(
+                        entry["stage"], chain["index_path"].parent
+                    )
+                    ballot = pathlib.Path(
+                        prepared["output_paths"]["verdict.tsv"]
+                    ).read_text(encoding="utf-8").strip().split("\t")
+                    self.assertEqual(ballot[1], "strong-accept")
+                rows = chain["aggregation"]["ledger_rows"]
+                self.assertEqual(len(rows), 1)
+                row = rows[0].split("\t")
+                self.assertEqual(row[4], verdict)
+                self.assertEqual(row[7], category)
 
     def test_one_byte_falsification_has_exact_evidence_incomplete_row(self):
         story = "Single-byte falsification candidate."
