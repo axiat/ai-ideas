@@ -17,8 +17,8 @@ Review one candidate against its supplied prior-work evidence. Use `strong-accep
 
 ## Output
 
-The `review-verdict-tsv` response artifact contains exactly one
-four-field row and is materialized as `output/verdict.tsv`:
+The response contains exactly one artifact, `review-markdown`. The host
+derives `output/verdict.tsv` from that markdown as exactly one four-field row:
 
 ```text
 candidate-id<TAB>verdict<TAB>MAJOR-count<TAB>one-sentence reason
