@@ -223,6 +223,10 @@ def build_generation_tsv_from_markdown(markdown, direction_contract=None):
         != [f"I{index}" for index in range(1, len(headings) + 1)]
     ):
         raise StageError("generation markdown section mismatch")
+    marker = lines[markers[0]]
+    incomplete = marker.startswith(
+        "Assumption-Removal Attempt: incomplete "
+    )
     required = (
         "One-Sentence Story",
         "Theme",
@@ -341,19 +345,15 @@ def build_generation_tsv_from_markdown(markdown, direction_contract=None):
                     label not in values
                     for label in assumption_required
                 )
-                or len(crack_evidence) < 2
+                or (len(crack_evidence) < 2 and not incomplete)
             ):
                 raise StageError(
                     f"assumption-removal evidence is incomplete: "
                     f"{identifier}"
                 )
-    marker = lines[markers[0]]
     complete = re.fullmatch(
         r"Assumption-Removal Attempt: complete (I[1-9][0-9]?)",
         marker,
-    )
-    incomplete = marker.startswith(
-        "Assumption-Removal Attempt: incomplete "
     )
     if (
         complete is None
@@ -364,7 +364,7 @@ def build_generation_tsv_from_markdown(markdown, direction_contract=None):
     ):
         raise StageError("assumption-removal marker is invalid")
     # Complete attempts must carry real http(s) Crack Evidence URLs.
-    # Incomplete markers satisfy the attempt quota; placeholder cracks OK.
+    # Incomplete markers satisfy the quota; missing or placeholder cracks OK.
     if complete is not None:
         complete_id = complete.group(1)
         if assumption_url_cracks.get(complete_id, 0) < 2:
