@@ -148,6 +148,10 @@ single-work direct hit with a reproducible query and occupying URL. Invalid or
 missing kill evidence fails open to keep. The host seals selector and
 prescreen bytes, applies deterministic priority and `SHORT_MAX`, and
 materializes byte-bound full, kill, keep, and shortlist views.
+New selections use schema v2: after recheck/evolution priority, selector rank
+determines deep-search order, with theme inventory and generation order as
+tie-breakers. Assumption-removal form grants no priority. Existing schema-v1
+selections retain their original ordering and hash rules during replay.
 
 ### History modes
 
