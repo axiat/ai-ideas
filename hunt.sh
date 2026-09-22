@@ -53,11 +53,12 @@ runtime_variable_is_set() {
 
 hunt_provider_diagnostic() {
   local label=$1 provider=$2 model=$3 reasoning=$4 output
+  local max_output_tokens=${5:-$PORTABLE_MAX_OUTPUT_TOKENS}
   local -a command=(
     python3 -B lib/history_audit_cli.py provider-command
     --surface hunt
     --provider "$provider"
-    --max-output-tokens "$PORTABLE_MAX_OUTPUT_TOKENS"
+    --max-output-tokens "$max_output_tokens"
   )
   [ -z "$model" ] || command+=(--model "$model")
   [ -z "$reasoning" ] || command+=(--reasoning "$reasoning")
@@ -70,11 +71,12 @@ hunt_provider_diagnostic() {
 
 hunt_write_provider_profile() {
   local output=$1 provider=$2 model=$3 reasoning=$4 temporary
+  local max_output_tokens=${5:-$PORTABLE_MAX_OUTPUT_TOKENS}
   local -a command=(
     python3 -B lib/history_audit_cli.py provider-command
     --surface hunt
     --provider "$provider"
-    --max-output-tokens "$PORTABLE_MAX_OUTPUT_TOKENS"
+    --max-output-tokens "$max_output_tokens"
   )
   [ -z "$model" ] || command+=(--model "$model")
   [ -z "$reasoning" ] || command+=(--reasoning "$reasoning")
@@ -93,7 +95,8 @@ hunt_write_base_profile() {
     "$1" \
     "${HUNT_PROVIDER:-codex}" \
     "${HUNT_MODEL:-}" \
-    "${HUNT_REASONING_EFFORT:-}"
+    "${HUNT_REASONING_EFFORT:-}" \
+    "${2:-$PORTABLE_MAX_OUTPUT_TOKENS}"
 }
 
 hunt_write_review_profile() {
@@ -172,6 +175,9 @@ hunt_runtime_preflight() {
   diagnostic=$(hunt_provider_diagnostic \
     HUNT_PROVIDER "$base_provider" "$base_model" "$base_reasoning") \
     || return 2
+  hunt_provider_diagnostic \
+    'HUNT_PROVIDER (generate)' "$base_provider" "$base_model" "$base_reasoning" \
+    "$PORTABLE_GENERATE_MAX_OUTPUT_TOKENS" >/dev/null || return 2
 
   while IFS= read -r name; do
     case "$name" in
@@ -237,6 +243,9 @@ if type(value) is not int or value <= 0:
     raise SystemExit(2)
 print(value)
 ' history/retrieval-policy-v1.json) || exit 2
+# A generation batch contains about ten complete experiments. Its request
+# budget is separate from the policy-bound comparison and review budget.
+PORTABLE_GENERATE_MAX_OUTPUT_TOKENS=8192
 hunt_runtime_preflight || exit 2
 git config core.hooksPath .githooks
 
@@ -742,7 +751,7 @@ run_portable_generate_stage() {
   chmod 600 "$prompt_path" || return 1
   python3 -B lib/portable_stage.py run \
     --provider-request-profile "$profile" \
-    --max-output-tokens "$PORTABLE_MAX_OUTPUT_TOKENS" \
+    --max-output-tokens "$PORTABLE_GENERATE_MAX_OUTPUT_TOKENS" \
     --stage generate \
     --seat generate \
     --serialized-prompt "$prompt_path" \
@@ -2639,8 +2648,11 @@ while :; do
     policy_mode=$(history_policy_mode "$RD/history/startup.json") || exit 2
 
     internal_profile="$RD/history/provider-profiles/base.json"
-    if ! hunt_write_base_profile "$internal_profile"; then
-      log "Portable base provider profile creation failed"
+    generation_profile="$RD/history/provider-profiles/generate.json"
+    if ! hunt_write_base_profile "$internal_profile" \
+       || ! hunt_write_base_profile \
+         "$generation_profile" "$PORTABLE_GENERATE_MAX_OUTPUT_TOKENS"; then
+      log "Portable provider profile creation failed"
       exit 2
     fi
 
@@ -2659,7 +2671,7 @@ while :; do
     fi
     portable_err=$RD/history/generate-portable.err
     if ! run_portable_generate_stage \
-      "$internal_profile" \
+      "$generation_profile" \
       "$RD/history/generate-output" \
       "$RD/history/generate-attempt" \
       "$RD/history/generate-prompt.json" \

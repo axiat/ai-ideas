@@ -197,6 +197,27 @@ archives = [path for path in runs.iterdir() if (path / "round").is_dir()]
 if len(archives) != 1:
     raise SystemExit(f"expected one archived round, got {archives}")
 round_root = archives[0] / "round"
+profile_root = round_root / "history/provider-profiles"
+for name, expected in (("generate", 8192), ("base", 2048), ("review-1", 2048)):
+    profile = json.loads((profile_root / f"{name}.json").read_text())
+    if profile["max_output_tokens"] != expected:
+        raise SystemExit(f"{name} output budget changed: {profile}")
+generate_profile = json.loads((profile_root / "generate.json").read_text())
+for name in ("preflight", "completion"):
+    record = json.loads(
+        (round_root / f"history/generate-attempt/{name}.json").read_text()
+    )
+    if record["max_output_tokens"] != 8192 or record[
+        "execution_request_profile_hash"
+    ] != generate_profile["execution_request_profile_hash"]:
+        raise SystemExit(f"generate {name} lost its independent output budget")
+review_preflights = []
+for path in round_root.rglob("preflight.json"):
+    record = json.loads(path.read_text())
+    if record.get("stage") == "review":
+        review_preflights.append(record)
+if len(review_preflights) != 1 or review_preflights[0]["max_output_tokens"] != 2048:
+    raise SystemExit("generation budget leaked into review")
 batch = json.loads(
     (round_root / "history/batch/batch.json").read_text(
         encoding="utf-8"
@@ -264,6 +285,7 @@ if (
     or any(not isinstance(item, dict) or set(item) != profile_fields for item in profiles)
     or [item["provider"] for item in profiles] != ["claude", "claude"]
     or any(item["surface"] != "hunt" for item in profiles)
+    or any(item["max_output_tokens"] != 2048 for item in profiles)
 ):
     raise SystemExit(f"fresh Hunt did not bind base/review profiles: {profiles}")
 shadow_material = dict(shadow_plan)

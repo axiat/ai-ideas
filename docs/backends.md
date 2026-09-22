@@ -39,6 +39,12 @@ external prior-work research, and reporting. `FRONT_CMD`, `BACK_CMD`, and
 numbered reviewer overrides take precedence when set. Project mode uses the
 same configuration: add `HUNT_PROJECT=mytopic` before `./hunt.sh`.
 
+Generation requests an 8192-token output budget for its batch of complete
+candidate experiments. History comparison and review use the policy's
+2048-token budget. Each budget is bound to its own provider request profile;
+Codex currently records the native output cap as unsupported, so these values
+are not guaranteed hard limits for Codex output or reasoning.
+
 Other provider override examples:
 
 ```bash
