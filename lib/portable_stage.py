@@ -38,6 +38,7 @@ HOST_INPUT_MAX_BYTES = 256 * 1024
 MODEL_OUTPUT_MAX_BYTES = 128 * 1024
 DECLARED_INPUT_MAX_BYTES = 128 * 1024
 PREFLIGHT_MAX_BYTES = 64 * 1024
+STAGE_TIMEOUT_SECONDS = 1800
 _LEGACY_EXEC_SINGLE_STRING_MAX_BYTES = 128 * 1024
 _LEGACY_EXEC_AGGREGATE_CEILING_BYTES = 256 * 1024
 _EXEC_RESERVE_BYTES = 32 * 1024
@@ -1582,7 +1583,7 @@ def _completion_id(material):
     )
 
 
-def run_stage(prepared, timeout_seconds=600):
+def run_stage(prepared, timeout_seconds=STAGE_TIMEOUT_SECONDS):
     """Launch one portable provider and publish validated host projections."""
     prepared, private = _private_prepared(prepared)
     if prepared.get("execution_boundary") != BOUNDARY:
@@ -2402,7 +2403,9 @@ def _parser():
     run.add_argument("--input", action="append", default=[])
     run.add_argument("--output-root", required=True)
     run.add_argument("--state-root", required=True)
-    run.add_argument("--timeout-seconds", type=float, default=600)
+    run.add_argument(
+        "--timeout-seconds", type=float, default=STAGE_TIMEOUT_SECONDS
+    )
     return parser
 
 
