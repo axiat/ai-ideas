@@ -94,6 +94,11 @@ python3 lib/history_cli.py project-path mytopic
 HUNT_PROJECT=mytopic ./hunt.sh
 ```
 
+Project mode uses the same backend configuration as a default hunt. The
+[full Codex example](backends.md#hunt) pins all Hunt stages to `gpt-6-astra`
+with `high` reasoning; add `HUNT_PROJECT=mytopic` to that command for a
+project run.
+
 `HUNT_PROJECT_DIR=/abs/path` selects an unregistered directory directly; the harvest mark then lives only in the hunt process, so there is no cross-run crash recovery. Setting both variables, or either together with an explicit `RESEARCH_DIRECTION_FILE`, fails closed before any provider starts.
 
 The direction-file minimum: copy any `directions/*.json` contract into the folder as `direction.json`. The directory must be absolute, existing, non-symlink, and outside the checkout; `direction.json` must be a regular, non-symlink file that parses as a direction contract, validated at registration. Project mode also requires an existing `.ai-ideas/history.sqlite3`; on a fresh clone, run one default hunt first so startup creates the database.

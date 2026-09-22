@@ -18,15 +18,30 @@ effort:
 HISTORY_RUNTIME_ABI=v2 ./hunt.sh
 ```
 
-Explicit override grammar examples:
+The explicit Codex example uses `gpt-6-astra`, the model named in OpenAI's
+[current model guide](https://developers.openai.com/api/docs/guides/latest-model),
+with `high` reasoning. OpenAI recommends `high` for complex workflows and
+long-horizon research; it is the starting point for these examples. See the
+[reasoning effort guidance](https://developers.openai.com/api/docs/guides/reasoning#reasoning-effort).
 
 ```bash
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=codex \
-HUNT_MODEL=gpt-5.6-sol \
-HUNT_REASONING_EFFORT=xhigh \
+HUNT_MODEL=gpt-6-astra \
+HUNT_REASONING_EFFORT=high \
+AGENT_CMD='codex -m gpt-6-astra -c model_reasoning_effort=high --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write' \
 ./hunt.sh
+```
 
+`HUNT_MODEL` and `HUNT_REASONING_EFFORT` configure the internal stages;
+`AGENT_CMD` sets the same model and effort for selection, prescreening,
+external prior-work research, and reporting. `FRONT_CMD`, `BACK_CMD`, and
+numbered reviewer overrides take precedence when set. Project mode uses the
+same configuration: add `HUNT_PROJECT=mytopic` before `./hunt.sh`.
+
+Other provider override examples:
+
+```bash
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=kimi \
 HUNT_MODEL=kimi-code/k3 \
@@ -163,7 +178,7 @@ Explicit OpenCode and agy grammar examples:
 ```bash
 HISTORY_RUNTIME_ABI=v2 \
 AWR_PROVIDER=opencode \
-AWR_MODEL=openai/gpt-5.6-sol \
+AWR_MODEL=openai/gpt-6-astra \
 AWR_REASONING_EFFORT=high \
 SIDE_POLL_SEC=0 \
 ./awr-side.sh
@@ -312,7 +327,10 @@ Role-specific controls are `AWR_RESEARCH_*`, `AWR_PRIORWORK_*`, and
 HISTORY_RUNTIME_ABI=v2 \
 AWR_PROVIDER=codex \
 AWR_PRIORWORK_PROVIDER=opencode \
-AWR_PRIORWORK_MODEL=openai/gpt-5.6-sol \
+AWR_MODEL=gpt-6-astra \
+AWR_REASONING_EFFORT=high \
+AWR_PRIORWORK_MODEL=openai/gpt-6-astra \
+AWR_PRIORWORK_REASONING_EFFORT=high \
 AWR_JUDGE_PROVIDER=agy \
 AWR_JUDGE_MODEL=gemini-3.6-flash-high \
 SIDE_POLL_SEC=0 \

@@ -39,6 +39,10 @@ cd ai-ideas
 HISTORY_RUNTIME_ABI=v2 ./hunt.sh
 ```
 
+For an explicit model selection, the [full Codex example](docs/backends.md#hunt)
+sets every Hunt stage to `gpt-6-astra` with `high` reasoning. It also applies
+to directed runs and project mode.
+
 `./hunt.sh` is an active run, not a dry run. It invokes model and search backends, commits canonical history to SQLite, projects `ledger.tsv`, and may push a daily branch and open a pull request after a qualifying report. Shipped history mode is `shadow`: internal retrieval is observational for a fixed generated batch, and external research/review remain the sole ledger authority. Operational defaults and recovery procedures are in [`docs/getting-started.md`](docs/getting-started.md).
 
 ## Directed Run
@@ -121,7 +125,7 @@ use structured JSON transports; the contracts are in
 HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=kimi ./hunt.sh
 HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=grok ./hunt.sh
 HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=claude ./hunt.sh
-HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode AWR_MODEL=openai/gpt-5.6-sol SIDE_POLL_SEC=0 ./awr-side.sh
+HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode AWR_MODEL=openai/gpt-6-astra AWR_REASONING_EFFORT=high SIDE_POLL_SEC=0 ./awr-side.sh
 HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high SIDE_POLL_SEC=0 ./awr-side.sh
 HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=claude AWR_MODEL=sonnet SIDE_POLL_SEC=0 ./awr-side.sh
 ```
