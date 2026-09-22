@@ -28,6 +28,46 @@ def assumption_markdown(marker, cracks):
 
 
 class StageContractRegression(unittest.TestCase):
+    def test_generation_rejects_shared_content_before_first_candidate(self):
+        markdown = assumption_markdown(
+            "incomplete — I1; blocked by: Crack Evidence", ()
+        )
+        for shared in (
+            "Shared experiment protocol: Use 200 paired trials per arm.\n",
+            "# Shared protocol\nMatch memory bytes and action budgets.\n",
+            "<!-- Shared budget: two A100-days. -->\n",
+        ):
+            for position in ("before-marker", "after-marker"):
+                invalid = (
+                    shared + markdown
+                    if position == "before-marker"
+                    else markdown.replace(
+                        "\n\n## I1", "\n\n" + shared + "\n## I1", 1
+                    )
+                )
+                with self.subTest(shared=shared, position=position):
+                    with self.assertRaisesRegex(
+                        stage_contract.StageError,
+                        "generation markdown has content outside candidate sections",
+                    ):
+                        stage_contract.build_generation_tsv_from_markdown(invalid)
+
+    def test_generation_accepts_blank_preamble_and_candidate_local_protocol(self):
+        markdown = assumption_markdown(
+            "incomplete — I1; blocked by: Crack Evidence", ()
+        ).replace(
+            "Minimal Falsification Experiment: Experiment.",
+            "Minimal Falsification Experiment: Use 200 paired trials per arm.\n"
+            "Match memory bytes and action budgets within this candidate.",
+        )
+        markdown = "\n \t\n" + markdown.replace(
+            "\n\n## I1", "\n \t\n\n## I1", 1
+        )
+        self.assertEqual(
+            stage_contract.build_generation_tsv_from_markdown(markdown),
+            "I1\tStory.\tEvaluation\n",
+        )
+
     def test_incomplete_attempt_accepts_zero_or_one_crack_row(self):
         for cracks in (
             (),
