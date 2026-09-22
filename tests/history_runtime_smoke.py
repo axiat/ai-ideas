@@ -1837,8 +1837,14 @@ class RoundCoordinatorContract(CapabilityContract):
         direction_contract=None,
         legacy_v1=False,
         stem=None,
+        parent_id=None,
     ):
         startup = self.startup()
+        if parent_id is not None:
+            brief_path = pathlib.Path(startup["brief_path"])
+            brief = json.loads(brief_path.read_bytes())
+            brief["parent"] = {"candidate_id": parent_id}
+            brief_path.write_bytes(canonical(brief))
         generated = self.root / (
             "coordinator-generated"
             if stem is None
@@ -3040,6 +3046,236 @@ class RoundCoordinatorContract(CapabilityContract):
                 output_path=output,
             )
         self.assertFalse(output.exists())
+
+    @staticmethod
+    def _assumption_selection_specs(cracks=""):
+        return tuple(
+            {
+                "candidate_id": candidate_id,
+                "story": f"Bounded selection candidate {candidate_id}.",
+                "theme": "Evaluation and Diagnostics",
+                "candidate_markdown": (
+                    f"## {candidate_id}\n"
+                    f"One-Sentence Story: Bounded selection candidate {candidate_id}.\n"
+                    "Theme: Evaluation and Diagnostics\n"
+                    + (
+                        "Form: remove-load-bearing-assumption\n"
+                        "Assumption to Remove: persistent state\n"
+                        "Why It Can Be Removed Now: controlled observations\n"
+                        "Forcing Constraint: bounded storage\n"
+                        + cracks
+                        if candidate_id == "I1"
+                        else "Form: new mechanism or new problem\n"
+                    )
+                    + "Minimal Falsification Experiment: compare matched "
+                    "state interventions against a full-state baseline.\n"
+                ),
+            }
+            for candidate_id in ("I1", "I2", "I3")
+        )
+
+    def test_assumption_form_does_not_displace_higher_quality_candidates(self):
+        for stem, cracks in (
+            ("incomplete", "Crack Evidence: unavailable\n"),
+            (
+                "complete",
+                "Crack Evidence: https://example.com/a | first observation\n"
+                "Crack Evidence: https://example.com/b | second observation\n",
+            ),
+        ):
+            with self.subTest(stem=stem):
+                state = self._sealed_round(
+                    selected=("I2", "I3"),
+                    candidate_specs=self._assumption_selection_specs(cracks),
+                    stem=stem,
+                )
+                result = history_runtime.materialize_round_views(
+                    batch_path=state["batch"],
+                    selection_path=state["selection"],
+                    output_root=self.root / f"{stem}-selection-views",
+                )
+                self.assertEqual(result["shortlist_order"], ["I2", "I3"])
+
+    def _legacy_assumption_selection(self, state):
+        current = json.loads(state["selection"].read_bytes())
+        batch = json.loads(state["batch"].read_bytes())
+        candidates = {
+            item["candidate_id"]: item for item in batch["candidates"]
+        }
+        # The old v1 implementation selected I1/I2 for ranks I2/I3/I1.
+        # Reuse only the bound input descriptors, never the producer's targets.
+        legacy = {
+            key: current[key]
+            for key in (
+                "batch_path", "batch_sha256", "round_observation_path",
+                "round_observation_sha256", "sources", "short_max",
+                "theme_min_low",
+            )
+        }
+        legacy["schema_version"] = 1
+        legacy["targets"] = [
+            {
+                "candidate_id": candidate_id,
+                "candidate_content_sha256":
+                    candidates[candidate_id]["content_sha256"],
+                "disposition": "shortlist",
+            }
+            for candidate_id in ("I1", "I2")
+        ]
+        legacy["selection_sha256"] = hashlib.sha256(
+            b"history-runtime-selection-v1\0" + canonical(legacy)
+        ).hexdigest()
+        path = state["selection"].with_name("legacy-selection.json")
+        path.write_bytes(canonical(legacy))
+        return {**state, "selection": path}
+
+    def _assert_selection_consumers(self, state, expected):
+        history_runtime.verify_round_selection(state["selection"])
+        views_root = self.root / "versioned-selection-views"
+        views = history_runtime.materialize_round_views(
+            batch_path=state["batch"],
+            selection_path=state["selection"],
+            output_root=views_root,
+        )
+        self.assertEqual(views["shortlist_order"], expected)
+        authority = self.shadow_test_authority()
+        history_runtime._compare_frozen_targets_for_test(
+            test_authority=authority,
+            test_state_root=self.root,
+            db_path=self.database,
+            policy_path=self.policy_path,
+            batch_path=state["batch"],
+            artifact_root=state["observation_root"],
+            selection_path=state["selection"],
+            portable_request_profile=self._portable_profile(),
+        )
+        research_root = self.root / "versioned-research-views"
+        research = history_runtime.materialize_research_views(
+            db_path=self.database,
+            policy_path=self.policy_path,
+            batch_path=state["batch"],
+            selection_path=state["selection"],
+            comparison_index_path=(
+                state["observation_root"] / "comparison-index.json"
+            ),
+            artifact_root=state["observation_root"],
+            output_root=research_root,
+            authority=authority,
+        )
+        self.assertEqual(research["eligible_order"], expected)
+        for name in ("ideas.tsv", "ideas.md"):
+            self.assertEqual(
+                (research_root / name).read_bytes(),
+                (views_root / name).read_bytes(),
+            )
+        sealed = self._seal_review_plan(
+            state, stem="versioned", authority=authority,
+        )
+        history_runtime.verify_round_review_plan(
+            db_path=self.database,
+            policy_path=self.policy_path,
+            batch_path=state["batch"],
+            review_plan_path=sealed["plan_path"],
+            authority=authority,
+        )
+        self.assertEqual(
+            [item["candidate_id"] for item in sealed["plan"]["targets"]],
+            expected,
+        )
+        self.assertTrue(all(
+            item["planned_outcome"] == "review"
+            for item in sealed["plan"]["targets"]
+        ))
+
+    def test_legacy_assumption_selection_replays_through_review_plan(self):
+        state = self._sealed_round(
+            selected=("I2", "I3"),
+            candidate_specs=self._assumption_selection_specs(),
+        )
+        state = self._legacy_assumption_selection(state)
+        self._assert_selection_consumers(state, ["I1", "I2"])
+
+    def test_quality_selection_replays_through_review_plan(self):
+        state = self._sealed_round(
+            selected=("I2", "I3"),
+            candidate_specs=self._assumption_selection_specs(),
+        )
+        selection = json.loads(state["selection"].read_bytes())
+        self.assertEqual(selection["schema_version"], 2)
+        self._assert_selection_consumers(state, ["I2", "I3"])
+
+    def test_selection_rejects_version_and_hash_domain_substitution(self):
+        state = self._sealed_round(
+            selected=("I2", "I3"),
+            candidate_specs=self._assumption_selection_specs(),
+        )
+        current = json.loads(state["selection"].read_bytes())
+        legacy_state = self._legacy_assumption_selection(state)
+        legacy = json.loads(legacy_state["selection"].read_bytes())
+        cases = [
+            ("v1-as-v2", legacy, 2, None, "ID is invalid"),
+            ("v2-as-v1", current, 1, None, "ID is invalid"),
+            ("v1-with-v2-domain", legacy, 1, 2, "ID is invalid"),
+            ("v2-with-v1-domain", current, 2, 1, "ID is invalid"),
+            ("old-targets-rehashed-v2", legacy, 2, 2,
+             "source binding changed"),
+            ("new-targets-rehashed-v1", current, 1, 1,
+             "source binding changed"),
+            ("boolean-version", legacy, True, 1, "schema is invalid"),
+            ("unsupported-version", current, 3, 3, "schema is invalid"),
+        ]
+        for name, source, version, hash_version, error in cases:
+            with self.subTest(name=name):
+                forged = copy.deepcopy(source)
+                forged["schema_version"] = version
+                if hash_version is not None:
+                    forged.pop("selection_sha256")
+                    forged["selection_sha256"] = hashlib.sha256(
+                        f"history-runtime-selection-v{hash_version}\0".encode()
+                        + canonical(forged)
+                    ).hexdigest()
+                path = self.root / f"{name}.json"
+                path.write_bytes(canonical(forged))
+                with self.assertRaisesRegex(
+                    history_runtime.RuntimeContractError, error,
+                ):
+                    history_runtime.verify_round_selection(path)
+
+    def test_top_ranked_assumption_still_obeys_prescreen_kill(self):
+        for stem, killed, expected in (
+            ("qualified", (), ["I1", "I2"]),
+            ("killed", ("I1",), ["I2", "I3"]),
+        ):
+            with self.subTest(stem=stem):
+                state = self._sealed_round(
+                    selected=("I1", "I2"), killed=killed,
+                    candidate_specs=self._assumption_selection_specs(),
+                    stem=stem,
+                )
+                result = history_runtime.materialize_round_views(
+                    batch_path=state["batch"],
+                    selection_path=state["selection"],
+                    output_root=self.root / f"{stem}-ranked-views",
+                )
+                self.assertEqual(result["shortlist_order"], expected)
+
+    def test_recheck_and_evolution_keep_priority_over_selector_rank(self):
+        for index, declaration in enumerate(("Recheck of", "Evolved from")):
+            with self.subTest(declaration=declaration):
+                specs = self._assumption_selection_specs()
+                specs[2]["candidate_markdown"] += (
+                    f"{declaration}: canonical-parent\n"
+                )
+                state = self._sealed_round(
+                    selected=("I2", "I1"), candidate_specs=specs,
+                    stem=f"parent-{index}", parent_id="canonical-parent",
+                )
+                result = history_runtime.materialize_round_views(
+                    batch_path=state["batch"],
+                    selection_path=state["selection"],
+                    output_root=self.root / f"parent-{index}-views",
+                )
+                self.assertEqual(result["shortlist_order"], ["I3", "I2"])
 
     def test_selection_views_preserve_sealed_shortlist_priority(self):
         state = self._sealed_round(selected=("I2", "I1"))

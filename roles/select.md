@@ -55,6 +55,6 @@ id	direction-fit	direction-evidence
 ## Hard Rules
 
 - Produce advisory ranking and, when required, directed-scope classification only. Do not eliminate individual candidates, search prior work, score, issue novelty or acceptance verdicts, write reports, run publication commands, or modify `ideas.md`.
-- The ranking is advisory. The orchestrator allocates deep-search slots by rank, but recheck/evolution priority, the assumption-removal quota, and low-inventory theme coverage remain hard constraints and tie-breakers.
+- The ranking is advisory. The orchestrator allocates deep-search slots by rank while preserving recheck/evolution priority and low-inventory theme rules. The assumption-removal attempt quota applies only to raw generation and grants no selection priority.
 - In an undirected round, absent or invalid `select.tsv` falls back to generation order without invalidating the round.
 - In a directed round, ranking remains advisory, but missing or malformed `direction.tsv` rejects the batch.

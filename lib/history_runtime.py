@@ -2552,13 +2552,14 @@ def _prescreen_result(markdown, candidate_id):
     return {"decision": "kill", "evidence": occupant[0]}
 
 
-def _candidate_keep_rank(candidate):
+def _candidate_keep_rank(candidate, selection_version):
     markdown = candidate["candidate_markdown"]
     if re.search(
         r"(?mi)^(?:Recheck(?: of)?|Evolved from):", markdown
     ):
         return 0
-    if re.search(
+    # Legacy selections sealed the form priority into their replay contract.
+    if selection_version == 1 and re.search(
         r"(?mi)^Form:[ \t]*"
         r"remove-load-bearing-assumption[ \t]*$",
         markdown,
@@ -2576,6 +2577,7 @@ def _selection_material(
     prescreen_path,
     short_max,
     theme_min_low,
+    schema_version=2,
 ):
     if type(short_max) is not int or short_max < 1:
         raise RuntimeContractError(
@@ -2682,7 +2684,7 @@ def _selection_material(
         theme_count = theme_counts[candidate["theme"]]
         keeps.append(
             (
-                _candidate_keep_rank(candidate),
+                _candidate_keep_rank(candidate, schema_version),
                 ranks.get(candidate_id, 999),
                 theme_count,
                 order,
@@ -2707,7 +2709,7 @@ def _selection_material(
                 }
             )
     result = {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "batch_path": str(
             pathlib.Path(
                 os.path.abspath(os.fspath(batch_path))
@@ -2774,7 +2776,7 @@ def seal_round_selection(
         theme_min_low=theme_min_low,
     )
     result["selection_sha256"] = sha256(
-        b"history-runtime-selection-v1\0"
+        f"history-runtime-selection-v{result['schema_version']}\0".encode()
         + canonical_bytes(result)
     )
     _publish_immutable(output, canonical_bytes(result))
@@ -2800,7 +2802,8 @@ def verify_round_selection(selection_path):
     if (
         not isinstance(selection, dict)
         or set(selection) != fields
-        or selection.get("schema_version") != 1
+        or type(selection.get("schema_version")) is not int
+        or selection["schema_version"] not in {1, 2}
     ):
         raise RuntimeContractError(
             "round selection schema is invalid"
@@ -2808,7 +2811,7 @@ def verify_round_selection(selection_path):
     material = dict(selection)
     selection_sha = material.pop("selection_sha256")
     if selection_sha != sha256(
-        b"history-runtime-selection-v1\0"
+        f"history-runtime-selection-v{selection['schema_version']}\0".encode()
         + canonical_bytes(material)
     ):
         raise RuntimeContractError(
@@ -2833,6 +2836,7 @@ def verify_round_selection(selection_path):
         prescreen_path=sources["prescreen"]["path"],
         short_max=selection["short_max"],
         theme_min_low=selection["theme_min_low"],
+        schema_version=selection["schema_version"],
     )
     if expected != material:
         raise RuntimeContractError(
@@ -2881,7 +2885,7 @@ def _sealed_shortlist_order(batch, candidates, selection):
             )
         keeps.append(
             (
-                _candidate_keep_rank(candidate),
+                _candidate_keep_rank(candidate, selection["schema_version"]),
                 ranks.get(candidate_id, 999),
                 theme_count,
                 order,
@@ -3047,7 +3051,7 @@ def materialize_round_views(
             )
         keeps.append(
             (
-                _candidate_keep_rank(candidate),
+                _candidate_keep_rank(candidate, selection["schema_version"]),
                 ranks.get(candidate_id, 999),
                 theme_count,
                 order,
