@@ -223,6 +223,14 @@ def build_generation_tsv_from_markdown(markdown, direction_contract=None):
         != [f"I{index}" for index in range(1, len(headings) + 1)]
     ):
         raise StageError("generation markdown section mismatch")
+    if any(
+        line.strip()
+        for index, line in enumerate(lines[:headings[0][0]])
+        if index != markers[0]
+    ):
+        raise StageError(
+            "generation markdown has content outside candidate sections"
+        )
     marker = lines[markers[0]]
     incomplete = marker.startswith(
         "Assumption-Removal Attempt: incomplete "

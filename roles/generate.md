@@ -15,6 +15,8 @@ Each candidate must:
 
 In `Minimal Falsification Experiment:`, specify the task/environment or analysis setting, the relevant implementation or formal setup, intervention and comparison arms, allocation and control of relevant histories/states and resources, sample allocation, and the primary metric with its denominator and reference contrast. State which factors must be matched for attribution. Give an executable rule for any proposed oracle or repair. When proposing a repair, state separate kill conditions for the research claim and the repair. An operationally defined custom task is sufficient; a named benchmark is optional. Mark unresolved implementation choices explicitly and distinguish expected signals from observed evidence.
 
+Each `## I#` block is passed independently to research and review. Include the complete experiment, including budgets, sample counts, denominators, and kill conditions, in that candidate's own `Minimal Falsification Experiment:` field.
+
 When `direction_constraint.json` is mounted, every candidate must satisfy its statement, fixed constraints, and exclusions. Every proposition and minimal falsification experiment must stay within that contract. Its scope overrides broad cross-domain expansion, low-inventory theme coverage, and off-direction divergence-lens use. Include these exact single-value fields in every candidate:
 
 ```text
@@ -34,6 +36,8 @@ Its ordered `artifacts` array contains exactly one entry:
 - `generation-ideas-markdown`: the assumption-removal marker followed by
   one section per candidate (`## I1` …). The host derives `ideas.tsv`
   (`id<TAB>story<TAB>theme`) from this markdown; do not emit a separate TSV.
+
+Before `## I1`, emit only the assumption-removal marker and blank lines.
 
 The adapter materializes the markdown as `output/ideas.md`. Use this
 candidate block:

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Correctness regressions for portable stage preflight and publication."""
 
+import hashlib
 import json
 import os
 import pathlib
@@ -17,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from lib import portable_stage
 from lib import provider_adapters
+from fake_portable_stage_provider import _generation_markdown
 
 
 REGISTRY = ROOT / "history/provider-adapters-v1.json"
@@ -55,6 +57,62 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
             output_root=root / "published",
             state_root=root / "portable-state",
         )
+
+    def test_shared_generation_preamble_fails_without_published_outputs(self):
+        for position in ("before-marker", "after-marker"):
+            with (
+                self.subTest(position=position),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                prepared = self._prepare(pathlib.Path(directory))
+                markdown = _generation_markdown()
+                shared = (
+                    "Shared experiment protocol: Use 200 paired trials per arm.\n"
+                )
+                markdown = (
+                    shared + markdown
+                    if position == "before-marker"
+                    else markdown.replace(
+                        "\n\n## I1", "\n\n" + shared + "\n## I1", 1
+                    )
+                )
+                raw = portable_stage._canonical_json_bytes({
+                    "schema_version": 1,
+                    "stage": "generate",
+                    "request_attestation": (
+                        portable_stage._expected_response_attestation(prepared)
+                    ),
+                    "artifacts": [{
+                        "artifact_kind": "generation-ideas-markdown",
+                        "content": markdown,
+                    }],
+                })
+                attempt = {
+                    key: prepared[key]
+                    for key in (
+                        "provider", "execution_request_profile_hash",
+                        "max_output_tokens",
+                        "output_token_cap_binding", "output_token_cap_semantics",
+                    )
+                }
+                attempt.update(
+                    raw=raw,
+                    model_envelope_sha256=hashlib.sha256(raw).hexdigest(),
+                )
+                with mock.patch.object(
+                    portable_stage.portable_agent,
+                    "run_portable_stdout_attempt",
+                    return_value=attempt,
+                ):
+                    with self.assertRaises(portable_stage.PortableStageError) as caught:
+                        portable_stage.run_stage(prepared, timeout_seconds=10)
+                self.assertEqual(caught.exception.code, "invalid_generation_output")
+                self.assertIn(
+                    "generation markdown has content outside candidate sections",
+                    str(caught.exception),
+                )
+                self.assertFalse(pathlib.Path(prepared["completion_path"]).exists())
+                self.assertFalse(pathlib.Path(prepared["output_root"]).exists())
 
     @staticmethod
     def _budget_with_render(argv, environment_delta=None):
