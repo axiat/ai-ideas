@@ -34,7 +34,7 @@ HUNT_MODEL=kimi-code/k3 \
 
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
-HUNT_MODEL=grok-4.5 \
+HUNT_MODEL=grok-4.7 \
 HUNT_REASONING_EFFORT=high \
 ./hunt.sh
 
@@ -62,7 +62,7 @@ overrides use `HUNT_REVIEW_PROVIDER_<N>`, `HUNT_REVIEW_MODEL_<N>`, and
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=kimi \
 HUNT_REVIEW_PROVIDER_1=grok \
-HUNT_REVIEW_MODEL_1=grok-4.5 \
+HUNT_REVIEW_MODEL_1=grok-4.7 \
 HUNT_REVIEW_REASONING_EFFORT_1=high \
 ./hunt.sh
 ```
@@ -110,10 +110,10 @@ model and reasoning effort:
 ```bash
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
-HUNT_MODEL=grok-4.5 \
+HUNT_MODEL=grok-4.7 \
 HUNT_REASONING_EFFORT=high \
 AGENT_CMD='./grok-worker.sh' \
-GROK_MODEL=grok-4.5 \
+GROK_MODEL=grok-4.7 \
 GROK_REASONING_EFFORT=high \
 ./hunt.sh
 ```

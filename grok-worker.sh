@@ -18,7 +18,7 @@
 #
 # Usage:
 #   AGENT_CMD='./grok-worker.sh' ./hunt.sh
-#   GROK_MODEL=grok-4.5 GROK_REASONING_EFFORT=high \
+#   GROK_MODEL=grok-4.7 GROK_REASONING_EFFORT=high \
 #     AGENT_CMD='./grok-worker.sh' ./hunt.sh
 #   FRONT_CMD='./agy-worker.sh' BACK_CMD='./grok-worker.sh' ./hunt.sh
 #   PANEL_CMD='./grok-worker.sh' ./calib/run_panel.sh calib/cases/pos-meanflow

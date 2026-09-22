@@ -154,10 +154,10 @@ run configuration is required:
 ```bash
 HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
-HUNT_MODEL=grok-4.5 \
+HUNT_MODEL=grok-4.7 \
 HUNT_REASONING_EFFORT=high \
 AGENT_CMD='./grok-worker.sh' \
-GROK_MODEL=grok-4.5 \
+GROK_MODEL=grok-4.7 \
 GROK_REASONING_EFFORT=high \
 ./hunt.sh
 
