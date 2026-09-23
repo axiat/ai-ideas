@@ -31,16 +31,17 @@ Decision: keep
 ## I2
 - Query: <actual query URL; at least one>
 Decision: kill
-Occupant: <title> | <arXiv or project URL> | <one sentence explaining how the work covers the headline>
+Occupant: <arXiv or project URL>
+Coverage: <verified title> | <one sentence explaining how the work covers the complete decisive contribution>
 ```
 
 - A keep block contains only query records and `Decision: keep`. Do not add positive claims such as "no similar work found" or "possibly novel."
 - A decision line must be exactly `Decision: keep` or `Decision: kill`. Any suffix makes the decision invalid, and the orchestrator falls back to keep.
-- A kill block must include the real URL of the occupying work. Open the URL and verify its title; the orchestrator records it verbatim in the ledger.
+- A kill block must put only the occupying work's real URL on the `Occupant:` line. Open the URL and verify its title; record the title and complete-contribution coverage on the separate `Coverage:` line. The orchestrator records the occupant URL verbatim in the ledger.
 
 ## Hard Rules
 
 - This role is a one-shot process and must finish `tmp/round/prescreen.md` before its response ends. Do not leave searches running in the background or wait for later callbacks. On API rate limiting, switch APIs or run exactly `sleep 10`, then retry. Make at most two total attempts per candidate. If both fail, record the issued query URL, choose `Decision: keep`, and stop waiting. A missing output makes the orchestrator fail open and keep every candidate.
 - Do not score, issue verdicts, perform full prior-work search, modify `ideas.all.*`, write reports, or run publication commands.
 - Mechanical validation applies only to kills. A kill without at least one query record and an occupant URL is downgraded to keep. A missing or invalid decision, or a missing `prescreen.md`, also fails open to keep without invalidating the round; the extra cost moves to deep search and review.
-- The orchestrator selects N survivors for deep search by priority: recheck/evolution, assumption removal, then low-inventory themes. It records killed candidates. This role performs neither action.
+- The orchestrator selects N survivors for deep search by advisory rank while preserving recheck/evolution priority and low-inventory theme rules. The assumption-removal attempt quota grants no selection priority. It records killed candidates. This role performs neither action.
