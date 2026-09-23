@@ -144,7 +144,9 @@ declared parent. Retrieval is model-free and writes ranked traces and bounded
 packs.
 
 Selection ranks the frozen batch without killing. Prescreen may kill only a
-single-work direct hit with a reproducible query and occupying URL. Invalid or
+single-work direct hit covering the complete candidate's decisive contribution,
+including any explicitly claimed remaining adaptation, explanation, guarantee,
+or payoff, with a reproducible query and occupying URL. Invalid or
 missing kill evidence fails open to keep. The host seals selector and
 prescreen bytes, applies deterministic priority and `SHORT_MAX`, and
 materializes byte-bound full, kill, keep, and shortlist views.
@@ -182,6 +184,25 @@ and reviewer command prefixes. Each candidate × seat review runs in a fresh
 ABI-specific mirror. Aggregation validates every completion and ballot, applies
 the MAJOR cap and mechanical evidence gates, assigns the lowest vote, overlap,
 and non-SA category, and constructs one closed delta.
+
+New portable reviews use review-plan schema 3, binding review-output version 2
+and aggregation version 2 through host-frozen `review_protocol.json`.
+`history/review-contract.md` is the single active contract. It includes a strict
+JSON `Assessment:` line for
+coverage, decision causes and exact quotations of the frozen evidence.
+The four-column ballot remains host-derived. Invalid fields or quotations
+invalidate the output; they cannot become a neutral vote or select v1.
+The host chooses parser, validator and aggregation from the sealed protocol.
+Old schema-2 plans retain output v1 and aggregation v1 for exact replay.
+Every new run uses the current contract automatically; there is no review
+version selector. Historical format handling is confined to archive reads.
+Coverage is a supported reviewer assessment, not an automated proof of novelty.
+
+Scientific grading applies explicit gates, then the positive SA and AwR
+criteria. A preliminary idea is evaluated using stage-appropriate evidence;
+unrun experiments alone do not lower its grade. Reviewer severity counts
+independent failure conditions. A category records a separate conclusion
+from the current verdict and automatic re-entry eligibility.
 
 One transaction commits the round rows, vote vectors, near-SA observations,
 lineage facts, and projection outbox work. Projection materialization publishes
@@ -232,10 +253,36 @@ date	source	theme	idea	verdict	reason	overlap	category
   `Prescreen direct hit:`
 - `overlap`: `high`, `medium`, `low`, or `unknown`
 - `category`: `novelty-dead`, `evidence-incomplete`, `design-fixable`,
-  `ceiling-limited`, or `-`
+  `ceiling-limited`, `review-unresolved`, or `-`
 
-Strong Accept uses category `-`. A direct hit or high overlap is
-`novelty-dead`; a unanimous Strong Accept reduced only by a hard evidence gate
-is `evidence-incomplete`; Accept with Revisions plus low overlap is
-`design-fixable`; other Accept with Revisions rows are `ceiling-limited`.
-Historical seven-column rows remain valid and project category `-`.
+Aggregation v2 applies these rules in order:
+
+1. A verified prescreen direct hit is `novelty-dead`.
+2. Strong Accept uses `-`; unanimous SA reduced only by a mechanical evidence
+   gate is `evidence-incomplete`.
+3. Conflicting coverage assessments use `review-unresolved` without raising
+   the minimum-vote verdict. Any explicit disputed finding, or covered plus
+   not-covered across seats, is a conflict. Complementary design/value causes
+   can coexist and do not constitute a coverage conflict.
+4. Reject is `novelty-dead` only when at least one seat supports complete
+   coverage of the decisive contribution and no seat supplies a conflicting
+   coverage assessment. Unknown is an abstention on that coverage fact.
+5. AwR with low overlap uses `design-fixable`; other AwR uses `ceiling-limited`.
+6. Other Reject results use `review-unresolved`, including high-overlap results
+   without a supported complete-coverage assessment. This category establishes
+   no repairability or automatic retry entitlement; causes remain in the
+   sealed reviews and aggregation.
+
+Automatic near-SA observations must satisfy both the old eligibility formula
+and the new category's eligibility. This preserves the supporting-SA-vote,
+story-count and lineage requirements and adds no automatic re-entry for an
+ordinary Reject or high-overlap AwR. The AwR sidecar still consumes AwR
+verdicts independently of category; its judgment supplies no main-loop votes.
+Changed reviewer votes may change which candidates meet the same eligibility
+rules, so calibration reports must distinguish verdict, category and queue fit.
+
+Aggregation v1 keeps its historical mapping: high-overlap non-SA results and
+ordinary Reject results use `novelty-dead`; mechanical SA downgrades use
+`evidence-incomplete`; low-overlap AwR uses `design-fixable`, other AwR uses
+`ceiling-limited`. Historical rows retain their original categories and bytes.
+Seven-column rows remain valid and project category `-`.

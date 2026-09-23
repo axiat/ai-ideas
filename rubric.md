@@ -71,9 +71,12 @@ the user to restate.
 See: references/fatal-flaws.md for the ten canonical fatal flaws,
 each with a detection rule and a defense strategy.
 
-Run the fatal-flaws audit **before** the scoring steps rather than
-after them. Identify at most two fatal flaws. For each, state the
-flaw, cite the detection rule, and recommend a concrete defense.
+Run the fatal-flaws audit before the scoring steps. Identify the
+actual independent failure conditions. For each, cite the evidence,
+explain its effect on the central claim, and assess a concrete defense.
+The checklist names possible concerns; a matching phrase alone is
+insufficient to establish a flaw. Apply the idea-stage evidence and
+verdict rules in `brainstorming_policy.md` throughout.
 
 **Short-circuit rule.** If any fatal flaw is tagged CRITICAL in the
 severity taxonomy (single-handedly causes rejection, unfixable
@@ -153,12 +156,18 @@ engineering skills, timeline), assess:
   experiments, writing, revision) fit within the idea's lifecycle?
 
 Anchor the assessment in the idea's stated minimal falsification
-experiment (data × compute × expected signal, where a
-missing signal kills the idea). Judge whether that experiment is
-executable under the stated resource baseline and whether its signal
-can genuinely falsify the claim; narrative feasibility claims without
-an executable falsification experiment count as a MAJOR flaw and cap
-the verdict at Accept with Revisions.
+experiment (data × compute × expected signal and an explicit stopping
+condition). Judge whether that experiment is executable under the stated
+resource baseline. Resource and payoff thresholds can determine whether
+to continue a project. A claim of scientific falsification additionally
+requires the absent signature to be necessary under the stated assumptions;
+check for a materially plausible in-scope counterexample that could realize
+the same claim without that signature. A positive signature alone does not
+eliminate substantive, claim-relevant alternatives supported by the supplied
+materials. Checkable reasoning or a counterexample suffices;
+completed experiments and exhaustive enumeration are unnecessary. Narrative
+feasibility claims without an executable, claim-aligned validation plan
+count as a MAJOR flaw and cap the verdict at Accept with Revisions.
 
 Scope the lifecycle and timeline judgment to the falsification
 experiment plus a reasonable first-paper cut of the idea, not the
@@ -184,12 +193,22 @@ Issue one of three verdicts:
   A-tier venue); zero CRITICAL flaws, at most one MAJOR, capability
   match green, lifecycle fit. Dimension scores are diagnostic
   evidence for that judgment, not a mechanical SA threshold.
-- **Accept with Revisions**: pivot the scope per recommendations
-  before starting. Some dimensions weak, fixable flaws, or lifecycle
-  mismatch that can be shortened.
-- **Reject and Pivot**: do not pursue this version. Dominated by a
-  prior benchmark or method, unfixable capability mismatch, or more
-  than one fatal flaw.
+- **Accept with Revisions**: below SA, with supported residual
+  research value and specified revisions that can credibly produce
+  at least borderline work within the minimal experiment and first-paper
+  resource budget, or a supported borderline contribution ceiling.
+  State the retained value, blockers and revision acceptance conditions.
+  Fixable controls or useful engineering alone cannot establish this case.
+- **Reject and Pivot**: the current version lacks the positive case
+  for either verdict or has an explicit disqualifying flaw. Occupation
+  with no independently valuable remainder, unsupported problem/payoff,
+  or unrepairable feasibility may each suffice. Zero CRITICAL or one
+  MAJOR finding is compatible with Reject.
+
+Apply explicit disqualifying gates, then SA, then AwR. A cap provides
+only an upper limit. Additional experiments affect a verdict only when
+they address a named uncertainty that matters to the central contribution.
+Expected results remain predictions; their absence alone is not a flaw.
 
 Emit the evaluation in the Output format below.
 
@@ -314,14 +333,11 @@ executed. The bar is deliberately high: not every weakness is fatal.
 Writing an idea off as fatally flawed stops the student from
 pursuing it, so this section uses a conservative definition.
 
-A fatal flaw has three signatures: it is observable in the Idea
-description (not only discovered during experiments); it cannot be
-fixed by stronger baselines or better writing alone; and reviewers
-will flag it in the first review round.
-
-The canonical count is at most two fatal flaws per idea. If the list
-exceeds two, the idea's direction itself is wrong and a pivot is
-required.
+Establish a fatal finding from specific supplied evidence and assess
+whether a credible repair preserves the central contribution within
+the first-paper resources. A checklist match or an unrun experiment
+does not establish fatality. Count independent failure conditions using
+the severity rules below; the count alone does not establish CRITICAL.
 
 ## 2. Ten canonical fatal flaws
 
@@ -338,8 +354,10 @@ strong; a theory contribution submitted to VLDB meets the same fate.
 
 ### F3: Baseline is not the real baseline
 
-The chosen baseline is weak or outdated. Beating a 2023 baseline in
-2026 convinces no one; reviewers demand the current year's SOTA.
+The chosen baseline lacks a relevant existing capability or has been
+superseded on the claimed comparison. A new protocol needs faithful
+adaptations of the nearest capable methods and a justified selection
+procedure. Calendar age alone does not establish baseline weakness.
 
 ### F4: No compelling motivation
 
@@ -388,30 +406,32 @@ Reviewers flag this as overclaiming.
 ### F1 detection
 
 - Ask: what does this idea add over the single closest prior work?
-- Red flag: the student cannot name a specific contribution in one
-  sentence, or the contribution is "we use a bigger model" or "we
-  combine two existing methods".
+- A concern arises when the proposed difference lacks supported
+  research value. A larger model or combination needs a specific
+  contribution beyond its components; those forms alone do not settle
+  novelty. Identify the covered claim and evaluate the residual payoff.
 
 ### F2 detection
 
-- Ask: what is the target venue, and what are the top three papers
-  from that venue's most recent edition?
-- Red flag: the idea's contribution type does not appear in those
-  three papers.
+- Ask whether the target venue's stated scope and contribution types
+  include the work. Representative papers may clarify expectations;
+  absence from a small sample cannot establish a scope mismatch.
 
 ### F3 detection
 
-- Ask: what is the strongest public result on the target benchmark
-  as of the most recent three months?
-- Red flag: the student's baseline is more than 12 months old or
-  does not cite a 2026 result.
+- Ask which nearest capable methods and simple alternatives test the
+  claimed advance. Read their methods and justify faithful adaptation,
+  tuning opportunities and resource accounting for this setting.
+- Identify a missing relevant capability or comparison; a publication
+  year or unavailable ranking in a new protocol is insufficient.
 
 ### F4 detection
 
 - Ask: if this problem were solved tomorrow, who would benefit, and
   how much?
-- Red flag: the answer is "other researchers studying this narrow
-  problem" without naming an external beneficiary.
+- Identify the research or practical decision the result would change.
+  A theoretical or evaluation contribution may primarily benefit other
+  researchers; its significance still needs a specific explanation.
 
 ### F5 detection
 
@@ -420,10 +440,10 @@ Reviewers flag this as overclaiming.
 
 ### F6 detection
 
-- Ask: what experiment, if it produced a specific result, would prove
-  the main claim?
-- Red flag: the student cannot design such an experiment, or the
-  experiment is out of scope.
+- Ask which executable experiment, derivation or measurement analysis
+  could support or falsify the stated claim. Causal claims additionally
+  need identification against alternative explanations. A validation
+  plan that cannot test its own claim is a substantive concern.
 
 ### F7 detection
 
@@ -440,10 +460,10 @@ Reviewers flag this as overclaiming.
 
 ### F9 detection
 
-- Ask: did the student encounter the problem in practice, or did they
-  start from a technique they wanted to apply?
-- Red flag: the student cannot name a concrete real-world failure
-  that motivated the work.
+- Ask which observation, literature fact, formal argument or task
+  constraint establishes the problem and its significance. A favored
+  technique without such support is a concern; direct personal
+  experience of the failure is unnecessary.
 
 ### F10 detection
 
@@ -458,10 +478,10 @@ within the idea's lifecycle, the flaw remains fatal.
 
 | Flaw | Defense |
 |---|---|
-| F1 | Position against the closest prior work in one sentence. Name a specific axis on which the new idea dominates |
+| F1 | Identify the closest covered contribution and the new capability, knowledge or payoff that remains |
 | F2 | Either switch the venue target to match the contribution type, or reshape the contribution to fit the original venue |
-| F3 | Identify the latest state-of-the-art and add it as the primary baseline. If unavailable, document the recency cutoff and justify |
-| F4 | Name a concrete external beneficiary (a user, a deployed system, a policy question) in the first paragraph of the Introduction |
+| F3 | Compare faithful adaptations of the nearest capable methods with justified strong/simple alternatives; explain protocol and cost differences |
+| F4 | State the concrete research conclusion, practical decision or capability that would change and why it matters |
 | F5 | Follow recovery strategies in the lifecycle-capability-matching reference. Narrow scope, partner, reframe category, or pivot |
 | F6 | Design the decisive experiment explicitly and put it at the top of the experiments plan. If infeasible, pivot the claim |
 | F7 | Secure access before proceeding. For IRB, file early. For proprietary data, secure a partnership |
@@ -474,18 +494,31 @@ within the idea's lifecycle, the flaw remains fatal.
 After listing flaws and defenses, convert each flaw into a severity
 tag using the following logic.
 
-- **CRITICAL**: the flaw cannot be defended within the idea's lifecycle
-  given current resources, or two or more MAJOR flaws are present.
-- **MAJOR**: the flaw requires 2-4 weeks of dedicated work to defend.
-- **MINOR**: the flaw can be addressed in under a week of writing or
-  literature work.
+- **CRITICAL**: specific evidence defeats the central contribution or
+  execution premise, with no credible repair preserving that contribution
+  within the first-paper scope and resources.
+- **MAJOR**: a substantive gap affects the central contribution,
+  evidence, attribution or execution. State the required repair and
+  evidence; estimated work time helps assess feasibility but does not
+  independently determine severity.
+- **MINOR**: a clarification or correction that does not materially
+  affect the central judgment.
+
+Count independent failure conditions. Repeated descriptions of one
+factual gap count once and retain all of its consequences. If another
+defect survives that repair or needs distinct necessary evidence,
+count it separately. A single broad redesign cannot merge independent
+failures. Candidate defenses can resolve a finding only through concrete
+evidence, an executable correction or a justified claim reduction;
+record the disposition of each finding explicitly.
 
 Verdict implications:
 
 - **Any CRITICAL flaw**: verdict is Reject and Pivot. Do not proceed
   with this version of the idea.
-- **Two or more MAJOR flaws**: verdict is Accept with Revisions.
-  Defend all flaws before starting experiments.
+- **Two or more MAJOR flaws**: Strong Accept is forbidden. Assess the
+  positive AwR conditions in the policy; otherwise Reject. This count
+  alone neither establishes CRITICAL nor grants AwR.
 - **At most one MAJOR flaw and any MINOR flaws**: compatible with
   Strong Accept, subject to other evaluation steps.
 
@@ -738,11 +771,12 @@ MAJOR → cap at Accept with Revisions) and the clear-accept SA bar in
   thin idea, not a Reject rule. Re-read first (§9 Deflation); if the idea
   really is weak, the Reject is set by the value assessment or a CRITICAL
   flaw — never by the tally alone.
-- No single dimension reaches 7: the clear-accept SA bar in
-  `brainstorming_policy.md` requires a standout dimension (around 8), so
-  an idea with nothing at 7+ cannot meet it. That is the bar applied, not
-  a separate count veto — it removes SA and flags a vague idea to sharpen,
-  but does not by itself choose between Accept-with-Revisions and Reject.
+- No single dimension reaches 7: inspect whether the contribution lacks
+  significance or whether these performance/cost axes miss its knowledge
+  contribution. Apply the policy's clear-accept standard directly, including
+  its existing diagnostic exception. Dimension thresholds alone cannot
+  grant or forbid SA; the claimed new knowledge still needs independent
+  value, supporting evidence and appropriate validation.
 
 ## 8. Summary table
 

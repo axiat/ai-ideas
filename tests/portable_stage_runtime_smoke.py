@@ -98,6 +98,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
         stage="generate",
         intent=None,
         generation_policy="bounded policy\n",
+        review_protocol=b'{"aggregation_version":2,"review_output_version":2}\n',
     ):
         inputs = root / "inputs"
         inputs.mkdir(parents=True)
@@ -128,7 +129,10 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 separators=(",", ":"),
             ) + "\n"
             (inputs / "candidate.json").write_text(
-                '{"candidate_id":"I1"}\n', encoding="utf-8"
+                json.dumps({"candidate_id": "I1",
+                            "candidate_markdown": "## I1\nSummary: A bounded candidate.\n"},
+                           sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8"
             )
             (inputs / "prior_work.md").write_text(
                 "bounded prior work\n", encoding="utf-8"
@@ -141,6 +145,9 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 "prior_work.md": inputs / "prior_work.md",
                 "review_contract.md": inputs / "review_contract.md",
             }
+            if review_protocol is not None:
+                (inputs / "review_protocol.json").write_bytes(review_protocol)
+                input_paths["review_protocol.json"] = inputs / "review_protocol.json"
         elif stage == "awr-research":
             serialized_prompt = json.dumps(
                 {"schema_version": 1, "stage": "awr-research"},
@@ -682,6 +689,20 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 str(ROOT / ".ai-ideas/history.sqlite3"),
             ):
                 self.assertNotIn(forbidden, preflight_text)
+
+    def test_public_review_requires_current_protocol_before_provider_launch(self):
+        for protocol in (None, b"{}\n", b'{"aggregation_version":1,"review_output_version":1}\n',
+                         b'{"aggregation_version":2,"review_output_version":2}',
+                         b'{"aggregation_version":2,"review_output_version":2,"extra":1}\n'):
+            with self.subTest(protocol=protocol), tempfile.TemporaryDirectory() as directory:
+                prepared, _, _ = self._prepare(pathlib.Path(directory), stage="review", review_protocol=protocol)
+                with mock.patch.object(portable_agent, "run_portable_stdout_attempt",
+                                       side_effect=AssertionError("legacy provider must not launch")) as provider:
+                    with self.assertRaises(self._error()):
+                        portable_stage.run_stage(prepared, timeout_seconds=2)
+                    self.assertEqual(provider.call_count, 0)
+                self.assertFalse(pathlib.Path(prepared["completion_path"]).exists())
+                self.assertFalse(pathlib.Path(prepared["output_root"]).exists())
 
     def test_review_projection_stays_host_derived_and_replayable(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,6 +1,6 @@
 # Role: Prescreen (kill direct hits only; no endorsement or review)
 
-Before deep prior-work search and review, use the cheapest search pass to kill candidates whose headline mechanism or headline finding is directly occupied by a **single** work. This role kills but never clears: `Decision: keep` means only that no decisive direct hit was found. Independent prior-work search and review determine novelty.
+Before deep prior-work search and review, use the cheapest search pass to kill candidates whose decisive contribution is directly occupied by a **single** work. This role kills but never clears: `Decision: keep` means only that no decisive direct hit was found. Independent prior-work search and review determine novelty.
 
 ## Read
 
@@ -11,8 +11,8 @@ Read `tmp/round/ideas.all.md`, which contains every candidate in the current rou
 Spend 1–3 minutes per candidate. Optimize for speed, not depth.
 
 - Run 1–2 exact searches using the problem statement and mechanism keywords. Also run at least one **structured API query** and record the actual query URL with `- Query:`. Use arXiv (`http://export.arxiv.org/api/query?search_query=...`) or Semantic Scholar (`https://api.semanticscholar.org/graph/v1/paper/search?query=...`) through WebFetch.
-- Kill only when one work's abstract is sufficient to confirm that it covers the candidate's headline mechanism or headline finding. Combinations of multiple works, adjacent-domain similarity, and superficial resemblance do not qualify; deep search and review handle them.
-- For proposition-style candidates—a claim about the world rather than an M×D pairing, including competing explanations, named problems, estimand errors, and removal of a load-bearing assumption—the headline finding is also occupied when one work directly answers the proposition or when the named target paper admits it in its abstract or limitations. For the latter, open only the target paper to verify the admission. Leave systematic searches for competing explanations or prior definitions of the estimand to deep search.
+- Kill only when one work's abstract is sufficient to confirm that it covers the decisive contribution stated in the complete candidate, including any explicitly claimed remaining adaptation, explanation, guarantee, or payoff. Combinations of multiple works, adjacent-domain similarity, and superficial resemblance do not qualify; deep search and review handle them.
+- For proposition-style candidates, including competing explanations, named problems, estimand errors, and removal of a load-bearing assumption, apply the same complete-candidate test: one work must directly answer the decisive proposition, including any explicitly claimed remaining explanation, guarantee, or payoff. An admission in the named target paper's abstract or limitations qualifies only when it meets that test; open the target paper to verify the admission. Leave systematic searches for competing explanations or prior definitions of the estimand to deep search.
 - When uncertain, keep. A false kill permanently records the candidate family as rejected; a false keep costs one deep-search pass.
 
 ## Write

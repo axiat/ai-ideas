@@ -234,6 +234,22 @@ class HistoryBudgetSmoke(unittest.TestCase):
                 candidate={"candidate_id": "I1"},
             )
 
+    def test_current_review_protocol_mount_preserves_closed_budget_input(self):
+        mounts = {
+            "candidate.json": b'{"candidate_id":"I1"}\n',
+            "prior_work.md": b"# Prior work\n",
+            "review_contract.md": b"# Current review contract\n",
+            "review_protocol.json": b'{"aggregation_version":2,"review_output_version":2}\n',
+        }
+        self.assertTrue(self._assert_stage_mounts(
+            "review", mounts, candidate={"candidate_id": "I1"}
+        )["fits"])
+        with self.assertRaises(budget.PreflightError):
+            self._assert_stage_mounts(
+                "review", dict(mounts, **{"ledger.tsv": b"history\n"}),
+                candidate={"candidate_id": "I1"},
+            )
+
     def test_meta_requires_exact_bounded_failure_batch(self):
         batch = {"failure_batch.json": b'{"schema_version":1,"items":[]}\n'}
         self.assertTrue(self._assert_stage_mounts("meta", batch)["fits"])

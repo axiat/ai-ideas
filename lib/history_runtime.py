@@ -30,6 +30,8 @@ try:
     from lib import history_retrieval
     from lib import history_store
     from lib import history_witness
+    from lib import review_assessment
+    from lib import stage_contract
 except ImportError:
     import direction_contract as direction_contract_lib
     import history_archive
@@ -39,6 +41,8 @@ except ImportError:
     import history_retrieval
     import history_store
     import history_witness
+    import review_assessment
+    import stage_contract
 
 
 DIVERGENCE_LENS_MAX_BYTES = (
@@ -91,6 +95,7 @@ _INPUT_CAPS = {
     "candidate.json": 16384,
     "prior_work.md": 16384,
     "review_contract.md": 16384,
+    "review_protocol.json": 1024,
     "history_summary.json": 16384,
     "failure_batch.json": 65536,
 }
@@ -5899,7 +5904,9 @@ def _review_plan_hash(plan):
     material = dict(plan)
     material.pop("review_plan_sha256", None)
     return sha256(
-        b"history-runtime-review-plan-v2\0"
+        (b"history-runtime-review-plan-v3\0"
+         if plan.get("schema_version") == 3
+         else b"history-runtime-review-plan-v2\0")
         + canonical_bytes(material)
     )
 
@@ -6005,6 +6012,7 @@ def seal_round_review_plan(
         "review-contract.md": review_contract_raw,
         "prior-work-source.md": prior_source_raw,
     }
+    input_publications["review_protocol.json"] = review_assessment.protocol_bytes()
     review_contract = {
         "path": str(review_contract_path.resolve()),
         "sha256": sha256(review_contract_raw),
@@ -6138,7 +6146,7 @@ def seal_round_review_plan(
         if outcome_map[candidate_id] == "review"
     ]
     result = {
-        "schema_version": 2,
+        "schema_version": 3,
         "execution_boundary": PORTABLE_EXECUTION_BOUNDARY,
         "batch_path": str(
             pathlib.Path(batch_path).resolve()
@@ -6171,6 +6179,7 @@ def seal_round_review_plan(
         "commit_order": commit_order,
         "targets": targets,
     }
+    result["review_protocol"] = dict(review_assessment.PROTOCOL_V2)
     result["review_plan_sha256"] = _review_plan_hash(result)
     _publish_immutable_tree(input_root, input_publications)
     try:
@@ -6219,11 +6228,18 @@ def verify_round_review_plan(
             "round review plan schema is invalid"
         )
     if (
-        plan.get("schema_version") == 2
+        type(plan.get("schema_version")) is int
+        and plan["schema_version"] in {2, 3}
         and plan.get("execution_boundary")
         == PORTABLE_EXECUTION_BOUNDARY
     ):
         fields = common_fields | {"execution_boundary"}
+        if plan["schema_version"] == 3:
+            fields.add("review_protocol")
+            try:
+                review_assessment.validate_protocol(plan.get("review_protocol"))
+            except ValueError as exc:
+                raise RuntimeContractError(str(exc)) from exc
         seat_identity_field = "execution_request_profile_hash"
     else:
         raise RuntimeContractError(
@@ -6275,6 +6291,15 @@ def verify_round_review_plan(
     review_input_root = review_plan.parent / (
         review_plan.name + "-inputs"
     )
+    if plan["schema_version"] == 3:
+        protocol_raw = review_assessment.protocol_bytes()
+        _read_rooted_frozen_descriptor(
+            review_input_root,
+            {"path": str((review_input_root / "review_protocol.json").resolve()),
+             "sha256": sha256(protocol_raw), "byte_count": len(protocol_raw)},
+            "review_protocol.json", "round review protocol", maximum=1024,
+            fields={"path", "sha256", "byte_count"},
+        )
     source_raw = {}
     for name, relative_path, maximum in (
         ("review_contract", "review-contract.md", 16384),
@@ -6612,15 +6637,6 @@ def _run_review_matrix(
             output_path,
         )
     )
-    public_reference_root = pathlib.Path(output_path).resolve().parent
-    try:
-        pathlib.Path(stage_root).resolve().relative_to(
-            public_reference_root
-        )
-    except ValueError as exc:
-        raise RuntimeContractError(
-            "portable review stages are outside the index root"
-        ) from exc
     policy = history_projection.load_policy(policy_path)
     if policy["mode"] == "enforcement":
         _validated_runtime_authority(
@@ -6635,6 +6651,30 @@ def _run_review_matrix(
         review_plan_path=review_plan_path,
         authority=authority,
     )
+    if plan["schema_version"] != 3:
+        raise RuntimeContractError("execution requires the current review plan")
+    return _execute_verified_review_matrix(
+        plan=plan, policy=policy, review_plan_path=review_plan_path,
+        reviewer_request_profiles=reviewer_request_profiles,
+        reviewer_stage_runner=reviewer_stage_runner,
+        stage_root=stage_root, output_path=output_path,
+    )
+
+
+def _execute_verified_review_matrix(
+    *, plan, policy, review_plan_path, reviewer_request_profiles,
+    reviewer_stage_runner, stage_root, output_path,
+):
+    """Execute one verified object; historical objects are for private fixtures."""
+    public_reference_root = pathlib.Path(output_path).resolve().parent
+    try:
+        pathlib.Path(stage_root).resolve().relative_to(
+            public_reference_root
+        )
+    except ValueError as exc:
+        raise RuntimeContractError(
+            "portable review stages are outside the index root"
+        ) from exc
     profiles = _reviewer_profile_descriptors(
         reviewer_request_profiles
     )
@@ -6664,6 +6704,12 @@ def _run_review_matrix(
                 "review_contract.md":
                     plan["review_contract"]["path"],
             }
+            if plan["schema_version"] == 3:
+                inputs["review_protocol.json"] = str(
+                    pathlib.Path(review_plan_path).resolve().parent
+                    / (pathlib.Path(review_plan_path).name + "-inputs")
+                    / "review_protocol.json"
+                )
             mounted_summary = target[
                 "mounted_history_summary"
             ]
@@ -6736,6 +6782,7 @@ def _run_review_matrix_for_test(
     test_state_root,
     **values,
 ):
+    # Historical execution exists only to construct private, authorized fixtures.
     paths = (
         values["db_path"],
         values["policy_path"],
@@ -6763,7 +6810,27 @@ def _run_review_matrix_for_test(
         test_state_root,
         state_paths=paths,
     ):
-        return _run_review_matrix(**call_values)
+        _validate_review_matrix_executor(
+            executor=call_values.get("executor", PORTABLE_EXECUTOR),
+            reviewer_request_profiles=call_values.get("reviewer_request_profiles"),
+            reviewer_stage_runner=call_values.get("reviewer_stage_runner"),
+        )
+        if policy["mode"] == "enforcement":
+            _validated_runtime_authority(
+                policy, test_authority,
+                state_paths=(call_values["stage_root"], call_values["output_path"]),
+            )
+        plan = verify_round_review_plan(
+            db_path=call_values["db_path"], policy_path=call_values["policy_path"],
+            batch_path=call_values["batch_path"], review_plan_path=call_values["review_plan_path"],
+            authority=call_values.get("authority"),
+        )
+        return _execute_verified_review_matrix(
+            plan=plan, policy=policy, review_plan_path=call_values["review_plan_path"],
+            reviewer_request_profiles=call_values.get("reviewer_request_profiles"),
+            reviewer_stage_runner=call_values.get("reviewer_stage_runner"),
+            stage_root=call_values["stage_root"], output_path=call_values["output_path"],
+        )
 
 
 def _parse_review_ballot(raw, candidate_id):
@@ -6801,7 +6868,32 @@ def _parse_review_ballot(raw, candidate_id):
     }
 
 
-def _validate_compact_review(raw, ballot):
+def _validate_compact_review(
+    raw, ballot, *, review_output_version=1, candidate_markdown=None, prior_work=None,
+):
+    if review_output_version == 2:
+        try:
+            markdown = raw.decode("utf-8")
+            projected = stage_contract.build_review_verdict_from_markdown(
+                markdown, ballot["candidate_id"], review_output_version=2,
+                candidate_markdown=candidate_markdown, prior_work=prior_work,
+            )
+            expected = (f"{ballot['candidate_id']}\t{ballot['verdict']}\t"
+                        f"{ballot['major_count']}\t{ballot['reason']}\n")
+            if projected != expected:
+                raise ValueError("review artifact and ballot differ")
+            lines = [line for line in markdown.splitlines() if line.strip()]
+            values = dict(line.split(":", 1) for line in lines[1:])
+            values = {key: value.strip() for key, value in values.items()}
+            values["Assessment"] = review_assessment.parse(
+                values["Assessment"], verdict=ballot["verdict"],
+                candidate_markdown=candidate_markdown, prior_work=prior_work,
+            )
+            return values
+        except (UnicodeDecodeError, ValueError, stage_contract.StageError) as exc:
+            raise RuntimeContractError(str(exc)) from exc
+    if review_output_version != 1:
+        raise RuntimeContractError("review output version is invalid")
     if b"\x00" in raw or b"\r" in raw:
         raise RuntimeContractError(
             "review artifact contains invalid bytes"
@@ -6870,7 +6962,7 @@ def _validate_compact_review(raw, ballot):
     return values
 
 
-def _validated_review_outputs(prepared, candidate_id):
+def _validated_review_outputs(prepared, candidate_id, **review_context):
     ballot_raw = _read_bound_regular(
         prepared["output_paths"]["verdict.tsv"],
         "review matrix ballot",
@@ -6884,8 +6976,30 @@ def _validated_review_outputs(prepared, candidate_id):
         "review matrix artifact",
         maximum=65536,
     )
-    _validate_compact_review(review_raw, ballot)
+    values = _validate_compact_review(review_raw, ballot, **review_context)
+    if "Assessment" in values:
+        ballot["assessment"] = values["Assessment"]
     return ballot, ballot_raw, review_raw
+
+
+def _review_output_context(plan, target):
+    if plan["schema_version"] == 2:
+        return {}
+    sources = {}
+    for field in ("candidate_artifact", "prior_work"):
+        descriptor = target[field]
+        raw = _read_bound_regular(
+            descriptor["path"], "review " + field, maximum=16384,
+        )
+        if sha256(raw) != descriptor["sha256"]:
+            raise RuntimeContractError("review evidence source changed")
+        sources[field] = raw.decode("utf-8")
+    candidate = json.loads(sources["candidate_artifact"])
+    return {
+        "review_output_version": 2,
+        "candidate_markdown": candidate["candidate_markdown"],
+        "prior_work": sources["prior_work"],
+    }
 
 
 def _review_entry_stage(index, entry, review_index_path):
@@ -6988,6 +7102,8 @@ def verify_review_matrix(
             "review_contract.md":
                 plan["review_contract"]["sha256"],
         }
+        if plan["schema_version"] == 3:
+            expected_inputs["review_protocol.json"] = sha256(review_assessment.protocol_bytes())
         summary = target["mounted_history_summary"]
         if summary is not None:
             expected_inputs["history_summary.json"] = (
@@ -7047,7 +7163,7 @@ def verify_review_matrix(
                 "portable review stage binding changed"
             )
         _validated_review_outputs(
-            prepared, entry["candidate_id"]
+            prepared, entry["candidate_id"], **_review_output_context(plan, target)
         )
     return index
 
@@ -7064,7 +7180,9 @@ def _round_aggregation_hash(aggregation):
     material = dict(aggregation)
     material.pop("aggregation_sha256", None)
     return sha256(
-        b"history-runtime-round-aggregation-v1\0"
+        (b"history-runtime-round-aggregation-v2\0"
+         if aggregation.get("schema_version") == 2
+         else b"history-runtime-round-aggregation-v1\0")
         + canonical_bytes(material)
     )
 
@@ -7168,6 +7286,8 @@ def _aggregation_material(
                 "row_sha256": None,
                 "near_sa_observation": None,
             }
+            if plan["schema_version"] == 3:
+                target_result.update({"assessments": [], "coverage": None})
             if outcome == "history_abstain":
                 target_results[candidate_id] = target_result
                 continue
@@ -7190,6 +7310,8 @@ def _aggregation_material(
                     )
                 )
                 target_result["vote_vector"] = "-"
+                if plan["schema_version"] == 3:
+                    target_result["coverage"] = "covered"
             else:
                 ballots = []
                 for seat in plan["reviewer_seats"]:
@@ -7201,9 +7323,13 @@ def _aggregation_material(
                     )
                     ballot, ballot_raw, _ = (
                         _validated_review_outputs(
-                            prepared, candidate_id
+                            prepared, candidate_id, **_review_output_context(plan, target)
                         )
                     )
+                    if plan["schema_version"] == 3:
+                        target_result["assessments"].append({
+                            "seat_id": seat["seat_id"], "assessment": ballot["assessment"],
+                        })
                     rank = _review_rank(ballot["verdict"])
                     major = ballot["major_count"]
                     effective_rank = (
@@ -7285,18 +7411,13 @@ def _aggregation_material(
                     0: "reject",
                 }[final_rank]
                 overlap = facts["overlap"]
-                if final_rank == 2:
-                    category = "-"
-                elif downgraded:
-                    category = "evidence-incomplete"
-                elif overlap == "high":
-                    category = "novelty-dead"
-                elif raw_min == 1 and overlap == "low":
-                    category = "design-fixable"
-                elif raw_min == 1:
-                    category = "ceiling-limited"
-                else:
-                    category = "novelty-dead"
+                category_args = {"final_rank": final_rank, "raw_min": raw_min,
+                                 "downgraded": downgraded, "overlap": overlap}
+                category = review_assessment.legacy_category(**category_args)
+                if plan["schema_version"] == 3:
+                    assessments = [item["assessment"] for item in target_result["assessments"]]
+                    target_result["coverage"] = review_assessment.aggregate_coverage(assessments)
+                    category = review_assessment.classify(**category_args, assessments=assessments)
                 row = "\t".join(
                     (
                         plan["gate_config"]["round_date"],
@@ -7331,12 +7452,9 @@ def _aggregation_material(
                 story_count_after_append = (
                     existing_count + earlier_count + 1
                 )
-                if (
-                    final_rank != 2
-                    and category
-                    in {"design-fixable", "evidence-incomplete"}
-                    and sa_votes >= 1
-                    and story_count_after_append < 2
+                if review_assessment.eligible_for_reentry(
+                    **category_args, category=category, sa_votes=sa_votes,
+                    story_count_after_append=story_count_after_append,
                 ):
                     observation = {
                         "row_index": len(rows),
@@ -7366,8 +7484,8 @@ def _aggregation_material(
     finally:
         if owns_connection:
             conn.close()
-    return {
-        "schema_version": 1,
+    result = {
+        "schema_version": 2 if plan["schema_version"] == 3 else 1,
         "review_plan_sha256": plan["review_plan_sha256"],
         "review_index_sha256": index["review_index_sha256"],
         "targets": [
@@ -7377,6 +7495,10 @@ def _aggregation_material(
         "ledger_rows": rows,
         "near_sa_observations": near_sa,
     }
+    if plan["schema_version"] == 3:
+        result["review_protocol"] = dict(review_assessment.PROTOCOL_V2)
+    return result
+
 
 
 def build_round_aggregation(
@@ -7409,6 +7531,13 @@ def verify_round_aggregation(
     aggregation = _load_canonical_json(
         aggregation_path, "round aggregation"
     )
+    plan = verify_round_review_plan(
+        db_path=values["db_path"], policy_path=values["policy_path"],
+        batch_path=values["batch_path"], review_plan_path=values["review_plan_path"],
+        authority=values.get("authority"), _connection=values.get("_connection"),
+    )
+    version = 2 if plan["schema_version"] == 3 else 1
+    extra_fields = {"review_protocol"} if version == 2 else set()
     if (
         not isinstance(aggregation, dict)
         or set(aggregation)
@@ -7420,8 +7549,10 @@ def verify_round_aggregation(
             "ledger_rows",
             "near_sa_observations",
             "aggregation_sha256",
-        }
-        or aggregation.get("schema_version") != 1
+        } | extra_fields
+        or type(aggregation.get("schema_version")) is not int
+        or aggregation.get("schema_version") != version
+        or (version == 2 and aggregation.get("review_protocol") != plan["review_protocol"])
         or aggregation.get("aggregation_sha256")
         != _round_aggregation_hash(aggregation)
     ):
@@ -7798,7 +7929,7 @@ def materialize_report_views(
             index, entry, review_index_path
         )
         _, _, review_raw = _validated_review_outputs(
-            prepared, candidate_id
+            prepared, candidate_id, **_review_output_context(plan, plan_targets[candidate_id])
         )
         try:
             review = review_raw.decode("utf-8")
@@ -7901,7 +8032,7 @@ def commit_round(
         aggregation_path, "round aggregation"
     )
     portable_round = (
-        plan.get("schema_version") == 2
+        plan.get("schema_version") in {2, 3}
         and plan.get("execution_boundary")
         == PORTABLE_EXECUTION_BOUNDARY
     )

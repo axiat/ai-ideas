@@ -226,7 +226,7 @@ def _comparison(inner):
 def _review(inner):
     candidate = inner.get("candidate", {})
     candidate_id = candidate.get("candidate_id", "I1")
-    return (
+    text = (
         f"# {candidate_id}\n"
         "Verdict: strong-accept\n"
         "CRITICAL: 0\n"
@@ -240,6 +240,39 @@ def _review(inner):
         "History: unavailable\n"
         "Reason: The bounded fixture supports strong acceptance.\n"
     )
+
+    if os.environ.get("FAKE_AGENT_MODE") == "review-legacy-reject":
+        text = text.replace("Verdict: strong-accept", "Verdict: reject")
+        text = text.replace("MAJOR: 0", "MAJOR: 1")
+        text = text.replace("The bounded fixture supports strong acceptance.", "The frozen candidate lacks supporting evidence.")
+    protocol_path = pathlib.Path("input/review_protocol.json")
+    if protocol_path.is_file():
+        mode = os.environ.get("FAKE_AGENT_MODE", "")
+        if mode == "review-v2-missing-assessment":
+            return text
+        frozen_candidate = json.loads(pathlib.Path("input/candidate.json").read_text())
+        candidate_quote = frozen_candidate["candidate_markdown"].splitlines()[1]
+        prior_quote = pathlib.Path("input/prior_work.md").read_text().strip()
+        coverage = "not-covered"
+        causes = []
+        if mode in {"review-v2-reject", "review-v2-covered", "review-v2-awr"}:
+            verdict = "accept-w-rev" if mode == "review-v2-awr" else "reject"
+            text = text.replace("Verdict: strong-accept", "Verdict: " + verdict)
+            text = text.replace("MAJOR: 0", "MAJOR: 1")
+            reason = ("Prior work covers the decisive contribution." if mode == "review-v2-covered"
+                      else "Current design cannot identify the claimed effect.")
+            text = text.replace("The bounded fixture supports strong acceptance.", reason)
+            if mode == "review-v2-covered":
+                coverage = "covered"
+            causes = [{"code": "contribution-covered" if coverage == "covered" else "design-invalid",
+                       "evidence": [{"source": "candidate", "quote": candidate_quote}]}]
+        if mode == "review-v2-invalid-ref":
+            candidate_quote = "This source quote is deliberately invented."
+        value = {"coverage": coverage, "coverage_evidence": [
+            {"source": "candidate", "quote": candidate_quote},
+            {"source": "prior-work", "quote": prior_quote}], "causes": causes}
+        text = text.replace("Reason:", "Assessment: " + json.dumps(value, separators=(",", ":")) + "\nReason:")
+    return text
 
 
 def _awr_draft():

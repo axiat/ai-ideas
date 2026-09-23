@@ -59,7 +59,7 @@ RUNTIME_FILES = [
     "history/l2-budget-v1.json",
     "history/settlement-policy-v1.json",
     "history/production-evidence-roots-v1.json",
-    "history/review-contract-v1.md",
+    "history/review-contract.md",
     "ledger.instance-id",
     "roles/generate.md", "roles/meta.md", "roles/review.md",
     "roles/history-compare.md", "roles/research.md",

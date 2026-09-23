@@ -140,7 +140,7 @@ _STAGE_REQUIREMENTS = {
             "prior_work.md",
             "review_contract.md",
         },
-        "optional_mounts": {"history_summary.json"},
+        "optional_mounts": {"history_summary.json", "review_protocol.json"},
         "candidate": True,
         "retrieval_payload": False,
     },

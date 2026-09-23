@@ -13,6 +13,14 @@ Read only the draft's `## Revised Idea` claim when forming queries. Ignore and n
 5. Inspect the abstracts and methods of the 5–8 closest works, including relevant industrial tools or technical reports.
 6. For `Form: remove-load-bearing-assumption`, open every reported `Crack Evidence:` URL and classify it only as `supports`, `partial`, `contradicts`, or `unreachable`.
 
+In the existing nearest-work and counterexample fields, distinguish known
+phenomena or general mechanisms, direct target-setting results, and coverage
+of the remaining method or payoff. Preserve factual overlap labels and
+record supported differences and contrary evidence; reviewers judge value.
+A supports source may itself occupy the claimed assumption removal and must
+also be recorded as such. For new protocols, identify nearest capable
+baselines even when no same-protocol public ranking exists.
+
 ## Output Contract
 
 ```text

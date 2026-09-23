@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 2026-09-23 Review: distinguish candidate value, defects and occupation
+
+- The single active `history/review-contract.md` defines evidence-backed SA, bounded-revision AwR, and current-version Reject. Unrun experiments alone do not lower the grade. Scientific evidence and validation match the contribution type; known mechanisms, diagnostic contributions and new comparison protocols are evaluated through their supported residual value. Policy, rubric, research, selector, main reviewer, AwR reviewer and scheduled-entry summaries use the same criteria.
+- MAJOR counts independent failure conditions; repeated descriptions of one gap count once. Two MAJOR findings forbid SA without automatically creating CRITICAL or awarding AwR. The rubric no longer imposes a separate performance-dimension veto on a supported knowledge contribution.
+- Prescreen kills require one work to cover the complete candidate's decisive contribution, including an explicitly stated residual claim; covering a known motivating phenomenon alone does not bypass substantive review.
+- Reviewers distinguish project stopping thresholds from scientific falsification, check whether a missing signature is necessary for the claim being ruled out, and consider supported alternatives before attributing a positive signature to one mechanism. This requires idea-stage reasoning, without demanding completed experiments or exhaustive mechanisms.
+- New reviews include a structured Assessment with source-checked quotations, contribution coverage and decision causes. Complete coverage requires a cited prior result; ordinary Reject and unresolved coverage use `review-unresolved` without adding automatic re-entry. Lowest-vote aggregation, SA evidence gates and the existing re-entry budget remain in force.
+- New runs automatically use the current contract, with no review-version option. Internal archive readers retain old review and aggregation formats. Historical ledger/database rows and frozen review inputs remain unchanged.
+
+## 2026-09-23 Policy: assess mechanism transfers before experiments
+
+- Strong Accept for a transferred mechanism now requires an evidence-backed prospect of a new, attributable clear-accept payoff instead of an already-realized result. The case needs a specific causal argument grounded in observations or analysis and a feasible falsification experiment with a strong baseline, attribution controls, and a kill condition. Unrun experiments alone neither count as MAJOR nor cap the verdict; unsupported gain assumptions still fail the gate.
+- Updated both `brainstorming_policy.md` and the bounded review contract consumed by production reviewers. Novelty, nontrivial adaptation, clear-accept potential, and the other review gates remain unchanged. Historical ballots and frozen calibration inputs retain their original rules.
+
 ## 2026-09-20 Harness: v1 contained-runtime code stack removed
 
 - Deleted the unreachable v1 contained-runtime implementation: `lib/history_stage.py` (sandbox-exec/bwrap containment, `_run_contained`, `run_stage` CLI), `lib/history_stage_proxy.py` (Codex loopback canonicalizer), and `lib/history_stage_adapter.py` (contained adapter CLI). No live entry point referenced them after the 2026-09-07 runtime removal.

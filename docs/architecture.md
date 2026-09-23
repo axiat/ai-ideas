@@ -46,6 +46,13 @@ Startup imports an operator TSV baseline only when the durable bootstrap marker 
 
 A prescreen direct hit becomes `reject/high/novelty-dead` immediately. Internal history retrieval never creates an automatic verdict. In shipped `shadow` mode, history receipts are observational for a fixed generated batch; the normal external research/review protocol remains the sole authority for ledger verdicts. In calibrated `enforcement` mode, complete receipts gate permanent conclusions and nonpermanent statuses produce `history_abstain` without a ledger row.
 
+New reviews bind output and aggregation version 2 in a host-frozen protocol.
+Structured Assessment evidence distinguishes complete contribution coverage
+from design, value, evidence and feasibility findings. An ordinary Reject
+without supported complete coverage uses `review-unresolved`; it gains no
+automatic re-entry. Old output and aggregation versions remain replayable.
+The exact category and eligibility rules are in [`PROGRAM.md`](../PROGRAM.md).
+
 ## Directed Runs
 
 `RESEARCH_DIRECTION_FILE` selects a repository-relative closed contract. The

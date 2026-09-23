@@ -31,6 +31,13 @@ For a proposition-style idea, whose headline is a claim about the world rather t
 
 Any such hit requires `Overlap: high` and the exact location of the occupying statement.
 
+Within the existing nearest-work and counterexample fields, distinguish a
+known phenomenon or general mechanism from a direct target-setting result
+and from coverage of the candidate's remaining method or payoff. Preserve
+the high token when required above; it alone does not establish that every
+residual contribution is occupied. Record concrete supported differences
+and contradictory findings. Reviewers determine their value.
+
 Run at least one **structured API query** and record the actual query URL with `- Query:` so recall is reproducible and auditable. Use arXiv (`http://export.arxiv.org/api/query?search_query=...`) or Semantic Scholar (`https://api.semanticscholar.org/graph/v1/paper/search?query=...`) through WebFetch. Each `- Query:` line must contain the URL and nothing else: put HTTP status, error outcomes, and purpose notes on a separate line, because the orchestrator matches the `- Query:` line strictly and rejects any trailing annotation. APIs provide recall only. Read abstracts and methods before judging overlap; metadata alone is insufficient.
 
 `tmp/litwatch/index.jsonl` is an optional seed. If it contains entries for the idea's theme, scan their cached abstracts to accelerate discovery. The cache replaces no hard requirement: record at least one live API query, read at least five close works, and complete every proposition and assumption-removal check. A cached item counts only after its abstract is read, and every cached arXiv id still requires the live title check below. When the cache is absent or empty, follow the same process without it.
@@ -40,6 +47,12 @@ Find the **5–8 closest works** and read their abstracts and method sections, n
 **Payoff occupation:** When an idea explicitly uses a repair arm, application payload or payoff, or a published anomaly, search specifically for the closest occupier of that basis. Do not first decide whether the basis is load-bearing, creates an 8+ dimension, or supports Strong Accept. If occupied, record the closest payoff occupant in `Nearest Work:` or `Strongest Counterexample:`. For a genuine zero hit, record the search boundary and name the strongest current baseline under the same metric and setting; never equate an unsearched space with zero hits. When the basis is an anomalous result from a paper, record directly relevant supporting and opposing results from that paper and verify the comparison target and arithmetic behind every load-bearing number. Use the existing output fields.
 
 **Crack evidence verification:** Only for `Form: remove-load-bearing-assumption`, open every URL supplied in a `Crack Evidence:` line. Record whether the URL is reachable, whether the content supports the claimed fact, and whether it specifically shows the assumption weakening rather than being merely related. State facts only. Use exactly `supports`, `partial`, `contradicts`, or `unreachable`.
+
+A supporting source may also already accomplish the claimed assumption
+removal. Record that occupation as well; the count of supports supplies
+no independent evidence of novelty. For a new comparison protocol, name
+the nearest capable baselines and explain applicable capabilities even
+when no public ranking exists for that exact protocol.
 
 The orchestrator mechanically requires at least five linked close works and one query record in every idea block. An assumption-removal block also requires `## Crack Evidence Verification` with at least two verification lines. Field lines are matched strictly: `- Query:` takes the URL alone and `Papers Read:` takes the integer alone — put every breakdown, caveat, and parenthetical on a separate line. Missing, undersized, or annotated-field blocks invalidate and rerun the round.
 

@@ -7,8 +7,10 @@ import urllib.parse
 
 try:
     from lib import direction_contract as direction_contract_lib
+    from lib import review_assessment
 except ImportError:
     import direction_contract as direction_contract_lib
+    import review_assessment
 
 
 class StageError(RuntimeError):
@@ -383,11 +385,18 @@ def build_generation_tsv_from_markdown(markdown, direction_contract=None):
     return "\n".join(rows) + "\n"
 
 
-def build_review_verdict_from_markdown(markdown, candidate_id):
+def build_review_verdict_from_markdown(
+    markdown, candidate_id, *, review_output_version=1,
+    candidate_markdown=None, prior_work=None,
+):
     """Validate review markdown and return host-projected verdict.tsv text.
 
     Markdown is authoritative; dual-write TSV drift is projected away.
     """
+    if type(review_output_version) is not int or review_output_version not in {1, 2}:
+        raise StageError("review output version is invalid")
+    if review_output_version == 2 and ("\x00" in markdown or "\r" in markdown):
+        raise StageError("review markdown contains invalid bytes")
     lines = [line for line in markdown.splitlines() if line.strip()]
     labels = (
         "Verdict",
@@ -402,6 +411,8 @@ def build_review_verdict_from_markdown(markdown, candidate_id):
         "History",
         "Reason",
     )
+    if review_output_version == 2:
+        labels = labels[:-1] + ("Assessment", "Reason")
     if (
         len(lines) != len(labels) + 1
         or lines[0] != f"# {candidate_id}"
@@ -434,6 +445,14 @@ def build_review_verdict_from_markdown(markdown, candidate_id):
         and values["Verdict"] == "strong-accept"
     ):
         raise StageError("review verdict violates a hard gate")
+    if review_output_version == 2:
+        try:
+            review_assessment.parse(
+                values["Assessment"], verdict=values["Verdict"],
+                candidate_markdown=candidate_markdown, prior_work=prior_work,
+            )
+        except (ValueError, TypeError) as exc:
+            raise StageError(str(exc)) from exc
     reason = values["Reason"]
     if "\t" in reason or "\n" in reason:
         raise StageError("review markdown reason is invalid")

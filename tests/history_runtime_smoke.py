@@ -72,12 +72,16 @@ class RuntimeFixture(unittest.TestCase):
             (ROOT / "brainstorming_policy.md").read_bytes()
         )
         self.review_contract_path = (
-            self.root / "review-contract-v1.md"
+            self.root / "review-contract.md"
         )
         self.review_contract_path.write_bytes(
             (
-                ROOT / "history" / "review-contract-v1.md"
+                ROOT / "history" / "review-contract.md"
             ).read_bytes()
+        )
+        self.legacy_review_contract_path = self.root / "frozen-review-contract-v1.md"
+        self.legacy_review_contract_path.write_bytes(
+            (ROOT / "tests" / "fixtures" / "review-contract-v1.md").read_bytes()
         )
         self.ledger.write_text(
             "date\tsource\ttheme\tidea\tverdict\treason\toverlap\tcategory\n"
@@ -2282,6 +2286,7 @@ class RoundCoordinatorContract(CapabilityContract):
         prior_work_path=None,
         review_contract_path=None,
         reviewer_count=2,
+        legacy_review=True,
         authority=None,
     ):
         artifact_root = state.get(
@@ -2307,7 +2312,8 @@ class RoundCoordinatorContract(CapabilityContract):
                 encoding="utf-8",
             )
         if review_contract_path is None:
-            review_contract_path = self.review_contract_path
+            review_contract_path = (self.legacy_review_contract_path
+                                    if legacy_review else self.review_contract_path)
         plan_path = self.root / f"{stem}-review-plan.json"
         plan = history_runtime.seal_round_review_plan(
             db_path=self.database,
@@ -2328,6 +2334,22 @@ class RoundCoordinatorContract(CapabilityContract):
             output_path=plan_path,
             authority=authority,
         )
+        if legacy_review:
+            # Frozen historical fixture only: production always seals current rules.
+            plan["schema_version"] = 2
+            del plan["review_protocol"]
+            legacy_material = dict(plan)
+            legacy_material.pop("review_plan_sha256")
+            plan["review_plan_sha256"] = hashlib.sha256(
+                b"history-runtime-review-plan-v2\0" + canonical(legacy_material)
+            ).hexdigest()
+            input_root = pathlib.Path(str(plan_path) + "-inputs")
+            input_root.chmod(0o700)
+            (input_root / "review_protocol.json").unlink()
+            input_root.chmod(0o500)
+            plan_path.chmod(0o600)
+            plan_path.write_bytes(canonical(plan))
+            plan_path.chmod(0o400)
         return {
             "profiles": profiles,
             "plan": plan,
@@ -2337,12 +2359,35 @@ class RoundCoordinatorContract(CapabilityContract):
                 pathlib.Path(review_contract_path),
         }
 
+    def _legacy_review_stage(self, **values):
+        # Only the authority/root-confined fixture constructor calls this path.
+        # Public portable execution never waives the current protocol guard.
+        from lib import portable_stage
+        self.assertEqual(values["stage"], "review")
+        self.assertNotIn("review_protocol.json", values["input_paths"])
+        prepared = portable_stage.prepare_stage(
+            values["request_profile"], stage="review", seat_id=values["seat_id"],
+            serialized_prompt=history_runtime._portable_serialized_prompt(
+                "review", values["input_paths"], values["policy"],
+            ),
+            input_paths=values["input_paths"],
+            output_root=pathlib.Path(values["invocation_root"]) / "output",
+            state_root=pathlib.Path(values["invocation_root"]) / "state",
+        )
+        context = portable_stage._stage_execution_context(
+            prepared, portable_stage.STAGE_TIMEOUT_SECONDS,
+        )
+        portable_stage._execute_loaded_stage(*context, portable_stage.STAGE_TIMEOUT_SECONDS)
+        portable_stage.verify_completion(prepared)
+        return prepared
+
     def _review_chain(
         self,
         state,
         *,
         stem,
         reviewer_count=2,
+        legacy_review=True,
         prior_work_path=None,
         authority=None,
     ):
@@ -2352,6 +2397,7 @@ class RoundCoordinatorContract(CapabilityContract):
             state,
             stem=stem,
             reviewer_count=reviewer_count,
+            legacy_review=legacy_review,
             prior_work_path=prior_work_path,
             authority=authority,
         )
@@ -2364,6 +2410,7 @@ class RoundCoordinatorContract(CapabilityContract):
             batch_path=state["batch"],
             review_plan_path=sealed["plan_path"],
             reviewer_request_profiles=sealed["profiles"],
+            reviewer_stage_runner=self._legacy_review_stage if legacy_review else None,
             stage_root=self.root / f"{stem}-review-stages",
             output_path=index_path,
             authority=authority,
@@ -3585,7 +3632,7 @@ class RoundCoordinatorContract(CapabilityContract):
             artifact_root=state["observation_root"],
             prior_work_path=prior_work,
             review_contract_path=(
-                ROOT / "history" / "review-contract-v1.md"
+                ROOT / "history" / "review-contract.md"
             ),
             reviewer_request_profiles=profiles,
             round_date="2026-07-24",
@@ -3836,7 +3883,7 @@ class RoundCoordinatorContract(CapabilityContract):
         review_contract = self.root / "original-review-contract.md"
         review_contract.write_bytes(
             (
-                ROOT / "history" / "review-contract-v1.md"
+                ROOT / "history" / "review-contract.md"
             ).read_bytes()
         )
         sealed = self._seal_review_plan(

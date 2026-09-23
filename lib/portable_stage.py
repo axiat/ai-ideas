@@ -23,6 +23,7 @@ try:
     from lib import portable_agent
     from lib import provider_adapters
     from lib import stage_contract
+    from lib import review_assessment
 except ImportError:
     import direction_contract
     import history_contract_v2
@@ -30,6 +31,7 @@ except ImportError:
     import portable_agent
     import provider_adapters
     import stage_contract
+    import review_assessment
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -1492,11 +1494,15 @@ def _project_outputs(prepared, envelope_raw, input_raws):
         if not _valid_text(candidate_id):
             raise PortableStageError("invalid_review_candidate")
         try:
+            review_version = review_assessment.protocol_version(input_raws.get("review_protocol.json"))
             verdict = stage_contract.build_review_verdict_from_markdown(
                 review.decode("utf-8"),
                 candidate_id,
+                review_output_version=review_version,
+                candidate_markdown=candidate.get("candidate_markdown"),
+                prior_work=input_raws.get("prior_work.md", b"").decode("utf-8"),
             ).encode("utf-8")
-        except (UnicodeDecodeError, stage_contract.StageError) as exc:
+        except (ValueError, TypeError, stage_contract.StageError) as exc:
             raise PortableStageError("invalid_review_output") from exc
         return {
             "review.md": review,
@@ -1583,8 +1589,7 @@ def _completion_id(material):
     )
 
 
-def run_stage(prepared, timeout_seconds=STAGE_TIMEOUT_SECONDS):
-    """Launch one portable provider and publish validated host projections."""
+def _stage_execution_context(prepared, timeout_seconds):
     prepared, private = _private_prepared(prepared)
     if prepared.get("execution_boundary") != BOUNDARY:
         raise PortableStageError("invalid_prepared_stage")
@@ -1599,6 +1604,23 @@ def run_stage(prepared, timeout_seconds=STAGE_TIMEOUT_SECONDS):
     if completion_path.exists() or completion_path.is_symlink():
         raise PortableStageError("completion_exists")
     input_raws = _load_prepared_inputs(prepared)
+    return prepared, private, input_raws
+
+
+def run_stage(prepared, timeout_seconds=STAGE_TIMEOUT_SECONDS):
+    """Launch current stages; historical review formats remain read-only."""
+    prepared, private, input_raws = _stage_execution_context(prepared, timeout_seconds)
+    if prepared["stage"] == "review":
+        try:
+            if review_assessment.protocol_version(input_raws.get("review_protocol.json")) != 2:
+                raise ValueError("current review protocol is required")
+        except (ValueError, TypeError) as exc:
+            raise PortableStageError("invalid_review_protocol", str(exc)) from exc
+    return _execute_loaded_stage(prepared, private, input_raws, timeout_seconds)
+
+
+def _execute_loaded_stage(prepared, private, input_raws, timeout_seconds):
+    completion_path = pathlib.Path(prepared["completion_path"])
     preflight_raw = _capture_regular(
         prepared["preflight_path"],
         PREFLIGHT_MAX_BYTES,
