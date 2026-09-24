@@ -1,0 +1,66 @@
+{
+  "cells": [
+    {
+      "duration_seconds": 241.67720580101013,
+      "major_count": 1,
+      "seat": 1,
+      "status": "valid",
+      "target": "probe025",
+      "verdict": "accept-w-rev"
+    },
+    {
+      "duration_seconds": 202.76974415779114,
+      "major_count": 1,
+      "seat": 2,
+      "status": "valid",
+      "target": "probe025",
+      "verdict": "accept-w-rev"
+    },
+    {
+      "duration_seconds": 242.2437300682068,
+      "major_count": 1,
+      "seat": 3,
+      "status": "valid",
+      "target": "probe025",
+      "verdict": "accept-w-rev"
+    },
+    {
+      "duration_seconds": 194.29281401634216,
+      "major_count": 1,
+      "seat": 1,
+      "status": "valid",
+      "target": "probe028",
+      "verdict": "accept-w-rev"
+    },
+    {
+      "duration_seconds": 115.03703188896179,
+      "major_count": 1,
+      "seat": 2,
+      "status": "valid",
+      "target": "probe028",
+      "verdict": "accept-w-rev"
+    },
+    {
+      "duration_seconds": 204.29448795318604,
+      "major_count": 1,
+      "seat": 3,
+      "status": "valid",
+      "target": "probe028",
+      "verdict": "accept-w-rev"
+    }
+  ],
+  "completed_calls": 6,
+  "condition": "C-final-active-contract",
+  "duration_seconds": {
+    "max": 242.2437300682068,
+    "median": 203.5321160554886,
+    "min": 115.03703188896179
+  },
+  "format_and_source_validation_rate": 1.0,
+  "interpretation": "Targeted post-observation followup of two unchanged hypothetical packets. Kept separate from original A/B; no predetermined verdict or independent-holdout claim.",
+  "invalid_votes": 0,
+  "original_AB_unchanged": true,
+  "planned_calls": 6,
+  "production_unchanged": true,
+  "valid_votes": 6
+}

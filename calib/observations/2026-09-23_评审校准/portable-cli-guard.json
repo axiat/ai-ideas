@@ -1,0 +1,44 @@
+[
+  {
+    "case": "missing",
+    "exit_code": 2,
+    "launch_calls": 0,
+    "actual_provider_executed": false,
+    "stderr": "portable-stage: invalid_review_protocol [execution] (current review protocol is required)"
+  },
+  {
+    "case": "empty",
+    "exit_code": 2,
+    "launch_calls": 0,
+    "actual_provider_executed": false,
+    "stderr": "portable-stage: invalid_review_protocol [execution] (review protocol is invalid)"
+  },
+  {
+    "case": "old",
+    "exit_code": 2,
+    "launch_calls": 0,
+    "actual_provider_executed": false,
+    "stderr": "portable-stage: invalid_review_protocol [execution] (review protocol is invalid)"
+  },
+  {
+    "case": "noncanonical",
+    "exit_code": 2,
+    "launch_calls": 0,
+    "actual_provider_executed": false,
+    "stderr": "portable-stage: invalid_review_protocol [execution] (review protocol is not canonical)"
+  },
+  {
+    "case": "numeric_alias",
+    "exit_code": 2,
+    "launch_calls": 0,
+    "actual_provider_executed": false,
+    "stderr": "portable-stage: invalid_review_protocol [execution] (review protocol is invalid)"
+  },
+  {
+    "case": "current",
+    "exit_code": null,
+    "launch_calls": 1,
+    "actual_provider_executed": false,
+    "stderr": ""
+  }
+]

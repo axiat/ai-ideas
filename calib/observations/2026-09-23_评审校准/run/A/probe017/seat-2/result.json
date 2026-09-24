@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790139218.965944,
+  "projection": "I5\taccept-w-rev\t1\tAccept with revisions because CoVe’s shared-context findings and MemER’s erroneous-memory observations provide aligned motivation for the distinct fixed-action experiment, while substantial mechanism overlap and the unresolved reconstruction comparator prevent strong acceptance (prior_work.md, Nearest Work and Payoff / Implementation Check; candidate.json; review_contract.md).\n",
+  "review_sha256": "5d7284e8627fcfd97750db29dadcdc399537ca082079f4bf46d1842fd27444cd",
+  "status": "valid",
+  "verdict_sha256": "de03ced4be7605843afdb11512c41226922458bc14f3cc63b8f61752ccf4ba61"
+}

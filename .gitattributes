@@ -1,0 +1,2 @@
+# Preserve frozen observation evidence, including source-file end-of-file bytes.
+calib/observations/** -text whitespace=cr-at-eol,-blank-at-eof

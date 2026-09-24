@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790139032.393708,
+  "projection": "I9\treject\t1\tReject because the occupied explanation leaves a selection-criterion contribution without a sufficiently supported distinct payoff; the bounded experiment is useful, and its unrun status is not itself a defect (candidate.json; prior_work.md; review_contract.md).\n",
+  "review_sha256": "1ad4a0f982d52d0a7a8858729bce6ba44b202180879e9b76ca673c21264d5ab4",
+  "status": "valid",
+  "verdict_sha256": "d435c54492da08adc84047796817d5ecc69e65b5e4d7f7e8a660a6310a2892aa"
+}

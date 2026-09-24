@@ -1,0 +1,121 @@
+[
+  {
+    "name": "store",
+    "exit_code": 0,
+    "log": "/tmp/judge-revision/checks/store.log",
+    "tail": [
+      "................................................................................................",
+      "----------------------------------------------------------------------",
+      "Ran 96 tests in 2.346s",
+      "",
+      "OK"
+    ]
+  },
+  {
+    "name": "export-slice",
+    "exit_code": 0,
+    "log": "/tmp/judge-revision/checks/export-slice.log",
+    "tail": [
+      "..........",
+      "----------------------------------------------------------------------",
+      "Ran 10 tests in 0.138s",
+      "",
+      "OK"
+    ]
+  },
+  {
+    "name": "project-registry",
+    "exit_code": 0,
+    "log": "/tmp/judge-revision/checks/project-registry.log",
+    "tail": [
+      ".......................",
+      "----------------------------------------------------------------------",
+      "Ran 23 tests in 5.549s",
+      "",
+      "OK"
+    ]
+  },
+  {
+    "name": "projection",
+    "exit_code": 0,
+    "log": "/tmp/judge-revision/checks/projection.log",
+    "tail": [
+      "................",
+      "----------------------------------------------------------------------",
+      "Ran 16 tests in 0.329s",
+      "",
+      "OK"
+    ]
+  },
+  {
+    "name": "retrieval",
+    "exit_code": 0,
+    "log": "/tmp/judge-revision/checks/retrieval.log",
+    "tail": [
+      ".....................",
+      "----------------------------------------------------------------------",
+      "Ran 21 tests in 0.645s",
+      "",
+      "OK"
+    ]
+  },
+  {
+    "name": "retrieval-adversarial",
+    "exit_code": 0,
+    "log": "/tmp/judge-revision/checks/retrieval-adversarial.log",
+    "tail": [
+      "......................",
+      "----------------------------------------------------------------------",
+      "Ran 22 tests in 0.550s",
+      "",
+      "OK"
+    ]
+  },
+  {
+    "name": "direction",
+    "exit_code": 0,
+    "log": "/tmp/judge-revision/checks/direction.log",
+    "tail": [
+      "..................",
+      "----------------------------------------------------------------------",
+      "Ran 18 tests in 0.116s",
+      "",
+      "OK"
+    ]
+  },
+  {
+    "name": "project-mode",
+    "exit_code": 0,
+    "log": "/tmp/judge-revision/checks/project-mode.log",
+    "tail": [
+      "ok: project refusal in-checkout subdir holds under a logical PWD",
+      "ok: same-day re-runs accumulate distinct slice and manifest files",
+      "ok: second round slice holds only the second round rows",
+      "ok: report copy copies only the run-bound report",
+      "ok: crash before harvest is recovered from the registry mark",
+      "ok: dash-led project dir name commits and harvests",
+      "ok: harvest failure warns without rollback and the next run recovers",
+      "hunt project mode regression: all cases passed"
+    ]
+  },
+  {
+    "name": "calibration-abi",
+    "exit_code": 0,
+    "log": "/tmp/judge-revision/checks/calibration-abi.log",
+    "tail": [
+      "ok: calibration ABI smoke"
+    ]
+  },
+  {
+    "name": "stage-contract",
+    "exit_code": 0,
+    "log": "/tmp/judge-revision/checks/stage-contract.log",
+    "tail": [
+      "......",
+      "----------------------------------------------------------------------",
+      "Ran 6 tests in 0.001s",
+      "",
+      "OK"
+    ]
+  }
+]

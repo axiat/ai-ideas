@@ -1,0 +1,263 @@
+{
+  "awr_scope": "Verdict intake predicate (hypothetical source=hunt) only; sidecar completion/cooldown/budget state is not exercised.",
+  "eligibility_scope": "First-submission predicate only. No DB lineage, real resubmission or sidecar state is exercised.",
+  "groups": [
+    {
+      "aggregate_coverage": "not-covered",
+      "arm": "B",
+      "assessment_records": [
+        {
+          "causes": [
+            {
+              "code": "evidence-insufficient",
+              "evidence": [
+                {
+                  "quote": "Store executed action dependencies as a frontier, together with confirmed and pending outcomes.",
+                  "source": "candidate"
+                },
+                {
+                  "quote": "At width w, the proposed state uses O(w log n) event identifiers; the theorem obligation is continuation equivalence under the specified dependency and feedback assumptions.",
+                  "source": "candidate"
+                },
+                {
+                  "quote": "The proof assumes all outcomes are known before the next action; pending execution is excluded.",
+                  "source": "prior-work"
+                },
+                {
+                  "quote": "Memory grows with all unresolved event histories; no dependency-based merging is provided.",
+                  "source": "prior-work"
+                }
+              ]
+            }
+          ],
+          "coverage": "not-covered",
+          "coverage_evidence": [
+            {
+              "quote": "The claimed contribution is an output-sensitive frontier update and a sufficient condition for safe merging, not the general proposition that partial orders compress traces.",
+              "source": "candidate"
+            },
+            {
+              "quote": "Strongest Counterexample: E1 occupies partial-order trace compression, while E2 occupies delayed outcomes. Neither includes the pending-outcome/dependency interaction identified in E5.",
+              "source": "prior-work"
+            }
+          ]
+        },
+        {
+          "causes": [
+            {
+              "code": "evidence-insufficient",
+              "evidence": [
+                {
+                  "quote": "At width w, the proposed state uses O(w log n) event identifiers; the theorem obligation is continuation equivalence under the specified dependency and feedback assumptions.",
+                  "source": "candidate"
+                },
+                {
+                  "quote": "Memory grows with all unresolved event histories; no dependency-based merging is provided.",
+                  "source": "prior-work"
+                },
+                {
+                  "quote": "This is an analytic witness, not evidence that the proposed frontier algorithm works.",
+                  "source": "prior-work"
+                }
+              ]
+            }
+          ],
+          "coverage": "not-covered",
+          "coverage_evidence": [
+            {
+              "quote": "The claimed contribution is an output-sensitive frontier update and a sufficient condition for safe merging, not the general proposition that partial orders compress traces.",
+              "source": "candidate"
+            },
+            {
+              "quote": "E1 occupies partial-order trace compression, while E2 occupies delayed outcomes. Neither includes the pending-outcome/dependency interaction identified in E5.",
+              "source": "prior-work"
+            }
+          ]
+        },
+        {
+          "causes": [
+            {
+              "code": "evidence-insufficient",
+              "evidence": [
+                {
+                  "quote": "Store executed action dependencies as a frontier, together with confirmed and pending outcomes.",
+                  "source": "candidate"
+                },
+                {
+                  "quote": "At width w, the proposed state uses O(w log n) event identifiers; the theorem obligation is continuation equivalence under the specified dependency and feedback assumptions.",
+                  "source": "candidate"
+                },
+                {
+                  "quote": "Memory grows with all unresolved event histories; no dependency-based merging is provided.",
+                  "source": "prior-work"
+                }
+              ]
+            }
+          ],
+          "coverage": "not-covered",
+          "coverage_evidence": [
+            {
+              "quote": "The claimed contribution is an output-sensitive frontier update and a sufficient condition for safe merging, not the general proposition that partial orders compress traces.",
+              "source": "candidate"
+            },
+            {
+              "quote": "Strongest Counterexample: E1 occupies partial-order trace compression, while E2 occupies delayed outcomes. Neither includes the pending-outcome/dependency interaction identified in E5. E3/E4 are mandatory strongest baselines.",
+              "source": "prior-work"
+            }
+          ]
+        }
+      ],
+      "awr_verdict_intake": true,
+      "category": "design-fixable",
+      "condition": "C-final-active-contract",
+      "final_verdict": "accept-w-rev",
+      "legacy_category_same_votes": "design-fixable",
+      "legacy_eligible_first_submission": false,
+      "mechanical_gate_passed": true,
+      "new_eligible_first_submission": false,
+      "prior_work_facts": {
+        "overlap": "low",
+        "papers_read": 6,
+        "supported_cracks": 0
+      },
+      "raw_votes": [
+        "accept-w-rev",
+        "accept-w-rev",
+        "accept-w-rev"
+      ],
+      "row_number": null,
+      "status": "complete",
+      "target": "probe025"
+    },
+    {
+      "aggregate_coverage": "not-covered",
+      "arm": "B",
+      "assessment_records": [
+        {
+          "causes": [
+            {
+              "code": "design-invalid",
+              "evidence": [
+                {
+                  "quote": "Kill the double-counting explanation if the duplicate-count by shared-identity interaction is absent under matched positions or if inspection mediation does not explain the success loss; preserve E3 as the surviving alternative.",
+                  "source": "candidate"
+                },
+                {
+                  "quote": "Full methods show that treating correlated observations as independent inflates confidence.",
+                  "source": "prior-work"
+                }
+              ]
+            }
+          ],
+          "coverage": "not-covered",
+          "coverage_evidence": [
+            {
+              "quote": "The new payoff is a causal separation between evidence-counting and recency explanations in a class of memory agents; it does not claim the first observation of deterioration or propose a repair method.",
+              "source": "candidate"
+            },
+            {
+              "quote": "This occupies the general mechanism, but does not establish that the agents in E1/E2 actually perform such counting or that it mediates their decisions.",
+              "source": "prior-work"
+            },
+            {
+              "quote": "No duplicate-count by identity factorial test has been performed.",
+              "source": "prior-work"
+            }
+          ]
+        },
+        {
+          "causes": [
+            {
+              "code": "design-invalid",
+              "evidence": [
+                {
+                  "quote": "Test whether repeated retrieval of one observation is treated as new evidence, causing a confidence-driven suppression of inspection.",
+                  "source": "candidate"
+                },
+                {
+                  "quote": "Kill the double-counting explanation if the duplicate-count by shared-identity interaction is absent under matched positions or if inspection mediation does not explain the success loss; preserve E3 as the surviving alternative.",
+                  "source": "candidate"
+                },
+                {
+                  "quote": "Full methods show that treating correlated observations as independent inflates confidence.",
+                  "source": "prior-work"
+                }
+              ]
+            }
+          ],
+          "coverage": "not-covered",
+          "coverage_evidence": [
+            {
+              "quote": "The new payoff is a causal separation between evidence-counting and recency explanations in a class of memory agents; it does not claim the first observation of deterioration or propose a repair method.",
+              "source": "candidate"
+            },
+            {
+              "quote": "The unknown is whether this mechanism or E3's recency mechanism explains E1/E2 in actual closed-loop agents.",
+              "source": "prior-work"
+            },
+            {
+              "quote": "No duplicate-count by identity factorial test has been performed.",
+              "source": "prior-work"
+            }
+          ]
+        },
+        {
+          "causes": [
+            {
+              "code": "design-invalid",
+              "evidence": [
+                {
+                  "quote": "Kill the double-counting explanation if the duplicate-count by shared-identity interaction is absent under matched positions or if inspection mediation does not explain the success loss; preserve E3 as the surviving alternative.",
+                  "source": "candidate"
+                },
+                {
+                  "quote": "Full methods show that treating correlated observations as independent inflates confidence.",
+                  "source": "prior-work"
+                }
+              ]
+            }
+          ],
+          "coverage": "not-covered",
+          "coverage_evidence": [
+            {
+              "quote": "The new payoff is a causal separation between evidence-counting and recency explanations in a class of memory agents; it does not claim the first observation of deterioration or propose a repair method.",
+              "source": "candidate"
+            },
+            {
+              "quote": "This occupies the general mechanism, but does not establish that the agents in E1/E2 actually perform such counting or that it mediates their decisions.",
+              "source": "prior-work"
+            },
+            {
+              "quote": "No duplicate-count by identity factorial test has been performed.",
+              "source": "prior-work"
+            }
+          ]
+        }
+      ],
+      "awr_verdict_intake": true,
+      "category": "ceiling-limited",
+      "condition": "C-final-active-contract",
+      "final_verdict": "accept-w-rev",
+      "legacy_category_same_votes": "novelty-dead",
+      "legacy_eligible_first_submission": false,
+      "mechanical_gate_passed": true,
+      "new_eligible_first_submission": false,
+      "prior_work_facts": {
+        "overlap": "high",
+        "papers_read": 6,
+        "supported_cracks": 0
+      },
+      "raw_votes": [
+        "accept-w-rev",
+        "accept-w-rev",
+        "accept-w-rev"
+      ],
+      "row_number": null,
+      "status": "complete",
+      "target": "probe028"
+    }
+  ],
+  "provider_calls_by_aggregator": 0,
+  "separate_followup": true,
+  "story_count_assumption": 1
+}

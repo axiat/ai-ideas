@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790139577.63571,
+  "projection": "I5\taccept-w-rev\t1\tprior_work.md 提供的相关机制证据与 candidate.json 的固定动作交叉干预支持保留一个范围明确的具身诊断贡献，因此给予 accept-w-rev；修复基线须补齐，已有机制的高重合及尚未明确的修复归因不足以满足 review_contract.md 的 strong-accept 要求。\n",
+  "review_sha256": "2e71a1a828f29ce814373cfbd8443957b048cf1752a05d5bebf5a9ae420aee43",
+  "status": "valid",
+  "verdict_sha256": "0b3ba0e1f4fea6f9ce275e17a853158aa81f25fd361d1b665d1a22d938cd422a"
+}

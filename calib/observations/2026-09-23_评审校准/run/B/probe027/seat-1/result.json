@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790142283.8118951,
+  "projection": "I1\taccept-w-rev\t0\tAccept with revisions for the task-specific evaluation object supported by E5 and absent from E1–E4. Its supported value reaches borderline, while the occupied generic reversal result and E6's limited evidential reach prevent Strong Accept; unrun experiments are not themselves a defect (review_contract.md). Completion requires a defensible simulator-task rationale for equal required-action weighting, explicit aggregation and policy-specific scoring, faithful E3 comparison, and corrected witness attribution. These revisions refine the existing contribution within candidate.json's bounded experiment and require no new repair mechanism. No independent CRITICAL or MAJOR failure is established by the supplied evidence.\n",
+  "review_sha256": "840b722c5b82469e9dcca149256f16d138529bbcf682233f19f8febdf9a8f823",
+  "status": "valid",
+  "verdict_sha256": "3065ac26583da2766eb4c16f15ac0477834368b5e43a0ec3d290073fcada35c8"
+}

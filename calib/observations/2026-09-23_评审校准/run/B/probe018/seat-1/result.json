@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790140818.4930089,
+  "projection": "I4\treject\t1\t依据 review_contract.md，普通测量探针至多达到 borderline，仍需独立价值支持；本候选保留了未覆盖的受控交互实验，但 candidate.json 与 prior_work.md 尚未支持其超出已有现象局部量化的知识收益，修复也未提出超越最近方法的可归因差异，因此唯一 MAJOR 是净新增价值不足，当前既不满足 strong-accept，也不足以支持 accept-w-rev，判为 reject。\n",
+  "review_sha256": "948603f4d9658037d4fe4ddc74734e98d39720a6cecd39414f80f36fa55e1202",
+  "status": "valid",
+  "verdict_sha256": "7779ee27afd21f08690a42704d6bb40a637b349a11dc076eacaaec3448f97a77"
+}

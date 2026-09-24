@@ -1,0 +1,19 @@
+{
+  "copied_at_unix": 1790144338.7627861,
+  "files": {
+    "effect-audit.json": {
+      "sha256": "ae19a945f9cebdfdd63bf3b68506e2c738ff3996e82531233ebbf7e8b1e241b8",
+      "source_path": "/tmp/judge-revision/calibration/effect-audit.json"
+    },
+    "effect-counts.json": {
+      "sha256": "fa7b999c424093a6c29486ef57a4de7ef7c462c9b2cab821ff8f2e61ca1a7d87",
+      "source_path": "/tmp/judge-revision/calibration/effect-counts.json"
+    },
+    "effect-review.md": {
+      "sha256": "3d1304205c7a8c3063991a2eb492bb138a473f12db8f8b3ed21f8cba0256b4f6",
+      "source_path": "/tmp/judge-revision/calibration/effect-review.md"
+    }
+  },
+  "operation": "Copy finalized independent scientific review; original A/B source evidence unchanged",
+  "previous_hash_list_sha256": "933ac189794f8b34e4736a700ee56393cd16b48d26b7f6d8666614b9ff4f30ad"
+}

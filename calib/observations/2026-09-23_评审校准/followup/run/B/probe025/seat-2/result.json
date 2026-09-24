@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790144610.6035001,
+  "projection": "I1\taccept-w-rev\t1\tOne MAJOR blocks Strong Accept: candidate.json bounds event identifiers without explaining why the confirmed/pending-outcome information needed for exact continuation remains compact. E1's bound excludes pending execution, E2 retains growing unresolved histories, and E5 establishes the information requirement without validating the proposed representation. This is missing support, not demonstrated impossibility. Accept with Revisions retains the independently valuable compact-exactness question supported by E5/E6. Completion requires explicit dependency/feedback assumptions and a checkable state-sufficiency and storage argument covering pending-outcome information, retaining E5's distinguishing case, with all stored state charged to the 128-token comparison. These requirements refine the proposed contribution and fit its existing enumeration and simulator scope; unrun experiments are not a separate defect.\n",
+  "review_sha256": "88c526f0bc0f1885abdaff1fd04b83def536ce431c729d74ed57e600491d0288",
+  "status": "valid",
+  "verdict_sha256": "c808525b0f701fe38bbbbeb3ce7f5cd3e4d7db8aebcf680dadc4bd8eb93b78fd"
+}

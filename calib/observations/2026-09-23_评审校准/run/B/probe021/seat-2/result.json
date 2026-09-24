@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790140057.025683,
+  "projection": "I1\treject\t1\t唯一 MAJOR 是剩余贡献的独立价值缺少支持：已有工作覆盖候选所移除的核心前提，剩余组合尚只有收益预测和待核验区别（candidate.json · Why It May Be Novel、Minimal Falsification Experiment；prior_work.md · Overlap）。高重合使其不满足假设移除通道的条件；转入普通校准后，具体实验和工程用途仍不足以建立 AwR 所需的正向贡献，故 Reject（review_contract.md · Gates）。没有证据支持 CRITICAL；未运行实验、原始证据链接缺项和上述价值缺口不重复计数。\n",
+  "review_sha256": "15bf83c5981f6cfdf555a44e3db71bfedfe479b3eac36ab070feb5dbb8473632",
+  "status": "valid",
+  "verdict_sha256": "04e7603230418f63e71eb6c740919d52a2876efb88d3abb9fed7bdc1ef73ed88"
+}

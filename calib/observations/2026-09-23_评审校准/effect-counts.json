@@ -1,0 +1,138 @@
+{
+  "receipts": 60,
+  "counts": {
+    "A": {
+      "reject": 14,
+      "accept-w-rev": 11,
+      "strong-accept": 5
+    },
+    "B": {
+      "reject": 15,
+      "invalid": 1,
+      "accept-w-rev": 9,
+      "strong-accept": 5
+    }
+  },
+  "cases": {
+    "probe005": {
+      "A": {
+        "seat-1": "reject",
+        "seat-2": "reject",
+        "seat-3": "reject"
+      },
+      "B": {
+        "seat-1": "reject",
+        "seat-2": "reject",
+        "seat-3": "invalid"
+      }
+    },
+    "probe008": {
+      "A": {
+        "seat-1": "reject",
+        "seat-2": "reject",
+        "seat-3": "reject"
+      },
+      "B": {
+        "seat-1": "reject",
+        "seat-2": "reject",
+        "seat-3": "reject"
+      }
+    },
+    "probe009": {
+      "A": {
+        "seat-1": "reject",
+        "seat-2": "reject",
+        "seat-3": "reject"
+      },
+      "B": {
+        "seat-1": "reject",
+        "seat-2": "reject",
+        "seat-3": "reject"
+      }
+    },
+    "probe017": {
+      "A": {
+        "seat-1": "accept-w-rev",
+        "seat-2": "accept-w-rev",
+        "seat-3": "accept-w-rev"
+      },
+      "B": {
+        "seat-1": "reject",
+        "seat-2": "accept-w-rev",
+        "seat-3": "reject"
+      }
+    },
+    "probe018": {
+      "A": {
+        "seat-1": "reject",
+        "seat-2": "accept-w-rev",
+        "seat-3": "reject"
+      },
+      "B": {
+        "seat-1": "reject",
+        "seat-2": "reject",
+        "seat-3": "accept-w-rev"
+      }
+    },
+    "probe021": {
+      "A": {
+        "seat-1": "reject",
+        "seat-2": "reject",
+        "seat-3": "reject"
+      },
+      "B": {
+        "seat-1": "reject",
+        "seat-2": "reject",
+        "seat-3": "reject"
+      }
+    },
+    "probe025": {
+      "A": {
+        "seat-1": "strong-accept",
+        "seat-2": "strong-accept",
+        "seat-3": "strong-accept"
+      },
+      "B": {
+        "seat-1": "accept-w-rev",
+        "seat-2": "strong-accept",
+        "seat-3": "strong-accept"
+      }
+    },
+    "probe026": {
+      "A": {
+        "seat-1": "accept-w-rev",
+        "seat-2": "accept-w-rev",
+        "seat-3": "accept-w-rev"
+      },
+      "B": {
+        "seat-1": "accept-w-rev",
+        "seat-2": "accept-w-rev",
+        "seat-3": "accept-w-rev"
+      }
+    },
+    "probe027": {
+      "A": {
+        "seat-1": "accept-w-rev",
+        "seat-2": "accept-w-rev",
+        "seat-3": "accept-w-rev"
+      },
+      "B": {
+        "seat-1": "accept-w-rev",
+        "seat-2": "accept-w-rev",
+        "seat-3": "accept-w-rev"
+      }
+    },
+    "probe028": {
+      "A": {
+        "seat-1": "accept-w-rev",
+        "seat-2": "strong-accept",
+        "seat-3": "strong-accept"
+      },
+      "B": {
+        "seat-1": "strong-accept",
+        "seat-2": "strong-accept",
+        "seat-3": "strong-accept"
+      }
+    }
+  }
+}

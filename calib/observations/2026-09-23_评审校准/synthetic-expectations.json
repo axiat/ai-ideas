@@ -1,0 +1,43 @@
+[
+  {
+    "key": "probe025",
+    "kind": "unrun-substantive",
+    "synthetic": true,
+    "primary": "No severity or verdict cap solely because experiments are unrun. Evaluate the analytic witness, forced adaptation, strong baselines and kill conditions. Strong Accept remains conditional on a convincing substantive contribution; a particular verdict is not imposed.",
+    "forbidden_rationale": [
+      "Requires already measured gain before any Strong Accept",
+      "Unrun experiments alone are MAJOR"
+    ],
+    "may_still_fail": "An identified flaw in continuation equivalence, insufficient new payoff, or a supported actual implementation obstruction can lower the verdict."
+  },
+  {
+    "key": "probe026",
+    "kind": "finite-repairable-gap",
+    "synthetic": true,
+    "primary": "Identify unequal action horizons as one repairable attribution defect. Under the stated premises it should support accept-w-rev, with a concrete equal-horizon repair, rather than treating this finite design gap as proof of absent contribution.",
+    "expected_verdict": "accept-w-rev",
+    "may_still_fail": "Additional distinct fatal flaws must be supported by the supplied packet, not invented."
+  },
+  {
+    "key": "probe027",
+    "kind": "noncausal-discovery",
+    "synthetic": true,
+    "primary": "Assess a descriptive/identification claim on its own estimand. Absence of a causal intervention cannot itself be MAJOR or a rejection reason because no causal effect is claimed. Generic reweighting is occupied; remaining evaluation value may reasonably yield AwR rather than SA.",
+    "forbidden_rationale": [
+      "Every discovery must establish a causal mechanism",
+      "No intervention therefore the descriptive estimand is mismatched"
+    ],
+    "may_still_fail": "Rejecting an unimportant or already occupied evaluation object remains permitted if the reasoning specifically addresses the remaining alias-based contribution."
+  },
+  {
+    "key": "probe028",
+    "kind": "no-repair-strong-surprising-prior",
+    "synthetic": true,
+    "primary": "Do not impose a blanket diagnostic ceiling solely because there is no repair arm. Evaluate the strong aligned prior and new discriminating explanation separately from the already occupied anomaly. A sound lowered verdict must identify insufficient remaining payoff or experimental weakness.",
+    "forbidden_rationale": [
+      "No repair arm automatically forbids Strong Accept",
+      "The previously observed anomaly itself counts as the new contribution"
+    ],
+    "may_still_fail": "A concrete supported argument that causal separation is routine or insufficiently valuable can still cap the candidate."
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "expected_contract_sha256": "3dd6c908f167efa5494d00672254d8a464501d657b78f86dd2324f893a1d9a30",
+  "observed_contract_sha256": "52c94b98fe9f09f407b255832d8fcdfb846e9f06dd29770d2ed4b60b1f33dffe",
+  "effect": "Stopped before creating runtime snapshot/manifest or invoking provider. Waiting final parent hash.",
+  "provider_calls": 0
+}

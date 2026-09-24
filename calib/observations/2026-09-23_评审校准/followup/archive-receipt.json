@@ -1,0 +1,600 @@
+{
+  "archived_at_unix": 1790145109.652546,
+  "copied_files": {
+    "ab_runner_reference.py": {
+      "byte_count": 21418,
+      "sha256": "9076296916ebf2808ed5937be4daaaf808f14e7418efa4ebfe25bf5c6c10e220",
+      "source_path": "/private/tmp/judge-revision/followup/ab_runner_reference.py"
+    },
+    "aggregate.json": {
+      "byte_count": 11176,
+      "sha256": "b54bb12823a83f8861db25684c343b99209f7c96c0c7bcbc59e0dccb91cec992",
+      "source_path": "/private/tmp/judge-revision/followup/aggregate.json"
+    },
+    "arms/B/review_contract.md": {
+      "byte_count": 12344,
+      "sha256": "52c94b98fe9f09f407b255832d8fcdfb846e9f06dd29770d2ed4b60b1f33dffe",
+      "source_path": "/private/tmp/judge-revision/followup/arms/B/review_contract.md"
+    },
+    "arms/B/review_protocol.json": {
+      "byte_count": 52,
+      "sha256": "1fc077ee6fba735c41ad50682b5ffb9a41abc3ec0e13eeb7847a093bb6f03e17",
+      "source_path": "/private/tmp/judge-revision/followup/arms/B/review_protocol.json"
+    },
+    "bin/codex": {
+      "byte_count": 529,
+      "sha256": "82903e62cb6bd40c47534dc3e887f4bb21c61ae464b85081803aad4b0d6aa612",
+      "source_path": "/private/tmp/judge-revision/followup/bin/codex"
+    },
+    "check_config.py": {
+      "byte_count": 2695,
+      "sha256": "17d8b1cfa750d8d58b85783f8ab19c348bba1d992ff69ab9460c44d13dc62ffd",
+      "source_path": "/private/tmp/judge-revision/followup/check_config.py"
+    },
+    "collect.py": {
+      "byte_count": 3960,
+      "sha256": "47489f1392967dcb768080dea866d1da1328a0d5fe6646e8e8bc4dc983719503",
+      "source_path": "/private/tmp/judge-revision/followup/collect.py"
+    },
+    "configuration-check-first.json": {
+      "byte_count": 1539,
+      "sha256": "8350eee014a76d6ab85f65b7510739282e18c49f424e7d0e024f71c40060dcd7",
+      "source_path": "/private/tmp/judge-revision/followup/configuration-check-first.json"
+    },
+    "configuration-final-receipt.json": {
+      "byte_count": 8406,
+      "sha256": "632857b4a7288ecd64a28e80b4db985fcb7afbc36e0797e77e8393892a6040d6",
+      "source_path": "/private/tmp/judge-revision/followup/configuration-final-receipt.json"
+    },
+    "execution-summary.json": {
+      "byte_count": 1675,
+      "sha256": "a60a48761174d47cf26e276a5d4ba32f33f3deba118a760524a6f3928e5dce25",
+      "source_path": "/private/tmp/judge-revision/followup/execution-summary.json"
+    },
+    "expectations.json": {
+      "byte_count": 827,
+      "sha256": "d54912494d9ea3301d30dae9e81cb9e2de702a011d1f84e0c149ed71e1b00323",
+      "source_path": "/private/tmp/judge-revision/followup/expectations.json"
+    },
+    "final-host-replay.json": {
+      "byte_count": 7674,
+      "sha256": "45e9a71ad0cc46960b34509c88ac38124c69831d044ccefeb206963f4106ad61",
+      "source_path": "/private/tmp/judge-revision/followup/final-host-replay.json"
+    },
+    "final_host_replay.py": {
+      "byte_count": 6577,
+      "sha256": "4855f0578218ccd572219451ebfdce05ae83e0dfe7384c92aa43acb1d27557e5",
+      "source_path": "/private/tmp/judge-revision/followup/final_host_replay.py"
+    },
+    "followup-effect-audit.json": {
+      "byte_count": 3969,
+      "sha256": "764596f64520a50cda6c29b88b6f9841b35ab8262dc022d75849cf8f8c3136d5",
+      "source_path": "/private/tmp/judge-revision/followup/followup-effect-audit.json"
+    },
+    "followup-effect-review.md": {
+      "byte_count": 5378,
+      "sha256": "8db4fc1a937d1a101eea64d773399bb953bdea29c0f1dd45eb01d901cfab2769",
+      "source_path": "/private/tmp/judge-revision/followup/followup-effect-review.md"
+    },
+    "frozen/probe025/candidate.json": {
+      "byte_count": 2880,
+      "sha256": "ebdb9ea7fa4e00f0bd213962e62ee76344e4eabc23a3aa930e8bc851450902bf",
+      "source_path": "/private/tmp/judge-revision/followup/frozen/probe025/candidate.json"
+    },
+    "frozen/probe025/prior_work.md": {
+      "byte_count": 3378,
+      "sha256": "826b94e599d3500e24b0e657478e5ffa5678b0f9a63535fc21b9fc5754d3666c",
+      "source_path": "/private/tmp/judge-revision/followup/frozen/probe025/prior_work.md"
+    },
+    "frozen/probe028/candidate.json": {
+      "byte_count": 2648,
+      "sha256": "86289bac5f1ca9d5df6a5b257d830ccbceebc01bd53965874bddaa8e2d40edbd",
+      "source_path": "/private/tmp/judge-revision/followup/frozen/probe028/candidate.json"
+    },
+    "frozen/probe028/prior_work.md": {
+      "byte_count": 3427,
+      "sha256": "c037033e9fdbcac1f726848b44297df392d261eccd25bfd9f84021b364546eaf",
+      "source_path": "/private/tmp/judge-revision/followup/frozen/probe028/prior_work.md"
+    },
+    "manifest.json": {
+      "byte_count": 96897,
+      "sha256": "8a7bb473eb83f1a9962a9a163a6ece45014bec623e34834d81861d2bafbaae12",
+      "source_path": "/private/tmp/judge-revision/followup/manifest.json"
+    },
+    "offline-seal-contract-drift.json": {
+      "byte_count": 336,
+      "sha256": "a3bdd19055192975cb1d861774459c7d11c158f772373b1b6f54a005a3dc1a81",
+      "source_path": "/private/tmp/judge-revision/followup/offline-seal-contract-drift.json"
+    },
+    "plan.json": {
+      "byte_count": 76781,
+      "sha256": "78583fc10e0f5834f77d2a385f3596732b1d055f65b881ab57cf4e2e6d945b6f",
+      "source_path": "/private/tmp/judge-revision/followup/plan.json"
+    },
+    "preflight-B.json": {
+      "byte_count": 4317,
+      "sha256": "0526ae73435cb0a25991fe76c5b235450327c41ee26c4f31dab54ba22c8136a5",
+      "source_path": "/private/tmp/judge-revision/followup/preflight-B.json"
+    },
+    "profile-consistency.json": {
+      "byte_count": 1891,
+      "sha256": "ad2be7e471845f631be3b9d56afaa341baf1db36c407df5121b48361257e45f2",
+      "source_path": "/private/tmp/judge-revision/followup/profile-consistency.json"
+    },
+    "results.json": {
+      "byte_count": 7562,
+      "sha256": "27fa770973d2683bcb93ebc8ff64a5e47d4e8b4cf9e1a94e23daf66d60380808",
+      "source_path": "/private/tmp/judge-revision/followup/results.json"
+    },
+    "run-started.json": {
+      "byte_count": 560,
+      "sha256": "978f335bcb18ee30693435514124e47281867146e5fc47bc70903bc9bae0e818",
+      "source_path": "/private/tmp/judge-revision/followup/run-started.json"
+    },
+    "run/B/probe025/seat-1/attempt.json": {
+      "byte_count": 83,
+      "sha256": "305310a9e1646022edc9a7548f2cee674e88fbbf1d8eee786fe9b456b98ac77c",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-1/attempt.json"
+    },
+    "run/B/probe025/seat-1/output/prompt-attestation.json": {
+      "byte_count": 149,
+      "sha256": "2ce9660c8a59d6c745f4880a2c04d281705bcbe0ade376d5f0d1dda3756f0f6b",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-1/output/prompt-attestation.json"
+    },
+    "run/B/probe025/seat-1/output/review.md": {
+      "byte_count": 4593,
+      "sha256": "bb0104e7c8e64cbd4cafbfe6369a74f9263d642e5703a709a1c8b143c68ebc42",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-1/output/review.md"
+    },
+    "run/B/probe025/seat-1/output/verdict.tsv": {
+      "byte_count": 946,
+      "sha256": "ca038246317f8c52d35624b2023c0c5e4bc162e9104b99fe4abb25735eae67b7",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-1/output/verdict.tsv"
+    },
+    "run/B/probe025/seat-1/provider-config-receipt.json": {
+      "byte_count": 13149,
+      "sha256": "3c3d64c3a747a7d2ff751d4ddc651f0467b1ba6e95f3fee2e740665399ad70b5",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-1/provider-config-receipt.json"
+    },
+    "run/B/probe025/seat-1/result.json": {
+      "byte_count": 1212,
+      "sha256": "d17ba8d659075e3abf801b431e41fb117d89e823807e281c60ef88e05a466651",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-1/result.json"
+    },
+    "run/B/probe025/seat-1/state/completion.json": {
+      "byte_count": 1141,
+      "sha256": "db71966ebb73a8e9aa34910a326d7cc55a2335683de66b98b97eafa92bbd7427",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-1/state/completion.json"
+    },
+    "run/B/probe025/seat-1/state/imports/9ff3e81dad342c1fbe3b955e5ebf29ee120f6531bc28ce656c7d6c301628ad95.json": {
+      "byte_count": 4940,
+      "sha256": "9ff3e81dad342c1fbe3b955e5ebf29ee120f6531bc28ce656c7d6c301628ad95",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-1/state/imports/9ff3e81dad342c1fbe3b955e5ebf29ee120f6531bc28ce656c7d6c301628ad95.json"
+    },
+    "run/B/probe025/seat-1/state/preflight.json": {
+      "byte_count": 3800,
+      "sha256": "66ab1b810aa7c5f5f7aa3b23b1d18776362bc2e2eab4fa724d4498135b2138b4",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-1/state/preflight.json"
+    },
+    "run/B/probe025/seat-1/worker.stderr": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-1/worker.stderr"
+    },
+    "run/B/probe025/seat-1/worker.stdout": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-1/worker.stdout"
+    },
+    "run/B/probe025/seat-2/attempt.json": {
+      "byte_count": 83,
+      "sha256": "2fd709586b93a22c9cd44ed329300d3cf8573a0edd14f52623eb149ca7f93f18",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-2/attempt.json"
+    },
+    "run/B/probe025/seat-2/output/prompt-attestation.json": {
+      "byte_count": 149,
+      "sha256": "5b27c40406915e76820d299ec15a998c065bdbdbdc190872e446d585771f5bee",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-2/output/prompt-attestation.json"
+    },
+    "run/B/probe025/seat-2/output/review.md": {
+      "byte_count": 4355,
+      "sha256": "88c526f0bc0f1885abdaff1fd04b83def536ce431c729d74ed57e600491d0288",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-2/output/review.md"
+    },
+    "run/B/probe025/seat-2/output/verdict.tsv": {
+      "byte_count": 938,
+      "sha256": "c808525b0f701fe38bbbbeb3ce7f5cd3e4d7db8aebcf680dadc4bd8eb93b78fd",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-2/output/verdict.tsv"
+    },
+    "run/B/probe025/seat-2/provider-config-receipt.json": {
+      "byte_count": 12798,
+      "sha256": "5058cc4b8f1c2804583335a35dcd795159f7c6905609ade2d81c327e041438c1",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-2/provider-config-receipt.json"
+    },
+    "run/B/probe025/seat-2/result.json": {
+      "byte_count": 1204,
+      "sha256": "0275a3382089010f9086fe237f94d9a02e6ec65864ea26518f5c1fee982191c5",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-2/result.json"
+    },
+    "run/B/probe025/seat-2/state/completion.json": {
+      "byte_count": 1141,
+      "sha256": "0c40cc154428c6298df324483f0e5542d0fc62fb957543522e39f525d151d110",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-2/state/completion.json"
+    },
+    "run/B/probe025/seat-2/state/imports/9be222c3872d4c7ee2606d93fbed91ac20dbe7e243b50c26988665e9f320afbc.json": {
+      "byte_count": 4694,
+      "sha256": "9be222c3872d4c7ee2606d93fbed91ac20dbe7e243b50c26988665e9f320afbc",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-2/state/imports/9be222c3872d4c7ee2606d93fbed91ac20dbe7e243b50c26988665e9f320afbc.json"
+    },
+    "run/B/probe025/seat-2/state/preflight.json": {
+      "byte_count": 3800,
+      "sha256": "25b739b8c4f08536a341c6c4759de4ad20d1d33df999f39adea1a38d78d70fb1",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-2/state/preflight.json"
+    },
+    "run/B/probe025/seat-2/worker.stderr": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-2/worker.stderr"
+    },
+    "run/B/probe025/seat-2/worker.stdout": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-2/worker.stdout"
+    },
+    "run/B/probe025/seat-3/attempt.json": {
+      "byte_count": 83,
+      "sha256": "6308df3937c06712235a3537d61819d8a86bb5de3d2f5c531821da179a365e4d",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-3/attempt.json"
+    },
+    "run/B/probe025/seat-3/output/prompt-attestation.json": {
+      "byte_count": 149,
+      "sha256": "0191e65abb676815857ee87b7200b8269b27596d87ea2a5d6d70f834dc648024",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-3/output/prompt-attestation.json"
+    },
+    "run/B/probe025/seat-3/output/review.md": {
+      "byte_count": 3952,
+      "sha256": "467a58c193683ba21f98a49fd6fd7153cc7a8015b98601cf8800335e4a56be53",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-3/output/review.md"
+    },
+    "run/B/probe025/seat-3/output/verdict.tsv": {
+      "byte_count": 560,
+      "sha256": "217a6009dbaed80f0fd96584e16ece741a82f9ec5adab9205f03f721becb79cb",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-3/output/verdict.tsv"
+    },
+    "run/B/probe025/seat-3/provider-config-receipt.json": {
+      "byte_count": 13383,
+      "sha256": "cd480c9f5c7eb2520211e32d99d027c385b68ff2e299fd8c8ebafa7cac41d72a",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-3/provider-config-receipt.json"
+    },
+    "run/B/probe025/seat-3/result.json": {
+      "byte_count": 826,
+      "sha256": "470850d17313aedb77374ca459befd0aff316e854ea10bf439e45abdc9acd7f1",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-3/result.json"
+    },
+    "run/B/probe025/seat-3/state/completion.json": {
+      "byte_count": 1141,
+      "sha256": "0ef43414f658b1e774391bafb3d2e31c1ed817d879ee4844389b181bab5b8572",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-3/state/completion.json"
+    },
+    "run/B/probe025/seat-3/state/imports/a47a09472b20998c0af3381a6bc8fed9705a7bf0eb5e8dd84939b172e1aad875.json": {
+      "byte_count": 4291,
+      "sha256": "a47a09472b20998c0af3381a6bc8fed9705a7bf0eb5e8dd84939b172e1aad875",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-3/state/imports/a47a09472b20998c0af3381a6bc8fed9705a7bf0eb5e8dd84939b172e1aad875.json"
+    },
+    "run/B/probe025/seat-3/state/preflight.json": {
+      "byte_count": 3800,
+      "sha256": "8e1cd34adadcd143693aabfeb9e5442711f33564d74144a35710feae35573215",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-3/state/preflight.json"
+    },
+    "run/B/probe025/seat-3/worker.stderr": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-3/worker.stderr"
+    },
+    "run/B/probe025/seat-3/worker.stdout": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe025/seat-3/worker.stdout"
+    },
+    "run/B/probe028/seat-1/attempt.json": {
+      "byte_count": 83,
+      "sha256": "93c24b985c361c9b111b10c27f98cfe913d59140d9af15d061bb69902e7d7505",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-1/attempt.json"
+    },
+    "run/B/probe028/seat-1/output/prompt-attestation.json": {
+      "byte_count": 149,
+      "sha256": "182bfa6b1ac8462267f116514026230ea2dcf6962229424c0c47fd7051a93479",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-1/output/prompt-attestation.json"
+    },
+    "run/B/probe028/seat-1/output/review.md": {
+      "byte_count": 4154,
+      "sha256": "595d44130b2388378183f1b8030cfdf74d1beaed3ed7da512f29460f4b82f3ef",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-1/output/review.md"
+    },
+    "run/B/probe028/seat-1/output/verdict.tsv": {
+      "byte_count": 585,
+      "sha256": "2d660572cff7c70f65402083c02aaec47135b29ae1c7bc894f2ce4926966831c",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-1/output/verdict.tsv"
+    },
+    "run/B/probe028/seat-1/provider-config-receipt.json": {
+      "byte_count": 12798,
+      "sha256": "5058cc4b8f1c2804583335a35dcd795159f7c6905609ade2d81c327e041438c1",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-1/provider-config-receipt.json"
+    },
+    "run/B/probe028/seat-1/result.json": {
+      "byte_count": 851,
+      "sha256": "9168b188d6de78a29fbbf31a3da30010b0b34210b991a1ad3a84b4e1a807508a",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-1/result.json"
+    },
+    "run/B/probe028/seat-1/state/completion.json": {
+      "byte_count": 1141,
+      "sha256": "97c3167ec619909f64269411b7319bd748272ba7ad773bec7689f35f03298a43",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-1/state/completion.json"
+    },
+    "run/B/probe028/seat-1/state/imports/69c7a58e89f9adafa2a7cc69bc6e0e97b5074b92c18181a166b3fde1b6cc4528.json": {
+      "byte_count": 4493,
+      "sha256": "69c7a58e89f9adafa2a7cc69bc6e0e97b5074b92c18181a166b3fde1b6cc4528",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-1/state/imports/69c7a58e89f9adafa2a7cc69bc6e0e97b5074b92c18181a166b3fde1b6cc4528.json"
+    },
+    "run/B/probe028/seat-1/state/preflight.json": {
+      "byte_count": 3800,
+      "sha256": "16fdb3d482b24384086577d380c9ec5a2ba62120cd823e38b52382472d51a784",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-1/state/preflight.json"
+    },
+    "run/B/probe028/seat-1/worker.stderr": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-1/worker.stderr"
+    },
+    "run/B/probe028/seat-1/worker.stdout": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-1/worker.stdout"
+    },
+    "run/B/probe028/seat-2/attempt.json": {
+      "byte_count": 82,
+      "sha256": "5a8bc2cef76ee65d42a393b0d338d8ad3b98081322baa8635e37875407047044",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-2/attempt.json"
+    },
+    "run/B/probe028/seat-2/output/prompt-attestation.json": {
+      "byte_count": 149,
+      "sha256": "976a72c858d93067d812550193aa2ce67b91faa98c06204b14751bfa83960367",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-2/output/prompt-attestation.json"
+    },
+    "run/B/probe028/seat-2/output/review.md": {
+      "byte_count": 4763,
+      "sha256": "fd57da6a5d56d6a6a05a27d74d30601fb5fde56d2464fa96724cee69865c4a7b",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-2/output/review.md"
+    },
+    "run/B/probe028/seat-2/output/verdict.tsv": {
+      "byte_count": 469,
+      "sha256": "a78509deabd263c5bce3b65da51198f385ebd45c6ae2ad6e3cdd742007b9759e",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-2/output/verdict.tsv"
+    },
+    "run/B/probe028/seat-2/provider-config-receipt.json": {
+      "byte_count": 13266,
+      "sha256": "c5e7cc09fbe421cd9970656a91a5ad5b0cf4e1c07dcfef17784163c95ce03ca2",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-2/provider-config-receipt.json"
+    },
+    "run/B/probe028/seat-2/result.json": {
+      "byte_count": 734,
+      "sha256": "3fa1d6ad1bdd66c4f02d51b3980768fadab7cd6251269e1d4380ac3d54bd386c",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-2/result.json"
+    },
+    "run/B/probe028/seat-2/state/completion.json": {
+      "byte_count": 1141,
+      "sha256": "0b4faa7eb398361599d046fe2eb524ccd7cb8d393175309366c331b8bbdadb64",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-2/state/completion.json"
+    },
+    "run/B/probe028/seat-2/state/imports/516133146a00769fda052155863f5b1c28b2b4161247c9a6d3ca9c47ab566804.json": {
+      "byte_count": 5110,
+      "sha256": "516133146a00769fda052155863f5b1c28b2b4161247c9a6d3ca9c47ab566804",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-2/state/imports/516133146a00769fda052155863f5b1c28b2b4161247c9a6d3ca9c47ab566804.json"
+    },
+    "run/B/probe028/seat-2/state/preflight.json": {
+      "byte_count": 3800,
+      "sha256": "8fb476ea4c33531cccda72db0551c2909016e820cb617aef30963eab7f8896fc",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-2/state/preflight.json"
+    },
+    "run/B/probe028/seat-2/worker.stderr": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-2/worker.stderr"
+    },
+    "run/B/probe028/seat-2/worker.stdout": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-2/worker.stdout"
+    },
+    "run/B/probe028/seat-3/attempt.json": {
+      "byte_count": 84,
+      "sha256": "597220fc3b1837a4cc57c6cf7f1a279478e10955328d6177c088eddbcaa752c8",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-3/attempt.json"
+    },
+    "run/B/probe028/seat-3/output/prompt-attestation.json": {
+      "byte_count": 149,
+      "sha256": "8480435cff1b2c2a401ecea063f0e96316a9bf8a1822ec9481ef1c43265ff542",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-3/output/prompt-attestation.json"
+    },
+    "run/B/probe028/seat-3/output/review.md": {
+      "byte_count": 4452,
+      "sha256": "f605e2b82a7b0534ccec70f4b3f3149987631162a1d86eaea7247347009e8fb2",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-3/output/review.md"
+    },
+    "run/B/probe028/seat-3/output/verdict.tsv": {
+      "byte_count": 540,
+      "sha256": "acfdc673963ec9955f977f954ea857ee3fa771ceab1a6c39eebca03ab26edac5",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-3/output/verdict.tsv"
+    },
+    "run/B/probe028/seat-3/provider-config-receipt.json": {
+      "byte_count": 12798,
+      "sha256": "5058cc4b8f1c2804583335a35dcd795159f7c6905609ade2d81c327e041438c1",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-3/provider-config-receipt.json"
+    },
+    "run/B/probe028/seat-3/result.json": {
+      "byte_count": 805,
+      "sha256": "953874b704c37de82d20dc4311c6c2683a27fec1c3353b2d35a6c7f7085bc28b",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-3/result.json"
+    },
+    "run/B/probe028/seat-3/state/completion.json": {
+      "byte_count": 1141,
+      "sha256": "6b8cc340298ee89eea6b53af86b0bd0846ab3d20c15c3eff02978f471ae2e2f5",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-3/state/completion.json"
+    },
+    "run/B/probe028/seat-3/state/imports/ab4f1956c98d08885d9ad726c8327b1fc7a0e3227447309206553aaeff820a5e.json": {
+      "byte_count": 4791,
+      "sha256": "ab4f1956c98d08885d9ad726c8327b1fc7a0e3227447309206553aaeff820a5e",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-3/state/imports/ab4f1956c98d08885d9ad726c8327b1fc7a0e3227447309206553aaeff820a5e.json"
+    },
+    "run/B/probe028/seat-3/state/preflight.json": {
+      "byte_count": 3800,
+      "sha256": "3db661d55f9bf53a53fd195d57aa83e0eaacf53068412b09af3f8c9245acf6f5",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-3/state/preflight.json"
+    },
+    "run/B/probe028/seat-3/worker.stderr": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-3/worker.stderr"
+    },
+    "run/B/probe028/seat-3/worker.stdout": {
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_path": "/private/tmp/judge-revision/followup/run/B/probe028/seat-3/worker.stdout"
+    },
+    "runner.py": {
+      "byte_count": 10714,
+      "sha256": "ad042506894d1de0d84c061b64a3d4991042fe7604f65c477f4668bfe4652dd0",
+      "source_path": "/private/tmp/judge-revision/followup/runner.py"
+    },
+    "runtime-B/roles/review.md": {
+      "byte_count": 1472,
+      "sha256": "3b3de9edea3ca9f64ea76a22edd8ad79ccc09378592f5a04f0da6801917296af",
+      "source_path": "/private/tmp/judge-revision/followup/runtime-B/roles/review.md"
+    },
+    "runtime-final-host/roles/review.md": {
+      "byte_count": 1472,
+      "sha256": "3b3de9edea3ca9f64ea76a22edd8ad79ccc09378592f5a04f0da6801917296af",
+      "source_path": "/private/tmp/judge-revision/followup/runtime-final-host/roles/review.md"
+    },
+    "serialized_prompt.txt": {
+      "byte_count": 864,
+      "sha256": "624bb436591bb0de28acfb7ecb79dbc1fc169246cfec4a1c884824caac68af2c",
+      "source_path": "/private/tmp/judge-revision/followup/serialized_prompt.txt"
+    }
+  },
+  "destination": "/Users/qinningxu/code/ai-ideas/calib/observations/2026-09-23_评审校准/followup",
+  "operation": "Copy only; preserve original paths and bytes. Original 60-cell archive evidence is untouched.",
+  "replay_limitation": "Full runtime source snapshots remain at original /tmp paths; this evidence copy is not a self-contained executable replay.",
+  "runtime_snapshots": {
+    "runtime-B": {
+      "original_path": "/private/tmp/judge-revision/followup/runtime-B",
+      "source_sha256": {
+        "history/capacity-profiles-v1.json": "73263d1d98cddf4fd28bf21b15bb69f51939a87c2083c6711b646c73fd115352",
+        "history/history-audit-policy-v2.json": "e6587b2d5100a14e99bfe881258dd0e58625ce763e404291aaad062ec1ce021c",
+        "history/l2-budget-v1.json": "8bbe45bb612f5f3f59ee151d8596239e672ce91a395ae53cfcbbabf85d2828bd",
+        "history/metadata-policy-v1.json": "3ad7e151f89939ad08db8ad6098d2f850499d4b6d1a101b0f4fb727d0c1e811f",
+        "history/production-evidence-roots-v1.json": "2ab18a0b33ee03215ce7c94fed3ed45b4069695c23f0c242c2d9fd07aea0df1b",
+        "history/provider-adapters-v1.json": "dcd5021256e04a2d300f934c6621cb57b417ef329303108775bfe11ad5b61712",
+        "history/retrieval-policy-v1.json": "4d6a8375a4eba95291d27124291a8583fb8d53a31384823e314796750208bddd",
+        "history/review-contract.md": "52c94b98fe9f09f407b255832d8fcdfb846e9f06dd29770d2ed4b60b1f33dffe",
+        "history/risk-policy-v1.json": "341917cea36fb68f4a404cd4e751a063dbfd32f200ec7b03c2ac2fc96ae23ddb",
+        "history/semantic-release-policy-v1.json": "0e992adc2afb9d1d24b1c59acd3b7ee65c1453a8a944ee3f430bd06105c1de03",
+        "history/settlement-policy-v1.json": "817f72cc9ccd67b270d0cf686bd1f4a70638de404db7e7a3ecdc2ba01d343150",
+        "history/test-only-provider-v1.py": "79f87923131475c37864c6c44f7446a8146b0ab370d816821cd021074aca3083",
+        "lib/direction_contract.py": "8d88a0c77b70cc27f479d8c814f99ef7195c0366eee3d8d7b15eb6196cf2f394",
+        "lib/history_archive.py": "09903d54bcae870ddf384081425de3d4c89be4e3e163f9f77b3d3f03d0f184d4",
+        "lib/history_audit.py": "8c0e62595e3f897757958c9e345674d7f288fb62cae99720db293c19e774c6ac",
+        "lib/history_audit_cli.py": "114f31f145cc8af833623239ed87cf5209b56ce6b69865dd06d48050d63aadaa",
+        "lib/history_audit_eval_v2.py": "875efac0aaf5ac66345d341b100ea654e41b20b1654a4a51bd58f89560ed2ed5",
+        "lib/history_audit_plan.py": "4f3de5714140de180eb18d0244a511f0eabc7962ffd87375f8073e967b76dd81",
+        "lib/history_audit_store.py": "b5209486fcb1eede1f843875ca991e947959f61733d9eaf35a27803dda4c670b",
+        "lib/history_budget.py": "f1df8284992b33aec531619c428190c97c1c167236d2d4e721a5544044b736cf",
+        "lib/history_cas.py": "c1eca610aba3a5382d39b80b58c1d415e0d561a03ea330696e4165c5955dcc2f",
+        "lib/history_cli.py": "f2794e7d46e1e76bbb4aa99b2d4e79bb0f89c2550ff0fb86abeb5e4537311b0b",
+        "lib/history_contract_v2.py": "30363b91f9ef70315d62ac96a2d037cfcb381728f0a0ae607b08a05e7376e8b6",
+        "lib/history_eval.py": "fe27e29a976c4c653fdbd02756be36980c747ee608cecae661f316b97abceecc",
+        "lib/history_execution.py": "ebe98e33d6d088ad7af3d8dfdf11a2919d2b34292bd53d4fa6bcf4d70969a9b6",
+        "lib/history_metadata.py": "254fff07e0e5105b1d9395a0dbb52481e2ccb50dc175ce36ae28b0e859a3e510",
+        "lib/history_projection.py": "1e8d695191f8a126cc1f8d34590a325881e38604b7cafa12fe374e85c2de4732",
+        "lib/history_retrieval.py": "83068f556353ab2aee21c573e3d0925c0d3f21a9918234d9e0ad5e072723f6d6",
+        "lib/history_runtime.py": "8fecfa3049cd6dc4a4328dcb0e8302d0698c8dacd00707ee6d01901f815cd2ba",
+        "lib/history_store.py": "2ff66e35cd41647d70caff609e9d7a1872407ebe706ff9885e067900f27d48e7",
+        "lib/history_witness.py": "39a09d472fd87f1ec0e711e7e045a318e1d0cf96dd67a993317b9290166c458d",
+        "lib/litwatch.py": "202eb623d1a66aba025e3145afc5c915d06950ac2937ab66fd163aab2ecd3383",
+        "lib/portable_agent.py": "c2ef2a7a06e0c535a8f1084823952158b89c78652a8b0c52f57dc9fae07d1ec4",
+        "lib/portable_stage.py": "89751948a5173c1ce9aa94226f7c2bdf6df07c41bfcf9db9b7601df9bfdf8d4c",
+        "lib/provider_adapters.py": "af6ed88eea1a0ce9439a47302e4b1fb14d052c3a87d2f7a8ee6bd53b1446b9ed",
+        "lib/review_assessment.py": "bfc1d74a228df124ce2e126022fb9131c9ca7cfe6ba168fee4a29edf55559303",
+        "lib/stage_contract.py": "57f0b0708e8199d46207d86b2dbdd6f92dfb0f6b204f4cc5ff0fe28f82a64346",
+        "roles/awr-judge.md": "91581ba75d64e6918465941b856eed4d020146dc1f09b7f9033b909e273e1211",
+        "roles/awr-priorwork.md": "0c156ae38ef059ae7f162cf8ca6839aa771b7447073651399cc33fd13312819e",
+        "roles/awr.md": "49b6bbd298a638360591baf871fde8616000cb8a0cb692ffe5a1faba85897d2f",
+        "roles/generate.md": "d7f7599a407e9bcd8019ed0264e8a232ea2545bd34328d6c0d4104f4c87c7012",
+        "roles/history-compare.md": "8471d50a833be0aa1ac550dfb33fff2fd9a8a1162b518b9e46ec7c77d540e282",
+        "roles/litwatch.md": "2453e6c507f92c937c21bb6cb136588c885d7b5f534cc0957a82cf7b4fe7e0b7",
+        "roles/meta.md": "4414773a7cb7778637ed640e69a9c8902d1a306aeb4d154047b8fafe6de7791f",
+        "roles/prescreen.md": "fafead21b550e6d64f5109a488d547e0585c9b5e68832322e1d28a0803fb0192",
+        "roles/report.md": "fcd3c227617bfe708ce0243fc78959af18fd5e95c55216da75ddfb02121a040e",
+        "roles/research.md": "c519e618c0e86266cc70c59c87f94967daba70a56edf01ed38058f55006cc82e",
+        "roles/review.md": "3b3de9edea3ca9f64ea76a22edd8ad79ccc09378592f5a04f0da6801917296af",
+        "roles/select.md": "7f2591fe82d16466e0bfe5598d6cafbc78e063b213915714292e229c2ad25c56"
+      }
+    },
+    "runtime-final-host": {
+      "original_path": "/private/tmp/judge-revision/followup/runtime-final-host",
+      "source_sha256": {
+        "history/capacity-profiles-v1.json": "73263d1d98cddf4fd28bf21b15bb69f51939a87c2083c6711b646c73fd115352",
+        "history/history-audit-policy-v2.json": "e6587b2d5100a14e99bfe881258dd0e58625ce763e404291aaad062ec1ce021c",
+        "history/l2-budget-v1.json": "8bbe45bb612f5f3f59ee151d8596239e672ce91a395ae53cfcbbabf85d2828bd",
+        "history/metadata-policy-v1.json": "3ad7e151f89939ad08db8ad6098d2f850499d4b6d1a101b0f4fb727d0c1e811f",
+        "history/production-evidence-roots-v1.json": "2ab18a0b33ee03215ce7c94fed3ed45b4069695c23f0c242c2d9fd07aea0df1b",
+        "history/provider-adapters-v1.json": "dcd5021256e04a2d300f934c6621cb57b417ef329303108775bfe11ad5b61712",
+        "history/retrieval-policy-v1.json": "4d6a8375a4eba95291d27124291a8583fb8d53a31384823e314796750208bddd",
+        "history/review-contract.md": "52c94b98fe9f09f407b255832d8fcdfb846e9f06dd29770d2ed4b60b1f33dffe",
+        "history/risk-policy-v1.json": "341917cea36fb68f4a404cd4e751a063dbfd32f200ec7b03c2ac2fc96ae23ddb",
+        "history/semantic-release-policy-v1.json": "0e992adc2afb9d1d24b1c59acd3b7ee65c1453a8a944ee3f430bd06105c1de03",
+        "history/settlement-policy-v1.json": "817f72cc9ccd67b270d0cf686bd1f4a70638de404db7e7a3ecdc2ba01d343150",
+        "history/test-only-provider-v1.py": "79f87923131475c37864c6c44f7446a8146b0ab370d816821cd021074aca3083",
+        "lib/direction_contract.py": "8d88a0c77b70cc27f479d8c814f99ef7195c0366eee3d8d7b15eb6196cf2f394",
+        "lib/history_archive.py": "09903d54bcae870ddf384081425de3d4c89be4e3e163f9f77b3d3f03d0f184d4",
+        "lib/history_audit.py": "8c0e62595e3f897757958c9e345674d7f288fb62cae99720db293c19e774c6ac",
+        "lib/history_audit_cli.py": "114f31f145cc8af833623239ed87cf5209b56ce6b69865dd06d48050d63aadaa",
+        "lib/history_audit_eval_v2.py": "875efac0aaf5ac66345d341b100ea654e41b20b1654a4a51bd58f89560ed2ed5",
+        "lib/history_audit_plan.py": "4f3de5714140de180eb18d0244a511f0eabc7962ffd87375f8073e967b76dd81",
+        "lib/history_audit_store.py": "b5209486fcb1eede1f843875ca991e947959f61733d9eaf35a27803dda4c670b",
+        "lib/history_budget.py": "f1df8284992b33aec531619c428190c97c1c167236d2d4e721a5544044b736cf",
+        "lib/history_cas.py": "c1eca610aba3a5382d39b80b58c1d415e0d561a03ea330696e4165c5955dcc2f",
+        "lib/history_cli.py": "f2794e7d46e1e76bbb4aa99b2d4e79bb0f89c2550ff0fb86abeb5e4537311b0b",
+        "lib/history_contract_v2.py": "30363b91f9ef70315d62ac96a2d037cfcb381728f0a0ae607b08a05e7376e8b6",
+        "lib/history_eval.py": "fe27e29a976c4c653fdbd02756be36980c747ee608cecae661f316b97abceecc",
+        "lib/history_execution.py": "ebe98e33d6d088ad7af3d8dfdf11a2919d2b34292bd53d4fa6bcf4d70969a9b6",
+        "lib/history_metadata.py": "254fff07e0e5105b1d9395a0dbb52481e2ccb50dc175ce36ae28b0e859a3e510",
+        "lib/history_projection.py": "1e8d695191f8a126cc1f8d34590a325881e38604b7cafa12fe374e85c2de4732",
+        "lib/history_retrieval.py": "83068f556353ab2aee21c573e3d0925c0d3f21a9918234d9e0ad5e072723f6d6",
+        "lib/history_runtime.py": "8fecfa3049cd6dc4a4328dcb0e8302d0698c8dacd00707ee6d01901f815cd2ba",
+        "lib/history_store.py": "2ff66e35cd41647d70caff609e9d7a1872407ebe706ff9885e067900f27d48e7",
+        "lib/history_witness.py": "39a09d472fd87f1ec0e711e7e045a318e1d0cf96dd67a993317b9290166c458d",
+        "lib/litwatch.py": "202eb623d1a66aba025e3145afc5c915d06950ac2937ab66fd163aab2ecd3383",
+        "lib/portable_agent.py": "c2ef2a7a06e0c535a8f1084823952158b89c78652a8b0c52f57dc9fae07d1ec4",
+        "lib/portable_stage.py": "89751948a5173c1ce9aa94226f7c2bdf6df07c41bfcf9db9b7601df9bfdf8d4c",
+        "lib/provider_adapters.py": "af6ed88eea1a0ce9439a47302e4b1fb14d052c3a87d2f7a8ee6bd53b1446b9ed",
+        "lib/review_assessment.py": "bfc1d74a228df124ce2e126022fb9131c9ca7cfe6ba168fee4a29edf55559303",
+        "lib/stage_contract.py": "57f0b0708e8199d46207d86b2dbdd6f92dfb0f6b204f4cc5ff0fe28f82a64346",
+        "roles/awr-judge.md": "91581ba75d64e6918465941b856eed4d020146dc1f09b7f9033b909e273e1211",
+        "roles/awr-priorwork.md": "0c156ae38ef059ae7f162cf8ca6839aa771b7447073651399cc33fd13312819e",
+        "roles/awr.md": "49b6bbd298a638360591baf871fde8616000cb8a0cb692ffe5a1faba85897d2f",
+        "roles/generate.md": "d7f7599a407e9bcd8019ed0264e8a232ea2545bd34328d6c0d4104f4c87c7012",
+        "roles/history-compare.md": "8471d50a833be0aa1ac550dfb33fff2fd9a8a1162b518b9e46ec7c77d540e282",
+        "roles/litwatch.md": "2453e6c507f92c937c21bb6cb136588c885d7b5f534cc0957a82cf7b4fe7e0b7",
+        "roles/meta.md": "4414773a7cb7778637ed640e69a9c8902d1a306aeb4d154047b8fafe6de7791f",
+        "roles/prescreen.md": "fafead21b550e6d64f5109a488d547e0585c9b5e68832322e1d28a0803fb0192",
+        "roles/report.md": "fcd3c227617bfe708ce0243fc78959af18fd5e95c55216da75ddfb02121a040e",
+        "roles/research.md": "c519e618c0e86266cc70c59c87f94967daba70a56edf01ed38058f55006cc82e",
+        "roles/review.md": "3b3de9edea3ca9f64ea76a22edd8ad79ccc09378592f5a04f0da6801917296af",
+        "roles/select.md": "7f2591fe82d16466e0bfe5598d6cafbc78e063b213915714292e229c2ad25c56"
+      }
+    }
+  },
+  "source_root": "/private/tmp/judge-revision/followup",
+  "top_level_hash_list": "Parent will update the encompassing file hash list after final reports are added."
+}

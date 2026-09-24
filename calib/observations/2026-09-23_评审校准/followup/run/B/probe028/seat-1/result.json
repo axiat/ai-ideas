@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790144602.0850291,
+  "projection": "I1\taccept-w-rev\t1\tAccept with revisions because E1–E6 support an unoccupied causal-attribution contribution, while the single MAJOR exclusion error blocks Strong Accept; completion requires revising candidate.json's decision rule to distinguish identity-sensitive and identity-blind predictions, using its existing duplication/position contrasts and inspection interventions, and limiting conclusions to intervention-supported effects or mechanism exclusions with justified necessary predictions, which preserves independent value within the proposed experiment and resource budget.\n",
+  "review_sha256": "595d44130b2388378183f1b8030cfdf74d1beaed3ed7da512f29460f4b82f3ef",
+  "status": "valid",
+  "verdict_sha256": "2d660572cff7c70f65402083c02aaec47135b29ae1c7bc894f2ce4926966831c"
+}

@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790139564.7479491,
+  "projection": "I5\taccept-w-rev\t1\tCoVe 与 MemER 提供了相关机制依据，固定动作、环境真值和等预算对照支持一个可检验的窄贡献，因此给予 accept-w-rev；主估计量的动作来源混合问题须修正，而已有机制的高重合及尚待检验的修复增量不足以支持 strong-accept（candidate.json；prior_work.md；review_contract.md）。\n",
+  "review_sha256": "ce256ed70430c5e891c1d50b9876deb7ba44972a130b9caef1d72ecfae621b85",
+  "status": "valid",
+  "verdict_sha256": "45133d5591444b8b98facf38ea96e4631e1d610d2e9c0dfaa0d3f50fdf07d8c3"
+}

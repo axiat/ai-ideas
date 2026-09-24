@@ -1,0 +1,63 @@
+{
+  "checks": [
+    {
+      "name": "history-runtime",
+      "command": [
+        "python3",
+        "tests/history_runtime_smoke.py"
+      ],
+      "command_text": "python3 tests/history_runtime_smoke.py",
+      "cwd": "/Users/qinningxu/code/ai-ideas",
+      "exit_code": 0,
+      "log": "/tmp/judge-revision/checks/history-runtime.log",
+      "started_at_utc": "2026-09-23T05:02:50.248139+00:00",
+      "finished_at_utc": "2026-09-23T05:03:11.977990+00:00",
+      "elapsed_seconds": 21.73
+    },
+    {
+      "name": "portable-hunt-awr-e2e",
+      "command": [
+        "bash",
+        "tests/portable_hunt_awr_e2e_smoke.sh"
+      ],
+      "command_text": "bash tests/portable_hunt_awr_e2e_smoke.sh",
+      "cwd": "/Users/qinningxu/code/ai-ideas",
+      "exit_code": 0,
+      "log": "/tmp/judge-revision/checks/portable-hunt-awr-e2e.log",
+      "started_at_utc": "2026-09-23T05:02:50.248418+00:00",
+      "finished_at_utc": "2026-09-23T05:03:54.747583+00:00",
+      "elapsed_seconds": 64.499
+    },
+    {
+      "name": "runtime-abi",
+      "command": [
+        "bash",
+        "tests/runtime_abi_smoke.sh"
+      ],
+      "command_text": "bash tests/runtime_abi_smoke.sh",
+      "cwd": "/Users/qinningxu/code/ai-ideas",
+      "exit_code": 0,
+      "log": "/tmp/judge-revision/checks/runtime-abi.log",
+      "started_at_utc": "2026-09-23T05:02:50.248473+00:00",
+      "finished_at_utc": "2026-09-23T05:03:26.485538+00:00",
+      "elapsed_seconds": 36.237
+    },
+    {
+      "name": "git-diff-check",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "command_text": "git diff --check",
+      "cwd": "/Users/qinningxu/code/ai-ideas",
+      "exit_code": 0,
+      "log": "/tmp/judge-revision/checks/git-diff-check.log",
+      "started_at_utc": "2026-09-23T05:03:54.747805+00:00",
+      "finished_at_utc": "2026-09-23T05:03:54.785936+00:00",
+      "elapsed_seconds": 0.038
+    }
+  ],
+  "all_passed": true,
+  "scope": "Final checks after extracting verified review-matrix execution; test-provided fake providers only."
+}

@@ -1,0 +1,84 @@
+{
+  "invalid_votes": 0,
+  "missing_votes": 0,
+  "original_AB_unchanged": true,
+  "production_after": {
+    ".ai-ideas/history.sqlite3": "4e556721282830181710210d39256302aedd1663d9eaa4cf9a6488813b013c8a",
+    ".ai-ideas/history.sqlite3-shm": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb",
+    ".ai-ideas/history.sqlite3-wal": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ledger.tsv": "d87e55560fece48f9ac286090f32a68187124ff1c5bf3c08566c6659e00c1121",
+    "tmp/ledger.good": "d87e55560fece48f9ac286090f32a68187124ff1c5bf3c08566c6659e00c1121"
+  },
+  "production_before": {
+    ".ai-ideas/history.sqlite3": "4e556721282830181710210d39256302aedd1663d9eaa4cf9a6488813b013c8a",
+    ".ai-ideas/history.sqlite3-shm": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb",
+    ".ai-ideas/history.sqlite3-wal": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ledger.tsv": "d87e55560fece48f9ac286090f32a68187124ff1c5bf3c08566c6659e00c1121",
+    "tmp/ledger.good": "d87e55560fece48f9ac286090f32a68187124ff1c5bf3c08566c6659e00c1121"
+  },
+  "production_unchanged": true,
+  "rows": [
+    {
+      "completed_at_unix": 1790144844.4784698,
+      "condition": "C-final-active-contract",
+      "projection": "I1\taccept-w-rev\t1\tOne MAJOR blocks Strong Accept: I1 bounds event identifiers without explaining the storage required for confirmed/pending outcome information or supplying feedback assumptions that control it. E1's bound excludes pending execution, and E2 supplies no compression argument for that information. This is missing support, not an impossibility result. Revision requires explicit dependency/feedback assumptions and a checkable accounting of the entire retained state. If unresolved outcomes require another parameter, expose that dependence and scope the claim while retaining E5's pending-contact interaction. Completion requires a sufficient merging rule with a storage argument under those assumptions, assessed by I1's existing oracle and budget-matched replay plan. This retains the independently motivated contribution within the proposed first-paper scope and supports Accept with Revisions (candidate.json; E1, E2, E5, E6).\n",
+      "review_sha256": "bb0104e7c8e64cbd4cafbfe6369a74f9263d642e5703a709a1c8b143c68ebc42",
+      "seat": 1,
+      "status": "valid",
+      "target": "probe025",
+      "verdict_sha256": "ca038246317f8c52d35624b2023c0c5e4bc162e9104b99fe4abb25735eae67b7"
+    },
+    {
+      "completed_at_unix": 1790144610.6035001,
+      "condition": "C-final-active-contract",
+      "projection": "I1\taccept-w-rev\t1\tOne MAJOR blocks Strong Accept: candidate.json bounds event identifiers without explaining why the confirmed/pending-outcome information needed for exact continuation remains compact. E1's bound excludes pending execution, E2 retains growing unresolved histories, and E5 establishes the information requirement without validating the proposed representation. This is missing support, not demonstrated impossibility. Accept with Revisions retains the independently valuable compact-exactness question supported by E5/E6. Completion requires explicit dependency/feedback assumptions and a checkable state-sufficiency and storage argument covering pending-outcome information, retaining E5's distinguishing case, with all stored state charged to the 128-token comparison. These requirements refine the proposed contribution and fit its existing enumeration and simulator scope; unrun experiments are not a separate defect.\n",
+      "review_sha256": "88c526f0bc0f1885abdaff1fd04b83def536ce431c729d74ed57e600491d0288",
+      "seat": 2,
+      "status": "valid",
+      "target": "probe025",
+      "verdict_sha256": "c808525b0f701fe38bbbbeb3ce7f5cd3e4d7db8aebcf680dadc4bd8eb93b78fd"
+    },
+    {
+      "completed_at_unix": 1790144855.0217721,
+      "condition": "C-final-active-contract",
+      "projection": "I1\taccept-w-rev\t1\tAccept with revisions because E5/E6 support independent value beyond E1/E2, while one MAJOR blocks Strong Accept: candidate.json bounds identifiers without explaining how pending-outcome information and its dependency links fit that bound; require explicit feedback assumptions and a checkable storage argument for the complete sufficient state, allowing a revised pending-history parameter or defensible scope restriction, then apply the existing oracle and byte measurements while retaining E5-type interactions and nontrivial compression.\n",
+      "review_sha256": "467a58c193683ba21f98a49fd6fd7153cc7a8015b98601cf8800335e4a56be53",
+      "seat": 3,
+      "status": "valid",
+      "target": "probe025",
+      "verdict_sha256": "217a6009dbaed80f0fd96584e16ece741a82f9ec5adab9205f03f721becb79cb"
+    },
+    {
+      "completed_at_unix": 1790144602.0850291,
+      "condition": "C-final-active-contract",
+      "projection": "I1\taccept-w-rev\t1\tAccept with revisions because E1–E6 support an unoccupied causal-attribution contribution, while the single MAJOR exclusion error blocks Strong Accept; completion requires revising candidate.json's decision rule to distinguish identity-sensitive and identity-blind predictions, using its existing duplication/position contrasts and inspection interventions, and limiting conclusions to intervention-supported effects or mechanism exclusions with justified necessary predictions, which preserves independent value within the proposed experiment and resource budget.\n",
+      "review_sha256": "595d44130b2388378183f1b8030cfdf74d1beaed3ed7da512f29460f4b82f3ef",
+      "seat": 1,
+      "status": "valid",
+      "target": "probe028",
+      "verdict_sha256": "2d660572cff7c70f65402083c02aaec47135b29ae1c7bc894f2ce4926966831c"
+    },
+    {
+      "completed_at_unix": 1790144726.263902,
+      "condition": "C-final-active-contract",
+      "projection": "I1\taccept-w-rev\t1\tAccept with revisions because E1/E2 establish the anomaly, E3/E5 leave a valuable attribution question unresolved and E6 supports its bounded investigation, while candidate.json's unsupported claim that an identity interaction is necessary creates one repairable MAJOR that blocks Strong Accept; explicit hypothesis-specific falsification rules and direct evaluation of the recency contrast can retain the contribution within the proposed experiment.\n",
+      "review_sha256": "fd57da6a5d56d6a6a05a27d74d30601fb5fde56d2464fa96724cee69865c4a7b",
+      "seat": 2,
+      "status": "valid",
+      "target": "probe028",
+      "verdict_sha256": "a78509deabd263c5bce3b65da51198f385ebd45c6ae2ad6e3cdd742007b9759e"
+    },
+    {
+      "completed_at_unix": 1790144612.169125,
+      "condition": "C-final-active-contract",
+      "projection": "I1\taccept-w-rev\t1\tAccept with revisions because E1–E6 support an independently valuable attribution study, while candidate.json's unnecessary interaction requirement creates one repairable MAJOR that blocks Strong Accept; completion requires restricting that falsifier to an explicitly identity-sensitive hypothesis and specifying how the existing position-matched and randomized-inspection contrasts distinguish the broader proposed pathway from E3, including the identity-insensitive counterexample, within the stated scope and budget.\n",
+      "review_sha256": "f605e2b82a7b0534ccec70f4b3f3149987631162a1d86eaea7247347009e8fb2",
+      "seat": 3,
+      "status": "valid",
+      "target": "probe028",
+      "verdict_sha256": "acfdc673963ec9955f977f954ea857ee3fa771ceab1a6c39eebca03ab26edac5"
+    }
+  ],
+  "separate_followup": true,
+  "valid_votes": 6
+}

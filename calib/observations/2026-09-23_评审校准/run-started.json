@@ -1,0 +1,10 @@
+{
+  "production_before": {
+    ".ai-ideas/history.sqlite3": "4e556721282830181710210d39256302aedd1663d9eaa4cf9a6488813b013c8a",
+    ".ai-ideas/history.sqlite3-shm": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb",
+    ".ai-ideas/history.sqlite3-wal": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ledger.tsv": "d87e55560fece48f9ac286090f32a68187124ff1c5bf3c08566c6659e00c1121",
+    "tmp/ledger.good": "d87e55560fece48f9ac286090f32a68187124ff1c5bf3c08566c6659e00c1121"
+  },
+  "started_at_unix": 1790138492.903073
+}

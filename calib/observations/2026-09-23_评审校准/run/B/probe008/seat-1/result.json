@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790141011.585172,
+  "projection": "I2\treject\t2\tReject because the residual transfer lacks an independently supported technical or knowledge contribution (MAJOR 1), while the planned comparison omits capable learned and cost-aware alternatives (MAJOR 2); adding those comparators would repair validation but would not alone establish the retained research value required for accept-w-rev (candidate.json; prior_work.md; review_contract.md).\n",
+  "review_sha256": "02586687a68fc4bf85cff64d0c704a42917b7fd3e821912b94ff8b1c3fc332f4",
+  "status": "valid",
+  "verdict_sha256": "11ebd3e1300875739d63489dbd45e1eff06a3d87c8f1e1b489e86607313f5ed5"
+}

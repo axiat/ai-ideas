@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790141460.502329,
+  "projection": "I1\tstrong-accept\t0\tStrong Accept is justified conditionally by complete coverage and low target overlap, the independently documented limitations in E1/E2, E5’s analytic interaction witness, E6’s external forcing constraints, and candidate.json’s controlled falsification experiment; these satisfy review_contract.md’s evidence-backed prospective-payoff gate without treating predicted gains as observations.\n",
+  "review_sha256": "5c793120871e079cb04e4aa6267ab010f1b16cc8d5ef0eb3e43a9411f43237ec",
+  "status": "valid",
+  "verdict_sha256": "c138fcce1c155d3c8e027f5279a6f36f8fd21dfb947f17bcc345f3059a545889"
+}

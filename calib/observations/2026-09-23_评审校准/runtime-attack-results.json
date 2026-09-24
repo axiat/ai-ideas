@@ -1,0 +1,75 @@
+{
+  "eligibility_combinations": 41472,
+  "rejected_output_attacks": [
+    "missing-assessment",
+    "raw-CR",
+    "raw-NUL",
+    "duplicate-top-key",
+    "unknown-key",
+    "missing-key",
+    "cause-double",
+    "cause-nonstring",
+    "quote-forged",
+    "covered-without-url",
+    "covered-SA",
+    "covered-AwR",
+    "critical-AwR",
+    "two-major-SA",
+    "oversize-field"
+  ],
+  "rejected_protocol_attacks": 5,
+  "end_to_end": {
+    "covered_vs_notcovered": {
+      "verdict": "reject",
+      "category": "review-unresolved",
+      "votes": "0,2",
+      "near_sa": 0,
+      "coverage": "disputed",
+      "legacy_bytes_match_HEAD_algorithm": false
+    },
+    "sa_plus_awr_high": {
+      "verdict": "accept-w-rev",
+      "category": "ceiling-limited",
+      "votes": "1,2",
+      "near_sa": 0,
+      "coverage": "not-covered",
+      "legacy_bytes_match_HEAD_algorithm": false
+    },
+    "sa_plus_awr_low": {
+      "verdict": "accept-w-rev",
+      "category": "design-fixable",
+      "votes": "1,2",
+      "near_sa": 1,
+      "coverage": "not-covered",
+      "legacy_bytes_match_HEAD_algorithm": false
+    },
+    "all_awr_low": {
+      "verdict": "accept-w-rev",
+      "category": "design-fixable",
+      "votes": "1,1",
+      "near_sa": 0,
+      "coverage": "not-covered",
+      "legacy_bytes_match_HEAD_algorithm": false
+    },
+    "missing_assessment": {
+      "invalid_output_rejected": true,
+      "new_rows": 0
+    },
+    "legacy_reject_replay": {
+      "verdict": "reject",
+      "category": "novelty-dead",
+      "votes": "0,0",
+      "near_sa": 0,
+      "coverage": null,
+      "legacy_bytes_match_HEAD_algorithm": true
+    },
+    "legacy_sa_replay": {
+      "verdict": "strong-accept",
+      "category": "-",
+      "votes": "2,2",
+      "near_sa": 0,
+      "coverage": null,
+      "legacy_bytes_match_HEAD_algorithm": true
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "exact_reconstruction_proven": true,
+  "previous_config_sha256": "83b2f125907a701bf8176712a685999f0a6799afa2d85b59c0f54f959dd0b704",
+  "current_config_sha256": "38430141e2e73264b5fc43db4302e4f18c0877b6ed78d4f52cef27e5832b6ac9",
+  "changed_keys_beyond_owned_trust": [
+    "desktop.external-agent-import-sync-enabled"
+  ],
+  "desktop_field_types": {
+    "external-agent-import-sync-enabled": "bool"
+  },
+  "all_other_config_bytes_unchanged": true,
+  "provider_model_reasoning_tool_auth_route_unchanged": true,
+  "completed_cells": 37,
+  "repeated_calls": 0
+}

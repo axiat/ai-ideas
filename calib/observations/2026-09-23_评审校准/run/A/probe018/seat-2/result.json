@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790140524.65811,
+  "projection": "I4\taccept-w-rev\t1\tprior_work.md 的 MemER 训练先验观察与 RoboMME 历史依赖任务提供了相关机制依据，candidate.json 的频率干预及等预算修复比较提供了具体可检验增量，而主要归因缺口可用已安排的空白条件补充分析，因此给予 accept-w-rev，并将贡献限定为经验证的机器人交互与修复收益（review_contract.md）。\n",
+  "review_sha256": "6cf3284d548f9def39cd0333f6f8b5bab4768e07dd18f179eb461ef5a2827e41",
+  "status": "valid",
+  "verdict_sha256": "7d9b9a5eee711b5f9a6a92e98742d300500c0eef8f74d7e0d2634c778d157ce1"
+}

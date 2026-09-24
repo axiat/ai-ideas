@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790141060.757188,
+  "projection": "I1\tstrong-accept\t0\tStrong acceptance is justified conditionally by complete stipulated coverage, verified complementary limitations in E1/E2, E5's independent analytic witness, E6's externally imposed memory and feedback constraints, and a controlled falsification plan that tests the attributable difference without presuming its success (prior_work.md:E1–E6; candidate.json; review_contract.md).\n",
+  "review_sha256": "99587f55aef5fadc0dae4caa7bfac5e650b78a9c1ca5588a9836e5e247d4d10b",
+  "status": "valid",
+  "verdict_sha256": "c6087f5af1429a427da2f33df8960591b601e233e10f512db32f44689667d379"
+}

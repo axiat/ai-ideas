@@ -1,0 +1,20 @@
+{
+  "diagnostic_error": "Read-only checker used lexical /tmp for original suite instead of resolved /private/tmp; original suite trust keys were not stripped. Followup effective config fingerprint was unchanged.",
+  "matches_original_after_exact_owned_metadata_removal": false,
+  "mode": "read-only; no configuration value written or restored",
+  "normalized_sha256": "a69929f63f14f4affc6b1fdc49b0aae79f91fabb6dad0e7d6c5432d24872231a",
+  "original_AB_run_config_sha256": "83b2f125907a701bf8176712a685999f0a6799afa2d85b59c0f54f959dd0b704",
+  "raw_configuration_saved": false,
+  "raw_sha256": "bd846a579089ad37f8f196088c19112caecd6e9242f729394a84a2fdc3854ed4",
+  "removed_metadata_keys": [
+    "desktop.external-agent-import-sync-enabled",
+    "projects./private/tmp/judge-revision/followup/run/B/probe025/seat-1/state/attempt-dq19gnri/mirror.trust_level",
+    "projects./private/tmp/judge-revision/followup/run/B/probe025/seat-2/state/attempt-_djgiqdl/mirror.trust_level",
+    "projects./private/tmp/judge-revision/followup/run/B/probe025/seat-3/state/attempt-btv2ux0a/mirror.trust_level",
+    "projects./private/tmp/judge-revision/followup/run/B/probe028/seat-1/state/attempt-i7w1b1wf/mirror.trust_level",
+    "projects./private/tmp/judge-revision/followup/run/B/probe028/seat-2/state/attempt-jp7ncf1j/mirror.trust_level",
+    "projects./private/tmp/judge-revision/followup/run/B/probe028/seat-3/state/attempt-x5crk5wi/mirror.trust_level"
+  ],
+  "same_effective_config_as_followup_seal": true,
+  "terminal_line_feed_normalization": true
+}

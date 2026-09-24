@@ -1,0 +1,55 @@
+{
+  "checks": [
+    {
+      "command": [
+        "python3",
+        "tests/history_runtime_smoke.py"
+      ],
+      "command_text": "python3 tests/history_runtime_smoke.py",
+      "cwd": "/Users/qinningxu/code/ai-ideas",
+      "exit_code": 0,
+      "log": "/tmp/judge-revision/checks/guard-history-runtime.log",
+      "started_at_utc": "2026-09-23T07:02:48.150031+00:00",
+      "elapsed_seconds": 25.693
+    },
+    {
+      "command": [
+        "bash",
+        "tests/portable_hunt_awr_e2e_smoke.sh"
+      ],
+      "command_text": "bash tests/portable_hunt_awr_e2e_smoke.sh",
+      "cwd": "/Users/qinningxu/code/ai-ideas",
+      "exit_code": 0,
+      "log": "/tmp/judge-revision/checks/guard-portable-e2e.log",
+      "started_at_utc": "2026-09-23T07:02:48.150375+00:00",
+      "elapsed_seconds": 70.74
+    },
+    {
+      "command": [
+        "bash",
+        "tests/runtime_abi_smoke.sh"
+      ],
+      "command_text": "bash tests/runtime_abi_smoke.sh",
+      "cwd": "/Users/qinningxu/code/ai-ideas",
+      "exit_code": 0,
+      "log": "/tmp/judge-revision/checks/guard-runtime-abi.log",
+      "started_at_utc": "2026-09-23T07:02:48.151813+00:00",
+      "elapsed_seconds": 40.202
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "command_text": "git diff --check",
+      "cwd": "/Users/qinningxu/code/ai-ideas",
+      "exit_code": 0,
+      "log": "/tmp/judge-revision/checks/guard-diff-check.log",
+      "started_at_utc": "2026-09-23T07:03:58.890858+00:00",
+      "elapsed_seconds": 0.024
+    }
+  ],
+  "all_passed": true,
+  "scope": "Current-protocol guard at public portable review execution; fake providers only."
+}

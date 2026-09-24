@@ -1,0 +1,33 @@
+{
+  "date": "2026-09-23",
+  "research_started": "2026-09-22",
+  "repo_head": "ec53e8572c6846b1844457d6bc8e8621a0013c4f",
+  "ledger_sha256_before": "88f80bc2013b8edd4b212f5f3c2952c01ada3f5fc08f63c9343da7a0f1575f4d",
+  "cases": {
+    "probe01-I1": {
+      "paper": "DeepM2CDL",
+      "doi": "10.1109/TPAMI.2023.3334624",
+      "prior_cutoff": "2023-11-19",
+      "coverage": "abstract plus official code; target full text unavailable"
+    },
+    "probe02-I1": {
+      "paper": "TLCNet",
+      "doi": "10.1109/TPAMI.2026.3723450",
+      "prior_cutoff": "2025-10-11",
+      "coverage": "abstract plus2026-06-28 official code; target full text unavailable"
+    },
+    "probe03-I1": {
+      "paper": "PUTNet",
+      "doi": "10.1109/TPAMI.2026.3729831",
+      "prior_cutoff": "2025-05-28",
+      "coverage": "abstract plus2026-07-04 official code; target full text unavailable"
+    }
+  },
+  "protocol": "Current portable review stage, current policy and rubric, frozen evidence, target identities withheld, no live retrieval,3 independent seats, minimum vote. Historical prior cutoffs are conservative proxies, not confirmed submission dates. Target mechanisms reconstructed from later artifacts. Minimal experiments are evaluator-designed; thresholds are proposed, not reported results. Cross-domain probe waives embodied-topic mismatch only, not quality gates.",
+  "limitations": [
+    "Only three accepted papers selected from one research line; not a representative sample or estimate of acceptance rate.",
+    "No target manuscript/supplement available; evidence-limited ballots do not establish original-paper defects.",
+    "Same model across independent runs; not independent human reviewers.",
+    "No predeclared expected verdict, no outcome-tuned retries."
+  ]
+}
