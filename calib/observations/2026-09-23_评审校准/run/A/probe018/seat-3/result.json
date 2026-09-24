@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790140389.1193469,
+  "projection": "I4\treject\t1\t已有工作占据总体机制与修复思路，而剩余机器人交互的核心归因尚受 MAJOR-1 影响，冻结方案不足以支持从默认拒绝提升为接受（prior_work.md「Overlap」「Strongest Counterexample」；candidate.json「Minimal Falsification Experiment」；review_contract.md「Gates」）。\n",
+  "review_sha256": "f00f0832e92b69b27a8a360ca12a021bc7c4a38ac12384eeef4eb63c1987c0c7",
+  "status": "valid",
+  "verdict_sha256": "3ea364bd71cfbe19e57a947faf9cc24d815dd21f2a2c44c3f0e3bb336e380b35"
+}

@@ -1,0 +1,81 @@
+{
+  "command_profile_comparison": {
+    "effective_model": {
+      "equal": true,
+      "followup": null,
+      "original": null
+    },
+    "effective_reasoning": {
+      "equal": true,
+      "followup": null,
+      "original": null
+    },
+    "execution_boundary": {
+      "equal": true,
+      "followup": "portable-mirror-v1",
+      "original": "portable-mirror-v1"
+    },
+    "max_output_tokens": {
+      "equal": true,
+      "followup": 16384,
+      "original": 16384
+    },
+    "model_override_applied": {
+      "equal": true,
+      "followup": null,
+      "original": null
+    },
+    "provider": {
+      "equal": true,
+      "followup": "codex",
+      "original": "codex"
+    },
+    "provider_validation": {
+      "equal": true,
+      "followup": "unverified",
+      "original": "unverified"
+    },
+    "reasoning_override_applied": {
+      "equal": true,
+      "followup": null,
+      "original": null
+    },
+    "requested_model": {
+      "equal": true,
+      "followup": "gpt-6-astra",
+      "original": "gpt-6-astra"
+    },
+    "requested_reasoning": {
+      "equal": true,
+      "followup": "xhigh",
+      "original": "xhigh"
+    },
+    "surface": {
+      "equal": true,
+      "followup": "hunt",
+      "original": "hunt"
+    }
+  },
+  "explicit_cli_controls": [
+    {
+      "flag": "-m",
+      "value": "gpt-6-astra"
+    },
+    {
+      "flag": "-c",
+      "value": "model_reasoning_effort=xhigh"
+    },
+    {
+      "flag": "-c",
+      "value": "approval_policy=never"
+    },
+    {
+      "flag": "-s",
+      "value": "workspace-write"
+    }
+  ],
+  "same_serialized_prompt_bytes": true,
+  "same_wrapper_bytes": true,
+  "scope": "Explicit CLI request and local effective configuration evidence; registry provider_validation remains its original value, not a newly asserted backend guarantee.",
+  "wrapper_sha256": "82903e62cb6bd40c47534dc3e887f4bb21c61ae464b85081803aad4b0d6aa612"
+}

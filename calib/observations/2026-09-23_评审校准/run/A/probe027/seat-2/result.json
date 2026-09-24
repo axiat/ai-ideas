@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790142070.157469,
+  "projection": "I1\taccept-w-rev\t1\tAccept with revision because E5 and the stipulated coverage support a distinct, testable diagnostic, while the within-alias versus across-alias estimand discrepancy must be resolved before E6 can support the stronger acceptance case (candidate.json; prior_work.md:E1–E6; review_contract.md).\n",
+  "review_sha256": "8e3ea8e7b75841e8147e1bbd7d4d34fa3da29832422ce42391df12dfa8f6219b",
+  "status": "valid",
+  "verdict_sha256": "c78072dacc46bfa251cc46e3f4dcbd9cec4d7ab33eef834eb8025deb3b3b6d48"
+}

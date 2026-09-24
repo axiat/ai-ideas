@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/homebrew/bin/codex -c 'web_search="disabled"' -c sandbox_workspace_write.network_access=false -c project_doc_max_bytes=0 --disable shell_tool --disable apps --disable plugins --disable browser_use --disable browser_use_external --disable computer_use --disable in_app_browser --disable multi_agent --disable image_generation --disable workspace_dependencies --disable hooks -c mcp_servers.node_repl.enabled=false -c mcp_servers.openaiDeveloperDocs.enabled=false -c mcp_servers.computer-use.enabled=false "$@"

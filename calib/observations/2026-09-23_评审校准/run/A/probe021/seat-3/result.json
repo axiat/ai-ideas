@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790140200.77603,
+  "projection": "I1\treject\t1\t按 review_contract.md，高重合使候选回到普通校准；prior_work.md/Crack Evidence Verification 虽新增两项 supports 核验，却同时确认核心前提已有先例，ROS 2 对逐控制周期前缀识别仅提供 partial 支持，而剩余机制差异与归因不足共同构成一项 MAJOR，故判 reject，实验尚未运行本身不计为缺陷。\n",
+  "review_sha256": "047d2b7f2966f7a1fd7744d9438b2c92f4fcdbd835f5f2c53f145c37e8ae006a",
+  "status": "valid",
+  "verdict_sha256": "e0a860bf4783964902f9e16172e30336d907994dc63cd777087a986dc91f85c0"
+}

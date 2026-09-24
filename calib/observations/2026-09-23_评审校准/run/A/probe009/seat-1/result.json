@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790139694.189518,
+  "projection": "I3\treject\t1\tReject because direct prior work occupies both the explanatory proposition and the target application, while the remaining record-format hypothesis does not independently support clear acceptance under the occupation gate (prior_work.md; candidate.json; review_contract.md).\n",
+  "review_sha256": "d265fda0a8c438983e2c4733a3e08b578c69b60ef2c8b28314273964161bd062",
+  "status": "valid",
+  "verdict_sha256": "f281f83b77ad1062d75f9f46dc859274ea4165b1ab8f4e3f831c4451e7969afa"
+}

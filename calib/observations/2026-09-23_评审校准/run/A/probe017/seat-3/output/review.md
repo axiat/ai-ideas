@@ -1,0 +1,12 @@
+# I5
+Verdict: accept-w-rev
+CRITICAL: 0
+MAJOR: 1
+Headline: 固定动作上的共享错误记忆效应具有检验价值，但主分析须区分策略生成提议与额外构造动作（candidate.json；prior_work.md，Strongest Counterexample）。
+Occupation: prior_work.md 的 CoVe §3.3 已覆盖共享内容使验证重复错误及独立验证修复；AGM 和 MemER 分别覆盖传感器证据验证与历史关键帧检索。剩余差异是对具身执行前验证随机操纵错误记忆，并在固定动作上测量误接受；该组合未见于所提供的已读近邻，组成机制的重合度仍高。
+Experiment: candidate.json 设置环境克隆真值、固定提议、四种验证器记忆、成功提议接受率匹配，以及相同信息和预算下的历史重建对照，能够分离提议质量与验证表现。等预算历史重建是修复的关键对照，但 prior_work.md 的 Payoff / Implementation Check 尚未确认其具体公开实现或最强排名。差异上限低于 5 点、修复不优于重建、闭环成功率下降超过 2 点均有明确终止规则；预期增加 10 点仅为候选预测。
+Estimand: MAJOR 1：candidate.json 额外构造成功与失败动作以补齐各来源层，却将主指标定义为全部真实失败提议中的接受率，未规定将构造动作排除或单独估计；该混合指标不能直接代表由策略错误记忆诱发的失败提议。主分析应限定于策略实际生成的提议，分别报告策略记忆来源下的同源减独立错误效应，并将构造动作作为独立诊断集；这对应 review_contract.md 的估计量对齐要求。
+Payoff: prior_work.md 中 CoVe 的上下文干扰观察和 MemER 的错误文本记忆依赖，为共享记忆实验提供了直接相关的动机。可归因的修复增量是来源约束重建相对等预算历史重建的误接受率改善，同时维持成功提议接受率及闭环表现；该增量尚待 candidate.json 的实验检验，历史检索和独立重建本身已被近邻覆盖。
+Feasibility: candidate.json 的最小实验包含 400 个检查点、每个来源层至少各 200 个成功和失败提议、3 个种子及 2 张 A100、40 GPU 小时，规模适合作为首轮受控实验。算力数字属于计划预算，输入未提供实测耗时；现有设计足以支持开展验证，尚不足以确认预算内完成全部比较。
+History: unavailable；本轮未提供经核验的 history_summary.json，不能判定内部重复或继承关系。
+Reason: CoVe 与 MemER 提供了相关机制依据，固定动作、环境真值和等预算对照支持一个可检验的窄贡献，因此给予 accept-w-rev；主估计量的动作来源混合问题须修正，而已有机制的高重合及尚待检验的修复增量不足以支持 strong-accept（candidate.json；prior_work.md；review_contract.md）。

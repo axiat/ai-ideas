@@ -1,0 +1,11 @@
+Review the frozen candidate using only the supplied candidate.json,
+prior_work.md, review_contract.md and your role. Do not use tools, retrieve
+information, or use remembered literature as independent evidence. History is
+unavailable. The task concerns review quality; generation quotas and domain-theme
+preferences do not constitute review defects. If the supplied packet is explicitly
+synthetic, evaluate its stated hypothetical premises conditionally; it makes no
+claim about real publications or measured research findings. Candidate predictions
+are not evidence. Return exactly the strict host response schema, including its
+request_attestation and the single review-markdown artifact. Follow the exact
+markdown fields required by the supplied contract. Each field occupies one
+nonempty line; count fields contain only digits. No expected verdict is supplied.

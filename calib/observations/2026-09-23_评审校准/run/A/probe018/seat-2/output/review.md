@@ -1,0 +1,12 @@
+# I4
+Verdict: accept-w-rev
+CRITICAL: 0
+MAJOR: 1
+Headline: 受控的位置频率与记忆正确性交互具有可检验增量，但主估计量尚不能单独支持准确记忆利用下降的机制解释（candidate.json；prior_work.md）。
+Occupation: prior_work.md 所读 KAFT §3–4 与 DisentQA §2.1–2.3 已覆盖参数知识与外部证据冲突及反事实监督修复；MemER §4.1 Q3 已提出机器人训练顺序先验影响历史利用的解释。剩余增量是固定骨干和预算的位置频率干预、行动层面的交互估计及三种修复的等预算比较；这些具体组合未在所供已读正文中得到确认，不能据此宣称普遍空白。
+Experiment: candidate.json 提供三档训练频率、相同当前 RGB 与真实位置下的正确／错误／空白记忆干预、300 个配对检查点、首次动作指标，以及普通记忆、位置均衡和反事实配对微调对照，足以检验受控交互。修订需明确测试位置构成、错误记忆位置的分配规则及交互符号：若以“均匀条件的记忆收益减强偏置条件的记忆收益”定义正向下降量，其区间上限低于 5 点的终止规则才与预期下降方向一致；10 点交互和 5 点修复收益均是候选阈值，并非结果（candidate.json；prior_work.md，Payoff / Implementation Check）。
+Estimand: MAJOR-1：令 C、W、B 分别为正确、错误、空白记忆成功率，则候选主对比 C−W=(C−B)+(B−W)；其跨训练条件变化对齐“记忆质量的成功率效应”，但下降既可能来自正确记忆收益减少，也可能来自错误记忆损害减少，因此不能单独归因为准确记忆被忽略。应利用已经安排的空白条件分别报告两项，并结合正确记忆下的成功率和首次动作检验机制；这是主张与归因指标的缺口，按 review_contract.md 计一项 MAJOR（candidate.json）。
+Payoff: 可归属的新收益是位置频率对记忆使用的受控影响，以及配对历史训练相对最强等预算基线的独立改善。候选以修复收益不足 5 点或均匀条件下降超过 2 点作为终止条件，能够排除部分无净收益的迁移；然而反事实监督机制已由 KAFT 和 DisentQA 占用，现有材料尚不足以支持新的修复机制或 Strong Accept 所要求的非平凡迁移贡献（candidate.json；prior_work.md，Strongest Counterexample、Payoff / Implementation Check；review_contract.md）。
+Feasibility: candidate.json 明确每个策略 12,000 条轨迹、每种修复额外 3,000 条样本、3 个种子及 4 张 A100／120 GPU 小时，实验具备数据、计算和终止条件的限制，支持有条件的小团队首篇验证判断；具体骨干与运行耗时尚未给出，因此 120 GPU 小时只能作为计划预算，不能作为已验证成本。未运行实验本身不计缺陷（review_contract.md）。
+History: unavailable
+Reason: prior_work.md 的 MemER 训练先验观察与 RoboMME 历史依赖任务提供了相关机制依据，candidate.json 的频率干预及等预算修复比较提供了具体可检验增量，而主要归因缺口可用已安排的空白条件补充分析，因此给予 accept-w-rev，并将贡献限定为经验证的机器人交互与修复收益（review_contract.md）。

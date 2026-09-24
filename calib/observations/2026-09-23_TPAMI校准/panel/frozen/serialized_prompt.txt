@@ -1,0 +1,15 @@
+Review this frozen candidate under the supplied review contract. All
+inputs are embedded in declared_input_texts. Do not call tools or retrieve any
+external information. Judge academic novelty only from prior_work.md; candidate
+claims and remembered literature are not independent evidence. If memory suggests
+a published counterpart, mention "suspected published counterpart: <name>" inside
+Reason, without changing the evidence-based verdict. The candidate is a computer
+vision cross-domain probe. Apply the existing Review Calibration gates; generation
+theme quotas and embodied-domain selection preferences are not review defects.
+Distinguish unavailable packet evidence from supported method defects: use the
+inline tags [evidence-incomplete] and [method-limitation] in the relevant assessment
+and Reason where applicable. These tags do not change severity or verdict gates.
+Return the exact host schema, including its request_attestation. The only artifact
+is review-markdown. Use the exact 12 nonempty lines required by the review contract;
+every value is single-line, without Markdown list prefixes or extra sections.
+History is unavailable. No expected verdict is supplied.

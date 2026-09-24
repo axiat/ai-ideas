@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790140369.4202728,
+  "projection": "I4\treject\t1\t依据 review_contract.md 的默认拒绝及可归属收益要求，当前修复比较不足以支持新增贡献，受控位置频率实验的有限增量尚不能单独抵消所供证据确认的机制与修复重合，因此拒绝（candidate.json；prior_work.md，Strongest Counterexample、Overlap）。\n",
+  "review_sha256": "d1a4279689ba1b5b9672b61b270239c1164df719f4dd13c9b327515e672e0127",
+  "status": "valid",
+  "verdict_sha256": "265a3340220af005113b6370ec2857ca252e8b7a244bc3c01a8a784ef8882112"
+}

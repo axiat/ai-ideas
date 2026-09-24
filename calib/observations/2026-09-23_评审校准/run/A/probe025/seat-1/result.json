@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790141580.0772128,
+  "projection": "I1\tstrong-accept\t0\tStrong accept is justified under review_contract.md by the complete conditional coverage in prior_work.md, the independently supported gap and causal witness in E1/E2/E5, the external constraint in E6, and candidate.json’s feasible experiment with strongest baselines, attribution controls, and explicit kill conditions; the unproved theorem and unrun experiments remain research obligations rather than established results.\n",
+  "review_sha256": "225d3bcbd6d34e1fabdf3725a428f4acfad43a9a56989e17afd8eef06f732dc9",
+  "status": "valid",
+  "verdict_sha256": "1e3a6c61a641443c3d63189ca06bf40681221cc07c44f6c46390c7133403063f"
+}

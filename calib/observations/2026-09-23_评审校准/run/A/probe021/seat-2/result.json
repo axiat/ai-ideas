@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790139855.9383092,
+  "projection": "I1\treject\t1\t依据 review_contract.md 的默认拒绝与直接占用规则，核心前提已有直接先例，而候选剩余差异尚未独立达到明确接收标准，故以1项新颖性 MAJOR 判为 reject（prior_work.md：Strongest Counterexample、Overlap；candidate.json：Summary、Why It May Be Novel）。\n",
+  "review_sha256": "1fca6248ca790f37f8fe2869de1f9258b54551d9e00d4e58c94538f3693cd115",
+  "status": "valid",
+  "verdict_sha256": "684a24dfb0f6e3e290d3e3b858b144000bccb450d98812226f2226eac9ce8fb5"
+}

@@ -1,0 +1,217 @@
+{
+  "scope": "623–643 frozen original candidates; agent reassessment, no formal harness vote matrix or ledger mutation",
+  "contract_path": "/Users/qinningxu/code/ai-ideas/history/review-contract.md",
+  "contract_sha256": "52c94b98fe9f09f407b255832d8fcdfb846e9f06dd29770d2ed4b60b1f33dffe",
+  "candidates": [
+    {
+      "key": "probe001",
+      "source_type": "production-review-input",
+      "row_number": 623,
+      "candidate_id": "I2",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T013713-p85445-r1/round/history/batch/I2.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T013713-p85445-r1/round/history/review-attempts/001/review-plan.json-inputs/I2/prior-work.md",
+      "candidate_source_sha256": "cbbb7ab3384c678c35a4e72d904abedcb52fed86ada6bb03248ad888201da1f8",
+      "prior_work_source_sha256": "571701fc5e44ce3071acc29b31feeea87f8ee244d941d3cbc33831ae29b00b48"
+    },
+    {
+      "key": "probe002",
+      "source_type": "production-review-input",
+      "row_number": 624,
+      "candidate_id": "I3",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T013713-p85445-r1/round/history/batch/I3.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T013713-p85445-r1/round/history/review-attempts/001/review-plan.json-inputs/I3/prior-work.md",
+      "candidate_source_sha256": "6546c2f6b78490962f8912dcf022da351be58a6fddc0d905914d28707a77323d",
+      "prior_work_source_sha256": "d1571f51f815c376e2d4da3f27fde8fb25ff79b8c7fa299d2e810f5bb6567f6f"
+    },
+    {
+      "key": "probe003",
+      "source_type": "production-review-input",
+      "row_number": 625,
+      "candidate_id": "I7",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T013713-p85445-r1/round/history/batch/I7.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T013713-p85445-r1/round/history/review-attempts/001/review-plan.json-inputs/I7/prior-work.md",
+      "candidate_source_sha256": "ed9b265a42dbbf6d324ab9d8b4bec194459fb5ef1c1b1d490eb6e69bc3aac7f7",
+      "prior_work_source_sha256": "4226f549637da8632351f97544202ac5006879c61dc378fc017fffea29c10cde"
+    },
+    {
+      "key": "probe004",
+      "source_type": "production-review-input",
+      "row_number": 626,
+      "candidate_id": "I1",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T022051-p98861-r1/round/history/batch/I1.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T022051-p98861-r1/round/history/review-attempts/001/review-plan.json-inputs/I1/prior-work.md",
+      "candidate_source_sha256": "ef30dcc9580ddfc9907b131b80a14f3833911f3377bd773c5e98b18360de7538",
+      "prior_work_source_sha256": "692e1242b37c683180ee0aac44ee7f2a08f8d86a23ebee914616085c94f252bf"
+    },
+    {
+      "key": "probe005",
+      "source_type": "production-review-input",
+      "row_number": 627,
+      "candidate_id": "I9",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T022051-p98861-r1/round/history/batch/I9.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T022051-p98861-r1/round/history/review-attempts/001/review-plan.json-inputs/I9/prior-work.md",
+      "candidate_source_sha256": "87d6d1fd4f0d88379f0953004c9a88e5862e06ec12848ba7106fa0ea7aed67fe",
+      "prior_work_source_sha256": "65d39065efb2c97c066b8a66acd22e365cdbbd6e19d0994f45d8f6ea878e6fa3"
+    },
+    {
+      "key": "probe006",
+      "source_type": "production-review-input",
+      "row_number": 628,
+      "candidate_id": "I10",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T022051-p98861-r1/round/history/batch/I10.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T022051-p98861-r1/round/history/review-attempts/001/review-plan.json-inputs/I10/prior-work.md",
+      "candidate_source_sha256": "d92433a1d1cce149547b640a9cd316bb384d917460f4c70aecb9d7218b916307",
+      "prior_work_source_sha256": "e42ba8f695a9eb1d1592b7b55eee5ed2e51dc4d4e2f5c73ea38f84a20f377a7f"
+    },
+    {
+      "key": "probe007",
+      "source_type": "production-review-input",
+      "row_number": 629,
+      "candidate_id": "I10",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T030455-p9713-r1/round/history/batch/I10.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T030455-p9713-r1/round/history/review-attempts/001/review-plan.json-inputs/I10/prior-work.md",
+      "candidate_source_sha256": "b494d4765417d1e45bc106d9307da55ec9828b4c2306e15dc42c920931b3ce63",
+      "prior_work_source_sha256": "71a2b3e9dfc1814a78939ee2232e50876f69f83f022d1f16ad6e59f41c81c10b"
+    },
+    {
+      "key": "probe008",
+      "source_type": "production-review-input",
+      "row_number": 630,
+      "candidate_id": "I2",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T030455-p9713-r1/round/history/batch/I2.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T030455-p9713-r1/round/history/review-attempts/001/review-plan.json-inputs/I2/prior-work.md",
+      "candidate_source_sha256": "c5f081e48179fcc0f389a170f181b2b24640aab1030519b3dc33f0853d93e9d2",
+      "prior_work_source_sha256": "8393acadf3f7b819f33d45db2115b9d81d98bc8b03066f96690beac0247b52f4"
+    },
+    {
+      "key": "probe009",
+      "source_type": "production-review-input",
+      "row_number": 631,
+      "candidate_id": "I3",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T030455-p9713-r1/round/history/batch/I3.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T030455-p9713-r1/round/history/review-attempts/001/review-plan.json-inputs/I3/prior-work.md",
+      "candidate_source_sha256": "f94bbfd0370d9e76583ecaff14d2819d6b5e751f5ca41f96f01d1a96b89883cc",
+      "prior_work_source_sha256": "b038f5f70ae4a908391a27c43be91ac1e9b38a7bba066e225fd07e54881d4c3d"
+    },
+    {
+      "key": "probe010",
+      "source_type": "production-review-input",
+      "row_number": 632,
+      "candidate_id": "I2",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T033943-p16844-r1/round/history/batch/I2.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T033943-p16844-r1/round/history/review-attempts/001/review-plan.json-inputs/I2/prior-work.md",
+      "candidate_source_sha256": "728163c0c89e5bf3963a139e5813ea756558a78a9d20b096d41588cf1a37e273",
+      "prior_work_source_sha256": "81fbb618c6f947116daf822c1f8cd45a88ffc7d42a5e5827b4b208babfd7c595"
+    },
+    {
+      "key": "probe011",
+      "source_type": "production-review-input",
+      "row_number": 633,
+      "candidate_id": "I1",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T033943-p16844-r1/round/history/batch/I1.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T033943-p16844-r1/round/history/review-attempts/001/review-plan.json-inputs/I1/prior-work.md",
+      "candidate_source_sha256": "e46bf303b89a5ae2d16c1d853469d9b8baac489de6e49abcadffb17654533888",
+      "prior_work_source_sha256": "dd688718c9814077882dba2e08d6e03c639547f8dc3064a9c10875edc8e04b43"
+    },
+    {
+      "key": "probe012",
+      "source_type": "production-review-input",
+      "row_number": 634,
+      "candidate_id": "I3",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T033943-p16844-r1/round/history/batch/I3.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T033943-p16844-r1/round/history/review-attempts/001/review-plan.json-inputs/I3/prior-work.md",
+      "candidate_source_sha256": "6649443d88d720553189c2a30a9fded2aed2eec3e06aab2eba771a777d0bc89d",
+      "prior_work_source_sha256": "7628ff77e552abfeca07857e0dc948144d045175a3178e00b96cddfc309fecde"
+    },
+    {
+      "key": "probe013",
+      "source_type": "production-review-input",
+      "row_number": 635,
+      "candidate_id": "I1",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T041103-p33696-r1/round/history/batch/I1.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T041103-p33696-r1/round/history/review-attempts/001/review-plan.json-inputs/I1/prior-work.md",
+      "candidate_source_sha256": "c7413a3731e557b6f35f6f1ea43032a6ebe8170e981edec6d00b0f0a5dd9bff3",
+      "prior_work_source_sha256": "03be5ad6de6a966e3c506db97bc8729075d1c17b5a0757e659b6f0bcce0f0876"
+    },
+    {
+      "key": "probe014",
+      "source_type": "production-review-input",
+      "row_number": 636,
+      "candidate_id": "I4",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T041103-p33696-r1/round/history/batch/I4.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T041103-p33696-r1/round/history/review-attempts/001/review-plan.json-inputs/I4/prior-work.md",
+      "candidate_source_sha256": "50f95046b99458a252424a8dec40cde2cd73d1ea831ff7348c8e4e70779f8e11",
+      "prior_work_source_sha256": "0ded298a9a16417ad39e77e3dc690cff594207aee5c80733b11620ecb662f23f"
+    },
+    {
+      "key": "probe015",
+      "source_type": "production-review-input",
+      "row_number": 637,
+      "candidate_id": "I6",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T041103-p33696-r1/round/history/batch/I6.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T041103-p33696-r1/round/history/review-attempts/001/review-plan.json-inputs/I6/prior-work.md",
+      "candidate_source_sha256": "1ebf1c69727879550a1e32ecf02c42ed24051304d813385a9f0a426fb0e81306",
+      "prior_work_source_sha256": "8c3a6523f43d8df91662bd8e1926620e30c2f4a87cdc2b53a49494c36921047c"
+    },
+    {
+      "key": "probe016",
+      "source_type": "production-review-input",
+      "row_number": 638,
+      "candidate_id": "I1",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T044250-p33696-r2/round/history/batch/I1.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T044250-p33696-r2/round/history/review-attempts/001/review-plan.json-inputs/I1/prior-work.md",
+      "candidate_source_sha256": "547582e9067a30f53aeec4865e18a068b2811b7e015e5888767b21a060ca0b50",
+      "prior_work_source_sha256": "8829dba1d28e5673b757e64d08be69bc658d0e107fa4bde39a60af8af4c856b9"
+    },
+    {
+      "key": "probe017",
+      "source_type": "production-review-input",
+      "row_number": 639,
+      "candidate_id": "I5",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T044250-p33696-r2/round/history/batch/I5.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T044250-p33696-r2/round/history/review-attempts/001/review-plan.json-inputs/I5/prior-work.md",
+      "candidate_source_sha256": "913a79fc06d8c17811ef2a7f76e2d7a21cd766009a25bbcb2fe1836625bc293e",
+      "prior_work_source_sha256": "86347d90053570beccd4e47821b8e222ae5e19164463782f5296ba9523413c1b"
+    },
+    {
+      "key": "probe018",
+      "source_type": "production-review-input",
+      "row_number": 640,
+      "candidate_id": "I4",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T044250-p33696-r2/round/history/batch/I4.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T044250-p33696-r2/round/history/review-attempts/001/review-plan.json-inputs/I4/prior-work.md",
+      "candidate_source_sha256": "ab1a638eb58db52f90c6a8fefbb2590d313ffb332e9d65c4e1b62f21933cc969",
+      "prior_work_source_sha256": "e85c53368679bf5c9c5a221c36c969f57b5db2646f16ae85d2ecf9067abc5a69"
+    },
+    {
+      "key": "probe019",
+      "source_type": "production-review-input",
+      "row_number": 641,
+      "candidate_id": "I9",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T051620-p52040-r1/round/history/batch/I9.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T051620-p52040-r1/round/history/review-attempts/001/review-plan.json-inputs/I9/prior-work.md",
+      "candidate_source_sha256": "5cd928280a2c1267d774733dd1e5dee8da0c38f9c19502978a00f4a71735c60c",
+      "prior_work_source_sha256": "bd3df9a0d8ea0ac91228aba6f5f6cefa1b9038f5c403dc7078e966af31920f94"
+    },
+    {
+      "key": "probe020",
+      "source_type": "production-review-input",
+      "row_number": 642,
+      "candidate_id": "I4",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T051620-p52040-r1/round/history/batch/I4.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T051620-p52040-r1/round/history/review-attempts/001/review-plan.json-inputs/I4/prior-work.md",
+      "candidate_source_sha256": "68bb183f4e89b832e7115f3c6a1b17eb47253c74673e96723f1f1348549050dd",
+      "prior_work_source_sha256": "2dde36e7ec5492b1c221857ae44738ca4a189d65a58dd6e1ce3c0833133a471c"
+    },
+    {
+      "key": "probe021",
+      "source_type": "production-review-input",
+      "row_number": 643,
+      "candidate_id": "I1",
+      "candidate_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T051620-p52040-r1/round/history/batch/I1.json",
+      "prior_work_source": "/Users/qinningxu/.ai-ideas-runs/ai-ideas/20260923T051620-p52040-r1/round/history/review-attempts/001/review-plan.json-inputs/I1/prior-work.md",
+      "candidate_source_sha256": "5fd86e4959473142bbc3bd2e0057cbc82f4c07a0a97aa4d0de8bff08e902dc88",
+      "prior_work_source_sha256": "567da81e9e0cbb97aaa1b385770f3292ef72bb7d2e7212978eece07c1a30b6b4"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790139390.780829,
+  "projection": "I5\treject\t1\t拒绝依据是一个剩余贡献价值缺口：candidate.json 的归因设计具有诊断用途，但结合 prior_work.md 已覆盖的机制，目标场景中的重复测量及尚缺比较优势论证的修复不足以支持 AwR，仅补齐实施细节不能消除该缺口。\n",
+  "review_sha256": "4288d889a9a15d8f1416f5fac78a2a364173da63bb76d1f97baaa11ab29cd0d1",
+  "status": "valid",
+  "verdict_sha256": "78af8792c3a7a736c72343dfe039202504d2c99131ae125b8af69514a33b8695"
+}

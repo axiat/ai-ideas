@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790139376.024127,
+  "projection": "I5\treject\t1\tcandidate.json 的实验差异与执行方案可以保留，但结合 prior_work.md，其现有依据主要支持已知机制在新增配置中的复现，来源约束修复的独立收益亦缺少论证，因而尚无足以通过澄清或缩小范围保留的正面贡献，以一项价值支撑不足的 MAJOR 判为 reject。\n",
+  "review_sha256": "f4b7c40edba3145feb89a81ccfe594ef4da2af753f76f2196a5b198b5bfbefe2",
+  "status": "valid",
+  "verdict_sha256": "2cac09536d711014cb288a6236e4bd620a13be0d622b16bc9ce16f474c3ffb76"
+}

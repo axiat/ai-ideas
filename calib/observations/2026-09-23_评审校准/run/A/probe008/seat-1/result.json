@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790141493.896348,
+  "projection": "I2\treject\t2\tReject because the candidate does not specify a sufficient contribution beyond the occupied allocation principle, and its baseline design cannot establish such a contribution through the proposed robot result (MAJOR 1–2; candidate.json; prior_work.md; review_contract.md: default-reject and occupation gates).\n",
+  "review_sha256": "61ddc2f26bf6022f5ccdd142c7026131075239fda10636086ffe26e89651d447",
+  "status": "valid",
+  "verdict_sha256": "aa7fffdc1d21092955d30976e52cf04dfedf2f288e77b45f6b60cff51aeca634"
+}

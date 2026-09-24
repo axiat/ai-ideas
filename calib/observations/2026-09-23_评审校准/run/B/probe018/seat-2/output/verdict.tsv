@@ -1,0 +1,1 @@
+I4	reject	2	根据 candidate.json 与 prior_work.md，训练频率干预的机制归因存在可修复缺口，而修复该缺口后，剩余贡献仍主要是已知冲突现象的任务内量化与已知监督机制的应用；所给证据尚未支持至少 borderline 的独立价值，因此依据 review_contract.md 判为 reject。两项 MAJOR 分别对应识别与价值，均未达到 CRITICAL。

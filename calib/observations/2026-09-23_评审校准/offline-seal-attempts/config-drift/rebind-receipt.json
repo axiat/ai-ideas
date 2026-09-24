@@ -1,0 +1,9 @@
+{
+  "challenge_freeze_sha256": "ae28a6d26949461ad013552171981ff90fa441f28232284eeff635ea2c3d8fb2",
+  "model": "gpt-6-astra",
+  "new_config_sha256": "83b2f125907a701bf8176712a685999f0a6799afa2d85b59c0f54f959dd0b704",
+  "old_config_sha256": "2e2c4be7c68a31c045553b0d55a8fe8c6203eff42104f7512c845512f6a7b1dc",
+  "provider_calls": 0,
+  "reason": "Global CLI config changed after offline preparation; explicit model and reasoning unchanged.",
+  "reasoning": "xhigh"
+}

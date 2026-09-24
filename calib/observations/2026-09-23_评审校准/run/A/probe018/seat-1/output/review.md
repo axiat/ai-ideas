@@ -1,0 +1,12 @@
+# I4
+Verdict: reject
+CRITICAL: 0
+MAJOR: 1
+Headline: 受控位置频率干预保留了诊断增量，但修复比较尚未建立可独立归属的新增收益，当前不足以接收（candidate.json；prior_work.md，Overlap 与 Payoff / Implementation Check）。
+Occupation: KAFT 已覆盖参数知识与外部上下文冲突及反事实监督修复，DisentQA 已覆盖配对上下文与相应标签；MemER 已提出训练顺序先验影响历史使用的机器人解释。剩余差别是固定骨干和预算，操纵位置频率并测量记忆正确性的行动交互效应；所供正文阅读记录未发现这一具体实验，但不能据此认定广泛的新机制（prior_work.md，Nearest Work、Strongest Counterexample）。
+Experiment: 同一批 300 个检查点、配对当前 RGB 与真实位置、正确／错误／空白记忆以及位置均衡微调，构成了有效的主要控制。不过，“共享额外 3,000 条样本和更新预算”未明确普通条件化微调是否获得相同的反事实历史，也未说明配对微调额外采用何种训练操作；因此，修复比较无法区分反事实样本覆盖的收益与配对训练的收益，这支撑下述 MAJOR-1（candidate.json，Minimal Falsification Experiment）。
+Estimand: 正确减错误记忆成功率的跨训练条件差，能够估计训练频率对记忆质量效应的调节，与候选的操作性问题一致；但该差缩小也可能来自错误记忆条件改善，不能单独证明准确记忆的收益下降。已有空白条件可用于分解这两部分，首次动作响应可辅助解释；还应明确以均匀条件减强偏置条件定义预期正效应，使 5 点终止规则与假说方向一致（candidate.json，One-Sentence Story 与 Minimal Falsification Experiment）。
+Payoff: MAJOR-1：新增修复收益的归属不足。反事实监督本身已被 KAFT 和 DisentQA 占用，而当前比较尚未明确控制其数据收益；需要明确普通基线在相同反事实数据上的训练方式，以及配对方法具体增加的干预。否则，剩余贡献主要是位置频率交互曲线，尚不足以在已报告的高重合下独立支持接收；10 点交互和 5 点修复收益均为待检验阈值（prior_work.md，Overlap、Payoff / Implementation Check；candidate.json）。
+Feasibility: 最小实验给出了每个策略 12,000 条轨迹、修复阶段 3,000 条样本、3 个种子、4 张 A100 和 120 GPU 小时，并设置收益与性能退化终止条件，属于明确限额的实验计划；骨干规模和更新方式未说明，实际耗时仍待核算，现有材料不足以判为资源不可行（candidate.json，Minimal Falsification Experiment）。
+History: unavailable
+Reason: 依据 review_contract.md 的默认拒绝及可归属收益要求，当前修复比较不足以支持新增贡献，受控位置频率实验的有限增量尚不能单独抵消所供证据确认的机制与修复重合，因此拒绝（candidate.json；prior_work.md，Strongest Counterexample、Overlap）。

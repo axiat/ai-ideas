@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790140795.924451,
+  "projection": "I2\treject\t2\tReject because the missing cost-aware comparison prevents identification of an incremental method contribution, while the supplied support independently leaves the residual transfer below the AwR value threshold (candidate.json; prior_work.md). Adding that comparison would repair the validation gap but would not itself supply a supported new payoff. Neither broad overlap nor unrun experiments alone determines this verdict, and no CRITICAL failure is established.\n",
+  "review_sha256": "5fb650d99c18d78f48c49d47f815af18be545093d2d5acb4e7ab9626afcfbe0d",
+  "status": "valid",
+  "verdict_sha256": "8619ca01839c39f25fd69b046a442ab7cb4c6dd4736323a5c46e07b79518cfec"
+}

@@ -1,0 +1,13 @@
+# I1
+Verdict: reject
+CRITICAL: 0
+MAJOR: 1
+Headline: 具体的中断与迟到回执实验尚未被所读工作覆盖，但现有材料未支持其剩余贡献具有独立研究价值（candidate.json；prior_work.md）。
+Occupation: prior_work.md 中，CRAM §IV-B.2 已允许执行中的经验及当前 belief state 用于诊断和恢复，D-POMDP §§2、3.1 已覆盖结果观测到达前决策及随后更新信念，Deep Episodic Memory（2018）已覆盖视频前缀编码、后续预测与动作复用；candidate.json 剩余的区别是中断动作块前缀、未决状态分布和迟到回执修订在学习控制中的组合及受控收益，所读来源未完整覆盖这项具体贡献，因此 coverage 为 not-covered。
+Experiment: candidate.json 给出了三个模拟任务、随机截断、两档回执延迟、2400组成对种子以及等待定案、单一结果预测、完整历史循环策略等对照；配对95%置信区间上限低于5个百分点时否定预设收益，并报告无中断条件，构成有明确否证条件的有限实验，实验尚未运行本身不计缺陷。
+Estimand: candidate.json 的中断回合任务成功率与性能命题一致，匹配图像、回执、历史长度、决策时刻及策略规格能够约束信息量、等待时间和容量差异，已知转移模型的贝叶斯过滤器也明确只作上界；“收益来自部分执行语义”的解释仍是待检验命题，不能作为当前已成立的价值依据。
+Payoff: 唯一 MAJOR 是剩余贡献的价值依据不足：prior_work.md 已为在线使用未完成经验和迟到观测更新提供直接先例，而 candidate.json 尚未说明其表示需要何种超出现有机制的实质改动，或该实验能够产生何种独立的新解释；其5个百分点预期没有相应观察、推导或针对剩余差异的论证支持，因此目前既不足以支持 SA，也未建立 AwR 所需的独立研究价值。
+Feasibility: candidate.json 将实施规模限定为6000条训练轨迹、三个模拟任务、2张A100共48小时和2–3人，提供了合理的初步资源范围；供应材料未显示必须依赖预训练规模计算或无法取得的数据，因而没有独立的不可行性 finding。
+History: unavailable
+Assessment: {"coverage":"not-covered","coverage_evidence":[{"source":"candidate","quote":"记忆条目保留已执行前缀、未决后果和候选状态分布；新回执到达后再收缩分布。"},{"source":"prior-work","quote":"候选另外要求保存中断技能前缀和未决结果分布、随迟到回执修订，并在匹配输入和决策时刻的学习控制实验中测量收益，CRAM 的该段没有提供这组实验。"},{"source":"prior-work","quote":"实验为 Tiger、maze 等离散基准，并未训练机器人情景记忆写入器或研究中断动作块前缀。"}],"causes":[{"code":"value-insufficient","evidence":[{"source":"candidate","quote":"待核验的问题是未决执行记录能否直接承担经验记忆；与部分可观测控制、执行监测和事务式技能记录的区别仍需研究。"},{"source":"prior-work","quote":"完整技能结果先于一切经验使用并非上述文献的共同要求；CRAM 和 EMV 均记录执行过程，D-POMDP 明确放宽立即得到结果观测的假设。"},{"source":"candidate","quote":"预期未决条目较最强可训练对照提高至少5个百分点"}]}]}
+Reason: prior_work.md 的高重叠使假设移除专门标准不成立，其新增支持证据证明了宽泛前提已有放宽先例，而 candidate.json 剩余组合的独立价值仍缺少支持，因此按普通候选评定为 reject，计1项 MAJOR、0项 CRITICAL，补充引用或执行现有比较尚不足以从当前记录建立 AwR 的正面条件。

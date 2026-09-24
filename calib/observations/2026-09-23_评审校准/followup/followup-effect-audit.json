@@ -1,0 +1,56 @@
+{
+  "B/probe028/seat-1": {
+    "status": "valid",
+    "review_sha256": "595d44130b2388378183f1b8030cfdf74d1beaed3ed7da512f29460f4b82f3ef",
+    "finding": "AwR 0C1M。准确构造忽略identity、每条retrieved entry增量累积的反例，零交互仍兼容overconfidence/inspection/success路径；明确candidate没有排除该变体的假设。单一design-invalid与引文支持，未重复计数。修订限定identity-sensitive和identity-blind预测，利用已有contrasts，保留无repair解释价值。",
+    "signature_necessity_checked": true,
+    "unrun_penalty": false,
+    "no_repair_penalty": false,
+    "scientific_issues": []
+  },
+  "B/probe028/seat-3": {
+    "status": "valid",
+    "review_sha256": "f605e2b82a7b0534ccec70f4b3f3149987631162a1d86eaea7247347009e8fb2",
+    "finding": "AwR 0C1M。给出 L=L0+n*l(o) 且忽略identity的可核查反例；缺交互不能排除独立计数或确立E3。要求将该falsifier仅用于明确identity-sensitive假设，并用原有位置/inspection对比检验更宽路径；保留独立解释价值。Assessment准确，未罚无repair或未运行。",
+    "signature_necessity_checked": true,
+    "unrun_penalty": false,
+    "no_repair_penalty": false,
+    "scientific_issues": []
+  },
+  "B/probe025/seat-2": {
+    "status": "valid",
+    "review_sha256": "88c526f0bc0f1885abdaff1fd04b83def536ce431c729d74ed57e600491d0288",
+    "finding": "AwR 0C1M。唯一缺口是event IDs界未覆盖pending/outcome信息总存储，源码E2/E5支持缺少论证而非不可能。明确5点阈值属于项目收益停止条件，continuation equivalence可在不足5点收益时成立；有限枚举可证伪但不能替代一般论证。保留E5/E6形式价值并要求可核查state-sufficiency/storage论证，不要求已完成实验。",
+    "signature_necessity_checked": true,
+    "unrun_penalty": false,
+    "no_repair_penalty": false,
+    "scientific_issues": []
+  },
+  "B/probe028/seat-2": {
+    "status": "valid",
+    "review_sha256": "fd57da6a5d56d6a6a05a27d74d30601fb5fde56d2464fa96724cee69865c4a7b",
+    "finding": "AwR 0C1M。明确candidate与E5均未假设tag sensitivity，identity-blind独立计数可无交互，故kill规则不能排除全机制。修订要求分开两类预测、保留与数据相容的identity-blind变体，并直接用随机位置contrast评价recency。使用已有实验臂保留归因研究价值；Assessment quote支持design-invalid，未罚无repair或unrun，明确原8–12点非position-matched保证。",
+    "signature_necessity_checked": true,
+    "unrun_penalty": false,
+    "no_repair_penalty": false,
+    "scientific_issues": []
+  },
+  "B/probe025/seat-1": {
+    "status": "valid",
+    "review_sha256": "bb0104e7c8e64cbd4cafbfe6369a74f9263d642e5703a709a1c8b143c68ebc42",
+    "finding": "AwR 0C1M。给出2% unsafe降至0%的可核查例子，说明5pp项目阈值失败仍可有Pareto改进；明确这是payoff停止阈值，不另计MAJOR。唯一缺口为pending/outcome总存储与假设未说明，允许引入pending参数或收缩适用条件并保留E5交互。源引文支持evidence-insufficient，未把缺支持当不可能或要求已跑实验。",
+    "signature_necessity_checked": true,
+    "unrun_penalty": false,
+    "no_repair_penalty": false,
+    "scientific_issues": []
+  },
+  "B/probe025/seat-3": {
+    "status": "valid",
+    "review_sha256": "467a58c193683ba21f98a49fd6fd7153cc7a8015b98601cf8800335e4a56be53",
+    "finding": "AwR 0C1M。准确指出exact compact method可能与已安全E4同表现而仍满足形式命题，5pp只作项目阈值。有限枚举不能替代一般论证但未当unrun缺陷。唯一MAJOR是标识符界未约束pending及dependency state，允许有依据修改参数/范围，保留非平凡compression与E5交互。Assessment支持，未额外逼迫因果解释。",
+    "signature_necessity_checked": true,
+    "unrun_penalty": false,
+    "no_repair_penalty": false,
+    "scientific_issues": []
+  }
+}

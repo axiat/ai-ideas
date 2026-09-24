@@ -1,0 +1,542 @@
+[
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 28438,
+      "conservative_total_bytes": 68888,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "a1463294c40714b5aaae96dc8b009db84d89ab8c6332c61e4e2478935683dcc2",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe005/seat-1/state/preflight.json",
+    "seat": 1,
+    "target": "probe005"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 28438,
+      "conservative_total_bytes": 68888,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "3ce47f68788fb3814982846e663fc2d55f4270e18eb3c3f368bf98ae0997b76c",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe005/seat-2/state/preflight.json",
+    "seat": 2,
+    "target": "probe005"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 28438,
+      "conservative_total_bytes": 68888,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "4d16a977412d90ca8e0de5394de2475cff361f1b330b59144f2efd01054039f5",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe005/seat-3/state/preflight.json",
+    "seat": 3,
+    "target": "probe005"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 27418,
+      "conservative_total_bytes": 67868,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "ce043300a4aee9ef56cb025735199015bfa7f2452f69a8c5c5cc94d045433c06",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe017/seat-1/state/preflight.json",
+    "seat": 1,
+    "target": "probe017"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 27418,
+      "conservative_total_bytes": 67868,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "58dbf51d4b1ca503466f1799d81e05b183d8dcfd24e57b8afd6b302caa68deb2",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe017/seat-2/state/preflight.json",
+    "seat": 2,
+    "target": "probe017"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 27418,
+      "conservative_total_bytes": 67868,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "ba2927337913b2ac35d8d938d615c790c4a12e518240d6a2d82d7ce7275568f1",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe017/seat-3/state/preflight.json",
+    "seat": 3,
+    "target": "probe017"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 27318,
+      "conservative_total_bytes": 67768,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "a956007aa04e2dcd9a3049a56311c3c1699ccf58b8361604250d0e7d73e161d9",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe009/seat-1/state/preflight.json",
+    "seat": 1,
+    "target": "probe009"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 27318,
+      "conservative_total_bytes": 67768,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "14c7c4a57f570f7a3496232914f7add032df319d85377a102890bb4baa1dc223",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe009/seat-2/state/preflight.json",
+    "seat": 2,
+    "target": "probe009"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 27318,
+      "conservative_total_bytes": 67768,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "50017ceb384e7182516f6eabcb5595d861e2a8f0342bc1f0710b93ba36f65f43",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe009/seat-3/state/preflight.json",
+    "seat": 3,
+    "target": "probe009"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 28956,
+      "conservative_total_bytes": 69406,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "93edbeb1a92636bedd940dc8a56cd3c97cabfac9ef1d931e1026d0d40d390887",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe021/seat-1/state/preflight.json",
+    "seat": 1,
+    "target": "probe021"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 28956,
+      "conservative_total_bytes": 69406,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "33d84bf6a9a5410759f8e41cd17ddd394f71465d7c6959be3fd82aa82081eb3b",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe021/seat-2/state/preflight.json",
+    "seat": 2,
+    "target": "probe021"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 28956,
+      "conservative_total_bytes": 69406,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "816f49f5c7445d0062a883ed1432206bd4a500949b20b731a38c840c53713f79",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe021/seat-3/state/preflight.json",
+    "seat": 3,
+    "target": "probe021"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 28364,
+      "conservative_total_bytes": 68814,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "434f7e4ebf6cb2bcbffee3ae4105ebbe8e4475ad9ed9adc5880662cdb13850a0",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe018/seat-1/state/preflight.json",
+    "seat": 1,
+    "target": "probe018"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 28364,
+      "conservative_total_bytes": 68814,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "76b39196003d5742e421755b24035aca5be63ee34123f0457d4910b707967c98",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe018/seat-2/state/preflight.json",
+    "seat": 2,
+    "target": "probe018"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 28364,
+      "conservative_total_bytes": 68814,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "7c9ede8e5cd76a5bb6557d3c141e389cef6d374239655ef06530d635ef358efc",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe018/seat-3/state/preflight.json",
+    "seat": 3,
+    "target": "probe018"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 27591,
+      "conservative_total_bytes": 68041,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "93cd0781d06a137a86b44741abf7a25bff837e61ea3e695f7d7e0504c94bda29",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe008/seat-1/state/preflight.json",
+    "seat": 1,
+    "target": "probe008"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 27591,
+      "conservative_total_bytes": 68041,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "04dad641a2cc279b36b1856073338745d838e84dca1b748c59a86c8ed497ad7a",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe008/seat-2/state/preflight.json",
+    "seat": 2,
+    "target": "probe008"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 27591,
+      "conservative_total_bytes": 68041,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "60351c992b14d85aab5fd474e8921d1dc79947320ef6b2afe0f37d120d22e5c3",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe008/seat-3/state/preflight.json",
+    "seat": 3,
+    "target": "probe008"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 24217,
+      "conservative_total_bytes": 64667,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "83fcf84a60ab6c7c647faa91d7a0175b2a6593527fa681e925071741e5d4941c",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe025/seat-1/state/preflight.json",
+    "seat": 1,
+    "target": "probe025"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 24217,
+      "conservative_total_bytes": 64667,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "a8a5e2fd1c2173065320682df1c48a560df92d2aa8c198e8e8ab2b4e6107ca97",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe025/seat-2/state/preflight.json",
+    "seat": 2,
+    "target": "probe025"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 24217,
+      "conservative_total_bytes": 64667,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "00969bec969ce0ca932246068249c265d10a793d0b0a570468ee693f838b881d",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe025/seat-3/state/preflight.json",
+    "seat": 3,
+    "target": "probe025"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 23282,
+      "conservative_total_bytes": 63732,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "352ae1e53b34821878e5201d5fb677c19edc0db14ad23a20e47781a2696cc9b5",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe026/seat-1/state/preflight.json",
+    "seat": 1,
+    "target": "probe026"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 23282,
+      "conservative_total_bytes": 63732,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "7128d1b726786bbe60383b044abec79b33da1e8b87e17317c674b4b49bd0058d",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe026/seat-2/state/preflight.json",
+    "seat": 2,
+    "target": "probe026"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 23282,
+      "conservative_total_bytes": 63732,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "d0fbee5e58d23b0dc89e56d64c602fe4283df4b4c2cd248bded85ade026ed357",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe026/seat-3/state/preflight.json",
+    "seat": 3,
+    "target": "probe026"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 23676,
+      "conservative_total_bytes": 64126,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "2e855cb1e2e8252e958f4060cb73aad35efb234772154e912eae77733f91b545",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe027/seat-1/state/preflight.json",
+    "seat": 1,
+    "target": "probe027"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 23676,
+      "conservative_total_bytes": 64126,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "f44199faf29907ce96369c4d3d0a540b4e9bc8c0b49dc6259f279962504023d7",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe027/seat-2/state/preflight.json",
+    "seat": 2,
+    "target": "probe027"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 23676,
+      "conservative_total_bytes": 64126,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "939ccf6475726d75826189f1e5603600860cfad5f806d4c219918f0c14894085",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe027/seat-3/state/preflight.json",
+    "seat": 3,
+    "target": "probe027"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 24034,
+      "conservative_total_bytes": 64484,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "1acd77f08ce35ec9196ec7502caa6ae83c53c6c564c107cdce930a4070181859",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe028/seat-1/state/preflight.json",
+    "seat": 1,
+    "target": "probe028"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 24034,
+      "conservative_total_bytes": 64484,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "1092d6788161999bb10643ed77c3975dcc38a3732d8c99113c44b8ea9c2b09af",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe028/seat-2/state/preflight.json",
+    "seat": 2,
+    "target": "probe028"
+  },
+  {
+    "exec_budget": {
+      "aggregate_cap_bytes": 1048576,
+      "argv_bytes": 24034,
+      "conservative_total_bytes": 64484,
+      "environment_bytes": 6898,
+      "environment_delta_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "pointer_bytes": 784,
+      "rendered_argv_sha256": "db833610224feacec8b06bceb928a6e744d06b3f68b004fd5d97179bece62dd8",
+      "reserve_bytes": 32768,
+      "schema_version": "portable-stage-exec-budget-v2",
+      "single_string_cap_bytes": null,
+      "system_arg_max_bytes": 1048576
+    },
+    "preflight_path": "/private/tmp/judge-revision/calibration/preflight/B/probe028/seat-3/state/preflight.json",
+    "seat": 3,
+    "target": "probe028"
+  }
+]

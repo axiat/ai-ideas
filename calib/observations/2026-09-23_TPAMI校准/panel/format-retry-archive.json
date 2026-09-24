@@ -1,0 +1,42 @@
+{
+  "aggregate_sha256": "530a94bdf225612516a9f4b584c06b60f620ec4b5efb49248f21da1ed4e82fc3",
+  "archive_script_sha256": "44440631f2f27e165ea8fbeb380a65e4445ccfc8b5715da4080fbf898e51bfb9",
+  "archive_time_global_cli_identity": {
+    "config_path": "/Users/qinningxu/.codex/config.toml",
+    "config_sha256": "b86031af1810e370c19bf9cf7aacb9d2681892f9aebefa5a91c5aed877aface1",
+    "configured_model": "gpt-6-astra",
+    "configured_reasoning": "high",
+    "executable_path": "/opt/homebrew/Caskroom/codex/0.155.1/bin/codex",
+    "executable_sha256": "8eaf1ad12fe6bf89b1710330f58900014322c7c5af677e43be116d8ac5fc0a9e"
+  },
+  "completion_id": "1fab666d9ebb40e0396ecc51eb3eba8d406b560f62e764526a3ed3f39a098de8",
+  "explicit_cli_model": "gpt-6-astra",
+  "explicit_cli_reasoning": "xhigh",
+  "global_config_mtime_utc": "2026-09-22T17:25:45.765071+00:00",
+  "interpretation": "The post-call failure was the full global configuration hash check. This call explicitly bound model and reasoning in unchanged CLI arguments; changing global defaults does not override those command-line values. No model call or global configuration change was performed during archival.",
+  "original_eight_ballots_unchanged": true,
+  "original_failure_receipt_preserved": true,
+  "original_failure_receipt_sha256": "b34bfedc9c5df5fa2efd7c31befa30413607e4df569576de87fad79aa0b95198",
+  "provider_calls": 0,
+  "retry_response_sha256": "31692ccf8d18b2b149a5c8cf98f27fd219f019608e5b782ac422d6e9dc46a95a",
+  "retry_start_global_cli_identity": {
+    "config_path": "/Users/qinningxu/.codex/config.toml",
+    "config_sha256": "cdc68e08342fb0677332864127c3410e794a2d4ef53b7002fc2cfca11195d407",
+    "configured_model": "gpt-6-astra",
+    "configured_reasoning": "high",
+    "executable_path": "/opt/homebrew/Caskroom/codex/0.155.1/bin/codex",
+    "executable_sha256": "8eaf1ad12fe6bf89b1710330f58900014322c7c5af677e43be116d8ac5fc0a9e"
+  },
+  "status": "offline-verified-archived-and-aggregated",
+  "validated": [
+    "CLI binary",
+    "both wrappers",
+    "repository sources",
+    "frozen inputs",
+    "role and augmented prompt",
+    "reconstructed provider request and response attestation",
+    "canonical preflight and completion ID",
+    "raw response and all host projections",
+    "original invalid response and eight existing ballots"
+  ]
+}

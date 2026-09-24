@@ -1,0 +1,68 @@
+{
+  "status": "verified",
+  "valid_ballots": 9,
+  "results": [
+    {
+      "case": "probe01-I1",
+      "votes": [
+        "accept-w-rev",
+        "accept-w-rev",
+        "accept-w-rev"
+      ],
+      "major": [
+        1,
+        2,
+        1
+      ],
+      "critical": [
+        0,
+        0,
+        0
+      ],
+      "result": "accept-w-rev"
+    },
+    {
+      "case": "probe02-I1",
+      "votes": [
+        "accept-w-rev",
+        "accept-w-rev",
+        "accept-w-rev"
+      ],
+      "major": [
+        1,
+        1,
+        1
+      ],
+      "critical": [
+        0,
+        0,
+        0
+      ],
+      "result": "accept-w-rev"
+    },
+    {
+      "case": "probe03-I1",
+      "votes": [
+        "accept-w-rev",
+        "accept-w-rev",
+        "accept-w-rev"
+      ],
+      "major": [
+        1,
+        1,
+        1
+      ],
+      "critical": [
+        0,
+        0,
+        0
+      ],
+      "result": "accept-w-rev"
+    }
+  ],
+  "frozen_inputs_unchanged": true,
+  "review_sources_unchanged": true,
+  "original_eight_ballots_unchanged": true,
+  "ledger_unchanged": true,
+  "aggregate_sha256": "530a94bdf225612516a9f4b584c06b60f620ec4b5efb49248f21da1ed4e82fc3"
+}

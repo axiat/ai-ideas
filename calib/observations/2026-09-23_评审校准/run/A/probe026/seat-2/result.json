@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790141549.1444821,
+  "projection": "I1\taccept-w-rev\t1\tAccept with revision because the supplied coverage, E1/E2 limitations, E5 witness, and E6 deployment constraint justify the proposed interaction conditionally. The single MAJOR attribution defect has a concrete repair within the stated experiment. Strong Accept is unsupported until the experimental design isolates the memory effect; the absence of completed experiments is not an additional defect (prior_work.md:E1–E6; candidate.json; review_contract.md).\n",
+  "review_sha256": "b3d8bdfe91d058582fd932a5ed6195ee31318709f74e1552d29a203cbdf6ea11",
+  "status": "valid",
+  "verdict_sha256": "99fa850a74f2519931a03de11bc3eaf379e74fd95ba22ed909e365d206efa4cc"
+}

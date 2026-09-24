@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790141953.0841742,
+  "projection": "I1\taccept-w-rev\t1\tAccept with revision because E1/E2 leave the E5 interaction unoccupied and E6 supplies a concrete deployment constraint, while the sole MAJOR action-budget confound requires a bounded repair before the experiment satisfies the attribution requirement for Strong Accept (prior_work.md E1–E6; candidate.json; review_contract.md).\n",
+  "review_sha256": "07fca49f6c43c7bacc5b783974cb3a3e6b532d8ff792eab7d768a7c503ac6bf8",
+  "status": "valid",
+  "verdict_sha256": "2687a303c9416f2e09255fa92159b8edc73f04d4611200704282e0bdb0595cbc"
+}

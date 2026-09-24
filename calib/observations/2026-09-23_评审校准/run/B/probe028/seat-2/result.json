@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790142279.0506399,
+  "projection": "I1\tstrong-accept\t0\tStrong Accept is supported by prior_work.md's complete scoped coverage, E1/E2's replicated anomaly, E3/E5's unresolved explanatory competition, and the E6-supported discriminating experiment in candidate.json, which together justify a substantial new explanation within the stated first-paper resources under review_contract.md.\n",
+  "review_sha256": "458e66355062831424dd0f4c2ae666176a2c3143ca3a9bc778c6684bb3c16d83",
+  "status": "valid",
+  "verdict_sha256": "c4a1683f2dab23753f93662ef0f38aa4b62adf1b0a31af475a9ed4d5b1598d71"
+}

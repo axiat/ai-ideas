@@ -1,0 +1,12 @@
+# I3
+Verdict: reject
+CRITICAL: 0
+MAJOR: 1
+Headline: Visibility-conditioned memory of unsuccessful searches is already established, and the proposed encoding difference does not independently support acceptance (prior_work.md; candidate.json).
+Occupation: MAJOR 1 — prior_work.md reports that Nie et al. 2016, §IV-B, excludes hypothetical objects from locations that previous observations could have seen, while Wong et al. 2013, §III, persistently distinguishes observed and unobserved container regions. These directly occupy the proposed problem and its action consequences. The attributable difference is explicit visibility-tagged negative records evaluated under a fixed token budget (candidate.json).
+Experiment: candidate.json specifies 2,000 simulated episodes, validation-best object-belief and recurrent baselines at equal tokens and training, 200 paired episodes per visibility regime, matched locations and camera trajectories, and explicit permutation-sensitivity and nonpositive-gain kill conditions. This is a bounded comparison in outline. Baseline implementations must preserve visibility information to isolate the encoding difference; tag permutation alone tests dependence on information already used by the methods documented in prior_work.md.
+Estimand: Objects recovered within 30 actions measures the downstream search utility claimed in candidate.json. The paired improvement over a visibility-aware comparator is the relevant estimand; permutation sensitivity alone does not establish that improvement (candidate.json; prior_work.md, GenMOS and Bejjani entries).
+Payoff: The expected ≥10-point improvement is a prediction in candidate.json. prior_work.md already documents coverage-aware container search and retrieval, so a new payoff would require better use of limited memory relative to those approaches. candidate.json supplies no specific causal argument explaining why its record format should achieve that advantage over matched-resource visibility-aware beliefs or recurrent memory.
+Feasibility: The 2,000-episode, one-A100-day experiment in candidate.json is plausibly feasible for a small team as a bounded simulation study. Model sizes and baseline implementation costs are unspecified, so the stated compute budget remains an estimate.
+History: unavailable.
+Reason: Reject under review_contract.md's occupation gate: prior_work.md directly occupies the central problem and explanatory proposition, while candidate.json's remaining encoding and evaluation differences lack an independently supported clear-accept contribution.

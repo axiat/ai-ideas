@@ -1,0 +1,7 @@
+{
+  "completed_at_unix": 1790142274.293259,
+  "projection": "I1\tstrong-accept\t0\tStrong accept because E1/E2 supply a strong aligned prior, E3/E5 define competing explanations, and candidate.json specifies a bounded E4-based experiment with E6-supported attribution controls and explicit falsification conditions, leaving a substantial causal contribution after occupied results are excluded under review_contract.md.\n",
+  "review_sha256": "89c99cde44d14354fd43e2b1d524dbb301710e8d0062a7d0fe8436ec6b6dca39",
+  "status": "valid",
+  "verdict_sha256": "5074ec6655db41afba7d9660da0fd6ae6dc87999876fb2513fa7473653daf903"
+}

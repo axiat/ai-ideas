@@ -1,0 +1,15 @@
+{
+  "captured_at": "2026-09-23T04:12:33.003934+00:00",
+  "files": {
+    "history/review-contract-v1.md": "f1d6645dda2f0ebefc6ae1551a0fda6fe858f7f17aadbd1e9dd6c757f64a5ffb",
+    "roles/review.md": "7521b1dfbbb3fb5ad349e5e276395d0c949013f4273e32f6eb7ee9b746800a62",
+    "history/provider-adapters-v1.json": "dcd5021256e04a2d300f934c6621cb57b417ef329303108775bfe11ad5b61712",
+    "rubric.md": "0e0d99436f269d2822b5af34128992365afa60b593d15253df99c343287818c5",
+    "brainstorming_policy.md": "458e91ebfc85b6f26db495d5311eed97d38eb62b35c64fce6f9e13c3ffdf47eb",
+    "lib/portable_stage.py": "68ca91c0f0d117fde254ea0fc1e034cafb56694dda01d5feae5cccca0c394529",
+    "lib/portable_agent.py": "c2ef2a7a06e0c535a8f1084823952158b89c78652a8b0c52f57dc9fae07d1ec4",
+    "lib/provider_adapters.py": "af6ed88eea1a0ce9439a47302e4b1fb14d052c3a87d2f7a8ee6bd53b1446b9ed",
+    "lib/stage_contract.py": "f582eba69ca50b0ed1a2ed3508084bdf2d09c2d6331e1b8d9a9b112abd90c004"
+  },
+  "unrun_experiments_clause": true
+}

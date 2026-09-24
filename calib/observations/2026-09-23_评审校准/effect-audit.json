@@ -1,0 +1,386 @@
+{
+  "A/probe005/seat-1": {
+    "status": "valid",
+    "review_sha256": "ff8f1c4a09765df6c36c636ffeda0ce9bc0ad848dcbb44e628ea1830bfac1b95",
+    "scientific_audit": "Reject 0C1M。近邻已覆盖历史依赖恢复，配对选择协议仍有差异，但未支持独立收益。对照已被承认；未因 unrun 扣级。",
+    "clear_rule_violation": false
+  },
+  "A/probe005/seat-2": {
+    "status": "valid",
+    "review_sha256": "1ad4a0f982d52d0a7a8858729bce6ba44b202180879e9b76ca673c21264d5ab4",
+    "scientific_audit": "Reject 0C1M。保留选择准则差异，但有界实验不自行建立贡献；shuffle 对标签破坏的顾虑未额外计 MAJOR。",
+    "clear_rule_violation": false
+  },
+  "A/probe005/seat-3": {
+    "status": "valid",
+    "review_sha256": "2eef765589c3818b2d48766c2fa721d14e60b74a8664571ebb995bb79990954a",
+    "scientific_audit": "Reject 0C1M。剩余选择准则缺少相对 history-aware recovery 的价值依据；配对与运行时间细节未膨胀计数。",
+    "clear_rule_violation": false
+  },
+  "B/probe005/seat-1": {
+    "status": "valid",
+    "review_sha256": "cdce0dfe96c54b9e6fdae503c89f984fc59757accc2c1c0e7fed907f3c9760da",
+    "scientific_audit": "Reject 0C1M。not-covered 引文支持窄配对差异；value-insufficient 引文支持独立收益不足，未将实验预测当证据。",
+    "clear_rule_violation": false
+  },
+  "B/probe005/seat-2": {
+    "status": "valid",
+    "review_sha256": "93228d956ffdf14145a0607e914a006e50c682a2614d86c0d30e4cf45e3f0327",
+    "scientific_audit": "Reject 0C1M。准确区分未覆盖选择准则与尚不充分的正面价值；Assessment 与正文一致。",
+    "clear_rule_violation": false
+  },
+  "A/probe017/seat-1": {
+    "status": "valid",
+    "review_sha256": "2e71a1a828f29ce814373cfbd8443957b048cf1752a05d5bebf5a9ae420aee43",
+    "scientific_audit": "AwR 0C1M。保留固定动作诊断价值；有限修订为同能力、同预算重建基线，约束有依据。",
+    "clear_rule_violation": false
+  },
+  "A/probe017/seat-2": {
+    "status": "valid",
+    "review_sha256": "5d7284e8627fcfd97750db29dadcdc399537ca082079f4bf46d1842fd27444cd",
+    "scientific_audit": "AwR 0C1M。CoVe/MemER 提供动机；修订重建基线，保持独立验证/历史检索能力。",
+    "clear_rule_violation": false
+  },
+  "A/probe017/seat-3": {
+    "status": "valid",
+    "review_sha256": "ce256ed70430c5e891c1d50b9876deb7ba44972a130b9caef1d72ecfae621b85",
+    "scientific_audit": "AwR 0C1M。原生 policy proposal 与补充人工动作混合使主总体不清；按来源分层是有限修订。",
+    "clear_rule_violation": false
+  },
+  "B/probe017/seat-1": {
+    "status": "valid",
+    "review_sha256": "f4b7c40edba3145feb89a81ccfe594ef4da2af753f76f2196a5b198b5bfbefe2",
+    "scientific_audit": "Reject 0C1M。not-covered 支持固定动作协议差异；CoVe 已有机制后，场景诊断及来源约束修复价值不足是合理强度判断。",
+    "clear_rule_violation": false
+  },
+  "B/probe017/seat-2": {
+    "status": "valid",
+    "review_sha256": "f6bf1a30117bc10d0031902c482caed6851253c1ed855c05215754a0440484c5",
+    "scientific_audit": "AwR 0C0M。保留 modest 固定动作诊断价值；value-insufficient 仅阻止 SA。按来源明确对比/权重、分离补充动作、实例化能力匹配重建基线是有限修订，与 A 的 MAJOR 严重性分歧可解释。",
+    "clear_rule_violation": false
+  },
+  "B/probe017/seat-3": {
+    "status": "valid",
+    "review_sha256": "4288d889a9a15d8f1416f5fac78a2a364173da63bb76d1f97baaa11ab29cd0d1",
+    "scientific_audit": "Reject 0C1M。保留实验归因用途但剩余知识与修复优势不足；未要求一律 repair，未罚 unrun。",
+    "clear_rule_violation": false
+  },
+  "A/probe009/seat-1": {
+    "status": "valid",
+    "review_sha256": "d265fda0a8c438983e2c4733a3e08b578c69b60ef2c8b28314273964161bd062",
+    "scientific_audit": "Reject 0C1M。Nie/Wong/GenMOS 同任务直接覆盖；encoding 未给出独立价值；已有对照/可执行性被承认。",
+    "clear_rule_violation": false
+  },
+  "A/probe009/seat-2": {
+    "status": "valid",
+    "review_sha256": "15d890fa2c3e04c1c9be6ca4c7f8cd1407a85c0d0f9fe5d540ceec5ba5f71355",
+    "scientific_audit": "Reject 0C1M。直接占用与剩余 encoding 收益不足为同一贡献缺口；要求基线保留 visibility 能力正确。",
+    "clear_rule_violation": false
+  },
+  "A/probe009/seat-3": {
+    "status": "valid",
+    "review_sha256": "6eab3c32aff582b4e1de5b6f2a06ca32871a7b661e252cbd28c12bb704ecaaab",
+    "scientific_audit": "Reject 0C1M。已有覆盖条件负证据及行动用途；tag permutation 不能证明优于同能力表示。",
+    "clear_rule_violation": false
+  },
+  "B/probe009/seat-1": {
+    "status": "valid",
+    "review_sha256": "9b2d1d73f7ccc31a9b4f2271b152cdaf55d1386d271814db29afa7fe6e95a361",
+    "scientific_audit": "Reject 0C1M。covered 源码引文含 Nie URL 并直接支持同任务占用；contribution-covered 与剩余价值合为一项贡献缺口合理。",
+    "clear_rule_violation": false
+  },
+  "B/probe009/seat-2": {
+    "status": "valid",
+    "review_sha256": "0cb9c4009335f023fba3a505e4f54665bc3a452d27e7b662e6a67501a15879eb",
+    "scientific_audit": "Reject 0C1M。covered + contribution-covered/value-insufficient 两个原因代码对应一个贡献缺陷，未机械增加 MAJOR；引文支持。",
+    "clear_rule_violation": false
+  },
+  "B/probe009/seat-3": {
+    "status": "valid",
+    "review_sha256": "a809cccb6212d36dcc89fe67dd743daba827034fdb758f5a236efaae31ff0a8b",
+    "scientific_audit": "Reject 0C1M。covered 引文明确对应 claimed new problem 及 coverage-conditioned memory；可行性未被当作正面价值。",
+    "clear_rule_violation": false
+  },
+  "A/probe021/seat-2": {
+    "status": "valid",
+    "review_sha256": "1fca6248ca790f37f8fe2869de1f9258b54551d9e00d4e58c94538f3693cd115",
+    "scientific_audit": "Reject 0C1M。正确承认 research 新增两个 supports；CRAM/D-POMDP 已移除核心前提，特殊 SA 通道不成立但按普通标准评审。其余归因/预算方案承认，无 unrun 惩罚。",
+    "clear_rule_violation": false
+  },
+  "B/probe005/seat-3": {
+    "status": "invalid",
+    "scientific_audit": "无有效模型票，排除科学 verdict 分母；格式计数由 calibration 负责。"
+  },
+  "B/probe021/seat-1": {
+    "status": "valid",
+    "review_sha256": "5779856f1437ebfcadfc97b8b6d01aaaa993c4fadaca220fee62e17ab4a6a80e",
+    "scientific_audit": "Reject 0C1M。not-covered 针对中断前缀/未决分布的具体组合与控制实验，引用支持该窄范围差异，并未据此宣称新机制价值；既有 CRAM/D-POMDP/DEM 覆盖一般机制后，未定义实质适配与收益依据使 value-insufficient 成立。正确区分新增 supports 和特殊 SA 通道失效，未罚 unrun。",
+    "clear_rule_violation": false
+  },
+  "B/probe021/seat-2": {
+    "status": "valid",
+    "review_sha256": "15bf83c5981f6cfdf555a44e3db71bfedfe479b3eac36ab070feb5dbb8473632",
+    "scientific_audit": "Reject 0C1M。准确承认具体组合未完全覆盖、两项研究 supports、可执行控制实验；独立价值不足有材料支持。Assessment not-covered 引文是窄实验差异，未升级成新机制价值。",
+    "clear_rule_violation": false
+  },
+  "B/probe021/seat-3": {
+    "status": "valid",
+    "review_sha256": "c50639ab4f69a362da3983fff9e4ecade0cf575cf35ef42f2670dae973d66e8e",
+    "scientific_audit": "Reject 0C2M。M1 剩余表示无独立价值依据；M2 机制归因缺少保留 delayed belief 能力的同信息可训练比较或表示消融。候选将 waiting/point/distribution 同时改变，现有 Bayes 仅上界；M2 有事实依据。补 M2 不自动提供 M1 所需价值论证，未发现机械合并或重复计数。原因引文准确支持具体主张/现有对照/替代机制。",
+    "clear_rule_violation": false
+  },
+  "A/probe021/seat-1": {
+    "status": "valid",
+    "review_sha256": "ae032918a636e6ba815a7a8f23ec9e8c07966a5d4231b89cd2b2881821ea6d2e",
+    "scientific_audit": "Reject 0C1M。准确承认完整实验组合未见、核心前提已被移除及两个 supports；普通标准下未说明新增表示操作及独立价值。对照、估计量、资源无独立问题，未罚 unrun。",
+    "clear_rule_violation": false
+  },
+  "A/probe021/seat-3": {
+    "status": "valid",
+    "review_sha256": "047d2b7f2966f7a1fd7744d9438b2c92f4fcdbd835f5f2c53f145c37e8ae006a",
+    "scientific_audit": "Reject 0C1M。核心已有覆盖、未定义剩余表示操作及缺少 prefix-vs-belief 消融被表述为一个差异贡献缺口。与 B3 将价值和归因分别计 2M 存在严重性划分差异；当前拒绝结论合理，没有因两个问题同属一篇实验而武断合并。supports 与 partial 事实正确。",
+    "clear_rule_violation": false
+  },
+  "A/probe018/seat-1": {
+    "status": "valid",
+    "review_sha256": "d1a4279689ba1b5b9672b61b270239c1164df719f4dd13c9b327515e672e0127",
+    "scientific_audit": "Reject 0C1M。识别差之差可由错误记忆臂改善产生，建议用 blank 分解正确。唯一 MAJOR 主要称普通微调是否获得相同反事实历史未明确，但候选已经明示三者共享额外 3000 条样本和更新预算，这一部分批评依据不足；配对训练额外操作未定义仍可质疑。不能据局部误读直接宣称总 Reject 错误。",
+    "clear_rule_violation": false,
+    "scientific_issues": [
+      "材料解读问题：将明示的共享样本弱读为数据是否共享未知，影响唯一 MAJOR 的部分论据。"
+    ]
+  },
+  "A/probe018/seat-3": {
+    "status": "valid",
+    "review_sha256": "f00f0832e92b69b27a8a360ca12a021bc7c4a38ac12384eeef4eb63c1987c0c7",
+    "scientific_audit": "Reject 0C1M。重采样同时改变各位置技能训练量，控制总数及测试观察不能单独隔离参数先验机制；要求可见目标能力对照有依据。支持窄交互 estimand 而限制机制解释，未误强加因果。",
+    "clear_rule_violation": false,
+    "scientific_issues": []
+  },
+  "B/probe018/seat-2": {
+    "status": "valid",
+    "review_sha256": "9790ebe08be4ace626b0e869b9665f889b4af2b757ae721c83d5b4cb8b2bb70d",
+    "scientific_audit": "Reject 0C2M。M1 频率改变技能曝光，机制归因未识别；M2 新曲线和既有反事实修复的独立价值依据不足。补能力控制不自动提供新贡献价值，二者可独立。not-covered 和两项 cause 引文准确；未因无实验/无维修自动降级。",
+    "clear_rule_violation": false,
+    "scientific_issues": []
+  },
+  "A/probe018/seat-2": {
+    "status": "valid",
+    "review_sha256": "6cf3284d548f9def39cd0333f6f8b5bab4768e07dd18f179eb461ef5a2827e41",
+    "scientific_audit": "AwR 0C1M。正确用 C−W=(C−B)+(B−W) 揭示主估计量不足以证明准确记忆受抑制；已有 blank 臂可作有限分解，保留机器人交互/等预算修复的 modest 价值。未声称新通用机制或 SA。未另识别位置技能曝光混杂，所以有限修订能够支持窄交互描述，不能单凭 blank 分解完成全部参数先验机制识别。",
+    "clear_rule_violation": false
+  },
+  "B/probe018/seat-3": {
+    "status": "valid",
+    "review_sha256": "cf10007fd3aff8887e7cc242a4ddb911709e42458332192dc5807ef396fa4cfe",
+    "scientific_audit": "AwR 0C1M。not-covered 支持频率×记忆具体研究；M1 位置技能混杂。明确有限修订：分层读出/可见目标执行对照，或收缩为可识别的行为交互；把反事实训练定位为既有机制迁移；修正采样及效应符号。保留 modest 诊断价值有 MemER/RoboMME 动机，value-insufficient 仅阻止 SA，与 1M 并不矛盾。Assessment 引文支持，未以可修复自动取得 AwR。",
+    "clear_rule_violation": false
+  },
+  "A/probe008/seat-2": {
+    "status": "valid",
+    "review_sha256": "b05c58cd057c71c03ce823b7bb57b057ad7840a4bc1c73295530aa30e5cdc7ac",
+    "scientific_audit": "Reject 0C1M。保留物理 revisit-cost 转移差异，但缺少 MemER 类最接近 learned writer 比较，无法评估剩余价值。明确未知同设置排名并非缺陷，要求能力匹配或有依据排除；承认 route-cost shuffle、估计量和预算，未因 unrun 扣级。",
+    "clear_rule_violation": false
+  },
+  "B/probe018/seat-1": {
+    "status": "valid",
+    "review_sha256": "948603f4d9658037d4fe4ddc74734e98d39720a6cecd39414f80f36fa55e1202",
+    "scientific_audit": "Reject 0C1M。承认行为交互可测及共享样本，不把总效应当参数机制识别。窄频率曲线与既有反事实修复缺少独立价值为唯一 MAJOR。not-covered 及 value-insufficient 引文支持事实；未由 high overlap 自动覆盖全部贡献。",
+    "clear_rule_violation": false
+  },
+  "B/probe008/seat-2": {
+    "status": "valid",
+    "review_sha256": "9823ce80aea1bbd9da7fa6dfd0f29e96180bc0d13bc803a708bd14c9e9839d5b",
+    "scientific_audit": "Reject 0C1M。not-covered 仅保留 writer/route 窄差异；缺少忠实 cost-aware 及 learned writer 比较为一项 baseline MAJOR，两个遗漏同属比较覆盖缺口。正文另指出剩余价值不足，但无自动两原因两 MAJOR 规则。增加比较不自动建立正面价值。Assessment 支持两原因，未罚 unrun。",
+    "clear_rule_violation": false
+  },
+  "B/probe008/seat-3": {
+    "status": "valid",
+    "review_sha256": "5fb650d99c18d78f48c49d47f815af18be545093d2d5acb4e7ab9626afcfbe0d",
+    "scientific_audit": "Reject 0C2M。成本敏感强比较缺失与剩余价值支持不足分别计数，修复比较仍需独立价值论证，分立合理。准确承认 shuffle/route interaction 能检查信号但不能区分已知成本策略。not-covered 与 cause 引文支持，预测不作证据。",
+    "clear_rule_violation": false
+  },
+  "A/probe008/seat-3": {
+    "status": "valid",
+    "review_sha256": "b90d5312c4d5853b1f9e547ec82f5b1728f44c8096f9708991508d35e472c4bd",
+    "scientific_audit": "Reject 0C2M。M1 未给出实质转移机制，M2 缺少近邻 learned writer 强比较。准确区分 exact-setting 文献未见与机制创新，且明确 MemER 未知同指标最强仍应合理比较。有限实验、human motivation 和 unrun 均未被误处理。",
+    "clear_rule_violation": false
+  },
+  "B/probe008/seat-1": {
+    "status": "valid",
+    "review_sha256": "02586687a68fc4bf85cff64d0c704a42917b7fd3e821912b94ff8b1c3fc332f4",
+    "scientific_audit": "Reject 0C2M。剩余 transfer 无实质适配/独立知识论证与缺少 cost-aware/learned 比较相互独立；not-covered 源码引文仅支持窄路线实验未见。cause 引文准确，已承认预测与 shuffle，不将未运行或高重合单独作拒因。",
+    "clear_rule_violation": false
+  },
+  "A/probe025/seat-3": {
+    "status": "valid",
+    "review_sha256": "99587f55aef5fadc0dae4caa7bfac5e650b78a9c1ca5588a9836e5e247d4d10b",
+    "scientific_audit": "SA 0C0M。接受条件研究机会，E5 说明联合表征问题、E6 约束和具体证伪方案；明确有限枚举非一般证明、修复与收益仍未验证，并要求 pending-outcome 位数纳入存储。算法尚未具体可执行是一项可争议遗漏，但未把待证结论当事实。此票也表明 A 已有 unrun 修正。",
+    "clear_rule_violation": false
+  },
+  "B/probe025/seat-2": {
+    "status": "valid",
+    "review_sha256": "29f178e80a78cc9c8573cda66095fa68da540f1406c8162e57f6275da8aa686d",
+    "scientific_audit": "SA 0C0M。not-covered E1/E2/E5 引文支持联合机制研究机会；无 causes 与正面判断一致。明确算法正确性/增益未建立，枚举不能替代一般证明。SA 是 proposal 前景判断，未因未实验降级；尚无合并算法仍可构成合理降级意见，不能将该 SA 当已证明可行或真值。",
+    "clear_rule_violation": false
+  },
+  "A/probe008/seat-1": {
+    "status": "valid",
+    "review_sha256": "61ddc2f26bf6022f5ccdd142c7026131075239fda10636086ffe26e89651d447",
+    "scientific_audit": "Reject 0C2M。未定义相对成本保留机制的实质适配，以及缺少 cost-aware/learned writer 能力匹配比较，独立有据。承认人类记忆动机、route interaction、shuffle 和明确终止条件；未捏造 MemER 同指标排名。",
+    "clear_rule_violation": false
+  },
+  "A/probe025/seat-2": {
+    "status": "valid",
+    "review_sha256": "5c793120871e079cb04e4aa6267ab010f1b16cc8d5ef0eb3e43a9411f43237ec",
+    "scientific_audit": "SA 0C0M。E5 分析见证和 E6 强制限制支持联合保留/压缩的研究机会，明确 proposed rule 正确性/实证优势未成立，枚举仅可证伪。算法缺少具体合并规则仍属可争议充分性判断，未把预测当结果。",
+    "clear_rule_violation": false
+  },
+  "B/probe025/seat-3": {
+    "status": "valid",
+    "review_sha256": "a71bb3d8546c673f467de15761dab66307f70d2c7337fd42686776b6c1f1b111",
+    "scientific_audit": "SA 0C0M。明确 E5 已占用 aliasing 现象，剩余是未被记录覆盖的联合 frontier 研究机会；指出 O(wlogn) 仅 event IDs，实际字节需包含 outcome storage；一般证明和经验增益仍是义务。not-covered 引文准确支持 E1/E2 缺项，空 causes 合理。",
+    "clear_rule_violation": false
+  },
+  "A/probe025/seat-1": {
+    "status": "valid",
+    "review_sha256": "225d3bcbd6d34e1fabdf3725a428f4acfad43a9a56989e17afd8eef06f732dc9",
+    "scientific_audit": "SA 0C0M。完整条件 universe、E5 联合依赖见证和 E6 约束支持前景；明确一般证明/未运行仍为研究义务，事件 ID 存储以实际 bytes 进一步检查，未把预期当实测。算法可执行细节的充分性仍可合理争议。",
+    "clear_rule_violation": false
+  },
+  "A/probe026/seat-2": {
+    "status": "valid",
+    "review_sha256": "b3d8bdfe91d058582fd932a5ed6195ee31318709f74e1552d29a203cbdf6ea11",
+    "scientific_audit": "AwR 0C1M。准确指出 32 对 24 控制动作使 memory effect 混入资源效应，matched completion 无法消除；建议统一24动作，是有限修订。E5/E6 支持联合表示研究机会，明确不证明 proposed frontier 正确或5点收益。未进一步质疑机制未定义，AwR 可解释为 idea-stage 前景判断，不能作为固定标签真值。",
+    "clear_rule_violation": false
+  },
+  "B/probe026/seat-3": {
+    "status": "valid",
+    "review_sha256": "543e13209eeabf91446a8ee3276e9c5f30724288916ebe1558494545e0d07818",
+    "scientific_audit": "AwR 0C1M。准确识别 action-budget 混杂，统一24控制动作/保留消融与配对阈值是有限修订，matched completion 不解除混杂。not-covered 引文说明 E1/E2 缺联合机制；design-invalid 原文直接支持原因。保留价值基于 E5/E6 研究问题而非数值预测，明确算法/一般保证尚未成立；算法缺具体规则仍是输入限制。",
+    "clear_rule_violation": false
+  },
+  "A/probe026/seat-3": {
+    "status": "valid",
+    "review_sha256": "069bd5168812a67c36aec35c2af0b50ba1dfc2f65f7569597700792714483e20",
+    "scientific_audit": "AwR 0C1M。单一动作预算差异及其归因后果只计一次；统一训练/选择/测试/消融上限为24，是有限修订。E5 明确只证明简单表示丢失区分，不证明新frontier保留/预算内实现；保留研究前景判断。",
+    "clear_rule_violation": false
+  },
+  "B/probe026/seat-2": {
+    "status": "valid",
+    "review_sha256": "ff6136e046f279110b8c5535522a83f575e292bc788f8002086e56ca0e331d93",
+    "scientific_audit": "AwR 0C1M。not-covered 引文支持 E1/E2 未提供联合机制，design-invalid 引文直接显示32/24混杂。完成条件具体含共同动作预算、保留强基线能力与消融、无 false-safe 枚举、无一般证明则仅声明枚举域保证；实验尚未完成不另计缺陷。未证明算法可行的输入限制仍保留。",
+    "clear_rule_violation": false
+  },
+  "B/probe025/seat-1": {
+    "status": "valid",
+    "review_sha256": "e335a1f13e64da6d91e544f6f730cdc7d26a153a999b40ff9afabf01d69c1b9d",
+    "scientific_audit": "AwR 0C1M。pending outcomes/correlations 的完整存储未由 event IDs 的 O(wlogn) 界支持，E1 限同步、E2 随未决历史增长，引文准确。要求完整状态记账与明确假设、保留 E5 区分并允许有依据收缩存储界，是具体科学缺口，非 unrun 惩罚。E5/E6 保留问题价值，修订能否有限完成仍以未定义算法的输入限制为条件。",
+    "clear_rule_violation": false
+  },
+  "A/probe027/seat-3": {
+    "status": "valid",
+    "review_sha256": "09efe2e0fc28dab90d380d7b2272470eeccb3ab49500aa3954a450321227c041",
+    "scientific_audit": "AwR 0C0M。明确描述性主张不需内部因果解释或 repair；指出 literal identical actions 不区分方法、需policy自身动作，要求内外层权重与目标对齐的 nonidentifiability 论证、修正 E5/E6 和补 E3。保留语义诊断价值，未将 E6 可能性当实证。0M 体现将设计语义作澄清而不是确认失效的严重性选择。",
+    "clear_rule_violation": false
+  },
+  "B/probe027/seat-2": {
+    "status": "valid",
+    "review_sha256": "32e5bca71803a303cedb51ace399f2c4107dc0eb557cf629d296df2d8bf88a5a",
+    "scientific_audit": "AwR 0C1M。literal identical actions/trajectories 无法产生policy ranking是有据设计缺陷，有限修复为同prefix、各policy自身动作与rollout。明确无需causal/repair，要求内外权重、terminal error vs task success、E3对照与标签审计。not-covered/E4 与 cause 引文支持。未直接指出 E6 类间与定义类内不一致，但未把E6当特定指标实证，目标仍须明确。",
+    "clear_rule_violation": false
+  },
+  "A/probe026/seat-1": {
+    "status": "valid",
+    "review_sha256": "07fca49f6c43c7bacc5b783974cb3a3e6b532d8ff792eab7d768a7c503ac6bf8",
+    "scientific_audit": "AwR 0C1M。准确识别 action allowance 引起 memory-only attribution 混杂，统一24动作修订有限；E5 仅证明旧表示缺口，所提正确性和收益未证明。没有额外未运行缺陷。",
+    "clear_rule_violation": false
+  },
+  "B/probe026/seat-1": {
+    "status": "valid",
+    "review_sha256": "622822f583750892d0ef40399186fed7f6b84f9fae8c5853b4fd634df8507d59",
+    "scientific_audit": "AwR 0C1M。not-covered 与 design-invalid 引文支持 E1/E2 未给联合frontier和32/24动作混杂。要求共同动作cap、能力匹配E3/E4与消融、有限域枚举和配对验证；明确 E5 只支持问题/适配动机。未自动把可修复当AwR，保留价值另有 E5/E6 条件依据。",
+    "clear_rule_violation": false
+  },
+  "A/probe027/seat-1": {
+    "status": "valid",
+    "review_sha256": "36202e75ba64b8cbcd589225f16ace83df6c6cb3932d05a4708728da8b74e635",
+    "scientific_audit": "AwR 0C1M。E3 是切片评估不是policy，候选未安排输出其metrics，baseline MAJOR 有据。明确描述性无需因果/repair，并要求连接 E6 类间与定义类内权重、纠正引用及policy独立动作。保留语义诊断value有 E5 支持。",
+    "clear_rule_violation": false
+  },
+  "A/probe027/seat-2": {
+    "status": "valid",
+    "review_sha256": "8e3ea8e7b75841e8147e1bbd7d4d34fa3da29832422ce42391df12dfa8f6219b",
+    "scientific_audit": "AwR 0C1M。准确将 within-alias 与 across-alias 的目标量错位列为 MAJOR；E6 不能证明候选当前estimand。给出外层权重/额外论证有限修订，并要求 E3 比较；不强求causal或repair，语义评估研究可保留。",
+    "clear_rule_violation": false
+  },
+  "B/probe027/seat-3": {
+    "status": "valid",
+    "review_sha256": "4c7ba47a12990120d4d270737cca6377136ca9bb2ee5a3328986e4fd18b1955a",
+    "scientific_audit": "AwR 0C1M。E3切片比较遗漏为MAJOR；另具体要求内外层公式及匹配nonidentifiability论证、纠正E5/E6、policy自有terminal decision、限定实际排名纠正需数据。not-covered/causes 引文支持；evidence-insufficient 合理指新增诊断价值缺少强切片比较支撑。value-insufficient仅挡SA，未混淆AwR。",
+    "clear_rule_violation": false
+  },
+  "A/probe028/seat-2": {
+    "status": "valid",
+    "review_sha256": "3d1881b501e992ce8bc4f62fdd464dc7b060050313ea5609d08a1496037903df",
+    "scientific_audit": "SA 0C0M。允许无repair解释研究，独立价值为区分机制并测试inspection路径，未把旧异常或generic理论当新发现。明确E1/E2位置混杂总效应不保证controlled interaction幅度、null不证明E3。未讨论identity干预对其他表征的影响及confidence中介识别条件，SA属于对前景/识别充分性的较宽松判断。 另有明确kill逻辑遗漏：交互缺失仍兼容忽略identity的double-counting，A1已识别；本票对实验决定性的肯定过强。",
+    "clear_rule_violation": false,
+    "scientific_issues": [
+      "识别限制未充分处理：身份标签交互未必唯一指向内部独立计数，随机inspection只直接识别inspection作用。",
+      "具体遗漏：候选以count×identity交互缺失否定整个double-counting解释，但忽略identity tags且独立计算每个copy可无该交互。该kill规则不覆盖完整机制；本票认可其决定性而未处理此反例。"
+    ]
+  },
+  "B/probe028/seat-3": {
+    "status": "valid",
+    "review_sha256": "cd8827a8cc9b39970e0b18df90735bb26697d42cd2249c2f640e2e8276389fe7",
+    "scientific_audit": "SA 0C0M。not-covered 引文准确说明旧异常/通用机制之外的待检验解释；无repair不是降级原因。E6仅支持干预操作能力，票中直接称identity区别evidence interpretation、inspection测试整条中介路径，未处理标签改变其他表征及confidence中介所需假设，也未说明总效应8–12点不能移作机制效应先验。仍是prospective研究判断，非已证明新机制声明。 另有明确kill逻辑遗漏：交互缺失仍兼容忽略identity的double-counting，A1已识别；本票对实验决定性的肯定过强。",
+    "clear_rule_violation": false,
+    "scientific_issues": [
+      "SA对识别充分性较宽松：未处理身份标签交互解释非唯一及confidence中介识别条件。",
+      "具体遗漏：候选以count×identity交互缺失否定整个double-counting解释，但忽略identity tags且独立计算每个copy可无该交互。该kill规则不覆盖完整机制；本票认可其决定性而未处理此反例。"
+    ]
+  },
+  "B/probe027/seat-1": {
+    "status": "valid",
+    "review_sha256": "840b722c5b82469e9dcca149256f16d138529bbcf682233f19f8febdf9a8f823",
+    "scientific_audit": "AwR 0C0M。准确识别 E6 类间重加权与候选类内定义需映射；要求外层权重、policy独立输出、E3强切片比较、修正引用。保留E5支持的 modest目标价值，无需causal或repair。Assessment not-covered/value-insufficient 引文支持，后者只挡SA；0M是将操作缺项作修订澄清的severity选择。",
+    "clear_rule_violation": false,
+    "scientific_issues": []
+  },
+  "A/probe028/seat-3": {
+    "status": "valid",
+    "review_sha256": "89c99cde44d14354fd43e2b1d524dbb301710e8d0062a7d0fe8436ec6b6dca39",
+    "scientific_audit": "SA 0C0M。只把新解释/decision attribution算贡献，明确旧异常generic理论占用，允许无repair。指出机制效应未测、episode数不保证precision、null不证明E3。仍未处理identity标签其他表征解释和confidence中介所需条件；属于两臂共通识别充分性保留。 另有明确kill逻辑遗漏：交互缺失仍兼容忽略identity的double-counting，A1已识别；本票对实验决定性的肯定过强。",
+    "clear_rule_violation": false,
+    "scientific_issues": [
+      "未讨论身份标签交互的机制非唯一性与confidence中介识别条件。",
+      "具体遗漏：候选以count×identity交互缺失否定整个double-counting解释，但忽略identity tags且独立计算每个copy可无该交互。该kill规则不覆盖完整机制；本票认可其决定性而未处理此反例。"
+    ]
+  },
+  "B/probe028/seat-2": {
+    "status": "valid",
+    "review_sha256": "458e66355062831424dd0f4c2ae666176a2c3143ca3a9bc778c6684bb3c16d83",
+    "scientific_audit": "SA 0C0M。not-covered引用支持待研究特定机制/中介，明确旧异常与通用机制不是新贡献；认可无repair。明确E1/E2不证明matched-position效应/precision，避免总效应直接作特定机制证据。随机inspection能够检验下游作用，但票未讨论confidence到inspection的中介假设或标签其他表征路径。 另有明确kill逻辑遗漏：交互缺失仍兼容忽略identity的double-counting，A1已识别；本票对实验决定性的肯定过强。",
+    "clear_rule_violation": false,
+    "scientific_issues": [
+      "未充分处理身份标签交互的机制非唯一性与confidence中介识别条件。",
+      "具体遗漏：候选以count×identity交互缺失否定整个double-counting解释，但忽略identity tags且独立计算每个copy可无该交互。该kill规则不覆盖完整机制；本票认可其决定性而未处理此反例。"
+    ]
+  },
+  "B/probe028/seat-1": {
+    "status": "valid",
+    "review_sha256": "b2288fc6406e0cdb46455b1ab2c3fef8e96eeba7420e29b5fa2476a4927dc0df",
+    "scientific_audit": "SA 0C0M。解释为source-dependence行为机制与inspection下游作用，比宣称直接证明内部计数更克制；明确null不唯一证明E3、8–12点不能证明controlled interaction幅度。not-covered引用支持未解解释问题，无repair不影响正面值。较强内部独立计数/confidence中介解释仍需额外识别条件，原票未展开。 另有明确kill逻辑遗漏：交互缺失仍兼容忽略identity的double-counting，A1已识别；本票对实验决定性的肯定过强。",
+    "clear_rule_violation": false,
+    "scientific_issues": [
+      "强内部机制解释的识别充分性仍未解决；行为效应与下游inspection作用不自动唯一识别内部计数。",
+      "具体遗漏：候选以count×identity交互缺失否定整个double-counting解释，但忽略identity tags且独立计算每个copy可无该交互。该kill规则不覆盖完整机制；本票认可其决定性而未处理此反例。"
+    ]
+  },
+  "A/probe028/seat-1": {
+    "status": "valid",
+    "review_sha256": "7c6fad27a8d26a666b259fe650c8df1c326a8e0fce817012cd1ca373a7e56404",
+    "scientific_audit": "AwR 0C1M。准确指出 absent count×identity interaction 不能排除忽略identity标签、对每个copy独立计数的机制；该交互只测标签敏感性，kill全文机制过强。要求先给忽略标签计数、标签敏感计数及position三种预测，是有限修订；保留无repair解释价值、明确总效应非controlled效应。",
+    "clear_rule_violation": false
+  }
+}

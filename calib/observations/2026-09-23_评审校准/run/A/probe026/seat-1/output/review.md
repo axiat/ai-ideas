@@ -1,0 +1,12 @@
+# I1
+Verdict: accept-w-rev
+CRITICAL: 0
+MAJOR: 1
+Headline: E5 supports the proposed interaction, but unequal action budgets prevent attributing the planned comparison to memory (prior_work.md E5; candidate.json).
+Occupation: Within prior_work.md’s fully examined six-record universe, E1 covers completed-action quotients while excluding pending execution, and E2 handles delayed outcomes without dependency merging; neither supplies the proposed bounded continuation-preserving frontier. E5 establishes the relevant aliasing witness, not correctness of the proposed mechanism.
+Experiment: candidate.json specifies exhaustive prefix checks on six small graphs, 8,000 training trajectories, 1,200 paired episodes on 30 unseen graphs, three seeds, mandatory E3/E4 baselines, references and separate component ablations. Its false-safe counterexample kill and upper-95%-interval-below-5-percentage-points kill are discriminating once action budgets match; E6 supports exact enumeration and replay.
+Estimand: The single MAJOR finding is attribution: candidate.json targets memory-induced unsafe-continuation reduction at matched completion, but compares 32 method actions against 24 baseline actions. This contrast changes both memory and action allowance. Require 24 actions for every budgeted method while retaining identical observations, feedback and token budgets before applying the empirical kill condition.
+Payoff: E5 provides a causal rationale for jointly retaining pending outcomes and dependencies because its aliased prefixes require different safe continuations; E6 supplies the 128-token deployment constraint. A bounded frontier that preserves those distinctions would provide a new capability relative to E1/E2, but neither correctness nor the candidate.json target of a five-percentage-point gain has been demonstrated.
+Feasibility: candidate.json specifies a bounded first-paper plan using two researchers, two A100 GPUs and 48 GPU-hours; these are proposed resources, not measured runtime. Equalizing action allowances uses the existing E6 simulator and the same experimental setup.
+History: unavailable.
+Reason: Accept with revision because E1/E2 leave the E5 interaction unoccupied and E6 supplies a concrete deployment constraint, while the sole MAJOR action-budget confound requires a bounded repair before the experiment satisfies the attribution requirement for Strong Accept (prior_work.md E1–E6; candidate.json; review_contract.md).

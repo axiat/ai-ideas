@@ -1,0 +1,28 @@
+{
+  "provider_calls": 0,
+  "frozen_sha256": {
+    "frozen/probe005/candidate.json": "87d6d1fd4f0d88379f0953004c9a88e5862e06ec12848ba7106fa0ea7aed67fe",
+    "frozen/probe005/prior_work.md": "65d39065efb2c97c066b8a66acd22e365cdbbd6e19d0994f45d8f6ea878e6fa3",
+    "frozen/probe017/candidate.json": "913a79fc06d8c17811ef2a7f76e2d7a21cd766009a25bbcb2fe1836625bc293e",
+    "frozen/probe017/prior_work.md": "86347d90053570beccd4e47821b8e222ae5e19164463782f5296ba9523413c1b",
+    "frozen/probe009/candidate.json": "f94bbfd0370d9e76583ecaff14d2819d6b5e751f5ca41f96f01d1a96b89883cc",
+    "frozen/probe009/prior_work.md": "b038f5f70ae4a908391a27c43be91ac1e9b38a7bba066e225fd07e54881d4c3d",
+    "frozen/probe021/candidate.json": "5fd86e4959473142bbc3bd2e0057cbc82f4c07a0a97aa4d0de8bff08e902dc88",
+    "frozen/probe021/prior_work.md": "567da81e9e0cbb97aaa1b385770f3292ef72bb7d2e7212978eece07c1a30b6b4",
+    "frozen/probe018/candidate.json": "ab1a638eb58db52f90c6a8fefbb2590d313ffb332e9d65c4e1b62f21933cc969",
+    "frozen/probe018/prior_work.md": "e85c53368679bf5c9c5a221c36c969f57b5db2646f16ae85d2ecf9067abc5a69",
+    "frozen/probe008/candidate.json": "c5f081e48179fcc0f389a170f181b2b24640aab1030519b3dc33f0853d93e9d2",
+    "frozen/probe008/prior_work.md": "8393acadf3f7b819f33d45db2115b9d81d98bc8b03066f96690beac0247b52f4",
+    "frozen/probe025/candidate.json": "ebdb9ea7fa4e00f0bd213962e62ee76344e4eabc23a3aa930e8bc851450902bf",
+    "frozen/probe025/prior_work.md": "826b94e599d3500e24b0e657478e5ffa5678b0f9a63535fc21b9fc5754d3666c",
+    "frozen/probe026/candidate.json": "a76ce36012b65baaaca901b036640c64bc887fb3b4c7b7835fd46dbd94b240db",
+    "frozen/probe026/prior_work.md": "470a00db68d151a409c05a6f76bdc87339de2563f549b75866cbd47f22820111",
+    "frozen/probe027/candidate.json": "1426063cefcd6c30ffde9e5cf2ff068c8269841dcbc0ee27df82fd2aea3bc312",
+    "frozen/probe027/prior_work.md": "3a41f399527f468db7226bc626b06e4805949bc30df0fd06e5701c98b340913a",
+    "frozen/probe028/candidate.json": "86289bac5f1ca9d5df6a5b257d830ccbceebc01bd53965874bddaa8e2d40edbd",
+    "frozen/probe028/prior_work.md": "c037033e9fdbcac1f726848b44297df392d261eccd25bfd9f84021b364546eaf",
+    "expectations.json": "478fa05ce1ac92179bff1d162cbd485959ca42c283de39e6d5666f1bd1f8949a",
+    "synthetic-expectations.json": "e1866da174ff6963239b11af3609a58dbe39a6448f1da65f5d69a549a87b3f23",
+    "serialized_prompt.txt": "624bb436591bb0de28acfb7ecb79dbc1fc169246cfec4a1c884824caac68af2c"
+  }
+}

@@ -1,0 +1,44 @@
+Traceback (most recent call last):
+  File "/private/tmp/judge-revision/calibration/runtime-B/lib/stage_contract.py", line 450, in build_review_verdict_from_markdown
+    review_assessment.parse(
+  File "/private/tmp/judge-revision/calibration/runtime-B/lib/review_assessment.py", line 84, in parse
+    value = _json(raw)
+            ^^^^^^^^^^
+  File "/private/tmp/judge-revision/calibration/runtime-B/lib/review_assessment.py", line 30, in _json
+    return json.loads(raw, object_pairs_hook=_closed_object,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/__init__.py", line 359, in loads
+    return cls(**kw).decode(s)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.16/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/decoder.py", line 353, in raw_decode
+    obj, end = self.scan_once(s, idx)
+               ^^^^^^^^^^^^^^^^^^^^^^
+json.decoder.JSONDecodeError: Expecting ',' delimiter: line 1 column 1031 (char 1030)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/private/tmp/judge-revision/calibration/runtime-B/lib/portable_stage.py", line 1498, in _project_outputs
+    verdict = stage_contract.build_review_verdict_from_markdown(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/private/tmp/judge-revision/calibration/runtime-B/lib/stage_contract.py", line 455, in build_review_verdict_from_markdown
+    raise StageError(str(exc)) from exc
+lib.stage_contract.StageError: Expecting ',' delimiter: line 1 column 1031 (char 1030)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/tmp/judge-revision/calibration/runner.py", line 327, in <module>
+    if args.command=='worker':worker(*args.args)
+                              ^^^^^^^^^^^^^^^^^^
+  File "/tmp/judge-revision/calibration/runner.py", line 212, in worker
+    portable_stage.run_stage(prepared,timeout_seconds=1800)
+  File "/private/tmp/judge-revision/calibration/runtime-B/lib/portable_stage.py", line 1663, in run_stage
+    outputs = _project_outputs(prepared, attempt["raw"], input_raws)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/private/tmp/judge-revision/calibration/runtime-B/lib/portable_stage.py", line 1506, in _project_outputs
+    raise PortableStageError("invalid_review_output") from exc
+lib.portable_stage.PortableStageError: invalid_review_output

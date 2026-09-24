@@ -1,0 +1,19 @@
+{
+  "previous_config_sha256": "83b2f125907a701bf8176712a685999f0a6799afa2d85b59c0f54f959dd0b704",
+  "current_config_sha256": "73b07e71d46c841862f1e0c5109fc73d546398fbff7c99430ba5c21cebb3bf4c",
+  "exact_reconstruction_proven": true,
+  "changed_keys": [
+    "projects./private/tmp/judge-revision/calibration/run/A/probe005/seat-3/state/attempt-90d9rfc9/mirror.trust_level",
+    "projects./private/tmp/judge-revision/calibration/run/A/probe005/seat-1/state/attempt-7mszn5gr/mirror.trust_level",
+    "projects./private/tmp/judge-revision/calibration/run/B/probe005/seat-2/state/attempt-9pk8n98j/mirror.trust_level"
+  ],
+  "changed_values": "trusted",
+  "other_config_bytes_unchanged": true,
+  "explicit_model": "gpt-6-astra",
+  "explicit_reasoning": "xhigh",
+  "default_reasoning": "high",
+  "provider_route_and_auth_route_unchanged": true,
+  "provider_calls_completed": 3,
+  "provider_calls_repeated": 0,
+  "temporary_raw_config_removed_after_exact_hash_proof": true
+}
