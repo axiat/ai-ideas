@@ -2,9 +2,8 @@
 
 ## Filesystem
 
-`hunt.sh` owns the repository host process. The v1 contained runtime
-(`HISTORY_RUNTIME_ABI=v1`) was removed; portable-v2 is the only runtime and
-setting `HISTORY_RUNTIME_ABI=v2` is equivalent to leaving it unset.
+`hunt.sh` owns the repository host process. Hunt and AwR use a single
+portable runtime.
 
 Each internal stage runs as a normal same-user
 host process in a disposable portable mirror. The mounted surface contains one

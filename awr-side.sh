@@ -20,9 +20,7 @@
 # Usage:
 #   caffeinate -is ./awr-side.sh
 #
-# Portable-v2 is the only runtime and uses portable provider IDs. Codex is the
-# default. `HISTORY_RUNTIME_ABI=v2` is accepted for compatibility and is
-# equivalent to unset; v1 fails.
+# The portable runtime uses registered provider IDs. Codex is the default.
 # Omitted reasoning preserves the selected CLI's current default.
 # Codex, Kimi, and Grok model omission preserves the selected CLI default.
 # OpenCode model omission uses a safe host configuration probe and pins the
@@ -34,8 +32,8 @@
 #   AWR_JUDGE_PROVIDER / MODEL / REASONING_EFFORT
 #
 # Examples:
-#   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode ./awr-side.sh
-#   HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high \
+#   AWR_PROVIDER=opencode ./awr-side.sh
+#   AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high \
 #     AWR_REASONING_EFFORT=high ./awr-side.sh
 #
 # Every backend receives the same artifact validation, random launch throttle,
@@ -126,21 +124,6 @@ awr_runtime_preflight() {
   local base_provider base_model base_reasoning provider_changed
   local provider_name model_name reasoning_name
   local -a successful_providers successful_models successful_reasonings
-  if runtime_variable_is_set HISTORY_RUNTIME_ABI; then
-    case "$HISTORY_RUNTIME_ABI" in
-      v1)
-        printf 'awr-side: HISTORY_RUNTIME_ABI=v1 was removed; portable-v2 is the only runtime\n' >&2
-        return 2
-        ;;
-      v2) ;;
-      *)
-        printf 'awr-side: HISTORY_RUNTIME_ABI must be v2 when set: %s\n' \
-          "$HISTORY_RUNTIME_ABI" >&2
-        return 2
-        ;;
-    esac
-  fi
-
   for name in \
     SIDE_CMD SIDE_RESEARCH_CMD SIDE_PRIORWORK_CMD SIDE_JUDGE_CMD \
     SIDE_GAP_SEC AGY_MODEL AGY_PRINT_TIMEOUT

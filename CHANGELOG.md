@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 2026-09-26 Harness: runtime selector removed
+
+- Hunt and AwR now launch directly into the sole portable runtime; startup commands no longer need a runtime-version selector. Provider, model, and reasoning settings remain unchanged, including the documented all-Grok Hunt recipe.
+- Serialized runtime, schema, and receipt identities retain their existing values.
+
 ## 2026-09-23 Review: distinguish candidate value, defects and occupation
 
 - The single active `history/review-contract.md` defines evidence-backed SA, bounded-revision AwR, and current-version Reject. Unrun experiments alone do not lower the grade. Scientific evidence and validation match the contribution type; known mechanisms, diagnostic contributions and new comparison protocols are evaluated through their supported residual value. Policy, rubric, research, selector, main reviewer, AwR reviewer and scheduled-entry summaries use the same criteria.

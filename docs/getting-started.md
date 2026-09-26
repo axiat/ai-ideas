@@ -4,9 +4,9 @@
 
 - Bash with arrays, process substitution, `PIPESTATUS`, and indirect variable expansion
 - Git with a writable checkout and a configured `origin`
-- An authenticated Codex CLI for the default Hunt v2 path
+- An authenticated Codex CLI for the default Hunt path
 - For Kimi, Grok, or Claude internal stages: that authenticated CLI plus either authenticated Codex for external stages or explicit compatible `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD`; with `HUNT_PROVIDER=kimi` and no Codex on `PATH`, external stages fall back to the kimi CLI
-- An authenticated supported CLI for AwR v2; AwR accepts Codex, Kimi, Grok, OpenCode, agy, and Claude
+- An authenticated supported CLI for AwR; AwR accepts Codex, Kimi, Grok, OpenCode, agy, and Claude
 - AwR with agy requires Agy 1.1.8+ and an explicit catalog model; Claude uses grammar `claude-portable-v2`; [docs/backends.md](backends.md) defines both structured-JSON transports
 - Network access for model search, repository publication, and settlement fetches
 - `gh auth status` passing for pull-request creation
@@ -30,7 +30,7 @@ On first start without a durable bootstrap marker, `hunt.sh` imports the working
 ```bash
 git clone git@github.com:axiat/ai-ideas.git
 cd ai-ideas
-HISTORY_RUNTIME_ABI=v2 ./hunt.sh
+./hunt.sh
 ```
 
 `./hunt.sh` immediately starts model and retrieval work. It has no dry-run mode. Canonical decisions commit to SQLite and project to `ledger.tsv`. A successful Strong Accept path also creates `ideas/YYYY-MM-DD_hunt*.md`, invokes `publish.sh`, pushes `hunt/YYYY-MM-DD`, and creates or repairs its pull request.
@@ -63,8 +63,8 @@ REVIEWERS=5 ./hunt.sh
 SA_TARGET=3 ./hunt.sh
 ./hunt.sh 30
 HISTORY_NEAR_SA=tmp/near-sa-queue.tsv ./hunt.sh
-HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=kimi ./hunt.sh
-HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=claude HUNT_MODEL=sonnet ./hunt.sh
+HUNT_PROVIDER=kimi ./hunt.sh
+HUNT_PROVIDER=claude HUNT_MODEL=sonnet ./hunt.sh
 ```
 
 The positional argument changes the failure cooldown in minutes. `SA_TARGET=0` removes the daily target and leaves termination to the operator. `HISTORY_NEAR_SA` participates only in a first-time bootstrap epoch; a missing, unsafe, or semantically mismatched queue fails closed before agents start.
@@ -72,7 +72,6 @@ The positional argument changes the failure cooldown in minutes. `SA_TARGET=0` r
 ## Directed Run
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 RESEARCH_DIRECTION_FILE='directions/dynamic-spatial-memory-vla-v1.json' \
   caffeinate -is ./hunt.sh
 ```
@@ -137,7 +136,7 @@ python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 export-tsv tmp/ledger.
 python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 rebuild-projections
 ```
 
-`shadow` is the shipped mode: generation uses the bounded brief, history retrieval archives evidence, and external research/review remain the sole authority for ledger verdicts. In v2, the fresh audit plan records `producer_unavailable` while real provider capacity remains unbudgetable; it creates no hard L2 task or production no-match authority. `enforcement` requires a matching sealed production calibration capability and trust root; synthetic fixtures never enable it. `complete_no_match` is a scoped internal result, not academic novelty.
+`shadow` is the shipped mode: generation uses the bounded brief, history retrieval archives evidence, and external research/review remain the sole authority for ledger verdicts. The fresh audit plan records `producer_unavailable` while real provider capacity remains unbudgetable; it creates no hard L2 task or production no-match authority. `enforcement` requires a matching sealed production calibration capability and trust root; synthetic fixtures never enable it. `complete_no_match` is a scoped internal result, not academic novelty.
 
 ## Result Locations
 
@@ -161,7 +160,7 @@ python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 rebuild-projections
 An ordinary interruption is restartable:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 ./hunt.sh
+./hunt.sh
 ```
 
 A sealed `tmp/round/history/resume-state.json` resumes once when `RESUME_FRONT=1`. Resume mints a new run ID, seals a resume-attempt receipt, and reuses only matching policy, watermark, pack, comparator, adapter, and preflight identities. Review ballots and aggregate verdicts are always fresh. Set `RESUME_FRONT=0` to force a full front stage. A stale `tmp/hunt.lock` is removed automatically only when its recorded process is absent.

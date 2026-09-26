@@ -32,6 +32,8 @@ class PortableAgentError(RuntimeError):
 
 
 ENVIRONMENT_POLICY = "provider-config-preserving-scrub-v1"
+# This declaration is sealed into archived preflights. Retain legacy names
+# even when they no longer select runtime behavior.
 SCRUBBED_ENVIRONMENT = (
     "PWD",
     "OLDPWD",

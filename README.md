@@ -23,8 +23,8 @@ The main loop writes live state under `tmp/round/`, canonical history to `.ai-id
 
 ## Quick Start
 
-The default v2 path requires Bash, Git, an authenticated Codex CLI, network
-access, and an authenticated `gh` session for publication. Hunt v2 supports
+The default run requires Bash, Git, an authenticated Codex CLI, network
+access, and an authenticated `gh` session for publication. Hunt supports
 Codex, Kimi, Grok, and Claude for its internal stages. Selecting a non-Codex
 internal provider does not change the Codex default used by selector,
 prescreen, external research, and report stages; a host without Codex must
@@ -36,7 +36,7 @@ unauthenticated, set `AGENT_CMD` explicitly instead.
 ```bash
 git clone git@github.com:axiat/ai-ideas.git
 cd ai-ideas
-HISTORY_RUNTIME_ABI=v2 ./hunt.sh
+./hunt.sh
 ```
 
 For an explicit model selection, the [full Codex example](docs/backends.md#hunt)
@@ -48,7 +48,6 @@ to directed runs and project mode.
 ## Directed Run
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 RESEARCH_DIRECTION_FILE='directions/dynamic-spatial-memory-vla-v1.json' \
   caffeinate -is ./hunt.sh
 ```
@@ -69,6 +68,21 @@ HUNT_PROJECT=mytopic ./hunt.sh
 ```
 
 Run `project-add` from the checkout root. It requires an absolute, non-symlink directory outside the checkout and validates `direction.json` at registration. `HUNT_PROJECT_DIR=/abs/path` runs an unregistered directory directly.
+
+For a registered project, run all Hunt stages with Grok from the checkout root:
+
+```bash
+HUNT_PROJECT=mytopic \
+HUNT_PROVIDER=grok \
+AGENT_CMD='./grok-worker.sh' \
+RESUME_FRONT=0 \
+caffeinate -is ./hunt.sh
+```
+
+`RESUME_FRONT=0` starts a fresh front stage while preserving history. On macOS,
+`caffeinate -is` keeps the machine awake during the run; on other systems, use
+`./hunt.sh` directly. The model and reasoning effort use the Grok CLI defaults.
+Per-stage and reviewer overrides take precedence as described below.
 
 A project-mode run stages the direction by copy, prints `mode=project <name> <dir>` at startup, and commits to the master ledger exactly as a default hunt, recording the project name in each new row's provenance. After every round it exports into `<project>/harvest/`:
 
@@ -121,32 +135,24 @@ AwR with agy requires Agy 1.1.8+ and an explicit catalog model. Claude and Agy
 use structured JSON transports; the contracts are in
 [docs/backends.md](docs/backends.md).
 
-```bash
-HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=kimi ./hunt.sh
-HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=grok ./hunt.sh
-HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=claude ./hunt.sh
-HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=opencode AWR_MODEL=openai/gpt-6-astra AWR_REASONING_EFFORT=high SIDE_POLL_SEC=0 ./awr-side.sh
-HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high SIDE_POLL_SEC=0 ./awr-side.sh
-HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=claude AWR_MODEL=sonnet SIDE_POLL_SEC=0 ./awr-side.sh
-```
-
 `HUNT_PROVIDER` controls the portable internal stages. Route Hunt's external
 selector, prescreen, prior-work research, and report stages through an explicit
-worker with `AGENT_CMD`. Omitting both model variables and both reasoning
-variables keeps the selected CLI's current defaults:
+worker with `AGENT_CMD`. Both settings are needed to use Grok throughout;
+`HUNT_PROVIDER=grok` alone leaves external stages on the Codex default.
+`FRONT_CMD`, `BACK_CMD`, and numbered reviewer overrides take precedence when
+set. The following examples assume those overrides are unset. Omitting both
+model variables and both reasoning variables keeps the selected CLI's current
+defaults:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=kimi \
 AGENT_CMD='kimi --output-format text -p' \
 ./hunt.sh
 
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
 AGENT_CMD='./grok-worker.sh' \
 ./hunt.sh
 
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=claude \
 AGENT_CMD='./claude-worker.sh' \
 ./hunt.sh
@@ -156,7 +162,6 @@ Pin the same explicit model and reasoning effort on both paths when a fixed
 run configuration is required:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
 HUNT_MODEL=grok-4.7 \
 HUNT_REASONING_EFFORT=high \
@@ -165,7 +170,6 @@ GROK_MODEL=grok-4.7 \
 GROK_REASONING_EFFORT=high \
 ./hunt.sh
 
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=claude \
 HUNT_MODEL=sonnet \
 HUNT_REASONING_EFFORT=high \
@@ -175,8 +179,16 @@ CLAUDE_REASONING_EFFORT=high \
 ./hunt.sh
 ```
 
+AwR provider examples:
+
+```bash
+AWR_PROVIDER=opencode AWR_MODEL=openai/gpt-6-astra AWR_REASONING_EFFORT=high SIDE_POLL_SEC=0 ./awr-side.sh
+AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high SIDE_POLL_SEC=0 ./awr-side.sh
+AWR_PROVIDER=claude AWR_MODEL=sonnet SIDE_POLL_SEC=0 ./awr-side.sh
+```
+
 Exact model/reasoning spelling for every provider, role-specific overrides,
-the external Hunt stage boundary, and the v1 removal are in
+the external Hunt stage boundary, and removed controls are in
 [`docs/backends.md`](docs/backends.md).
 
 ## Calibration
