@@ -3,7 +3,7 @@
 #
 # SQLite is the only history authority.  ledger.tsv and tmp/ledger.good are
 # replayable projections reconciled by the history runtime. Generation,
-# internal-history comparison, and every review seat use portable-v2.
+# internal-history comparison, and every review seat use the portable runtime.
 # Selector, prescreen, external prior-work research, report assembly, and
 # publication retain their existing process boundaries.
 #
@@ -11,17 +11,14 @@
 #   ./hunt.sh [failure retry delay in minutes; default: 150]
 #
 # Main controls:
-#   HISTORY_RUNTIME_ABI=v2
-#       Portable-v2 is the only runtime. Setting v2 is accepted for
-#       compatibility and equivalent to unset; v1 fails.
 #   HUNT_PROVIDER / HUNT_MODEL / HUNT_REASONING_EFFORT
-#       V2 base provider and optional exact overrides. Provider/model/reasoning
+#       Base provider and optional exact overrides. Provider/model/reasoning
 #       values omitted from the environment preserve the CLI's current defaults.
 #   HUNT_REVIEW_PROVIDER_<N> / MODEL_<N> / REASONING_EFFORT_<N>
-#       Optional v2 review-seat overrides.
+#       Optional review-seat overrides.
 #   AGENT_CMD / FRONT_CMD / BACK_CMD
 #       External command strings for selector, prescreen, research, and report.
-#       They are parsed as argv without eval or a shell and never enter v2
+#       They are parsed as argv without eval or a shell and never enter
 #       internal stages.
 #   HISTORY_CALIBRATION_CAPABILITY / HISTORY_PRODUCTION_TRUST_ROOT
 #       Production enforcement authority.  Shadow mode needs neither.
@@ -132,21 +129,6 @@ hunt_runtime_preflight() {
   local name index indices="" provider model reasoning diagnostic
   local base_provider base_model base_reasoning provider_changed reviewer_limit
   local provider_name model_name reasoning_name
-  if runtime_variable_is_set HISTORY_RUNTIME_ABI; then
-    case "$HISTORY_RUNTIME_ABI" in
-      v1)
-        printf 'hunt.sh: HISTORY_RUNTIME_ABI=v1 was removed; portable-v2 is the only runtime\n' >&2
-        return 2
-        ;;
-      v2) ;;
-      *)
-        printf 'hunt.sh: HISTORY_RUNTIME_ABI must be v2 when set: %s\n' \
-          "$HISTORY_RUNTIME_ABI" >&2
-        return 2
-        ;;
-    esac
-  fi
-
   if runtime_variable_is_set CONTAINED_AGENT_CMD_JSON; then
     printf 'hunt.sh: CONTAINED_AGENT_CMD_JSON was removed with the v1 runtime\n' >&2
     return 2
@@ -167,7 +149,7 @@ hunt_runtime_preflight() {
   reviewer_limit=${REVIEWERS:-3}
   case "$reviewer_limit" in
     ''|0|*[!0-9]*)
-      printf 'hunt.sh: REVIEWERS must be a positive integer for v2 preflight: %s\n' \
+      printf 'hunt.sh: REVIEWERS must be a positive integer: %s\n' \
         "$reviewer_limit" >&2
       return 2
       ;;

@@ -646,7 +646,6 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 "OLDPWD": str(ROOT.parent),
                 "GIT_DIR": str(ROOT / ".git"),
                 "GIT_WORK_TREE": str(ROOT),
-                "HISTORY_RUNTIME_ABI": "v1",
                 "HISTORY_DB": str(ROOT / ".ai-ideas/history.sqlite3"),
                 "AGENT_CMD": "legacy-global-agent",
                 "FRONT_CMD": "legacy-front-agent",
@@ -689,6 +688,33 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 str(ROOT / ".ai-ideas/history.sqlite3"),
             ):
                 self.assertNotIn(forbidden, preflight_text)
+
+    def test_historical_scrub_declaration_keeps_archived_receipts_valid(self):
+        # This serialized declaration is embedded in sealed preflight receipts.
+        historical_scrubbed = (
+            "PWD", "OLDPWD", "INIT_CWD", "GIT_*", "GIT_DIR", "GIT_WORK_TREE",
+            "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "HISTORY_*",
+            "HISTORY_RUNTIME_ABI", "HISTORY_DB", "HUNT_*", "AWR_*", "SIDE_*",
+            "SIDE_CMD", "CONTAINED_*", "CONTAINED_AGENT_CMD_JSON", "AGENT_CMD",
+            "FRONT_CMD", "BACK_CMD", "RESEARCH_DIRECTION_FILE", "ENV",
+            "BASH_ENV", "ZDOTDIR",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            with mock.patch.object(
+                portable_agent, "SCRUBBED_ENVIRONMENT", historical_scrubbed
+            ):
+                prepared, _, _ = self._prepare(root)
+                self._api(portable_stage, "run_stage")(
+                    prepared, timeout_seconds=2
+                )
+                descriptor = self._api(portable_stage, "public_descriptor")(
+                    prepared, root
+                )
+            self._api(portable_stage, "verify_completion")(prepared)
+            self._api(portable_stage, "verify_public_descriptor")(
+                descriptor, root
+            )
 
     def test_public_review_requires_current_protocol_before_provider_launch(self):
         for protocol in (None, b"{}\n", b'{"aggregation_version":1,"review_output_version":1}\n',

@@ -1,8 +1,7 @@
 # Backends
 
-Portable-v2 is the only runtime; `HISTORY_RUNTIME_ABI=v2` is accepted for
-compatibility and is equivalent to leaving it unset. Internal stages use
-registered provider IDs and portable mirrors. Omitted reasoning preserves the
+Hunt and AwR use a single portable runtime. Internal stages use registered
+provider IDs and portable mirrors. Omitted reasoning preserves the
 selected CLI's current configuration. Omitted models preserve the Codex, Kimi,
 Grok, and Claude defaults; OpenCode requires a safe host probe and is launched
 with the resolved model pinned; agy requires an explicit model. OpenCode and
@@ -15,7 +14,7 @@ Generation, history comparison, and review accept `codex`, `kimi`, `grok`, or
 effort:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 ./hunt.sh
+./hunt.sh
 ```
 
 The explicit Codex example uses `gpt-6-astra`, the model named in OpenAI's
@@ -25,7 +24,6 @@ long-horizon research; it is the starting point for these examples. See the
 [reasoning effort guidance](https://developers.openai.com/api/docs/guides/reasoning#reasoning-effort).
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=codex \
 HUNT_MODEL=gpt-6-astra \
 HUNT_REASONING_EFFORT=high \
@@ -48,18 +46,15 @@ are not guaranteed hard limits for Codex output or reasoning.
 Other provider override examples:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=kimi \
 HUNT_MODEL=kimi-code/k3 \
 ./hunt.sh
 
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
 HUNT_MODEL=grok-4.7 \
 HUNT_REASONING_EFFORT=high \
 ./hunt.sh
 
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=claude \
 HUNT_MODEL=sonnet \
 HUNT_REASONING_EFFORT=high \
@@ -80,7 +75,6 @@ overrides use `HUNT_REVIEW_PROVIDER_<N>`, `HUNT_REVIEW_MODEL_<N>`, and
 `HUNT_REVIEW_REASONING_EFFORT_<N>`:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=kimi \
 HUNT_REVIEW_PROVIDER_1=grok \
 HUNT_REVIEW_MODEL_1=grok-4.7 \
@@ -90,7 +84,7 @@ HUNT_REVIEW_REASONING_EFFORT_1=high \
 
 Selector, prescreen, external prior-work research, and report assembly retain
 the existing `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` process interface. These
-variables never enter v2 internal stages, and `HUNT_PROVIDER` does not change
+variables never enter internal stages, and `HUNT_PROVIDER` does not change
 their Codex default. A host without Codex must set `AGENT_CMD` or both
 `FRONT_CMD` and `BACK_CMD` to a prompt-taking command that satisfies the
 external stage's file contract; with `HUNT_PROVIDER=kimi` and no Codex
@@ -98,7 +92,6 @@ executable on `PATH`, Hunt defaults `AGENT_CMD` to the kimi CLI. A Kimi
 command shape is:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=kimi \
 AGENT_CMD='kimi --output-format text -p' \
 ./hunt.sh
@@ -118,7 +111,6 @@ sessions. With no model or reasoning override, both the portable Grok stages
 and external Grok stages preserve the CLI's current defaults:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
 AGENT_CMD='./grok-worker.sh' \
 ./hunt.sh
@@ -129,7 +121,6 @@ independent. Pin both paths explicitly when the complete Hunt run must use one
 model and reasoning effort:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=grok \
 HUNT_MODEL=grok-4.7 \
 HUNT_REASONING_EFFORT=high \
@@ -147,7 +138,6 @@ internal Claude stages use grammar `claude-portable-v2` directly. With no model
 or effort override, both paths preserve the Claude CLI's current defaults:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=claude \
 AGENT_CMD='./claude-worker.sh' \
 ./hunt.sh
@@ -156,7 +146,6 @@ AGENT_CMD='./claude-worker.sh' \
 Pin both paths when a fixed run configuration is required:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=claude \
 HUNT_MODEL=sonnet \
 HUNT_REASONING_EFFORT=high \
@@ -176,27 +165,24 @@ AwR adds `opencode`, `agy`, and `claude`. Codex with its current CLI
 configuration remains the default:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 SIDE_POLL_SEC=0 ./awr-side.sh
+SIDE_POLL_SEC=0 ./awr-side.sh
 ```
 
 Explicit OpenCode and agy grammar examples:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 AWR_PROVIDER=opencode \
 AWR_MODEL=openai/gpt-6-astra \
 AWR_REASONING_EFFORT=high \
 SIDE_POLL_SEC=0 \
 ./awr-side.sh
 
-HISTORY_RUNTIME_ABI=v2 \
 AWR_PROVIDER=agy \
 AWR_MODEL=gemini-3.6-flash-high \
 AWR_REASONING_EFFORT=high \
 SIDE_POLL_SEC=0 \
 ./awr-side.sh
 
-HISTORY_RUNTIME_ABI=v2 \
 AWR_PROVIDER=claude \
 AWR_MODEL=sonnet \
 AWR_REASONING_EFFORT=high \
@@ -314,7 +300,6 @@ has no text fallback and does not recover JSON from fences, mirror artifacts,
 or session state.
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 HUNT_PROVIDER=claude \
 HUNT_MODEL=sonnet \
 HUNT_REASONING_EFFORT=high \
@@ -330,7 +315,6 @@ Role-specific controls are `AWR_RESEARCH_*`, `AWR_PRIORWORK_*`, and
 `AWR_JUDGE_*`. For example:
 
 ```bash
-HISTORY_RUNTIME_ABI=v2 \
 AWR_PROVIDER=codex \
 AWR_PRIORWORK_PROVIDER=opencode \
 AWR_MODEL=gpt-6-astra \
@@ -349,8 +333,8 @@ preflight.
 
 ## Portable Boundary
 
-Each v2 attempt runs directly on the host in a disposable bounded mirror. The
-mirror contains one role plus declared inputs; it omits the full ledger,
+Each portable attempt runs directly on the host in a disposable bounded mirror.
+The mirror contains one role plus declared inputs; it omits the full ledger,
 SQLite database, Git metadata, unrelated round state, and `.claude`. The host
 sets a fixed request-byte ceiling, accepts one closed JSON envelope through the
 provider-specific structured transport, validates it, and publishes outputs
@@ -382,7 +366,7 @@ bare JSON still fails strict parsing. An additional delimiter, a different
 label or case, a missing close, or any trailing byte also rejects the response.
 No trimming, JSON-suffix search, normalization, or repair occurs.
 
-Every v2 portable request carries binding-covered `transport_instructions`
+Every portable request carries binding-covered `transport_instructions`
 and the full stage contract inline: `role_text`, `declared_input_texts`,
 `host_output_contract`, and `response_schema`. Disk copies of `role.md` and
 `input/*` remain byte-identical audit material; providers must not depend on
@@ -437,12 +421,12 @@ outside the mirror.
 Provider authentication and current CLI defaults remain available through the
 provider's normal host configuration.
 
-## V1 Removal
+## Removed Controls
 
-The v1 contained runtime was removed. `HISTORY_RUNTIME_ABI=v1` fails with a
-clear error; `v2` or an unset variable selects the only runtime. The v1
-controls `CONTAINED_AGENT_CMD_JSON`, `CONTAINED_REV_CMD_<N>_JSON`, and
-`SIDE_*` fail preflight before state mutation. Hunt continues to allow
+The removed contained-runtime controls `CONTAINED_AGENT_CMD_JSON` and
+`CONTAINED_REV_CMD_<N>_JSON`, along with AwR's legacy command controls
+`SIDE_CMD`, `SIDE_RESEARCH_CMD`, `SIDE_PRIORWORK_CMD`, and `SIDE_JUDGE_CMD`,
+fail preflight before state mutation. Hunt continues to allow
 `AGENT_CMD` / `FRONT_CMD` / `BACK_CMD` only for its four external stages.
 
 Operational AwR defaults remain `SIDE_POLL_SEC=9000`, `SIDE_MAX_BAD=3`,

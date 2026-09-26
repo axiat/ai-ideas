@@ -885,7 +885,6 @@ def main():
             "OLDPWD",
             "GIT_DIR",
             "GIT_WORK_TREE",
-            "HISTORY_RUNTIME_ABI",
             "HISTORY_DB",
             "RESEARCH_DIRECTION_FILE",
             "AGENT_CMD",

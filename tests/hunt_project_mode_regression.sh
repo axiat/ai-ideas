@@ -195,7 +195,6 @@ run_project_hunt() {
       "FAKE_PORTABLE_STAGE_LOG=$provider_log" \
       "HISTORY_AUDIT_CLI_CALL_LOG=$cli_log" \
       FAKE_PORTABLE_STAGE_MODE=mirror-audit \
-      HISTORY_RUNTIME_ABI=v2 \
       HUNT_PROVIDER=claude \
       HUNT_REVIEW_PROVIDER_1=claude \
       HUNT_REVIEW_MODEL_1=sonnet \
@@ -898,7 +897,6 @@ run_in_checkout_subdir_refusal() {
       "FAKE_PORTABLE_STAGE_LOG=$CASE_ROOT/refuse-in-subdir-logical.providers.jsonl" \
       "HISTORY_AUDIT_CLI_CALL_LOG=$CASE_ROOT/refuse-in-subdir-logical.audit-cli.calls" \
       FAKE_PORTABLE_STAGE_MODE=mirror-audit \
-      HISTORY_RUNTIME_ABI=v2 \
       HUNT_PROVIDER=claude \
       HUNT_REVIEW_PROVIDER_1=claude \
       HUNT_REVIEW_MODEL_1=sonnet \

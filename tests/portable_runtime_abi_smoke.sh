@@ -224,51 +224,24 @@ run_awr_rejection() {
   fi
 }
 
-run_hunt_v1_removed_regression() {
-  local repo status log marker
-  repo=$(make_repo "hunt-v1-removed") || {
-    record_failure "hunt v1 removed fixture setup"
-    return
-  }
-  install_fake_providers "$repo"
-  log="$SANDBOX_ROOT/hunt-v1-removed.log"
-  marker="$SANDBOX_ROOT/hunt-v1-removed.provider-launched"
-  run_bounded "$repo" "$log" \
-    env \
-      -u HUNT_PROVIDER -u HUNT_MODEL -u HUNT_REASONING_EFFORT \
-      "PATH=$repo/.test-bin:$PATH" \
-      "PROVIDER_LAUNCH_LOG=$marker" \
-      HISTORY_RUNTIME_ABI=v1 MAX_FAILS=bad \
-      bash ./hunt.sh
-  status=$?
-  if [ "$status" -ne 2 ] \
-    || ! grep -q 'HISTORY_RUNTIME_ABI=v1 was removed' "$log"; then
-    record_failure "hunt did not reject HISTORY_RUNTIME_ABI=v1 clearly"
-  elif [ -e "$marker" ]; then
-    record_failure "v1 rejection launched a provider"
-  else
-    printf 'ok: hunt rejects HISTORY_RUNTIME_ABI=v1 with a clear error\n'
-  fi
-}
-
 run_hunt_external_legacy_regression() {
   local repo before after status log marker
-  repo=$(make_repo "hunt-v2-external-legacy") || {
-    record_failure "hunt v2 external legacy fixture setup"
+  repo=$(make_repo "hunt-external-legacy") || {
+    record_failure "hunt external legacy fixture setup"
     return
   }
   sed -n '1p' "$repo/ledger.tsv" > "$repo/ledger.tsv.empty"
   mv "$repo/ledger.tsv.empty" "$repo/ledger.tsv"
   install_fake_providers "$repo"
   git -C "$repo" config core.hooksPath .githooks
-  log="$SANDBOX_ROOT/hunt-v2-external-legacy.log"
-  marker="$SANDBOX_ROOT/hunt-v2-external-legacy.provider-launched"
+  log="$SANDBOX_ROOT/hunt-external-legacy.log"
+  marker="$SANDBOX_ROOT/hunt-external-legacy.provider-launched"
   before=$(state_digest "$repo")
   run_bounded "$repo" "$log" \
     env \
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
-      HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=claude \
+      HUNT_PROVIDER=claude \
       AGENT_CMD=/usr/bin/false \
       MAX_FAILS=bad \
       bash ./hunt.sh
@@ -277,32 +250,32 @@ run_hunt_external_legacy_regression() {
   if [ "$status" -ne 2 ] \
     || ! grep -q 'MAX_FAILS must' "$log" \
     || grep -Eq 'AGENT_CMD.*(mixed|legacy|forbidden|required)' "$log"; then
-    record_failure "Hunt v2 external fallback did not reach normal validation"
+    record_failure "Hunt external fallback did not reach normal validation"
   elif [ "$after" != "$before" ] || [ -e "$marker" ]; then
-    record_failure "v2 external-stage regression mutated state or launched a provider"
+    record_failure "external-stage regression mutated state or launched a provider"
   else
-    printf 'ok: Hunt v2 retains AGENT_CMD only as the external-stage fallback\n'
+    printf 'ok: Hunt retains AGENT_CMD only as the external-stage fallback\n'
   fi
 }
 
 run_hunt_review_isolation() {
   local repo before after status log marker
-  repo=$(make_repo "hunt-v2-review-isolation") || {
-    record_failure "hunt v2 review isolation fixture setup"
+  repo=$(make_repo "hunt-review-isolation") || {
+    record_failure "hunt review isolation fixture setup"
     return
   }
   sed -n '1p' "$repo/ledger.tsv" > "$repo/ledger.tsv.empty"
   mv "$repo/ledger.tsv.empty" "$repo/ledger.tsv"
   install_fake_providers "$repo"
   git -C "$repo" config core.hooksPath .githooks
-  log="$SANDBOX_ROOT/hunt-v2-review-isolation.log"
-  marker="$SANDBOX_ROOT/hunt-v2-review-isolation.provider-launched"
+  log="$SANDBOX_ROOT/hunt-review-isolation.log"
+  marker="$SANDBOX_ROOT/hunt-review-isolation.provider-launched"
   before=$(state_digest "$repo")
   run_bounded "$repo" "$log" \
     env \
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
-      HISTORY_RUNTIME_ABI=v2 REVIEWERS=1 \
+      REVIEWERS=1 \
       HUNT_PROVIDER=claude HUNT_MODEL=sonnet HUNT_REASONING_EFFORT=high \
       HUNT_REVIEW_PROVIDER_1=claude \
       HUNT_REVIEW_MODEL_1= HUNT_REVIEW_REASONING_EFFORT_1= \
@@ -321,19 +294,19 @@ run_hunt_review_isolation() {
 
 run_hunt_review_index_bound() {
   local repo before after status log marker
-  repo=$(make_repo "hunt-v2-review-index") || {
-    record_failure "hunt v2 review index fixture setup"
+  repo=$(make_repo "hunt-review-index") || {
+    record_failure "hunt review index fixture setup"
     return
   }
   install_fake_providers "$repo"
-  log="$SANDBOX_ROOT/hunt-v2-review-index.log"
-  marker="$SANDBOX_ROOT/hunt-v2-review-index.provider-launched"
+  log="$SANDBOX_ROOT/hunt-review-index.log"
+  marker="$SANDBOX_ROOT/hunt-review-index.provider-launched"
   before=$(state_digest "$repo")
   run_bounded "$repo" "$log" \
     env \
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
-      HISTORY_RUNTIME_ABI=v2 REVIEWERS=1 HUNT_PROVIDER=claude \
+      REVIEWERS=1 HUNT_PROVIDER=claude \
       HUNT_REVIEW_PROVIDER_2=claude \
       bash ./hunt.sh
   status=$?
@@ -349,53 +322,52 @@ run_hunt_review_index_bound() {
   fi
 }
 
-run_awr_valid_v2_no_fallback() {
+run_awr_no_legacy_fallback() {
   local repo before after status log marker
-  repo=$(make_repo "awr-v2-no-fallback") || {
-    record_failure "awr v2 no-fallback fixture setup"
+  repo=$(make_repo "awr-no-fallback") || {
+    record_failure "awr no-fallback fixture setup"
     return
   }
   sed -n '1p' "$repo/ledger.tsv" > "$repo/ledger.tsv.empty"
   mv "$repo/ledger.tsv.empty" "$repo/ledger.tsv"
   install_fake_providers "$repo"
-  log="$SANDBOX_ROOT/awr-v2-no-fallback.log"
-  marker="$SANDBOX_ROOT/awr-v2-no-fallback.provider-launched"
+  log="$SANDBOX_ROOT/awr-no-fallback.log"
+  marker="$SANDBOX_ROOT/awr-no-fallback.provider-launched"
   before=$(state_digest "$repo")
   run_bounded "$repo" "$log" \
     env \
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
-      HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=claude SIDE_POLL_SEC=bad \
+      AWR_PROVIDER=claude SIDE_POLL_SEC=bad \
       bash ./awr-side.sh
   status=$?
   after=$(state_digest "$repo")
   if [ "$status" -ne 2 ] \
     || ! grep -q 'must be nonnegative integers' "$log"; then
-    record_failure "valid AwR v2 did not reach normal sidecar validation"
+    record_failure "valid AwR did not reach normal sidecar validation"
   elif [ "$after" != "$before" ] || [ -e "$marker" ]; then
-    record_failure "valid AwR v2 mutated state or launched a provider"
+    record_failure "valid AwR mutated state or launched a provider"
   else
-    printf 'ok: valid AwR v2 cannot fall through to legacy side commands\n'
+    printf 'ok: valid AwR cannot fall through to legacy side commands\n'
   fi
 }
 
 run_awr_role_isolation() {
   local repo before after status log marker
-  repo=$(make_repo "awr-v2-role-isolation") || {
-    record_failure "awr v2 role isolation fixture setup"
+  repo=$(make_repo "awr-role-isolation") || {
+    record_failure "awr role isolation fixture setup"
     return
   }
   sed -n '1p' "$repo/ledger.tsv" > "$repo/ledger.tsv.empty"
   mv "$repo/ledger.tsv.empty" "$repo/ledger.tsv"
   install_fake_providers "$repo"
-  log="$SANDBOX_ROOT/awr-v2-role-isolation.log"
-  marker="$SANDBOX_ROOT/awr-v2-role-isolation.provider-launched"
+  log="$SANDBOX_ROOT/awr-role-isolation.log"
+  marker="$SANDBOX_ROOT/awr-role-isolation.provider-launched"
   before=$(state_digest "$repo")
   run_bounded "$repo" "$log" \
     env \
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
-      HISTORY_RUNTIME_ABI=v2 \
       AWR_PROVIDER=claude AWR_MODEL=sonnet AWR_REASONING_EFFORT=high \
       AWR_RESEARCH_PROVIDER=claude \
       AWR_RESEARCH_MODEL= AWR_RESEARCH_REASONING_EFFORT= \
@@ -416,16 +388,16 @@ run_awr_agy_catalog_dedup_case() {
   local name=$1 expected_catalog_calls=$2
   shift 2
   local repo before after status marker log catalog_dir catalog catalog_calls
-  repo=$(make_repo "awr-v2-agy-catalog-$name") || {
+  repo=$(make_repo "awr-agy-catalog-$name") || {
     record_failure "AwR agy catalog $name fixture setup"
     return
   }
   sed -n '1p' "$repo/ledger.tsv" > "$repo/ledger.tsv.empty"
   mv "$repo/ledger.tsv.empty" "$repo/ledger.tsv"
   install_fake_providers "$repo"
-  marker="$SANDBOX_ROOT/awr-v2-agy-catalog-$name.provider-launched"
-  log="$SANDBOX_ROOT/awr-v2-agy-catalog-$name.log"
-  catalog_dir="$SANDBOX_ROOT/awr-v2-agy-catalog-$name.config"
+  marker="$SANDBOX_ROOT/awr-agy-catalog-$name.provider-launched"
+  log="$SANDBOX_ROOT/awr-agy-catalog-$name.log"
+  catalog_dir="$SANDBOX_ROOT/awr-agy-catalog-$name.config"
   catalog="$catalog_dir/agy-catalog-count"
   mkdir -p "$catalog_dir"
   : > "$catalog_dir/agy-catalog-count.enabled"
@@ -435,7 +407,6 @@ run_awr_agy_catalog_dedup_case() {
       "PATH=$repo/.test-bin:$PATH" \
       "PROVIDER_LAUNCH_LOG=$marker" \
       "XDG_CONFIG_HOME=$catalog_dir" \
-      HISTORY_RUNTIME_ABI=v2 \
       AWR_PROVIDER=agy AWR_MODEL=gemini/fixture-model \
       SIDE_POLL_SEC=bad \
       "$@" bash ./awr-side.sh
@@ -458,28 +429,21 @@ run_awr_agy_catalog_dedup_case() {
   fi
 }
 
-# Setness is intentional: even an explicitly empty control is a removed-v1
-# or unknown-control signal and cannot be silently treated as unset.
-run_hunt_rejection v1-set-empty-provider \
-  HISTORY_RUNTIME_ABI=v1 HUNT_PROVIDER=
-run_hunt_rejection v2-mixed-empty-contained \
-  HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=codex CONTAINED_AGENT_CMD_JSON=
-run_hunt_rejection v2-ineligible-provider \
-  HISTORY_RUNTIME_ABI=v2 HUNT_PROVIDER=opencode
-run_hunt_rejection unknown-abi \
-  HISTORY_RUNTIME_ABI=v3
-run_hunt_v1_removed_regression
+# Setness is intentional: even an explicitly empty removed control cannot be
+# silently treated as unset.
+run_hunt_rejection mixed-empty-contained \
+  HUNT_PROVIDER=codex CONTAINED_AGENT_CMD_JSON=
+run_hunt_rejection ineligible-provider \
+  HUNT_PROVIDER=opencode
 run_hunt_external_legacy_regression
 run_hunt_review_isolation
 run_hunt_review_index_bound
 
-run_awr_rejection v1-set-empty-provider \
-  HISTORY_RUNTIME_ABI=v1 AWR_PROVIDER=
-run_awr_rejection v2-mixed-empty-legacy \
-  HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=codex SIDE_CMD=
-run_awr_rejection v2-unknown-provider \
-  HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=unknown
-run_awr_valid_v2_no_fallback
+run_awr_rejection mixed-empty-legacy \
+  AWR_PROVIDER=codex SIDE_CMD=
+run_awr_rejection unknown-provider \
+  AWR_PROVIDER=unknown
+run_awr_no_legacy_fallback
 run_awr_role_isolation
 run_awr_agy_catalog_dedup_case inherited 1
 run_awr_agy_catalog_dedup_case distinct-model 2 \

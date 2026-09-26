@@ -60,7 +60,6 @@ class AwrSideOutputCaptureRegression(unittest.TestCase):
                 "HOME": str(home),
                 "CODEX_HOME": str(home / "codex-config"),
                 "PATH": f"{root / '.test-bin'}:{os.environ['PATH']}",
-                "HISTORY_RUNTIME_ABI": "v2",
                 "AWR_PROVIDER": "claude",
                 "AWR_RESEARCH_PROVIDER": "claude",
                 "AWR_PRIORWORK_PROVIDER": "claude",

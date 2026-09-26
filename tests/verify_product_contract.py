@@ -13,16 +13,16 @@ HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 MAX_SPARSE_HAN_LINES = 24
 MAX_TEST_HAN_LINES = 80
 EXPECTED = {
-    "ledger_snapshot": "d798a390c51d83e241b90566db16368d0061a9c57ca6ef54c49bc2ab71fcd5f0",
-    "stable_projection": "d8debe92685f0b8bdc7630daa03d7a6c29078ae868bdbf3aa83338b5721768c2",
-    "theme_projection": "2deeb6525c8a04f605d119ae7a357b2980ea8c70a3726cb9cd0717aca8aef12a",
-    "row_urls": "8acd8d8f17202d4d58a021889c745ba1c92430f7d6d6ab0934b5b24d754f73c3",
-    "row_technical_tokens": "f4c53305df68006ad009f0c28052cc123e4dc03214f53e27b3f2fccf3204cbd1",
-    "row_count_units": "a93f481b4ef3628a53131454126d490a93ed14c71910e0afe93e0139202be548",
-    "row_labeled_quantities": "80ba322329d0bdf321865d47c8d886c324defcb90ad699c56d3fc9dfb9ebe26b",
-    "row_numeric_operators": "f01628179d862935d8d85dc55dce28e5de62d514373871579e4349de9f033735",
-    "row_code_spans": "192b505f672f9626a63cde4dc99c3e0f9f528b91448133f4c07b2ca1cf6146bb",
-    "row_symbols": "a5790f5f8f7af3850fc3478c1433c344b23b3e87b9f71c5105d65b60b8c96e82",
+    "ledger_snapshot": "6aae588da1d5ff0667e227e78add86e3805247b9bc7308969102d651f29e060b",
+    "stable_projection": "7ec6f8e2205949726f932dd6d08d659b79ce29658071be45d00ce9167a8729c8",
+    "theme_projection": "b65751eff516b867e567df5434bb30ae353b88a8348b4727179f31071f9f57d7",
+    "row_urls": "9f6123566e75dfbb9dd0a5080ff9934fd2036a1595c24ce33d52ed06a0d3d76f",
+    "row_technical_tokens": "678a00fe7c475fcda4f560df34b1d94f766c4021d1b1f4494d5b4a9082445abe",
+    "row_count_units": "82f912259dabe73e97ef121fd425769d4a80a94462812aff1a57fd11df31efe2",
+    "row_labeled_quantities": "a4799673e664b9623b32fa18c82172fd898630695f70d4d52ec26ca2715713dc",
+    "row_numeric_operators": "f158a3645e225ca30f0012fec7df0dada536fb6e802b4e867a455d802b3ae840",
+    "row_code_spans": "0b41c0a371bb0a88553fad6e4dd1ecf43e3e93aa0c82f3f297aa3805e9b8dd2f",
+    "row_symbols": "38788c3428597340592b8f67b77ba2ccb7778b185c5e128fbc4300ab43872ec3",
     "case_ids": "f60b9cad357cf1bbf3a8e591e17251ef388f0ed6fbac01fa3fda9477419a14b6",
     "assertions": "5f12400d936aa208097077d680eefa74babb0ef6f0090984cc264a42031c7da0",
     "calibration_evidence": "ed86ecc2dcd80b2d248a931e87d47357c15586d4250b240b494cf2ccc3a4495e",
@@ -356,7 +356,6 @@ def _awr_assignment(token):
 def _awr_uncertain_assignments(segment, cursor, assignments):
     selected = dict(assignments)
     selection_keys = {
-        "HISTORY_RUNTIME_ABI",
         "AWR_PROVIDER",
         "AWR_RESEARCH_PROVIDER",
         "AWR_PRIORWORK_PROVIDER",
@@ -504,14 +503,12 @@ def _awr_command_invocations(segment, cursor=0, inherited=None, depth=0):
     return []
 
 
-def _unsafe_v2_agy_examples(header):
+def _unsafe_agy_examples(header):
     unsafe = []
     for command in _awr_usage_commands(header):
         command_is_unsafe = False
         for segment in _awr_shell_segments(command):
             for assignments in _awr_command_invocations(segment):
-                if assignments.get("HISTORY_RUNTIME_ABI") != "v2":
-                    continue
                 base_provider = assignments.get("AWR_PROVIDER", "codex")
                 base_model = assignments.get("AWR_MODEL", "")
                 if base_provider == "agy" and not base_model:
@@ -556,7 +553,7 @@ def assert_awr_provider_usage():
         "OpenCode model omission uses a safe host configuration probe and pins "
         "the resolved model.",
         "agy has no trusted default-identity probe and requires an explicit model.",
-        "HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high "
+        "AWR_PROVIDER=agy AWR_MODEL=gemini-3.6-flash-high "
         "AWR_REASONING_EFFORT=high ./awr-side.sh",
     )
     for statement in required:
@@ -564,59 +561,59 @@ def assert_awr_provider_usage():
             raise AssertionError(
                 f"missing AwR provider usage contract: {statement!r}"
             )
-    unsafe = _unsafe_v2_agy_examples(header)
+    unsafe = _unsafe_agy_examples(header)
     if unsafe:
         raise AssertionError(
             f"AwR usage contains agy examples without an effective model: {unsafe!r}"
         )
     parser_probes = (
-        "# SIDE_POLL_SEC=0 HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh",
-        "# AWR_JUDGE_PROVIDER=agy HISTORY_RUNTIME_ABI=v2 \\\n"
+        "# SIDE_POLL_SEC=0 AWR_PROVIDER=agy ./awr-side.sh",
+        "# AWR_JUDGE_PROVIDER=agy \\\n"
         "#   SIDE_POLL_SEC=0 ./awr-side.sh",
-        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh "
+        "# AWR_PROVIDER=agy ./awr-side.sh "
         "AWR_MODEL=gemini-3.6-flash-high",
-        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh "
+        "# AWR_PROVIDER=agy ./awr-side.sh "
         "# add AWR_MODEL=gemini-3.6-flash-high",
-        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "# AWR_PROVIDER=agy "
         "AWR_MODEL=gemini-3.6-flash-high ./awr-side.sh && "
-        "HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh",
-        "# caffeinate -is env HISTORY_RUNTIME_ABI=v2 "
         "AWR_PROVIDER=agy ./awr-side.sh",
-        "# env -u AWR_MODEL HISTORY_RUNTIME_ABI=v2 "
+        "# caffeinate -is env "
         "AWR_PROVIDER=agy ./awr-side.sh",
-        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy bash ./awr-side.sh",
-        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "# env -u AWR_MODEL "
+        "AWR_PROVIDER=agy ./awr-side.sh",
+        "# AWR_PROVIDER=agy bash ./awr-side.sh",
+        "# AWR_PROVIDER=agy "
         "bash -euxo pipefail ./awr-side.sh",
         "# bash -co pipefail "
-        "'HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy ./awr-side.sh'",
-        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "'AWR_PROVIDER=agy ./awr-side.sh'",
+        "# AWR_PROVIDER=agy "
         "custom-wrapper ./awr-side.sh",
     )
     for probe in parser_probes:
-        if not _unsafe_v2_agy_examples(header + "\n" + probe):
+        if not _unsafe_agy_examples(header + "\n" + probe):
             raise AssertionError(
                 f"AwR usage validator missed agy example without model: {probe!r}"
             )
     warning_probe = (
-        "# Never run HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "# Never run AWR_PROVIDER=agy "
         "./awr-side.sh without AWR_MODEL."
     )
-    if _unsafe_v2_agy_examples(header + "\n" + warning_probe):
+    if _unsafe_agy_examples(header + "\n" + warning_probe):
         raise AssertionError(
             f"AwR usage validator treated prose as a command: {warning_probe!r}"
         )
     inert_probe = (
-        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy "
+        "# AWR_PROVIDER=agy "
         "caffeinate -is echo ./awr-side.sh"
     )
-    if _unsafe_v2_agy_examples(header + "\n" + inert_probe):
+    if _unsafe_agy_examples(header + "\n" + inert_probe):
         raise AssertionError(
             f"AwR usage validator treated an argument as execution: {inert_probe!r}"
         )
     shell_stdin_probe = (
-        "# HISTORY_RUNTIME_ABI=v2 AWR_PROVIDER=agy bash -s ./awr-side.sh"
+        "# AWR_PROVIDER=agy bash -s ./awr-side.sh"
     )
-    if _unsafe_v2_agy_examples(header + "\n" + shell_stdin_probe):
+    if _unsafe_agy_examples(header + "\n" + shell_stdin_probe):
         raise AssertionError(
             f"AwR usage validator treated a shell argv as execution: {shell_stdin_probe!r}"
         )
@@ -1290,11 +1287,11 @@ def verify_ledger_evidence(data=None, header=None):
         data = rows[1:]
     if header is not None and header != LEDGER_HEADER:
         raise AssertionError(f"ledger header changed: {header}")
-    if len(data) != 664:
+    if len(data) != 804:
         raise AssertionError(f"ledger row count changed: {len(data)}")
     nf7 = sum(len(row) == 7 for row in data)
     nf8 = sum(len(row) == 8 for row in data)
-    if (nf7, nf8) != (216, 448):
+    if (nf7, nf8) != (216, 588):
         raise AssertionError(f"ledger shape changed: nf7={nf7}, nf8={nf8}")
     actual = ledger_evidence(data)
     for key, value in actual.items():

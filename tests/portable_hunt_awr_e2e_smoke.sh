@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Offline RED contract for the wired HISTORY_RUNTIME_ABI=v2 product paths.
+# Offline RED contract for the portable runtime product paths.
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -484,7 +484,6 @@ run_hunt_v2() {
       "FAKE_PORTABLE_STAGE_LOG=$provider_log" \
       "HISTORY_AUDIT_CLI_CALL_LOG=$cli_log" \
       FAKE_PORTABLE_STAGE_MODE=mirror-audit \
-      HISTORY_RUNTIME_ABI=v2 \
       RESEARCH_DIRECTION_FILE=directions/dynamic-spatial-memory-vla-v1.json \
       HUNT_PROVIDER=claude \
       HUNT_REVIEW_PROVIDER_1=claude \
@@ -547,7 +546,6 @@ run_terminal_failure_skips_cooldown() {
       "PATH=$repo/.test-bin:$PATH" \
       "FAKE_SLEEP_LOG=$sleep_log" \
       FAKE_PORTABLE_STAGE_MODE=malformed \
-      HISTORY_RUNTIME_ABI=v2 \
       HUNT_PROVIDER=claude \
       "AGENT_CMD=$repo/tests/fake_agent.sh" \
       HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
@@ -615,7 +613,6 @@ run_retryable_failure_cooldown_case() {
       "PATH=$repo/.test-bin:$PATH" \
       "FAKE_SLEEP_LOG=$sleep_log" \
       FAKE_PORTABLE_STAGE_MODE=malformed \
-      HISTORY_RUNTIME_ABI=v2 \
       HUNT_PROVIDER=claude \
       "AGENT_CMD=$repo/tests/fake_agent.sh" \
       HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
@@ -766,7 +763,6 @@ run_awr_v2() {
       "PATH=$repo/.test-bin:$PATH" \
       "FAKE_PORTABLE_STAGE_LOG=$provider_log" \
       FAKE_PORTABLE_STAGE_MODE=mirror-audit \
-      HISTORY_RUNTIME_ABI=v2 \
       AWR_PROVIDER=claude \
       AWR_RESEARCH_PROVIDER=claude \
       AWR_PRIORWORK_PROVIDER=claude \
@@ -813,7 +809,6 @@ run_awr_v2_all_agy() {
       "PATH=$repo/.test-bin:$PATH" \
       "FAKE_PORTABLE_STAGE_LOG=$provider_log" \
       FAKE_PORTABLE_STAGE_MODE=agy-portable-audit \
-      HISTORY_RUNTIME_ABI=v2 \
       AWR_PROVIDER=agy \
       AWR_MODEL=gemini/fixture-model \
       AWR_RESEARCH_PROVIDER=agy \
