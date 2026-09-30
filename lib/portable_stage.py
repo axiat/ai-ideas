@@ -592,10 +592,10 @@ def _decode_contract_text(raw, label):
     return text
 
 
-def _host_output_contract(stage):
+def _host_output_contract(stage, declared_input_texts):
     """Machine-facing output shape the host will parse after import."""
     if stage == "generate":
-        return {
+        contract = {
             "schema_version": "portable-stage-host-output-contract-v1",
             "artifact_kind": "generation-ideas-markdown",
             "required_prefix": (
@@ -618,6 +618,11 @@ def _host_output_contract(stage):
                 "Direction Evidence",
             ],
             "field_line_format": "<Field Name>: <single-line value>",
+            "theme_value_rule": (
+                "Copy Theme exactly from the mounted generation_policy.md "
+                "Theme Vocabulary. Use one complete value; direction IDs, "
+                "new labels, and placeholders are invalid themes."
+            ),
             "forbidden_headings": [
                 "# Generation Ideas",
                 "## Idea ",
@@ -631,7 +636,7 @@ def _host_output_contract(stage):
                 "\n"
                 "## I1\n"
                 "One-Sentence Story: ...\n"
-                "Theme: ...\n"
+                "Theme: <exact Theme Vocabulary value>\n"
                 "Direction Axis: <allowed_axes id when direction mounted>\n"
                 "Target Failure: <target_failures id when direction mounted>\n"
                 "Direction Evidence: ...\n"
@@ -641,6 +646,24 @@ def _host_output_contract(stage):
                 "Why It May Be Novel: ...\n"
             ),
         }
+        themes = []
+        inside = False
+        policy = declared_input_texts.get("generation_policy.md", "")
+        for line in policy.splitlines():
+            if line.rstrip() == "## Theme Vocabulary":
+                inside = True
+                continue
+            if inside and line.startswith("## "):
+                break
+            if inside:
+                if themes and not line.strip():
+                    break
+                themes.extend(
+                    value.strip() for value in line.split("/") if value.strip()
+                )
+        if themes:
+            contract["theme_vocabulary"] = themes
+        return contract
     return {
         "schema_version": "portable-stage-host-output-contract-v1",
         "stage": stage,
@@ -751,7 +774,7 @@ def _provider_request(
         "declared_input_texts": ordered_inputs,
         "role_sha256": role_sha256,
         "response_schema": schema,
-        "host_output_contract": _host_output_contract(stage),
+        "host_output_contract": _host_output_contract(stage, ordered_inputs),
         "transport_instructions": {
             "schema_version": "portable-stage-transport-instructions-v1",
             "precedence": (

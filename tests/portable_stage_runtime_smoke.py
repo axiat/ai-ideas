@@ -331,6 +331,35 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
             raise AssertionError(f"receipt is not canonical: {path}")
         return raw, value
 
+    def test_generation_request_exposes_mounted_policy_theme_vocabulary(self):
+        policy = (
+            "# Bounded generation policy\n"
+            "Outside the vocabulary / ignored\n\n"
+            "## Theme Vocabulary\n\n"
+            " VLA - Architecture / Safety and Robustness \n"
+            "Evaluation and Diagnostics\n\n"
+            "Inventory instructions / also not a theme.\n\n"
+            "## Direction metadata\n"
+            "memory-placeholder / memory-access-and-use\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            prepared, _, _ = self._prepare(
+                pathlib.Path(directory), generation_policy=policy
+            )
+            request = json.loads(prepared["provider_request"])
+            self.assertEqual(
+                request["host_output_contract"].get("theme_vocabulary"),
+                [
+                    "VLA - Architecture",
+                    "Safety and Robustness",
+                    "Evaluation and Diagnostics",
+                ],
+            )
+            self.assertEqual(
+                request["declared_input_texts"]["generation_policy.md"],
+                policy,
+            )
+
     def test_preflight_and_completion_bind_dynamic_closed_envelope(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
