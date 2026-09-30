@@ -336,10 +336,11 @@ def _private_prepared(prepared):
     return copy.deepcopy(private["public"]), private
 
 
-def _frozen_response_schema(prepared, private):
+def _frozen_response_schema(prepared, private, input_raws):
     raw = private["response_schema_raw"]
     expected_sha = prepared["output_contract"]["response_schema_sha256"]
-    current = _canonical_bytes(_response_schema(prepared["stage"]))
+    themes = _generation_themes(prepared["stage"], input_raws)
+    current = _canonical_bytes(_response_schema(prepared["stage"], themes))
     if _sha(raw) != expected_sha or current != raw:
         raise PortableStageError("response_schema_changed")
     try:
@@ -523,7 +524,21 @@ def _response_echo_sha256(binding_sha256, prompt_sha256):
     )
 
 
-def _response_schema(stage):
+def _generation_themes(stage, input_raws):
+    if stage != "generate":
+        return None
+    try:
+        return stage_contract.generation_theme_vocabulary(
+            _decode_contract_text(
+                input_raws.get("generation_policy.md", b""),
+                "generation_policy.md",
+            )
+        )
+    except stage_contract.StageError as exc:
+        raise PortableStageError("invalid_contract_text", str(exc)) from exc
+
+
+def _response_schema(stage, theme_vocabulary=None):
     if stage in _AWR_ARTIFACTS:
         kind, _ = _AWR_ARTIFACTS[stage]
         return {
@@ -561,7 +576,7 @@ def _response_schema(stage):
         }
     try:
         schema = copy.deepcopy(
-            stage_contract.stage_response_schema(stage)
+            stage_contract.stage_response_schema(stage, theme_vocabulary)
         )
     except ValueError as exc:
         raise PortableStageError("unsupported_stage") from exc
@@ -597,16 +612,25 @@ def _host_output_contract(stage, declared_input_texts):
     if stage == "generate":
         contract = {
             "schema_version": "portable-stage-host-output-contract-v1",
-            "artifact_kind": "generation-ideas-markdown",
+            "artifact_kind": "generation-candidates-json",
+            "content_shape": {
+                "assumption_removal_attempt": "one complete marker line",
+                "candidates": [{
+                    "theme": "one exact theme_vocabulary value",
+                    "markdown": (
+                        "candidate body without headings, Theme, "
+                        "or assumption-removal marker"
+                    ),
+                }],
+            },
             "required_prefix": (
                 "Assumption-Removal Attempt: complete I#   OR   "
                 "Assumption-Removal Attempt: incomplete — <candidate>; "
                 "blocked by: <field>"
             ),
-            "candidate_heading": "## I<n>",
+            "host_rendered_candidate_heading": "## I<n>",
             "required_fields": [
                 "One-Sentence Story",
-                "Theme",
                 "Form",
                 "Summary",
                 "Minimal Falsification Experiment",
@@ -619,9 +643,9 @@ def _host_output_contract(stage, declared_input_texts):
             ],
             "field_line_format": "<Field Name>: <single-line value>",
             "theme_value_rule": (
-                "Copy Theme exactly from the mounted generation_policy.md "
-                "Theme Vocabulary. Use one complete value; direction IDs, "
-                "new labels, and placeholders are invalid themes."
+                "Select each candidate.theme exactly from the schema enum. "
+                "The host renders Theme and sequential I1..I<n> headings; "
+                "candidate.markdown must not repeat them."
             ),
             "forbidden_headings": [
                 "# Generation Ideas",
@@ -630,39 +654,10 @@ def _host_output_contract(stage, declared_input_texts):
                 "### Rationale",
                 "### Evaluation plan",
             ],
-            "example": (
-                "Assumption-Removal Attempt: incomplete — I1; "
-                "blocked by: Crack Evidence\n"
-                "\n"
-                "## I1\n"
-                "One-Sentence Story: ...\n"
-                "Theme: <exact Theme Vocabulary value>\n"
-                "Direction Axis: <allowed_axes id when direction mounted>\n"
-                "Target Failure: <target_failures id when direction mounted>\n"
-                "Direction Evidence: ...\n"
-                "Form: ...\n"
-                "Summary: ...\n"
-                "Minimal Falsification Experiment: ...\n"
-                "Why It May Be Novel: ...\n"
-            ),
         }
-        themes = []
-        inside = False
-        policy = declared_input_texts.get("generation_policy.md", "")
-        for line in policy.splitlines():
-            if line.rstrip() == "## Theme Vocabulary":
-                inside = True
-                continue
-            if inside and line.startswith("## "):
-                break
-            if inside:
-                if themes and not line.strip():
-                    break
-                themes.extend(
-                    value.strip() for value in line.split("/") if value.strip()
-                )
-        if themes:
-            contract["theme_vocabulary"] = themes
+        contract["theme_vocabulary"] = stage_contract.generation_theme_vocabulary(
+            declared_input_texts.get("generation_policy.md", "")
+        )
         return contract
     return {
         "schema_version": "portable-stage-host-output-contract-v1",
@@ -1136,7 +1131,7 @@ def prepare_stage(
         input_raws[name] = raw
 
     role_raw = _capture_regular(_ROLES[stage], 128 * 1024, "unsafe_role")
-    schema = _response_schema(stage)
+    schema = _response_schema(stage, _generation_themes(stage, input_raws))
     input_sha256s = {
         name: _sha(raw) for name, raw in sorted(input_raws.items())
     }
@@ -1448,7 +1443,11 @@ def _project_outputs(prepared, envelope_raw, input_raws):
     if stage in _AWR_ARTIFACTS:
         return _parse_awr_output(stage, envelope_raw)
     try:
-        artifacts = stage_contract.parse_model_output(stage, envelope_raw)
+        artifacts = stage_contract.parse_model_output(
+            stage, envelope_raw, _generation_themes(stage, input_raws)
+        )
+    except stage_contract.StageError as exc:
+        raise PortableStageError("invalid_generation_output", str(exc)) from exc
     except ValueError as exc:
         raise PortableStageError("invalid_model_envelope") from exc
     attestation = _projected_prompt_attestation(prepared)
@@ -1654,7 +1653,7 @@ def _execute_loaded_stage(prepared, private, input_raws, timeout_seconds):
         or _sha(preflight_raw) != prepared["preflight_sha256"]
     ):
         raise PortableStageError("preflight_changed")
-    response_schema = _frozen_response_schema(prepared, private)
+    response_schema = _frozen_response_schema(prepared, private, input_raws)
     intent = _load_launch_intent(prepared, private)
     current_exec_budget = _rendered_exec_budget(
         intent,

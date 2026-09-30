@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from lib import portable_stage
 from lib import provider_adapters
-from fake_portable_stage_provider import _generation_markdown
+from fake_portable_stage_provider import _generation_content
 
 
 REGISTRY = ROOT / "history/provider-adapters-v1.json"
@@ -44,7 +44,7 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
         brief = inputs / "generation_brief.json"
         policy = inputs / "generation_policy.md"
         brief.write_text('{"brief":"bounded"}\n', encoding="utf-8")
-        policy.write_text("bounded policy\n", encoding="utf-8")
+        policy.write_text("## Theme Vocabulary\nWorld Models - Architecture\n", encoding="utf-8")
         return portable_stage.prepare_stage(
             self._intent(),
             stage="generate",
@@ -65,16 +65,15 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
                 tempfile.TemporaryDirectory() as directory,
             ):
                 prepared = self._prepare(pathlib.Path(directory))
-                markdown = _generation_markdown()
+                content = _generation_content()
+                marker = content["assumption_removal_attempt"]
                 shared = (
                     "Shared experiment protocol: Use 200 paired trials per arm.\n"
                 )
-                markdown = (
-                    shared + markdown
+                content["assumption_removal_attempt"] = (
+                    shared + marker
                     if position == "before-marker"
-                    else markdown.replace(
-                        "\n\n## I1", "\n\n" + shared + "\n## I1", 1
-                    )
+                    else marker + "\n" + shared
                 )
                 raw = portable_stage._canonical_json_bytes({
                     "schema_version": 1,
@@ -83,8 +82,8 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
                         portable_stage._expected_response_attestation(prepared)
                     ),
                     "artifacts": [{
-                        "artifact_kind": "generation-ideas-markdown",
-                        "content": markdown,
+                        "artifact_kind": "generation-candidates-json",
+                        "content": content,
                     }],
                 })
                 attempt = {
@@ -108,7 +107,7 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
                         portable_stage.run_stage(prepared, timeout_seconds=10)
                 self.assertEqual(caught.exception.code, "invalid_generation_output")
                 self.assertIn(
-                    "generation markdown has content outside candidate sections",
+                    "generation assumption-removal marker is invalid",
                     str(caught.exception),
                 )
                 self.assertFalse(pathlib.Path(prepared["completion_path"]).exists())
@@ -219,7 +218,7 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
             brief = inputs / "generation_brief.json"
             policy = inputs / "generation_policy.md"
             brief.write_text('{}\n', encoding="utf-8")
-            policy.write_text("bounded\n", encoding="utf-8")
+            policy.write_text("## Theme Vocabulary\nWorld Models - Architecture\n", encoding="utf-8")
             with self.assertRaises(portable_stage.PortableStageError) as caught:
                 portable_stage.prepare_stage(
                     self._intent(),
@@ -245,7 +244,7 @@ class PortableStageCorrectnessRegression(unittest.TestCase):
             brief = inputs / "generation_brief.json"
             policy = inputs / "generation_policy.md"
             brief.write_text('{}\n', encoding="utf-8")
-            policy.write_text("bounded\n", encoding="utf-8")
+            policy.write_text("## Theme Vocabulary\nWorld Models - Architecture\n", encoding="utf-8")
             output = root / "published"
             state = root.resolve() / "published" / "state"
             with self.assertRaises(portable_stage.PortableStageError) as caught:

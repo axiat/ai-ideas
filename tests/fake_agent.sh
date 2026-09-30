@@ -101,11 +101,8 @@ if stage == "generate":
             "Compare stale and repair-aware 3D memory on dynamic scene "
             "changes; kill the idea if repaired VLA decisions do not recover."
         )
-    ideas_md = (
-        f"{marker}\n\n"
-        "## I1\n"
+    candidate_markdown = (
         f"One-Sentence Story: {story}\n"
-        "Theme: World Models - Architecture\n"
         f"{direction}"
         f"Form: {form}\n"
         f"Summary: {summary}\n"
@@ -115,8 +112,14 @@ if stage == "generate":
     )
     artifacts = [
         {
-            "artifact_kind": "generation-ideas-markdown",
-            "content": ideas_md,
+            "artifact_kind": "generation-candidates-json",
+            "content": {
+                "assumption_removal_attempt": marker,
+                "candidates": [{
+                    "theme": "World Models - Architecture",
+                    "markdown": candidate_markdown,
+                }],
+            },
         },
     ]
 elif stage == "history-compare":

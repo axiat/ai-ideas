@@ -13,7 +13,7 @@ Each candidate must:
 - fit a team of typically 2–3 researchers (up to ~10 if justified) on realistic academic compute (a few A100-class GPUs by default; no pretraining-scale) unless the policy explicitly provides a different bound;
 - remain materially distinct from the other candidates in the batch.
 
-For every `Theme:` field, copy one complete value exactly from `generation_policy.md` under `## Theme Vocabulary`. The host output contract repeats the mounted vocabulary when present. `Direction Axis` and `Target Failure` are separate metadata and do not supply theme values. Before returning, check every candidate's theme against the vocabulary; invented labels and placeholders fail the entire generation batch.
+Select each candidate's `theme` from the response schema enum, which contains the exact mounted `generation_policy.md` Theme Vocabulary. `Direction Axis` and `Target Failure` are separate metadata. The host renders the selected theme as a `Theme:` line; omit that line from the candidate's `markdown` body.
 
 In `Minimal Falsification Experiment:`, specify the task/environment or analysis setting, the relevant implementation or formal setup, intervention and comparison arms, allocation and control of relevant histories/states and resources, sample allocation, and the primary metric with its denominator and reference contrast. State which factors must be matched for attribution. Give an executable rule for any proposed oracle or repair. When proposing a repair, state separate kill conditions for the research claim and the repair. An operationally defined custom task is sufficient; a named benchmark is optional. Mark unresolved implementation choices explicitly and distinguish expected signals from observed evidence.
 
@@ -27,27 +27,31 @@ Target Failure: <exact target_failures id>
 Direction Evidence: <one bounded sentence>
 ```
 
-At least one candidate must attempt `remove-load-bearing-assumption`. Record exactly one assumption-removal marker before the first candidate:
+At least one candidate must attempt `remove-load-bearing-assumption`. Set `assumption_removal_attempt` to exactly one complete marker line:
 
 - `Assumption-Removal Attempt: complete I#` only when that candidate has all five structured fields and at least two `Crack Evidence:` lines with real `http(s)` URLs.
 - `Assumption-Removal Attempt: incomplete — <candidate>; blocked by: <field>` when real crack-evidence URLs are unavailable. Do not fabricate URLs. An incomplete attempt may still use `Form: remove-load-bearing-assumption` with honest non-URL placeholders, or omit that form and keep only the marker; either way the marker alone satisfies the attempt quota.
 
 Return one final JSON object matching the supplied strict response schema.
-Its ordered `artifacts` array contains exactly one entry:
+Its `artifacts` array contains exactly one `generation-candidates-json` entry.
+The entry's `content` is an object with:
 
-- `generation-ideas-markdown`: the assumption-removal marker followed by
-  one section per candidate (`## I1` …). The host derives `ideas.tsv`
-  (`id<TAB>story<TAB>theme`) from this markdown; do not emit a separate TSV.
+- `assumption_removal_attempt`: the complete single-line marker above.
+- `candidates`: an ordered array of candidate objects. Each object has only
+  `theme` (one schema enum value) and `markdown` (the candidate body).
 
-Before `## I1`, emit only the assumption-removal marker and blank lines.
+Array positions define candidate IDs `I1` through `I<n>`; use those IDs when
+referencing the assumption-removal candidate. The host inserts the headings
+and selected themes, preserves each body, and derives `ideas.tsv`
+(`id<TAB>story<TAB>theme`). The resulting `ideas.md` and TSV undergo the
+existing generation checks.
 
-The adapter materializes the markdown as `output/ideas.md`. Use this
-candidate block:
+Each `markdown` body contains the following fields, plus direction and
+assumption-removal fields when applicable. Omit Markdown headings, `Theme:`,
+and assumption-removal markers from the body:
 
 ```text
-## I1
 One-Sentence Story: ...
-Theme: <exact Theme Vocabulary value>
 Form: ...
 Summary: ...
 Minimal Falsification Experiment: ...

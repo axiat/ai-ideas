@@ -97,7 +97,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
         *,
         stage="generate",
         intent=None,
-        generation_policy="bounded policy\n",
+        generation_policy="## Theme Vocabulary\nWorld Models - Architecture\n",
         review_protocol=b'{"aggregation_version":2,"review_output_version":2}\n',
     ):
         inputs = root / "inputs"
@@ -211,10 +211,10 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             first, _, _ = self._prepare(
-                root / "first", generation_policy="policy A\n"
+                root / "first", generation_policy="## Theme Vocabulary\nWorld Models - Architecture\n\nPolicy A\n"
             )
             second, _, _ = self._prepare(
-                root / "second", generation_policy="policy B\n"
+                root / "second", generation_policy="## Theme Vocabulary\nWorld Models - Architecture\n\nPolicy B\n"
             )
             self.assertEqual(
                 first["serialized_prompt_sha256"],
@@ -359,6 +359,41 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
                 request["declared_input_texts"]["generation_policy.md"],
                 policy,
             )
+            content = request["response_schema"]["properties"]["artifacts"]["items"]["properties"]["content"]
+            self.assertEqual(
+                content["properties"]["candidates"]["items"]["properties"]["theme"]["enum"],
+                request["host_output_contract"]["theme_vocabulary"],
+            )
+
+    def test_generation_without_vocabulary_fails_before_provider_or_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            with mock.patch.object(portable_stage.portable_agent, "run_portable_stdout_attempt") as launch:
+                with self.assertRaises(portable_stage.PortableStageError) as caught:
+                    self._prepare(root, generation_policy="bounded policy without vocabulary\n")
+                launch.assert_not_called()
+            self.assertEqual(caught.exception.code, "invalid_contract_text")
+            self.assertFalse((root / "portable-state").exists())
+            self.assertFalse((root / "published").exists())
+
+    def test_mounted_vocabulary_changes_schema_and_request_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            first, _, inputs = self._prepare(root / "first")
+            second, _, _ = self._prepare(
+                root / "second", generation_policy="## Theme Vocabulary\nSafety and Robustness\n"
+            )
+            self.assertNotEqual(
+                first["output_contract"]["response_schema_sha256"],
+                second["output_contract"]["response_schema_sha256"],
+            )
+            self.assertNotEqual(first["provider_request_binding_sha256"], second["provider_request_binding_sha256"])
+            inputs["generation_policy.md"].write_text("## Theme Vocabulary\nSafety and Robustness\n")
+            with mock.patch.object(portable_stage.portable_agent, "run_portable_stdout_attempt") as launch:
+                with self.assertRaises(portable_stage.PortableStageError) as caught:
+                    portable_stage.run_stage(first)
+                launch.assert_not_called()
+            self.assertEqual(caught.exception.code, "input_changed")
 
     def test_preflight_and_completion_bind_dynamic_closed_envelope(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -521,7 +556,7 @@ class PortableStageRuntimeSmoke(unittest.TestCase):
             brief = inputs / "generation_brief.json"
             policy = inputs / "generation_policy.md"
             brief.write_text('{}\n', encoding="utf-8")
-            policy.write_text('bounded\n', encoding="utf-8")
+            policy.write_text('## Theme Vocabulary\nWorld Models - Architecture\n', encoding="utf-8")
             launch_log = root / "provider-launched"
             with mock.patch.dict(
                 os.environ,

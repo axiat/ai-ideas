@@ -44,7 +44,7 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
         brief = inputs / "generation_brief.json"
         policy = inputs / "generation_policy.md"
         brief.write_text('{"brief":"bounded"}\n', encoding="utf-8")
-        policy.write_text("bounded policy\n", encoding="utf-8")
+        policy.write_text("## Theme Vocabulary\nWorld Models - Architecture\n", encoding="utf-8")
         return portable_stage.prepare_stage(
             intent,
             stage="generate",
@@ -234,7 +234,7 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
         self.assertEqual(capability.authority, "hard-complete")
 
     def test_empty_content_violates_declared_min_length(self):
-        schema = portable_stage._response_schema("generate")
+        schema = portable_stage._response_schema("generate", ["World Models - Architecture"])
         contract = portable_agent._validate_response_schema_contract(schema)
         value = {
             "schema_version": 1,
@@ -244,12 +244,17 @@ class PortableOutputTokenContractRegression(unittest.TestCase):
                 "response_echo_sha256": "a" * 64,
             },
             "artifacts": [
-                {"artifact_kind": "generation-ideas-markdown", "content": ""}
+                {"artifact_kind": "generation-candidates-json", "content": {
+                    "assumption_removal_attempt": "Assumption-Removal Attempt: incomplete I1",
+                    "candidates": [{"theme": "World Models - Architecture", "markdown": ""}],
+                }}
             ],
         }
         with self.assertRaises(portable_agent.PortableAgentError) as caught:
             portable_agent._validate_response_value(value, contract)
         self.assertEqual(caught.exception.code, "schema_mismatch")
+        value["artifacts"][0]["content"]["candidates"][0]["markdown"] = "Nonempty body"
+        portable_agent._validate_response_value(value, contract)
 
     def test_omission_fails_but_provider_default_budgets_are_recorded(self):
         omitted = provider_adapters._resolve_command_intent_for_test(

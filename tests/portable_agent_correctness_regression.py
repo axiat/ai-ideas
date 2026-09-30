@@ -309,7 +309,7 @@ class PortableNoFollowRootRegression(unittest.TestCase):
                     "maximum": 1,
                     "type": "integer",
                 },
-                "stage": {"enum": ["generate"], "type": "string"},
+                "stage": {"enum": ["review"], "type": "string"},
                 "request_attestation": {
                     "additionalProperties": False,
                     "properties": {
@@ -330,7 +330,7 @@ class PortableNoFollowRootRegression(unittest.TestCase):
                         "additionalProperties": False,
                         "properties": {
                             "artifact_kind": {
-                                "enum": ["generation-tsv"],
+                                "enum": ["review-markdown"],
                                 "type": "string",
                             },
                             "content": {
