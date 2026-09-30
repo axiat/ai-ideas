@@ -1075,6 +1075,65 @@ PY
   printf 'ok: harvest failure warns without rollback and the next run recovers\n'
 }
 
+run_directed_selector_case() {
+  local name=$1 mode=$2 expected_status=$3 reason=$4 expected_rounds=$5
+  local repo project log runs status before
+  repo=$(prepare_hunt_repo "selector-$name") || {
+    fail "$name selector fixture setup"; return;
+  }
+  project=$(make_project "selector-$name-project") || {
+    fail "$name selector project setup"; return;
+  }
+  log="$CASE_ROOT/selector-$name.log"
+  runs="$CASE_ROOT/selector-$name-runs"
+  before="$CASE_ROOT/selector-$name-ledger.tsv"
+  cp "$repo/ledger.tsv" "$before"
+  run_project_hunt "$repo" "$log" \
+    "$CASE_ROOT/selector-$name.providers.jsonl" \
+    "$CASE_ROOT/selector-$name.cli.log" "$runs" \
+    "$CASE_ROOT/selector-$name-home" \
+    "HUNT_PROJECT_DIR=$project" "FAKE_AGENT_MODE=$mode" ROUND_LIMIT=2
+  status=$?
+  if [ "$status" -ne "$expected_status" ]; then
+    fail "$name selector exited $status, expected $expected_status"
+    return
+  fi
+  if ! python3 - "$repo" "$project" "$runs" "$before" \
+    "$reason" "$expected_rounds" <<'PY'
+import pathlib
+import sqlite3
+import sys
+
+repo, project, runs, before = map(pathlib.Path, sys.argv[1:5])
+reason, expected_rounds = sys.argv[5], int(sys.argv[6])
+archives = sorted(runs.glob("*/manifest.tsv"))
+if len(archives) != expected_rounds:
+    raise SystemExit(f"failure budget produced {len(archives)} rounds, expected {expected_rounds}")
+for archive in archives:
+    manifest = dict(line.split("\t", 1) for line in archive.read_text().splitlines())
+    if manifest["reason"] != reason:
+        raise SystemExit(f"wrong archive classification: {manifest['reason']}")
+    stages = (archive.parent / "round/stages.tsv").read_text().splitlines()
+    if len(stages) != 1 or stages[0].split("\t")[0] != "select":
+        raise SystemExit(f"failed or rejected selection reached later stages: {stages}")
+if (repo / "ledger.tsv").read_bytes() != before.read_bytes():
+    raise SystemExit("failed or rejected selection changed the ledger")
+with sqlite3.connect(repo / ".ai-ideas/history.sqlite3") as database:
+    if database.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] != 1:
+        raise SystemExit("failed or rejected selection created canonical candidates")
+if list((project / "harvest").glob("manifest-*.json")):
+    raise SystemExit("failed or rejected selection published a harvest")
+PY
+  then
+    fail "$name selector archive or history contract"
+    return
+  fi
+  printf 'ok: directed selector %s\n' "$name"
+}
+
+run_directed_selector_case provider-failure selector-failure 1 failed:select 1
+run_directed_selector_case missing-output direction-missing-verdict 1 failed:select 1
+run_directed_selector_case out-of-scope direction-out-of-scope 0 rejected:direction 2
 run_default_flow_parity
 run_dir_mode_success
 run_registry_mode_success
