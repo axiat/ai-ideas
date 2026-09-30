@@ -2705,7 +2705,7 @@ while :; do
         "$FRONT_CMD" \
         "Read roles/select.md and follow it" \
         select; then
-        reject_direction_round || exit 1
+        fail_round select || exit 1
         continue
       fi
       if ! validate_direction_verdicts \
