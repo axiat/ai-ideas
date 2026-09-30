@@ -279,7 +279,7 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
             brief = root / "brief.json"
             policy = root / "policy.md"
             brief.write_text('{}\n', encoding="utf-8")
-            policy.write_text('bounded\n', encoding="utf-8")
+            policy.write_text('## Theme Vocabulary\nWorld Models - Architecture\n', encoding="utf-8")
             with self.assertRaises(portable_stage.PortableStageError):
                 portable_stage.prepare_stage(
                     intent,
@@ -356,7 +356,7 @@ class ProviderIdentityHardeningSmoke(unittest.TestCase):
             brief = root / "brief.json"
             policy = root / "policy.md"
             brief.write_text('{}\n', encoding="utf-8")
-            policy.write_text('bounded\n', encoding="utf-8")
+            policy.write_text('## Theme Vocabulary\nWorld Models - Architecture\n', encoding="utf-8")
             with self.assertRaises(portable_stage.PortableStageError):
                 portable_stage.prepare_stage(
                     intent,
@@ -497,7 +497,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 '{"brief":"bounded"}\n', encoding="utf-8"
             )
             (inputs / "generation_policy.md").write_text(
-                "bounded policy\n", encoding="utf-8"
+                "## Theme Vocabulary\nWorld Models - Architecture\n", encoding="utf-8"
             )
             input_paths = {
                 "generation_brief.json": inputs / "generation_brief.json",
@@ -657,7 +657,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         self.assertIn("generation_brief.json", request["declared_input_texts"])
         self.assertEqual(
             request["host_output_contract"]["artifact_kind"],
-            "generation-ideas-markdown",
+            "generation-candidates-json",
         )
         binding = request["request_binding"]
         base = {
@@ -839,7 +839,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         for stage in portable_stage._ROLES:
             with self.subTest(stage=stage):
                 self.assertEqual(
-                    portable_stage._response_schema(stage)["properties"][
+                    portable_stage._response_schema(stage, ["World Models - Architecture"])[ "properties"][
                         "schema_version"
                     ],
                     {"maximum": 1, "minimum": 1, "type": "integer"},
@@ -848,11 +848,48 @@ class PortableStageHardeningSmoke(unittest.TestCase):
         for stage in ("generate", "history-compare", "review", "meta"):
             with self.subTest(legacy_stage=stage):
                 self.assertEqual(
-                    stage_contract.stage_response_schema(stage)[
+                    stage_contract.stage_response_schema(stage, ["World Models - Architecture"])[
                         "properties"
                     ]["schema_version"],
                     {"enum": [1], "type": "integer"},
                 )
+
+    def test_rejected_generation_evidence_requires_attestation_and_byte_bound(self):
+        for case in ("bound", "wrong-attestation", "oversize"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                prepared = self._prepare(root)
+                value = {
+                    "schema_version": 1,
+                    "stage": "generate",
+                    "request_attestation": portable_stage._expected_response_attestation(prepared),
+                    "artifacts": [{
+                        "artifact_kind": "generation-candidates-json",
+                        "content": {
+                            "assumption_removal_attempt": "Assumption-Removal Attempt: incomplete I1",
+                            "candidates": [{"theme": "memory-placeholder", "markdown": "invalid enum"}],
+                        },
+                    }],
+                }
+                if case == "wrong-attestation":
+                    value["request_attestation"]["response_echo_sha256"] = "f" * 64
+                if case == "oversize":
+                    value["extra"] = "x" * (128 * 1024)
+                raw = self._canonical(value)
+                with mock.patch.object(
+                    portable_agent, "_parse_codex_final_message", return_value=(value, raw)
+                ):
+                    with self.assertRaises(portable_stage.PortableStageError) as caught:
+                        portable_stage.run_stage(prepared, timeout_seconds=10)
+                self.assertEqual(caught.exception.code, "schema_mismatch")
+                rejected = list((root / "state/rejected").glob("*.json"))
+                self.assertEqual(len(rejected), int(case == "bound"))
+                if rejected:
+                    self.assertEqual(rejected[0].read_bytes(), raw)
+                    self.assertEqual(rejected[0].stem, hashlib.sha256(raw).hexdigest())
+                self.assertFalse((root / "state/imports").exists())
+                self.assertFalse((root / "state/completion.json").exists())
+                self.assertFalse((root / "published").exists())
 
     def test_closed_response_schema_accepts_equal_type_exact_integer_bounds(self):
         schema = portable_stage._response_schema("awr-research")
@@ -1090,7 +1127,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
             brief = inputs / "generation_brief.json"
             policy = inputs / "generation_policy.md"
             brief.write_text('{}\n', encoding="utf-8")
-            policy.write_text('bounded\n', encoding="utf-8")
+            policy.write_text('## Theme Vocabulary\nWorld Models - Architecture\n', encoding="utf-8")
             with self.assertRaises(portable_stage.PortableStageError) as caught:
                 portable_stage.prepare_stage(
                     self._capability(),
@@ -2420,7 +2457,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 '{"schema_version":1,"stage":"generate"}\n',
                 {"generation_brief.json": body_sha, "generation_policy.md": body_sha},
                 role_sha,
-                portable_stage._response_schema("generate"),
+                portable_stage._response_schema("generate", ["World Models - Architecture"]),
                 3072,
                 "reasoning-and-visible-output",
                 role_text=role,

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -160,7 +161,11 @@ def _generation_markdown():
         "Crack Evidence: https://example.com/two | Bounded latent drift.\n"
     )
     mode = os.environ.get("FAKE_PORTABLE_STAGE_MODE", "")
-    if mode in {"generation-theme-valid", "generation-theme-invalid"}:
+    if mode in {
+        "generation-theme-valid",
+        "generation-theme-invalid",
+        "generation-theme-injection",
+    }:
         prefix, candidate = markdown.split("## I1\n", 1)
         blocks = [
             f"## I{number}\n" + candidate.replace(
@@ -178,6 +183,31 @@ def _generation_markdown():
             )
         markdown = prefix + "\n".join(blocks)
     return markdown
+
+
+def _generation_content():
+    marker, markdown = _generation_markdown().split("\n\n", 1)
+    candidates = []
+    for block in re.split(r"(?m)^## I[1-9][0-9]*\n", markdown)[1:]:
+        lines = block.splitlines(keepends=True)
+        themes = [
+            line[len("Theme: "):].strip() for line in lines
+            if line.startswith("Theme: ")
+        ]
+        if len(themes) != 1:
+            raise RuntimeError("fixture requires one theme per candidate")
+        candidates.append({
+            "theme": themes[0],
+            "markdown": "".join(
+                line for line in lines if not line.startswith("Theme: ")
+            ),
+        })
+    if os.environ.get("FAKE_PORTABLE_STAGE_MODE") == "generation-theme-injection":
+        candidates[-1]["markdown"] += "\tTheme: memory-placeholder\n"
+    return {
+        "assumption_removal_attempt": marker,
+        "candidates": candidates,
+    }
 
 
 def _comparison(inner):
@@ -437,7 +467,7 @@ def _awr_priorwork():
 
 def _artifact(stage, inner):
     if stage == "generate":
-        return "generation-ideas-markdown", _generation_markdown()
+        return "generation-candidates-json", _generation_content()
     if stage == "history-compare":
         return "history-comparison-json", _comparison(inner)
     if stage == "review":
@@ -1038,7 +1068,11 @@ def main():
         ).encode("utf-8")
     if mode == "non-nfc-envelope":
         value = json.loads(raw)
-        value["artifacts"][0]["content"] += "Cafe\u0301\n"
+        if request["stage"] == "generate":
+            candidate = value["artifacts"][0]["content"]["candidates"][0]
+            candidate["markdown"] += "Cafe\u0301\n"
+        else:
+            value["artifacts"][0]["content"] += "Cafe\u0301\n"
         raw = (
             json.dumps(
                 value,
@@ -1049,9 +1083,13 @@ def main():
             + "\n"
         ).encode("utf-8")
     if mode == "surrogate-inner-value":
+        field = (
+            b'"markdown":"' if request["stage"] == "generate"
+            else b'"content":"'
+        )
         raw = raw.replace(
-            b'"content":"',
-            b'"content":"\\ud800',
+            field,
+            field + b'\\ud800',
             1,
         )
     if mode == "duplicate-key":

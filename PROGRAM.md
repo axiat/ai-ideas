@@ -136,7 +136,18 @@ behavior.
 
 ### Candidate freeze and observation
 
-Internal generation writes `ideas.tsv` and `ideas.md`. The host freezes their
+Generation returns one `generation-candidates-json` artifact containing a
+single assumption-removal marker and an ordered candidate array. Each
+candidate selects `theme` from the enum built from the captured generation
+policy and supplies a `markdown` body. The host renders sequential headings
+and the selected themes, preserves the bodies, and derives `ideas.tsv`.
+Missing vocabulary, unknown themes, and body-level theme or heading injection
+fail closed; existing direction, form, evidence, and scientific gates apply.
+Bounded generation responses with valid request attestations that fail schema
+validation are retained under the attempt's `rejected/` directory without
+completion receipts or published candidate outputs.
+
+The host writes `ideas.tsv` and `ideas.md` and freezes their
 exact bytes, one canonical candidate artifact per id, and a batch manifest
 before any downstream decision. Duplicate and failure-pattern retrieval run
 for every frozen candidate; evolution retrieval runs only for a validated

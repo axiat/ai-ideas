@@ -18,9 +18,9 @@ class StageError(RuntimeError):
 
 
 _MODEL_ARTIFACTS = {
-    # Generate: model writes markdown only. Host projects ideas.tsv.
+    # Generate: model selects enum themes; host renders markdown and TSV.
     "generate": (
-        ("generation-ideas-markdown", "output/ideas.md", 65536),
+        ("generation-candidates-json", "output/ideas.md", 65536),
     ),
     "history-compare": (
         (
@@ -76,13 +76,133 @@ def _validate_json_nesting(raw):
         raise ValueError("JSON nesting is unbalanced")
 
 
-def stage_response_schema(stage):
+def _validate_theme_vocabulary(themes):
+    if (
+        type(themes) is not list
+        or not themes
+        or any(
+            type(theme) is not str
+            or not theme
+            or theme != theme.strip()
+            or any(character in theme for character in "\x00\t\r\n")
+            for theme in themes
+        )
+        or len(set(themes)) != len(themes)
+    ):
+        raise StageError("generation theme vocabulary is missing or invalid")
+
+
+def generation_theme_vocabulary(policy):
+    """Read the first nonempty vocabulary paragraph from the captured policy."""
+    themes = []
+    inside = False
+    for line in policy.splitlines():
+        if line.rstrip() == "## Theme Vocabulary":
+            inside = True
+            continue
+        if inside and line.startswith("## "):
+            break
+        if inside:
+            if themes and not line.strip():
+                break
+            themes.extend(
+                value.strip() for value in line.split("/") if value.strip()
+            )
+    _validate_theme_vocabulary(themes)
+    return themes
+
+
+def generation_content_schema(themes):
+    _validate_theme_vocabulary(themes)
+    return {
+        "additionalProperties": False,
+        "type": "object",
+        "required": ["assumption_removal_attempt", "candidates"],
+        "properties": {
+            "assumption_removal_attempt": {
+                "type": "string", "minLength": 1, "maxLength": 4096,
+            },
+            "candidates": {
+                "type": "array", "minItems": 1, "maxItems": 20,
+                "items": {
+                    "additionalProperties": False,
+                    "type": "object",
+                    "required": ["theme", "markdown"],
+                    "properties": {
+                        "theme": {"type": "string", "enum": list(themes)},
+                        "markdown": {
+                            "type": "string", "minLength": 1,
+                            "maxLength": 65536,
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def validate_generation_content(value, themes):
+    """Validate the closed typed payload independently of provider decoding."""
+    _validate_theme_vocabulary(themes)
+    if (
+        type(value) is not dict
+        or set(value) != {"assumption_removal_attempt", "candidates"}
+        or type(value.get("assumption_removal_attempt")) is not str
+        or not 1 <= len(value["assumption_removal_attempt"]) <= 4096
+        or type(value.get("candidates")) is not list
+        or not 1 <= len(value["candidates"]) <= 20
+    ):
+        raise StageError("generation content shape is invalid")
+    for candidate in value["candidates"]:
+        if (
+            type(candidate) is not dict
+            or set(candidate) != {"theme", "markdown"}
+            or type(candidate.get("theme")) is not str
+            or candidate["theme"] not in themes
+            or type(candidate.get("markdown")) is not str
+            or not 1 <= len(candidate["markdown"]) <= 65536
+        ):
+            raise StageError("generation candidate shape or theme is invalid")
+
+
+def render_generation_markdown(value, themes):
+    """Render model-selected themes and bodies without guessing or rewriting."""
+    validate_generation_content(value, themes)
+    marker = value["assumption_removal_attempt"]
+    if (
+        not marker.startswith("Assumption-Removal Attempt: ")
+        or len(marker.splitlines()) != 1
+        or any(character in marker for character in "\x00\r\n")
+    ):
+        raise StageError("generation assumption-removal marker is invalid")
+    sections = []
+    for index, candidate in enumerate(value["candidates"], 1):
+        body = candidate["markdown"]
+        if any(character in body for character in "\x00\r"):
+            raise StageError("generation candidate body contains a control character")
+        for line in body.splitlines():
+            stripped = line.lstrip()
+            if (
+                stripped.startswith(("Theme:", "Assumption-Removal Attempt:"))
+                or re.match(r"^#{1,6}(?:\s|$)", stripped)
+            ):
+                raise StageError(
+                    "generation candidate body contains a reserved field or heading"
+                )
+        sections.append(f"## I{index}\nTheme: {candidate['theme']}\n{body}")
+    markdown = marker + "\n\n" + "\n\n".join(sections) + "\n"
+    if len(markdown.encode("utf-8")) > 65536:
+        raise StageError("generation markdown exceeds its byte bound")
+    return markdown
+
+
+def stage_response_schema(stage, theme_vocabulary=None):
     """Return the strict one-message schema used by the canonicalizer."""
     try:
         artifacts = _MODEL_ARTIFACTS[stage]
     except KeyError as exc:
         raise ValueError("unsupported stage") from exc
-    return {
+    schema = {
         "additionalProperties": False,
         "properties": {
             "artifacts": {
@@ -122,9 +242,14 @@ def stage_response_schema(stage):
         "required": ["schema_version", "stage", "artifacts"],
         "type": "object",
     }
+    if stage == "generate":
+        schema["properties"]["artifacts"]["items"]["properties"]["content"] = (
+            generation_content_schema(theme_vocabulary)
+        )
+    return schema
 
 
-def parse_model_output(stage, raw):
+def parse_model_output(stage, raw, theme_vocabulary=None):
     """Validate one structured final message and return artifact bytes."""
     if (
         not isinstance(raw, bytes)
@@ -158,10 +283,16 @@ def parse_model_output(stage, raw):
             not isinstance(item, dict)
             or set(item) != {"artifact_kind", "content"}
             or item.get("artifact_kind") != kind
-            or not isinstance(item.get("content"), str)
         ):
             raise ValueError("model artifact envelope is invalid")
-        content = item["content"].encode("utf-8")
+        if stage == "generate":
+            content = render_generation_markdown(
+                item.get("content"), theme_vocabulary
+            ).encode("utf-8")
+        else:
+            if not isinstance(item.get("content"), str):
+                raise ValueError("model artifact envelope is invalid")
+            content = item["content"].encode("utf-8")
         if not content or len(content) > maximum:
             raise ValueError("model artifact content is invalid")
         rendered[path] = content
@@ -202,8 +333,8 @@ def _evidence_urls(evidence):
 def build_generation_tsv_from_markdown(markdown, direction_contract=None):
     """Validate generate markdown and return host-projected ideas.tsv text.
 
-    Single source of truth: model writes markdown only. The TSV index is
-    derived from each section's One-Sentence Story and Theme.
+    The TSV index is derived from each rendered section's One-Sentence Story
+    and model-selected Theme.
     """
     lines = markdown.splitlines()
     markers = [

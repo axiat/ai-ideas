@@ -19,9 +19,11 @@ import unicodedata
 try:
     from lib import history_contract_v2
     from lib import provider_adapters
+    from lib import stage_contract
 except ImportError:
     import history_contract_v2
     import provider_adapters
+    import stage_contract
 
 
 class PortableAgentError(RuntimeError):
@@ -566,9 +568,13 @@ def _publish_import(
     output_sha,
     raw,
     maximum,
+    *,
+    directory_name="imports",
 ):
+    if directory_name not in {"imports", "rejected"}:
+        raise PortableAgentError("unsafe_state_path")
     imports_descriptor = _open_or_create_directory_at(
-        root_descriptor, "imports", "unsafe_state_path"
+        root_descriptor, directory_name, "unsafe_state_path"
     )
     final_name = output_sha + ".json"
     try:
@@ -834,7 +840,27 @@ def _validate_response_schema_contract(schema):
         or len(kind["enum"]) != artifacts["minItems"]
         or any(type(value) is not str or not value for value in kind["enum"])
         or len(set(kind["enum"])) != len(kind["enum"])
-        or type(content) is not dict
+    ):
+        raise PortableAgentError("invalid_response_schema")
+    if stage["enum"] == ["generate"]:
+        try:
+            themes = content["properties"]["candidates"]["items"]["properties"]["theme"]["enum"]
+            expected_content = stage_contract.generation_content_schema(themes)
+        except (KeyError, TypeError, stage_contract.StageError) as exc:
+            raise PortableAgentError("invalid_response_schema") from exc
+        if (
+            kind["enum"] != ["generation-candidates-json"]
+            or _canonical_json_bytes(content) != _canonical_json_bytes(expected_content)
+        ):
+            raise PortableAgentError("invalid_response_schema")
+        return {
+            "schema_version": version["minimum"],
+            "stage": "generate",
+            "artifact_kinds": tuple(kind["enum"]),
+            "theme_vocabulary": tuple(themes),
+        }
+    if (
+        type(content) is not dict
         or set(content) not in (
             {"maxLength", "type"},
             {"maxLength", "minLength", "type"},
@@ -899,7 +925,18 @@ def _validate_response_value(value, contract):
             or set(item) != {"artifact_kind", "content"}
             or type(item.get("artifact_kind")) is not str
             or item["artifact_kind"] != expected_kind
-            or type(item.get("content")) is not str
+        ):
+            raise PortableAgentError("schema_mismatch")
+        if contract["stage"] == "generate":
+            try:
+                stage_contract.validate_generation_content(
+                    item.get("content"), list(contract["theme_vocabulary"])
+                )
+            except stage_contract.StageError as exc:
+                raise PortableAgentError("schema_mismatch") from exc
+            continue
+        if (
+            type(item.get("content")) is not str
             or len(item["content"]) < contract["content_min_length"]
             or len(item["content"]) > contract["content_max_length"]
         ):
@@ -1978,7 +2015,24 @@ def run_portable_stdout_attempt(
                 capability.provider, stdout, response_schema
             )
         _validate_stdout_mirror(mirror, copied)
-        _validate_response_value(value, response_contract)
+        try:
+            _validate_response_value(value, response_contract)
+        except PortableAgentError as exc:
+            # Preserve bounded, request-bound generation failures as rejected
+            # evidence, never as an accepted import or completed stage.
+            if (
+                response_contract["stage"] == "generate"
+                and exc.code == "schema_mismatch"
+                and type(value) is dict
+                and value.get("request_attestation") == expected_attestation
+                and 0 < len(model_bytes) <= max_stdout_bytes
+            ):
+                _publish_import(
+                    root_descriptor, hashlib.sha256(model_bytes).hexdigest(),
+                    model_bytes, max_stdout_bytes, directory_name="rejected",
+                )
+                _assert_directory_binding(root, root_descriptor, "unsafe_state_root")
+            raise
         if _canonical_json_bytes(value["request_attestation"]) != _canonical_json_bytes(
             expected_attestation
         ):

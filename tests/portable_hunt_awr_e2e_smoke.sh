@@ -575,7 +575,8 @@ run_generation_theme_case() {
   fi
   if ! python3 - "$repo" "$project" "$runs" "$before" \
     "$provider_log" "$external_log" "$log" \
-    "$expected_reason" "$expected_theme" <<'PY'
+    "$expected_reason" "$expected_theme" "$name" <<'PY'
+import hashlib
 import json
 import pathlib
 import sqlite3
@@ -584,7 +585,7 @@ import sys
 repo, project, runs, before, provider_log, external_log, log = map(
     pathlib.Path, sys.argv[1:8]
 )
-reason, expected_theme = sys.argv[8:10]
+reason, expected_theme, case = sys.argv[8:11]
 archives = list(runs.glob("*/manifest.tsv"))
 if len(archives) != 1:
     raise SystemExit(f"MAX_FAILS=1 allowed {len(archives)} rounds")
@@ -593,23 +594,59 @@ if manifest["reason"] != reason:
     raise SystemExit(f"wrong failure classification: {manifest['reason']}")
 round_root = archives[0].parent / "round"
 history = round_root / "history"
-completion = json.loads((history / "generate-attempt/completion.json").read_text())
-envelope = json.loads((history / "generate-attempt/imports" / (
-    completion["model_envelope_sha256"] + ".json"
-)).read_text())
-markdown = envelope["artifacts"][0]["content"].encode("utf-8")
-if (history / "generate-output/ideas.md").read_bytes() != markdown:
-    raise SystemExit("archived generation markdown changed the model output")
-rows = [line.split("\t") for line in (
-    history / "generate-output/ideas.tsv"
-).read_text().splitlines()]
-if [row[0] for row in rows] != [f"I{number}" for number in range(1, 8)]:
-    raise SystemExit("generation did not preserve all seven candidates")
-themes = [row[2] for row in rows]
+attempt = history / "generate-attempt"
+completion_path = attempt / "completion.json"
+imports = list((attempt / "imports").glob("*.json"))
+rejected = list((attempt / "rejected").glob("*.json"))
+if case == "invalid":
+    if imports or len(rejected) != 1:
+        raise SystemExit("invalid typed theme was not retained only as rejected evidence")
+    raw_path = rejected[0]
+elif case == "injection":
+    if rejected or len(imports) != 1:
+        raise SystemExit("body injection did not retain its schema-valid raw import")
+    raw_path = imports[0]
+else:
+    completion = json.loads(completion_path.read_text())
+    if rejected or len(imports) != 1:
+        raise SystemExit("legal typed generation did not complete one import")
+    raw_path = attempt / "imports" / (completion["model_envelope_sha256"] + ".json")
+raw = raw_path.read_bytes()
+if hashlib.sha256(raw).hexdigest() != raw_path.stem:
+    raise SystemExit("archived model response differs from its recorded hash")
+envelope = json.loads(raw)
+if envelope["artifacts"][0]["artifact_kind"] != "generation-candidates-json":
+    raise SystemExit("generation did not use the typed model artifact")
+content = envelope["artifacts"][0]["content"]
+candidates = content["candidates"]
+if len(candidates) != 7:
+    raise SystemExit("raw generation did not preserve all seven candidates")
+themes = [candidate["theme"] for candidate in candidates]
 if themes != ["World Models - Architecture"] * 6 + [expected_theme]:
-    raise SystemExit(f"generation silently rewrote candidate themes: {themes}")
-if f"Theme: {expected_theme}\n" not in markdown.decode().split("## I7\n", 1)[1]:
-    raise SystemExit("I7 theme was not preserved in the raw model output")
+    raise SystemExit(f"generation silently rewrote typed themes: {themes}")
+if case in {"invalid", "injection"}:
+    if completion_path.exists() or list((history / "generate-output").glob("*")):
+        raise SystemExit("invalid generation published output or a completion")
+    if case == "injection" and "\tTheme: memory-placeholder\n" not in candidates[-1]["markdown"]:
+        raise SystemExit("body injection was removed from the raw model evidence")
+else:
+    markdown = content["assumption_removal_attempt"] + "\n\n" + "\n\n".join(
+        f"## I{number}\nTheme: {candidate['theme']}\n{candidate['markdown']}"
+        for number, candidate in enumerate(candidates, 1)
+    ) + "\n"
+    if (history / "generate-output/ideas.md").read_bytes() != markdown.encode("utf-8"):
+        raise SystemExit("host rendering changed the model body or selected theme")
+    rows = [line.split("\t") for line in (
+        history / "generate-output/ideas.tsv"
+    ).read_text().splitlines()]
+    expected_rows = []
+    for number, candidate in enumerate(candidates, 1):
+        story = next(line.removeprefix("One-Sentence Story: ")
+                     for line in candidate["markdown"].splitlines()
+                     if line.startswith("One-Sentence Story: "))
+        expected_rows.append([f"I{number}", story, candidate["theme"]])
+    if rows != expected_rows:
+        raise SystemExit("TSV projection changed the model stories or selected themes")
 providers = [
     (record["stage"], record["provider"])
     for record in map(json.loads, provider_log.read_text().splitlines())
@@ -617,11 +654,12 @@ providers = [
 if providers != [("generate", "codex")]:
     raise SystemExit(f"unexpected portable calls after generation: {providers}")
 stages = [line.split("\t")[0] for line in (round_root / "stages.tsv").read_text().splitlines()]
-if reason == "failed:generation-contract":
+if reason == "failed:generate":
     if stages or external_log.exists():
-        raise SystemExit("unknown theme reached selector or later stages")
-    if "Theme gate: I7 uses an unknown theme: memory-placeholder" not in log.read_text():
-        raise SystemExit("generation failed for a reason other than the unknown theme")
+        raise SystemExit("invalid generation reached selector or later stages")
+    expected_error = "schema_mismatch" if case == "invalid" else "invalid_generation_output"
+    if expected_error not in log.read_text():
+        raise SystemExit(f"generation failed for a reason other than {expected_error}")
 else:
     calls = external_log.read_text().splitlines()
     if stages != ["select"] or len(calls) != 1 or "roles/select.md" not in calls[0]:
@@ -638,7 +676,7 @@ PY
     fail "$name generation theme archive or state contract"
     return
   fi
-  printf 'ok: %s generation theme preserves outputs and stops at %s\n' \
+  printf 'ok: %s generation retains model evidence and stops at %s\n' \
     "$name" "$expected_reason"
 }
 
@@ -976,7 +1014,8 @@ run_contract_regressions() {
 }
 
 run_hunt_v2
-run_generation_theme_case invalid failed:generation-contract memory-placeholder
+run_generation_theme_case invalid failed:generate memory-placeholder
+run_generation_theme_case injection failed:generate 'World Models - Architecture'
 run_generation_theme_case valid failed:select 'World Models - Architecture'
 run_terminal_failure_skips_cooldown
 run_retryable_failures_retain_cooldown
