@@ -143,7 +143,7 @@ def _generation_markdown():
             "Direction Evidence: The repair arm attributes recovery to "
             "corrected 3D memory.\n"
         )
-    return (
+    markdown = (
         "Assumption-Removal Attempt: complete I1\n\n"
         "## I1\n"
         f"One-Sentence Story: {story}\n"
@@ -159,6 +159,25 @@ def _generation_markdown():
         "Crack Evidence: https://example.com/one | Stable skipped updates.\n"
         "Crack Evidence: https://example.com/two | Bounded latent drift.\n"
     )
+    mode = os.environ.get("FAKE_PORTABLE_STAGE_MODE", "")
+    if mode in {"generation-theme-valid", "generation-theme-invalid"}:
+        prefix, candidate = markdown.split("## I1\n", 1)
+        blocks = [
+            f"## I{number}\n" + candidate.replace(
+                f"One-Sentence Story: {story}\n",
+                f"One-Sentence Story: {story} case {number}.\n",
+                1,
+            )
+            for number in range(1, 8)
+        ]
+        if mode == "generation-theme-invalid":
+            blocks[-1] = blocks[-1].replace(
+                "Theme: World Models - Architecture\n",
+                "Theme: memory-placeholder\n",
+                1,
+            )
+        markdown = prefix + "\n".join(blocks)
+    return markdown
 
 
 def _comparison(inner):

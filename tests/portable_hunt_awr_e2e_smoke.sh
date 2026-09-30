@@ -516,6 +516,132 @@ run_hunt_v2() {
   printf 'ok: Hunt v2 portable internal stages and legacy external stages\n'
 }
 
+run_generation_theme_case() {
+  local name=$1 expected_reason=$2 expected_theme=$3
+  local repo project log provider_log external_log runs fixture_home before status
+  repo=$(make_repo "hunt-theme-$name") || {
+    fail "$name generation theme fixture setup"; return;
+  }
+  install_fake_providers "$repo"
+  write_hunt_ledger "$repo/ledger.tsv"
+  mkdir -p "$repo/tmp"
+  : > "$repo/tmp/near-sa-queue.tsv"
+  if ! (
+    cd "$repo" \
+      && python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 init \
+        > /dev/null \
+      && python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 \
+        sync-ledger ledger.tsv > /dev/null
+  ); then
+    fail "$name generation theme history setup"; return
+  fi
+  project="$CASE_ROOT/hunt-theme-$name-project"
+  log="$CASE_ROOT/hunt-theme-$name.log"
+  provider_log="$CASE_ROOT/hunt-theme-$name.providers.jsonl"
+  external_log="$CASE_ROOT/hunt-theme-$name.external.log"
+  runs="$CASE_ROOT/hunt-theme-$name-runs"
+  fixture_home="$CASE_ROOT/hunt-theme-$name-home"
+  before="$CASE_ROOT/hunt-theme-$name-ledger.tsv"
+  mkdir -p "$project" "$runs" "$fixture_home"
+  cp "$repo/ledger.tsv" "$before"
+  cp "$repo/directions/dynamic-spatial-memory-vla-v1.json" \
+    "$project/direction.json"
+  # A valid generation reaches this selector and stops before research.
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf "%s\\n" "$*" >> "$FAKE_EXTERNAL_STAGE_LOG"' \
+    'exit 23' > "$repo/.test-bin/external-stage"
+  chmod 755 "$repo/.test-bin/external-stage"
+  run_bounded "$repo" "$log" \
+    env \
+      "HOME=$fixture_home" "CODEX_HOME=$fixture_home/codex-config" \
+      "EXPECTED_PROVIDER_HOME=$fixture_home" \
+      "EXPECTED_PROVIDER_CODEX_HOME=$fixture_home/codex-config" \
+      "PATH=$repo/.test-bin:$PATH" \
+      "FAKE_PORTABLE_STAGE_LOG=$provider_log" \
+      "FAKE_EXTERNAL_STAGE_LOG=$external_log" \
+      "FAKE_PORTABLE_STAGE_MODE=generation-theme-$name" \
+      "HUNT_PROJECT_DIR=$project" HUNT_PROVIDER=codex \
+      "AGENT_CMD=$repo/.test-bin/external-stage" \
+      HISTORY_NEAR_SA=tmp/near-sa-queue.tsv \
+      RESUME_FRONT=0 THEME_MIN_LOW=0 RESEARCH_RETRY=0 \
+      FAIL_SLEEP_MIN=0 MAX_FAILS=1 ROUND_LIMIT=2 SA_TARGET=0 \
+      "RUNS_DIR=$runs" bash ./hunt.sh
+  status=$?
+  if [ "$status" -ne 1 ]; then
+    fail "$name generation theme exited $status, expected 1"
+    sed -n '1,100p' "$log" >&2
+    return
+  fi
+  if ! python3 - "$repo" "$project" "$runs" "$before" \
+    "$provider_log" "$external_log" "$log" \
+    "$expected_reason" "$expected_theme" <<'PY'
+import json
+import pathlib
+import sqlite3
+import sys
+
+repo, project, runs, before, provider_log, external_log, log = map(
+    pathlib.Path, sys.argv[1:8]
+)
+reason, expected_theme = sys.argv[8:10]
+archives = list(runs.glob("*/manifest.tsv"))
+if len(archives) != 1:
+    raise SystemExit(f"MAX_FAILS=1 allowed {len(archives)} rounds")
+manifest = dict(line.split("\t", 1) for line in archives[0].read_text().splitlines())
+if manifest["reason"] != reason:
+    raise SystemExit(f"wrong failure classification: {manifest['reason']}")
+round_root = archives[0].parent / "round"
+history = round_root / "history"
+completion = json.loads((history / "generate-attempt/completion.json").read_text())
+envelope = json.loads((history / "generate-attempt/imports" / (
+    completion["model_envelope_sha256"] + ".json"
+)).read_text())
+markdown = envelope["artifacts"][0]["content"].encode("utf-8")
+if (history / "generate-output/ideas.md").read_bytes() != markdown:
+    raise SystemExit("archived generation markdown changed the model output")
+rows = [line.split("\t") for line in (
+    history / "generate-output/ideas.tsv"
+).read_text().splitlines()]
+if [row[0] for row in rows] != [f"I{number}" for number in range(1, 8)]:
+    raise SystemExit("generation did not preserve all seven candidates")
+themes = [row[2] for row in rows]
+if themes != ["World Models - Architecture"] * 6 + [expected_theme]:
+    raise SystemExit(f"generation silently rewrote candidate themes: {themes}")
+if f"Theme: {expected_theme}\n" not in markdown.decode().split("## I7\n", 1)[1]:
+    raise SystemExit("I7 theme was not preserved in the raw model output")
+providers = [
+    (record["stage"], record["provider"])
+    for record in map(json.loads, provider_log.read_text().splitlines())
+]
+if providers != [("generate", "codex")]:
+    raise SystemExit(f"unexpected portable calls after generation: {providers}")
+stages = [line.split("\t")[0] for line in (round_root / "stages.tsv").read_text().splitlines()]
+if reason == "failed:generation-contract":
+    if stages or external_log.exists():
+        raise SystemExit("unknown theme reached selector or later stages")
+    if "Theme gate: I7 uses an unknown theme: memory-placeholder" not in log.read_text():
+        raise SystemExit("generation failed for a reason other than the unknown theme")
+else:
+    calls = external_log.read_text().splitlines()
+    if stages != ["select"] or len(calls) != 1 or "roles/select.md" not in calls[0]:
+        raise SystemExit("legal themes did not pass generation into the selector")
+if (repo / "ledger.tsv").read_bytes() != before.read_bytes():
+    raise SystemExit("generation failure changed the ledger")
+with sqlite3.connect(repo / ".ai-ideas/history.sqlite3") as database:
+    if database.execute("SELECT count(*) FROM candidates").fetchone()[0] != 1:
+        raise SystemExit("generation or selector failure added canonical candidates")
+if list((project / "harvest").glob("*")):
+    raise SystemExit("generation or selector failure published a harvest")
+PY
+  then
+    fail "$name generation theme archive or state contract"
+    return
+  fi
+  printf 'ok: %s generation theme preserves outputs and stops at %s\n' \
+    "$name" "$expected_reason"
+}
+
 run_terminal_failure_skips_cooldown() {
   local repo log sleep_log home runs status failures
   repo=$(make_repo hunt-terminal-failure) || {
@@ -850,6 +976,8 @@ run_contract_regressions() {
 }
 
 run_hunt_v2
+run_generation_theme_case invalid failed:generation-contract memory-placeholder
+run_generation_theme_case valid failed:select 'World Models - Architecture'
 run_terminal_failure_skips_cooldown
 run_retryable_failures_retain_cooldown
 run_awr_v2

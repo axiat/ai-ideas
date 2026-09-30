@@ -13,6 +13,8 @@ Each candidate must:
 - fit a team of typically 2–3 researchers (up to ~10 if justified) on realistic academic compute (a few A100-class GPUs by default; no pretraining-scale) unless the policy explicitly provides a different bound;
 - remain materially distinct from the other candidates in the batch.
 
+For every `Theme:` field, copy one complete value exactly from `generation_policy.md` under `## Theme Vocabulary`. The host output contract repeats the mounted vocabulary when present. `Direction Axis` and `Target Failure` are separate metadata and do not supply theme values. Before returning, check every candidate's theme against the vocabulary; invented labels and placeholders fail the entire generation batch.
+
 In `Minimal Falsification Experiment:`, specify the task/environment or analysis setting, the relevant implementation or formal setup, intervention and comparison arms, allocation and control of relevant histories/states and resources, sample allocation, and the primary metric with its denominator and reference contrast. State which factors must be matched for attribution. Give an executable rule for any proposed oracle or repair. When proposing a repair, state separate kill conditions for the research claim and the repair. An operationally defined custom task is sufficient; a named benchmark is optional. Mark unresolved implementation choices explicitly and distinguish expected signals from observed evidence.
 
 Each `## I#` block is passed independently to research and review. Include the complete experiment, including budgets, sample counts, denominators, and kill conditions, in that candidate's own `Minimal Falsification Experiment:` field.
@@ -45,7 +47,7 @@ candidate block:
 ```text
 ## I1
 One-Sentence Story: ...
-Theme: ...
+Theme: <exact Theme Vocabulary value>
 Form: ...
 Summary: ...
 Minimal Falsification Experiment: ...
