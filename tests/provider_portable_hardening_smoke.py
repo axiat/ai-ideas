@@ -854,8 +854,43 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                     {"enum": [1], "type": "integer"},
                 )
 
-    def test_rejected_generation_evidence_requires_attestation_and_byte_bound(self):
-        for case in ("bound", "wrong-attestation", "oversize"):
+    def test_large_grok_transport_preserves_valid_artifacts_and_receipts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prepared = self._prepare(root, provider="grok")
+            with mock.patch.dict(
+                os.environ,
+                {"FAKE_PORTABLE_STAGE_MODE": "large-transport-metadata"},
+                clear=False,
+            ):
+                portable_stage.run_stage(prepared, timeout_seconds=10)
+            portable_stage.verify_completion(prepared)
+            self.assertTrue((root / "published/ideas.md").is_file())
+            descriptor = portable_stage.public_descriptor(prepared, root)
+            portable_stage.verify_public_descriptor(descriptor, root)
+
+    def test_large_codex_final_message_is_read_without_byte_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "final.json"
+            value = {"payload": "x" * (256 * 1024)}
+            raw = self._canonical(value)
+            path.write_bytes(raw)
+            parsed, canonical = portable_agent._parse_codex_final_message(path, None)
+            self.assertEqual(parsed, value)
+            self.assertEqual(canonical, raw)
+
+    def test_legacy_sealed_output_contract_remains_verifiable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            with mock.patch.object(portable_stage, "MODEL_OUTPUT_MAX_BYTES", 128 * 1024):
+                prepared = self._prepare(root)
+                portable_stage.run_stage(prepared, timeout_seconds=10)
+            portable_stage.verify_completion(prepared)
+            descriptor = portable_stage.public_descriptor(prepared, root)
+            portable_stage.verify_public_descriptor(descriptor, root)
+
+    def test_rejected_generation_evidence_requires_attestation(self):
+        for case in ("bound", "wrong-attestation", "large"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 root = pathlib.Path(directory)
                 prepared = self._prepare(root)
@@ -873,7 +908,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                 }
                 if case == "wrong-attestation":
                     value["request_attestation"]["response_echo_sha256"] = "f" * 64
-                if case == "oversize":
+                if case == "large":
                     value["extra"] = "x" * (128 * 1024)
                 raw = self._canonical(value)
                 with mock.patch.object(
@@ -883,7 +918,7 @@ class PortableStageHardeningSmoke(unittest.TestCase):
                         portable_stage.run_stage(prepared, timeout_seconds=10)
                 self.assertEqual(caught.exception.code, "schema_mismatch")
                 rejected = list((root / "state/rejected").glob("*.json"))
-                self.assertEqual(len(rejected), int(case == "bound"))
+                self.assertEqual(len(rejected), int(case != "wrong-attestation"))
                 if rejected:
                     self.assertEqual(rejected[0].read_bytes(), raw)
                     self.assertEqual(rejected[0].stem, hashlib.sha256(raw).hexdigest())

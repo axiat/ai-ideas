@@ -151,6 +151,20 @@ def _trusted_root_alias(path, code):
     raise PortableAgentError(code)
 
 
+def _read_output_bytes(descriptor, maximum):
+    chunks = []
+    total = 0
+    while True:
+        size = 65536 if maximum is None else min(65536, maximum + 1 - total)
+        chunk = os.read(descriptor, size)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if maximum is not None and total > maximum:
+            raise PortableAgentError("oversize")
+        chunks.append(chunk)
+
+
 def _open_read_stable(path, maximum, code, *, require_owner_only=False):
     path = _trusted_root_alias(path, code)
     directory_descriptor = _open_absolute_directory_no_follow(path.parent, code)
@@ -183,9 +197,7 @@ def _open_read_stable(path, maximum, code, *, require_owner_only=False):
                 != (before.st_dev, before.st_ino)
             ):
                 raise PortableAgentError(code)
-            raw = os.read(descriptor, maximum + 1)
-            if len(raw) > maximum or os.read(descriptor, 1):
-                raise PortableAgentError("oversize")
+            raw = _read_output_bytes(descriptor, maximum)
         finally:
             os.close(descriptor)
         try:
@@ -480,9 +492,7 @@ def _verify_import_winner(
             != (before.st_dev, before.st_ino)
         ):
             raise PortableAgentError("unsafe_import")
-        raw = os.read(descriptor, maximum + 1)
-        if len(raw) > maximum or os.read(descriptor, 1):
-            raise PortableAgentError("oversize")
+        raw = _read_output_bytes(descriptor, maximum)
         after_read = os.fstat(descriptor)
         if (
             opened.st_dev,
@@ -1470,6 +1480,9 @@ def _communicate_bounded(
                     selector.unregister(stream)
                     stream.close()
                     continue
+                if maximum is None:
+                    capture.extend(chunk)
+                    continue
                 if enforce and len(capture) + len(chunk) > maximum:
                     raise PortableAgentError("oversize")
                 if len(capture) < maximum:
@@ -1910,7 +1923,7 @@ def run_portable_stdout_attempt(
     state_root,
     timeout_seconds,
     max_output_tokens=None,
-    max_stdout_bytes=128 * 1024,
+    max_stdout_bytes=None,
 ):
     """Run one disposable mirror and import one canonical stdout envelope."""
     if not provider_adapters.command_intent_is_issued(capability):
@@ -1928,7 +1941,9 @@ def run_portable_stdout_attempt(
         raise PortableAgentError("invalid_prompt")
     if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
         raise PortableAgentError("invalid_timeout")
-    if type(max_stdout_bytes) is not int or not 1 <= max_stdout_bytes <= 128 * 1024:
+    if max_stdout_bytes is not None and (
+        type(max_stdout_bytes) is not int or max_stdout_bytes < 1
+    ):
         raise PortableAgentError("invalid_output_contract")
     response_contract = _validate_response_schema_contract(response_schema)
     expected_attestation = _validate_expected_response_attestation(
@@ -2018,14 +2033,15 @@ def run_portable_stdout_attempt(
         try:
             _validate_response_value(value, response_contract)
         except PortableAgentError as exc:
-            # Preserve bounded, request-bound generation failures as rejected
+            # Preserve request-bound generation failures as rejected
             # evidence, never as an accepted import or completed stage.
             if (
                 response_contract["stage"] == "generate"
                 and exc.code == "schema_mismatch"
                 and type(value) is dict
                 and value.get("request_attestation") == expected_attestation
-                and 0 < len(model_bytes) <= max_stdout_bytes
+                and len(model_bytes) > 0
+                and (max_stdout_bytes is None or len(model_bytes) <= max_stdout_bytes)
             ):
                 _publish_import(
                     root_descriptor, hashlib.sha256(model_bytes).hexdigest(),
