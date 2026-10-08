@@ -41,7 +41,6 @@ _MODEL_ARTIFACTS = {
         ),
     ),
 }
-_MODEL_OUTPUT_MAX_BYTES = 128 * 1024
 # Independent of interpreter-specific json decoder recursion behavior.
 JSON_MAX_NESTING_DEPTH = 128
 
@@ -251,12 +250,8 @@ def stage_response_schema(stage, theme_vocabulary=None):
 
 def parse_model_output(stage, raw, theme_vocabulary=None):
     """Validate one structured final message and return artifact bytes."""
-    if (
-        not isinstance(raw, bytes)
-        or not raw
-        or len(raw) > _MODEL_OUTPUT_MAX_BYTES
-    ):
-        raise ValueError("model output byte bound is invalid")
+    if not isinstance(raw, bytes) or not raw:
+        raise ValueError("model output bytes are invalid")
     try:
         _validate_json_nesting(raw)
         value = json.loads(raw.decode("utf-8"))
