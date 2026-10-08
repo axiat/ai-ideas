@@ -8,7 +8,7 @@
 # publication retain their existing process boundaries.
 #
 # Usage:
-#   ./hunt.sh [failure retry delay in minutes; default: 150]
+#   ./hunt.sh [failure retry delay in minutes; default: 15]
 #
 # Main controls:
 #   HUNT_PROVIDER / HUNT_MODEL / HUNT_REASONING_EFFORT
@@ -240,7 +240,7 @@ fi
 AGENT_CMD=${AGENT_CMD:-codex --search -c approval_policy=never -c sandbox_workspace_write.network_access=true exec -s workspace-write}
 FRONT_CMD=${FRONT_CMD:-$AGENT_CMD}
 BACK_CMD=${BACK_CMD:-$AGENT_CMD}
-FAIL_SLEEP_MIN=${FAIL_SLEEP_MIN:-${1:-150}}
+FAIL_SLEEP_MIN=${FAIL_SLEEP_MIN:-${1:-15}}
 # Contract/format failures should not burn the long operational cooldown.
 CONTRACT_FAIL_SLEEP_MIN=${CONTRACT_FAIL_SLEEP_MIN:-1}
 NO_HIT_SLEEP_MIN_LO=${NO_HIT_SLEEP_MIN_LO:-1}

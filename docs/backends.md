@@ -438,7 +438,7 @@ A failed final bounded Hunt round exits without `FAIL_SLEEP_MIN`; failed rounds
 with another bounded attempt remaining retain the configured cooldown. Contract
 failures, including a successful Codex process that omits or produces an unsafe
 final-message artifact, use `CONTRACT_FAIL_SLEEP_MIN` (default 1 minute);
-provider/runtime failures use `FAIL_SLEEP_MIN` (default 150 minutes).
+provider/runtime failures use `FAIL_SLEEP_MIN` (default 15 minutes).
 
 Hunt external stages receive a shared disposable-mirror preamble and must run to
 completion without requesting confirmation. The parent process must create the
