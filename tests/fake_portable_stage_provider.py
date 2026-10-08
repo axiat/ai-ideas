@@ -793,6 +793,8 @@ def _grok_transport(inner_raw, mode):
         "total_cost_usd": 0.001,
         "total_cost_usd_ticks": 10000000,
     }
+    if mode == "large-transport-metadata":
+        outer["reasoning"] = "x" * (256 * 1024)
     if mode == "missing-text":
         outer.pop("text")
     if mode == "nonstring-text":

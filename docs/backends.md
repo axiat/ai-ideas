@@ -352,9 +352,9 @@ fails before any artifact is projected or completion is published.
 Portable Grok stages use the `grok-portable-v3` command grammar and request
 `--output-format json`. The rendered command environment forces all six
 `GROK_CLAUDE_*_ENABLED` compatibility cells to `false`, and the command record
-and preflight bind those values. The complete
-provider-owned outer stdout remains under the 128 KiB capture limit. After the
-host validates that transport and its terminal `text`, it accepts complete bare
+and preflight bind those values. Provider stdout and the model response envelope
+have no byte-size cap; stage timeouts and individual artifact limits still apply.
+After the host validates that transport and its terminal `text`, it accepts complete bare
 inner JSON or one unique terminal Markdown fence after an optional accumulated
 prefix. Grok's CLI reducer concatenates assistant chunks without inserting a
 separator, so the exact opener bytes `b"```json\n"` may begin at any byte of

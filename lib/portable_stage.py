@@ -37,7 +37,7 @@ except ImportError:
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BOUNDARY = "portable-mirror-v1"
 HOST_INPUT_MAX_BYTES = 256 * 1024
-MODEL_OUTPUT_MAX_BYTES = 128 * 1024
+MODEL_OUTPUT_MAX_BYTES = None  # Provider transport and model envelopes are uncapped.
 DECLARED_INPUT_MAX_BYTES = 128 * 1024
 PREFLIGHT_MAX_BYTES = 64 * 1024
 STAGE_TIMEOUT_SECONDS = 1800
@@ -1919,13 +1919,17 @@ def _validate_public_preflight(value):
     ):
         raise PortableStageError("invalid_preflight")
     output_contract = value.get("output_contract")
-    if output_contract != {
+    expected_output_contract = {
         "capture": "stdout",
         "max_bytes": MODEL_OUTPUT_MAX_BYTES,
         "sha256": None,
         "response_schema_sha256": value["response_schema_sha256"],
-    } or value.get("output_names") != sorted(
-        _OUTPUT_PROFILES[value["stage"]]
+    }
+    # Existing sealed receipts retain their original finite output contract.
+    legacy_output_contract = dict(expected_output_contract, max_bytes=128 * 1024)
+    if (
+        output_contract not in (expected_output_contract, legacy_output_contract)
+        or value.get("output_names") != sorted(_OUTPUT_PROFILES[value["stage"]])
     ):
         raise PortableStageError("invalid_preflight")
     if (
@@ -2352,7 +2356,9 @@ def verify_public_descriptor(descriptor, reference_root):
         if descriptor[name] != preflight.get(name):
             raise PortableStageError("public_receipt_changed")
     envelope_raw = _capture_regular(
-        envelope_path, MODEL_OUTPUT_MAX_BYTES, "invalid_model_import"
+        envelope_path,
+        preflight["output_contract"]["max_bytes"],
+        "invalid_model_import",
     )
     if _sha(envelope_raw) != completion_ref["model_envelope_sha256"]:
         raise PortableStageError("model_import_changed")

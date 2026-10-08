@@ -131,5 +131,29 @@ class GenerationStructuredContractRegression(unittest.TestCase):
             stage_contract.parse_model_output("generate", raw, THEMES)
 
 
+class ModelEnvelopeSizeRegression(unittest.TestCase):
+    def test_json_escaping_can_exceed_old_cap_without_exceeding_artifact_limit(self):
+        content = '"' * 65536
+        raw = portable_agent._canonical_json_bytes({
+            "schema_version": 1,
+            "stage": "review",
+            "artifacts": [{"artifact_kind": "review-markdown", "content": content}],
+        })
+        self.assertGreater(len(raw), 128 * 1024)
+        self.assertEqual(
+            stage_contract.parse_model_output("review", raw),
+            {"output/review.md": content.encode("utf-8")},
+        )
+
+    def test_decoded_artifact_still_rejects_content_above_its_limit(self):
+        raw = portable_agent._canonical_json_bytes({
+            "schema_version": 1,
+            "stage": "review",
+            "artifacts": [{"artifact_kind": "review-markdown", "content": "x" * 65537}],
+        })
+        with self.assertRaisesRegex(ValueError, "model artifact content is invalid"):
+            stage_contract.parse_model_output("review", raw)
+
+
 if __name__ == "__main__":
     unittest.main()
