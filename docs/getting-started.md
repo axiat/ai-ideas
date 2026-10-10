@@ -50,7 +50,7 @@ Primary defaults:
 | Daily Strong Accept target | `SA_TARGET=1` |
 | Deep-research shortlist | `SHORT_MAX=3` |
 | Front-stage empty retries | `EMPTY_MAX=3` |
-| Failure cooldown | `FAIL_SLEEP_MIN=15` minutes |
+| Failure cooldown | `FAIL_SLEEP_MIN=25` minutes |
 | Complete no-report retry | `NO_HIT_SLEEP_MIN_LO=1` to `NO_HIT_SLEEP_MIN_HI=8` minutes |
 | Consecutive backend failure cap | `MAX_FAILS=12` |
 | History policy | `history/retrieval-policy-v1.json` (`shadow`) |
