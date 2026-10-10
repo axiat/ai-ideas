@@ -3,3 +3,4 @@ tmp/
 .ai-ideas/
 __pycache__/
 *.pyc
+output/
