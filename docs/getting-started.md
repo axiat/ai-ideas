@@ -155,6 +155,13 @@ python3 lib/history_cli.py --db .ai-ideas/history.sqlite3 rebuild-projections
 
 `.ai-ideas/` and `tmp/` are gitignored. Per-run archives are not stored under `tmp/runs/`.
 
+Hunt writes each status message to `hunt.log` before displaying it. Console
+writes time out after 0.2 seconds, so a paused terminal or an unread output
+pipe cannot block the next stage. Console output may be partial or absent
+when blocked; the complete status message remains in `hunt.log`.
+Runtime stderr diagnostics also append to `hunt.log`, including Python
+tracebacks. Stages with their own error files keep those destinations.
+
 ## Recovery
 
 An ordinary interruption is restartable:
