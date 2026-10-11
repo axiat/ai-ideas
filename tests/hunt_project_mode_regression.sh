@@ -653,7 +653,7 @@ run_refusal_matrix() {
     sed -n '1,60p' "$CASE_ROOT/refuse-unknown.log" >&2
     return
   fi
-  if ! grep -q 'known' "$CASE_ROOT/refuse-unknown.log"; then
+  if ! grep -q 'known' "$repo/hunt.log"; then
     fail 'refusal unknown-project did not list registered names'
     return
   fi

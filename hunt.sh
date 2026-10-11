@@ -294,7 +294,36 @@ RUNS_DIR=${RUNS_DIR:-$HOME/.ai-ideas-runs/$(basename "$PWD")}
 STRUCTURED_API_RE='^- Query:[[:space:]]*https?://(export\.arxiv\.org/api/query\?[^[:space:]]+|api\.semanticscholar\.org/graph/v1/[A-Za-z0-9._~%/:+-]+\?[^[:space:]]+)[[:space:]]*$'
 
 log() {
-  printf '[%s] %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG"
+  local line
+  line="[$(date '+%F %T')] $*"
+  # Keep the complete file log before attempting best-effort console output.
+  # Redirect stderr first so even a failed append cannot block on the terminal.
+  printf '%s\n' "$line" 2>/dev/null >> "$LOG" || return 1
+  python3 - "$line" 2>/dev/null <<'PY' || true
+import os
+import signal
+import sys
+
+
+def stop_console_write(_signal, _frame):
+    # Exit normally from Python: a signal-killed child makes Bash write a
+    # termination diagnostic to the same potentially blocked terminal.
+    os._exit(0)
+
+
+signal.signal(signal.SIGALRM, stop_console_write)
+signal.setitimer(signal.ITIMER_REAL, 0.2)
+remaining = os.fsencode(sys.argv[1]) + b"\n"
+try:
+    while remaining:
+        written = os.write(1, remaining)
+        if written == 0:
+            break
+        remaining = remaining[written:]
+except OSError:
+    pass
+os._exit(0)
+PY
 }
 
 copy_mutable_round_view() {
@@ -2408,6 +2437,8 @@ reject_direction_round() {
 
 validate_config
 mkdir -p tmp "$HISTORY_STATE_ROOT"
+# Runtime diagnostics must not wait for a terminal to accept stderr.
+exec 2>/dev/null 2>> "$LOG" || exit 2
 
 acquire_hunt_lock || exit 2
 trap '
@@ -2427,7 +2458,10 @@ mkdir -p "$RUNS_DIR" || { log "Cannot create archive directory"; exit 2; }
   log "Archive-integrity sentinel exists: $HALT_MARK"
   exit 2
 }
-project_mode_preflight || exit $?
+project_mode_preflight || {
+  log "Project mode preflight failed; see $LOG"
+  exit 2
+}
 
 # Validate enforcement authority, migrate once, recover projections, and
 # reconcile both TSV targets before any agent process can start.

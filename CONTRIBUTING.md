@@ -32,6 +32,7 @@ python3 tests/direction_contract_smoke.py
 python3 tests/history_runtime_smoke.py
 bash tests/history_runtime_smoke.sh
 bash tests/hunt_project_mode_regression.sh
+python3 tests/hunt_logging_regression.py
 python3 tests/verify_product_contract.py runtime
 python3 tests/verify_product_contract.py fixtures
 bash tests/runtime_abi_smoke.sh
