@@ -88,7 +88,7 @@ _STAGE_MESSAGES = {
 _DIRECTION_UNSPECIFIED = object()
 _INPUT_CAPS = {
     "generation_brief.json": 65536,
-    "generation_policy.md": 16384,
+    "generation_policy.md": 32768,
     "research_context.md": 65536,
     "direction_constraint.json": 16384,
     "retrieval_pack.json": 65536,

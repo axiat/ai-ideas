@@ -149,6 +149,68 @@ class RuntimeFixture(unittest.TestCase):
         )
 
 
+class GenerationInputContract(RuntimeFixture):
+    def test_shipped_generation_policy_is_preserved_up_to_32k(self):
+        from lib import portable_stage
+
+        policy_raw = self.generation_policy_path.read_bytes()
+        self.assertLessEqual(len(policy_raw), 32768)
+        brief_path = self.root / "generation_brief.json"
+        brief_path.write_bytes(canonical({"brief": "bounded"}))
+        input_paths = {
+            "generation_brief.json": brief_path,
+            "generation_policy.md": self.generation_policy_path,
+        }
+        for label, size in (("shipped", len(policy_raw)), ("limit", 32768)):
+            with self.subTest(policy_bytes=size):
+                expected = policy_raw + b"\n" * (size - len(policy_raw))
+                self.generation_policy_path.write_bytes(expected)
+                try:
+                    prompt = history_runtime._portable_serialized_prompt(
+                        "generate", input_paths, self.policy
+                    )
+                except history_runtime.RuntimeContractError as exc:
+                    self.fail(f"generation policy of {size} bytes was refused: {exc}")
+                mounted = {
+                    item["path"]: item["text"].encode("utf-8")
+                    for item in json.loads(prompt)["mounted_inputs"]
+                }
+                self.assertEqual(mounted["generation_policy.md"], expected)
+                prepared = portable_stage.prepare_stage(
+                    self._portable_profile(),
+                    stage="generate",
+                    seat_id="generation-policy-capacity",
+                    serialized_prompt=prompt,
+                    input_paths=input_paths,
+                    output_root=self.root / f"output-{label}",
+                    state_root=self.root / f"state-{label}",
+                )
+                request = json.loads(prepared["provider_request"])
+                self.assertEqual(
+                    request["declared_input_texts"]["generation_policy.md"].encode("utf-8"),
+                    expected,
+                )
+                self.assertEqual(
+                    prepared["declared_input_bytes"]["generation_policy.md"],
+                    size,
+                )
+
+    def test_generation_policy_larger_than_32k_is_rejected(self):
+        raw = self.generation_policy_path.read_bytes()
+        self.generation_policy_path.write_bytes(
+            raw + b"\n" * (32769 - len(raw))
+        )
+        with self.assertRaisesRegex(
+            history_runtime.RuntimeContractError,
+            "portable stage input generation_policy.md",
+        ):
+            history_runtime._portable_serialized_prompt(
+                "generate",
+                {"generation_policy.md": self.generation_policy_path},
+                self.policy,
+            )
+
+
 class StartupContract(RuntimeFixture):
     def test_absent_database_imports_once_and_publishes_both_targets(self):
         result = self.startup()

@@ -8,10 +8,12 @@ Each candidate must:
 
 - use one form allowed by the bounded generation policy;
 - state one story and one theme from the policy vocabulary;
-- distinguish a falsifiable proposition from a mechanism-domain pairing;
+- state a substantive contribution and falsifiable prediction, distinguishing a new formulation or application angle from a bare mechanism-domain pairing;
 - include an executable minimal falsification experiment with the strongest baseline, data scale, compute, expected signal, attribution control, and kill condition;
 - fit a team of typically 2–3 researchers (up to ~10 if justified) on realistic academic compute (a few A100-class GPUs by default; no pretraining-scale) unless the policy explicitly provides a different bound;
 - remain materially distinct from the other candidates in the batch.
+
+Explore previously unexploited structural correspondences between target problems and established methods. Consider how to encode solutions, states, or objectives as objects a mature method can learn, generate, or optimize; explain preserved task-relevant distinctions and constraints, the newly enabled capability, and the contrast with routine direct application. A substantive reformulation can supply the contribution without new algorithmic components.
 
 Select each candidate's `theme` from the response schema enum, which contains the exact mounted `generation_policy.md` Theme Vocabulary. `Direction Axis` and `Target Failure` are separate metadata. The host renders the selected theme as a `Theme:` line; omit that line from the candidate's `markdown` body.
 

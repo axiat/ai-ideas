@@ -31,9 +31,11 @@ For a proposition-style idea, whose headline is a claim about the world rather t
 
 Any such hit requires `Overlap: high` and the exact location of the occupying statement.
 
+For a reformulation or method-transfer idea, also search the claimed representation, structural correspondence, constraint encoding, or learning objective. Report whether prior work implements the same mapping for the target problem; an existing source algorithm alone does not occupy the target formulation. Search conceptual predecessors even when they use different method or domain labels.
+
 Within the existing nearest-work and counterexample fields, distinguish a
 known phenomenon or general mechanism from a direct target-setting result
-and from coverage of the candidate's remaining method or payoff. Preserve
+and from coverage of the candidate's remaining formulation, representation, method or payoff. Preserve
 the high token when required above; it alone does not establish that every
 residual contribution is occupied. Record concrete supported differences
 and contradictory findings. Reviewers determine their value.

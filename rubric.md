@@ -727,6 +727,11 @@ side-stepping manual question writing. Cheaper score 8.
 Transplants a mature idea from one domain to another, or unifies a
 fragmented set of tasks under a single framework.
 
+A substantive new formulation, representation, or structural correspondence
+can make this a strong contribution even when the source algorithm remains
+unchanged. Assess the newly enabled capability under `brainstorming_policy.md`;
+a familiar method alone does not impose an incremental ceiling.
+
 ### Canonical entry strategies
 
 - **Cross-domain transplantation**. Take a mature technique from one
@@ -1553,8 +1558,9 @@ Signal that yes: the idea depends on capability that did not exist
 two years ago. Example: LLM agents only became practical after
 instruction-tuned base models matured; reinforcement-learning from
 execution feedback only became tractable after cheap-inference
-infrastructure. An idea that could have been done five years ago but
-was not, is usually incremental.
+infrastructure. Earlier technical feasibility alone does not determine
+novelty: a previously unexploited formulation or structural correspondence
+may still supply a substantive contribution under the acceptance policy.
 
 Signal that no: the idea could have been attempted at any point in
 the last decade with minor modifications.
